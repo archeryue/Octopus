@@ -3,7 +3,9 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from server.database import Database
 from server.main import app
+from server.session_manager import session_manager
 
 TOKEN = "changeme"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
@@ -11,9 +13,17 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 @pytest.fixture
 async def client():
+    # Initialize session_manager with in-memory DB before each test
+    db = Database(":memory:")
+    await db.initialize()
+    session_manager.sessions.clear()
+    await session_manager.initialize(db)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+    await db.close()
 
 
 @pytest.mark.asyncio

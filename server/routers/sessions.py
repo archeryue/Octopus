@@ -27,7 +27,7 @@ async def list_sessions(_: str = Depends(verify_token)):
 async def create_session(
     req: CreateSessionRequest, _: str = Depends(verify_token)
 ):
-    s = session_manager.create_session(req.name, req.working_dir)
+    s = await session_manager.create_session(req.name, req.working_dir)
     return SessionInfo(
         id=s.id,
         name=s.name,

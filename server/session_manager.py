@@ -23,6 +23,7 @@ from claude_code_sdk import (
 from claude_code_sdk._errors import MessageParseError
 
 from .config import settings
+from .database import Database
 from .models import MessageContent, MessageRole, SessionStatus
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,25 @@ class SessionManager:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
         self._broadcast_callbacks: list[Any] = []
+        self.db: Database | None = None
+
+    async def initialize(self, db: Database) -> None:
+        self.db = db
+        rows = await db.load_sessions()
+        for row in rows:
+            session = Session(
+                id=row["id"],
+                name=row["name"],
+                working_dir=row["working_dir"],
+                created_at=row["created_at"],
+                claude_session_id=row["claude_session_id"],
+            )
+            # Load persisted messages
+            msg_rows = await db.load_messages(session.id)
+            for m in msg_rows:
+                session.messages.append(MessageContent(**m))
+            self.sessions[session.id] = session
+        logger.info("Loaded %d sessions from database", len(rows))
 
     def on_broadcast(self, callback):
         self._broadcast_callbacks.append(callback)
@@ -74,7 +94,7 @@ class SessionManager:
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
 
-    def create_session(self, name: str, working_dir: str | None = None) -> Session:
+    async def create_session(self, name: str, working_dir: str | None = None) -> Session:
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
@@ -82,6 +102,14 @@ class SessionManager:
             working_dir=working_dir or settings.default_working_dir,
         )
         self.sessions[sid] = session
+        if self.db:
+            await self.db.save_session(
+                session_id=session.id,
+                name=session.name,
+                working_dir=session.working_dir,
+                created_at=session.created_at,
+                claude_session_id=session.claude_session_id,
+            )
         return session
 
     async def delete_session(self, session_id: str) -> bool:
@@ -93,7 +121,27 @@ class SessionManager:
                 await session._client.disconnect()
             except Exception:
                 pass
+        if self.db:
+            await self.db.delete_session(session_id)
         return True
+
+    async def _persist_message(self, session: Session, msg: MessageContent) -> None:
+        if not self.db:
+            return
+        seq = len(session.messages) - 1
+        await self.db.append_message(
+            session_id=session.id,
+            seq=seq,
+            role=msg.role.value,
+            type=msg.type,
+            content=msg.content,
+            tool_name=msg.tool_name,
+            tool_input=msg.tool_input,
+            tool_use_id=msg.tool_use_id,
+            is_error=msg.is_error,
+            session_id_ref=msg.session_id,
+            cost=msg.cost,
+        )
 
     async def send_message(
         self, session_id: str, prompt: str
@@ -108,6 +156,7 @@ class SessionManager:
                 role=MessageRole.user, type="text", content=prompt
             )
             session.messages.append(user_msg)
+            await self._persist_message(session, user_msg)
             yield {"type": "user_message", "session_id": session_id, "content": prompt}
 
             session.status = SessionStatus.running
@@ -126,6 +175,7 @@ class SessionManager:
                     content=str(e),
                 )
                 session.messages.append(error_msg)
+                await self._persist_message(session, error_msg)
                 yield {
                     "type": "error",
                     "session_id": session_id,
@@ -160,15 +210,15 @@ class SessionManager:
                 "tool_input": input_data,
             }
             await self._broadcast(approval_msg)
-            session.messages.append(
-                MessageContent(
-                    role=MessageRole.tool,
-                    type="tool_approval_request",
-                    tool_name=tool_name,
-                    tool_input=input_data,
-                    tool_use_id=tool_use_id,
-                )
+            msg = MessageContent(
+                role=MessageRole.tool,
+                type="tool_approval_request",
+                tool_name=tool_name,
+                tool_input=input_data,
+                tool_use_id=tool_use_id,
             )
+            session.messages.append(msg)
+            await self._persist_message(session, msg)
 
             # Wait for user decision
             try:
@@ -230,6 +280,7 @@ class SessionManager:
                                     content=block.text,
                                 )
                                 session.messages.append(text_msg)
+                                await self._persist_message(session, text_msg)
                                 yield {
                                     "type": "assistant_text",
                                     "session_id": session.id,
@@ -244,6 +295,7 @@ class SessionManager:
                                     tool_use_id=block.id,
                                 )
                                 session.messages.append(tool_msg)
+                                await self._persist_message(session, tool_msg)
                                 yield {
                                     "type": "tool_use",
                                     "session_id": session.id,
@@ -263,6 +315,7 @@ class SessionManager:
                                     is_error=block.is_error,
                                 )
                                 session.messages.append(result_msg)
+                                await self._persist_message(session, result_msg)
                                 yield {
                                     "type": "tool_result",
                                     "session_id": session.id,
@@ -277,6 +330,10 @@ class SessionManager:
 
                     elif isinstance(msg, ResultMessage):
                         session.claude_session_id = msg.session_id
+                        if self.db:
+                            await self.db.update_session_field(
+                                session.id, claude_session_id=msg.session_id
+                            )
                         result_msg = MessageContent(
                             role=MessageRole.system,
                             type="result",
@@ -284,6 +341,7 @@ class SessionManager:
                             cost=msg.total_cost_usd,
                         )
                         session.messages.append(result_msg)
+                        await self._persist_message(session, result_msg)
                         yield {
                             "type": "result",
                             "session_id": session.id,

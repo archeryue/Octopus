@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "python-dotenv>=1.0",
     "claude-code-sdk>=0.0.25",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,6 @@
 import logging
 import os
+from contextlib import asynccontextmanager
 
 # Clear this so claude-code-sdk subprocess doesn't think it's nested
 os.environ.pop("CLAUDECODE", None)
@@ -9,14 +10,26 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .database import Database
 from .routers import sessions, ws
+from .session_manager import session_manager
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-app = FastAPI(title="Octopus", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db = Database(settings.db_path)
+    await db.initialize()
+    await session_manager.initialize(db)
+    yield
+    await db.close()
+
+
+app = FastAPI(title="Octopus", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
