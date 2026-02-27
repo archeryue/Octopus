@@ -1,0 +1,16 @@
+[project]
+name = "octopus"
+version = "0.1.0"
+description = "Remote Claude Code controller"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "claude-code-sdk>=0.0.25",
+]
+
+[project.scripts]
+octopus = "server.main:run"
