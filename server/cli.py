@@ -149,6 +149,57 @@ def do_handoff(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def do_pull(args: argparse.Namespace) -> None:
+    """Execute the pull subcommand — fetch a session from Octopus and write as JSONL."""
+    from .jsonl_writer import write_jsonl_file
+    from .models import MessageContent
+
+    server = args.server.rstrip("/")
+    token = args.token
+    session_id = args.session_id
+
+    # Fetch session from server
+    url = f"{server}/api/sessions/{session_id}"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"Error: HTTP {e.code} — {body}", file=sys.stderr)
+        sys.exit(1)
+    except urllib.error.URLError as e:
+        print(f"Error: Could not connect to {server} — {e.reason}", file=sys.stderr)
+        sys.exit(1)
+
+    claude_session_id = data.get("claude_session_id")
+    if not claude_session_id:
+        import uuid
+        claude_session_id = str(uuid.uuid4())
+        print(f"Note: No claude_session_id on server — generated {claude_session_id}")
+
+    working_dir = args.cwd or data.get("working_dir") or str(Path.cwd())
+    messages = [MessageContent(**msg) for msg in data.get("messages", [])]
+
+    if not messages:
+        print("Warning: Session has no messages.", file=sys.stderr)
+
+    # Determine output path
+    project_dir = Path(args.project_dir) if args.project_dir else get_project_dir(working_dir)
+    out_path = project_dir / f"{claude_session_id}.jsonl"
+
+    write_jsonl_file(out_path, messages, claude_session_id, working_dir)
+
+    msg_count = len(messages)
+    print(f"Pulled session with {msg_count} messages → {out_path}")
+    print(f"\nResume with:\n  claude --resume {claude_session_id}")
+
+
 def do_serve(args: argparse.Namespace) -> None:
     """Execute the serve subcommand (default)."""
     from .main import run
@@ -193,6 +244,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Name for the imported session",
     )
 
+    # pull
+    pull_parser = subparsers.add_parser(
+        "pull", help="Pull a session from Octopus and write as Claude Code JSONL"
+    )
+    pull_parser.add_argument(
+        "session_id",
+        help="Octopus session ID to pull",
+    )
+    pull_parser.add_argument(
+        "--server",
+        default="http://localhost:8000",
+        help="Octopus server URL (default: http://localhost:8000)",
+    )
+    pull_parser.add_argument(
+        "--token",
+        default="changeme",
+        help="Auth token for the Octopus server",
+    )
+    pull_parser.add_argument(
+        "--project-dir",
+        help="Path to Claude Code project directory (default: auto-detect from working_dir)",
+    )
+    pull_parser.add_argument(
+        "--cwd",
+        help="Override the working directory stored in the session",
+    )
+
     return parser
 
 
@@ -205,6 +283,8 @@ def main() -> None:
         do_serve(args)
     elif args.command == "handoff":
         do_handoff(args)
+    elif args.command == "pull":
+        do_pull(args)
     else:
         parser.print_help()
 

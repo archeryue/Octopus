@@ -11,6 +11,7 @@ from server.cli import (
     build_parser,
     discover_sessions,
     get_project_dir,
+    do_pull,
 )
 
 
@@ -131,3 +132,76 @@ class TestBuildParser:
         assert args.server == "http://remote:9000"
         assert args.token == "secret"
         assert args.name == "My Session"
+
+    def test_pull_with_args(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "pull",
+            "session-42",
+            "--server", "http://remote:9000",
+            "--token", "secret",
+            "--cwd", "/home/user/proj",
+        ])
+        assert args.command == "pull"
+        assert args.session_id == "session-42"
+        assert args.server == "http://remote:9000"
+        assert args.token == "secret"
+        assert args.cwd == "/home/user/proj"
+
+    def test_pull_defaults(self):
+        parser = build_parser()
+        args = parser.parse_args(["pull", "sess-1"])
+        assert args.command == "pull"
+        assert args.session_id == "sess-1"
+        assert args.server == "http://localhost:8000"
+        assert args.token == "changeme"
+        assert args.cwd is None
+        assert args.project_dir is None
+
+    def test_pull_project_dir_override(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "pull", "sess-1",
+            "--project-dir", "/custom/path",
+        ])
+        assert args.project_dir == "/custom/path"
+
+
+class TestDoPull:
+    def test_generates_uuid_when_no_claude_session_id(self, monkeypatch, capsys, tmp_path):
+        """do_pull should generate a UUID and write JSONL when claude_session_id is missing."""
+
+        # Mock urlopen to return a session without claude_session_id
+        response_data = json.dumps({
+            "id": "oct-123",
+            "name": "Test",
+            "working_dir": "/proj",
+            "status": "idle",
+            "created_at": "2026-01-01T00:00:00Z",
+            "messages": [{"role": "user", "content": "hello", "type": "user"}],
+        }).encode("utf-8")
+
+        class FakeResponse:
+            def __init__(self):
+                self._data = response_data
+            def read(self):
+                return self._data
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req: FakeResponse())
+
+        parser = build_parser()
+        args = parser.parse_args(["pull", "oct-123", "--project-dir", str(tmp_path)])
+
+        do_pull(args)
+
+        captured = capsys.readouterr()
+        assert "No claude_session_id on server" in captured.out
+        assert "generated" in captured.out
+
+        # Verify a JSONL file was written
+        jsonl_files = list(tmp_path.glob("*.jsonl"))
+        assert len(jsonl_files) == 1
