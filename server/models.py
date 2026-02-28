@@ -17,6 +17,13 @@ class CreateSessionRequest(BaseModel):
     working_dir: str | None = None
 
 
+class ImportSessionRequest(BaseModel):
+    name: str = "Imported Session"
+    working_dir: str | None = None
+    claude_session_id: str | None = None
+    messages: list[MessageContent] = []
+
+
 class SessionInfo(BaseModel):
     id: str
     name: str

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
-from ..models import CreateSessionRequest, SessionDetail, SessionInfo, SessionStatus
+from ..models import CreateSessionRequest, ImportSessionRequest, SessionDetail, SessionInfo, SessionStatus
 from ..session_manager import session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -35,6 +35,27 @@ async def create_session(
         status=s.status,
         created_at=s.created_at,
         message_count=0,
+    )
+
+
+@router.post("/import", response_model=SessionDetail, status_code=status.HTTP_201_CREATED)
+async def import_session(
+    req: ImportSessionRequest, _: str = Depends(verify_token)
+):
+    s = await session_manager.import_session(
+        name=req.name,
+        working_dir=req.working_dir,
+        claude_session_id=req.claude_session_id,
+        messages=req.messages,
+    )
+    return SessionDetail(
+        id=s.id,
+        name=s.name,
+        working_dir=s.working_dir,
+        status=s.status,
+        created_at=s.created_at,
+        message_count=len(s.messages),
+        messages=s.messages,
     )
 
 

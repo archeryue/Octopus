@@ -112,6 +112,35 @@ class SessionManager:
             )
         return session
 
+    async def import_session(
+        self,
+        name: str,
+        working_dir: str | None = None,
+        claude_session_id: str | None = None,
+        messages: list[MessageContent] | None = None,
+    ) -> Session:
+        sid = uuid.uuid4().hex[:12]
+        session = Session(
+            id=sid,
+            name=name,
+            working_dir=working_dir or settings.default_working_dir,
+            claude_session_id=claude_session_id,
+        )
+        self.sessions[sid] = session
+        if self.db:
+            await self.db.save_session(
+                session_id=session.id,
+                name=session.name,
+                working_dir=session.working_dir,
+                created_at=session.created_at,
+                claude_session_id=session.claude_session_id,
+            )
+        if messages:
+            for msg in messages:
+                session.messages.append(msg)
+                await self._persist_message(session, msg)
+        return session
+
     async def delete_session(self, session_id: str) -> bool:
         session = self.sessions.pop(session_id, None)
         if session is None:

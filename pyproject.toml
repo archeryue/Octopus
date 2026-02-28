@@ -21,7 +21,7 @@ test = [
 ]
 
 [project.scripts]
-octopus = "server.main:run"
+octopus = "server.cli:main"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
