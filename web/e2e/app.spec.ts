@@ -1,6 +1,22 @@
 import { test, expect } from "@playwright/test";
 
 const TOKEN = "changeme";
+const API = "http://localhost:8000/api/sessions";
+
+// Clean up all sessions after the entire test suite
+test.afterAll(async ({ request }) => {
+  const res = await request.get(API, {
+    headers: { Authorization: `Bearer ${TOKEN}` },
+  });
+  if (res.ok()) {
+    const sessions: { id: string }[] = await res.json();
+    for (const s of sessions) {
+      await request.delete(`${API}/${s.id}`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      });
+    }
+  }
+});
 
 test.describe("Login", () => {
   test("shows login screen when no token", async ({ page }) => {
