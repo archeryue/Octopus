@@ -38,6 +38,9 @@ For phone access: use the same URL with your machine's LAN IP, or expose via tun
 - Real-time streaming responses via WebSocket
 - Tool use display (collapsible command/result blocks)
 - Conversation continuity (sessions resume across messages)
+- SQLite persistence (sessions and messages survive restarts)
+- Session handoff: `octopus handoff` imports local Claude Code sessions
+- Session pull: `octopus pull` exports sessions as JSONL for local `claude --resume`
 - Mobile-responsive dark UI
 - Token-based auth
 
@@ -49,7 +52,7 @@ For phone access: use the same URL with your machine's LAN IP, or expose via tun
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 23 backend tests
+.venv/bin/pytest tests/ -v        # 95 backend tests
 cd web && bun run test            # 8 frontend unit tests
 cd web && bun run test:e2e        # 12 Playwright e2e tests
 ```

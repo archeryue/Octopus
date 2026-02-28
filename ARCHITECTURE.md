@@ -39,7 +39,11 @@ Remote Claude Code controller — interact with Claude Code from any device via 
 | `auth.py` | Token verification for REST (`Authorization: Bearer <token>`) and WebSocket (`?token=<token>` query param). |
 | `models.py` | Pydantic models for API requests/responses and internal message representation. |
 | `session_manager.py` | Core component. Manages multiple Claude Code sessions via `claude-code-sdk`. Handles message streaming, tool result forwarding, and broadcast to connected WebSocket clients. |
-| `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`. |
+| `database.py` | SQLite persistence layer (`aiosqlite`). Write-through caching for sessions and messages. Loads sessions on startup. |
+| `jsonl_parser.py` | Parses Claude Code JSONL session files — extracts metadata, converts message formats, consolidates multi-block messages. |
+| `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format for local resumption via `claude --resume`. |
+| `cli.py` | CLI entry point — `octopus serve` (default), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
+| `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`, `POST /api/sessions/import`. |
 | `routers/ws.py` | WebSocket endpoint at `/ws`. Receives client commands (`send_message`, `approve_tool`, `deny_tool`), streams responses back. Each message send runs as a background `asyncio.Task` so the receive loop stays responsive. |
 
 ### Frontend (`web/src/`)
@@ -111,6 +115,7 @@ GET    /api/sessions              List all sessions
 POST   /api/sessions              Create session {name, working_dir}
 GET    /api/sessions/{id}         Session details + message history
 DELETE /api/sessions/{id}         Delete session
+POST   /api/sessions/import       Import a local Claude Code session
 GET    /health                    Health check
 ```
 
@@ -118,11 +123,12 @@ All REST endpoints require `Authorization: Bearer <token>`.
 
 ## Session Lifecycle
 
-1. **Create** — `POST /api/sessions` creates a `Session` object with a UUID, name, and working directory. No Claude subprocess yet.
+1. **Create** — `POST /api/sessions` creates a `Session` object with a UUID, name, and working directory. Persisted to SQLite. No Claude subprocess yet.
 2. **First message** — `send_message` via WebSocket triggers `_run_claude()`, which creates a `ClaudeSDKClient`, connects, sends the prompt, and streams the response. The SDK spawns `claude` CLI as a subprocess.
 3. **Conversation continuity** — After the first turn, `ResultMessage.session_id` is saved as `claude_session_id`. Subsequent messages pass this as `resume` in `ClaudeCodeOptions`, so Claude maintains conversation context.
 4. **Concurrent sessions** — Each session gets its own `ClaudeSDKClient` instance (and thus its own CLI subprocess). Multiple sessions can run in parallel.
-5. **Delete** — Disconnects the SDK client (kills subprocess) and removes the session from memory.
+5. **Import/Export** — `octopus handoff` imports a local Claude Code session; `octopus pull` exports an Octopus session as JSONL for local resumption. Sessions without a `claude_session_id` (e.g. created via web UI before Claude responds) get a generated UUID on pull.
+6. **Delete** — Disconnects the SDK client (kills subprocess), removes from memory, and deletes from SQLite (cascade removes messages).
 
 ## Key Design Decisions
 
@@ -150,8 +156,10 @@ Open `http://localhost:5173`, enter the token from `.env` (`OCTOPUS_AUTH_TOKEN`)
 
 ## Tech Stack
 
-- **Backend**: Python 3.12, FastAPI, uvicorn, pydantic-settings
+- **Backend**: Python 3.12, FastAPI, uvicorn, pydantic-settings, aiosqlite
 - **Claude integration**: `claude-code-sdk` 0.0.25 (wraps Claude Code CLI subprocess)
 - **Frontend**: React 19, TypeScript, Vite, zustand, react-markdown
 - **Auth**: Token-based (`.env` config)
+- **Persistence**: SQLite via aiosqlite (write-through caching)
 - **Communication**: WebSocket (streaming) + REST (CRUD)
+- **Testing**: pytest (backend), vitest (frontend unit), Playwright (E2E)
