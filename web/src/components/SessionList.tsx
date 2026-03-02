@@ -6,6 +6,7 @@ const API_URL = `http://${window.location.hostname}:8000`;
 export function SessionList() {
   const [newName, setNewName] = useState("");
   const [workingDir, setWorkingDir] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
   const setSessions = useSessionStore((s) => s.setSessions);
@@ -103,16 +104,30 @@ export function SessionList() {
               <span className="session-name">{s.name}</span>
               <span className={`status-dot status-${s.status}`} />
             </div>
-            <button
-              className="btn-delete"
-              onClick={(e) => {
-                e.stopPropagation();
-                deleteSession(s.id);
-              }}
-              title="Delete session"
-            >
-              ×
-            </button>
+            <div className="session-item-actions">
+              <button
+                className="btn-copy-id"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigator.clipboard.writeText(s.id);
+                  setCopiedId(s.id);
+                  setTimeout(() => setCopiedId(null), 1500);
+                }}
+                title="Copy session ID"
+              >
+                {copiedId === s.id ? "\u2713" : "\u2398"}
+              </button>
+              <button
+                className="btn-delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteSession(s.id);
+                }}
+                title="Delete session"
+              >
+                ×
+              </button>
+            </div>
           </div>
         ))}
       </div>
