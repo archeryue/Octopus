@@ -7,7 +7,7 @@ You MUST verify your changes before considering them done:
 1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (95 tests)
 2. **Frontend unit tests**: `cd web && bun run test` (8 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (12 tests, Playwright auto-starts servers)
+4. **E2E tests**: `cd web && bun run test:e2e` (17 tests, Playwright auto-starts servers)
 
 All tests must pass before committing.
 
@@ -17,7 +17,7 @@ All tests must pass before committing.
 |-------|------|-------|----------------|
 | Backend unit | pytest | 95 | Config, models, session manager, REST API (auth, CRUD, 404s), database persistence, JSONL parser/writer, CLI (handoff, pull), import API |
 | Frontend unit | vitest | 8 | Zustand store (token, sessions, messages, status) |
-| E2E | Playwright | 12 | Login flow, session create/delete, sending messages to Claude with real responses, Enter key send, input disabled while running, WebSocket connection, mobile responsive layout |
+| E2E | Playwright | 17 | Login flow, session create/delete, sending messages to Claude with real responses, Enter key send, input disabled while running, WebSocket connection, mobile responsive layout, CLI handoff import, CLI pull (with/without claude_session_id), roundtrip pull+handoff, API cleanup |
 
 ## Project Structure
 

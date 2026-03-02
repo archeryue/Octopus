@@ -31,6 +31,7 @@ class SessionInfo(BaseModel):
     status: SessionStatus
     created_at: str
     message_count: int = 0
+    claude_session_id: str | None = None
 
 
 class MessageRole(str, Enum):

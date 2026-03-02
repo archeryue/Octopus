@@ -18,6 +18,7 @@ async def list_sessions(_: str = Depends(verify_token)):
             status=s.status,
             created_at=s.created_at,
             message_count=len(s.messages),
+            claude_session_id=s.claude_session_id,
         )
         for s in sessions
     ]
@@ -35,6 +36,7 @@ async def create_session(
         status=s.status,
         created_at=s.created_at,
         message_count=0,
+        claude_session_id=s.claude_session_id,
     )
 
 
@@ -55,6 +57,7 @@ async def import_session(
         status=s.status,
         created_at=s.created_at,
         message_count=len(s.messages),
+        claude_session_id=s.claude_session_id,
         messages=s.messages,
     )
 
@@ -71,6 +74,7 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
         status=s.status,
         created_at=s.created_at,
         message_count=len(s.messages),
+        claude_session_id=s.claude_session_id,
         messages=s.messages,
     )
 
