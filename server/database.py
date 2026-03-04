@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
+
+CREATE TABLE IF NOT EXISTS bridge_mappings (
+    platform TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (platform, chat_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
 """
 
 
@@ -160,6 +168,35 @@ class Database:
                 }
             )
         return results
+
+    # --- Bridge mappings ---
+
+    async def save_bridge_mapping(
+        self, platform: str, chat_id: str, session_id: str
+    ) -> None:
+        await self.conn.execute(
+            "INSERT OR REPLACE INTO bridge_mappings (platform, chat_id, session_id) "
+            "VALUES (?, ?, ?)",
+            (platform, chat_id, session_id),
+        )
+        await self.conn.commit()
+
+    async def delete_bridge_mapping(self, platform: str, chat_id: str) -> None:
+        await self.conn.execute(
+            "DELETE FROM bridge_mappings WHERE platform = ? AND chat_id = ?",
+            (platform, chat_id),
+        )
+        await self.conn.commit()
+
+    async def load_bridge_mappings(self) -> list[dict[str, str]]:
+        cursor = await self.conn.execute(
+            "SELECT platform, chat_id, session_id FROM bridge_mappings"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {"platform": row[0], "chat_id": row[1], "session_id": row[2]}
+            for row in rows
+        ]
 
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         allowed = {"name", "working_dir", "claude_session_id"}

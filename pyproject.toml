@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "claude-code-sdk>=0.0.25",
     "aiosqlite>=0.20",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]

@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: ["telegram-bridge.spec.ts"],
   timeout: 30_000,
   retries: 0,
   use: {

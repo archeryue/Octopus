@@ -152,6 +152,9 @@ test.describe("Chat", () => {
     await expect(page.locator(".msg-user .msg-content")).toContainText(
       "Say hello"
     );
+
+    // Wait for response to complete so it doesn't interfere with the next test
+    await expect(page.locator(".result-badge")).toBeVisible({ timeout: 30_000 });
   });
 
   test("disables input while running", async ({ page }) => {

@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui"
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:bridge": "playwright test --config playwright.bridge.config.ts"
   },
   "dependencies": {
     "react": "^19.2.0",
