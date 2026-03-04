@@ -7,12 +7,14 @@ Remote Claude Code controller — interact with Claude Code from any device via 
 ```
                     ┌──────────────┐
                     │   Web UI     │  React / Vite / TypeScript
-                    │  :5173       │  zustand state, WebSocket client
+                    │  (built SPA  │  zustand state, WebSocket client
+                    │   or dev)    │
                     └──────┬───────┘
-                           │ WebSocket + REST
+                           │ same-origin (production)
+                           │ or Vite proxy (development)
                     ┌──────▼───────┐
                     │  Octopus     │  FastAPI + uvicorn
-                    │  Server      │  Python 3.12+
+                    │  Server      │  Serves API + static frontend
                     │  :8000       │
                     └──────┬───────┘
                            │ claude-code-sdk
@@ -28,21 +30,30 @@ Remote Claude Code controller — interact with Claude Code from any device via 
                     └──────────────┘
 ```
 
+### Single-Port Architecture
+
+In production, `octopus serve` serves everything from port 8000:
+- API routes (`/api/*`, `/ws`, `/health`) are handled by FastAPI routers
+- All other paths serve the built frontend from `web/dist/` via `StaticFiles(html=True)`
+- The frontend uses `window.location.origin` for API calls and derives `ws://`/`wss://` from `window.location.protocol`, so it works behind any proxy, tunnel, or HTTPS terminator
+
+In development, the Vite dev server runs on port 5173 with hot-reload and proxies `/api`, `/ws`, `/health` to the backend on port 8000.
+
 ## Components
 
 ### Backend (`server/`)
 
 | File | Purpose |
 |---|---|
-| `main.py` | FastAPI app, CORS middleware, route registration. Clears `CLAUDECODE` env var to allow nested subprocess spawning. |
+| `main.py` | FastAPI app, CORS middleware, route registration, static file serving for built frontend. Clears `CLAUDECODE` env var to allow nested subprocess spawning. |
 | `config.py` | Pydantic settings loaded from `.env` — auth token, host, port, CORS origins, default working directory. |
 | `auth.py` | Token verification for REST (`Authorization: Bearer <token>`) and WebSocket (`?token=<token>` query param). |
 | `models.py` | Pydantic models for API requests/responses and internal message representation. |
 | `session_manager.py` | Core component. Manages multiple Claude Code sessions via `claude-code-sdk`. Handles message streaming, tool result forwarding, and broadcast to connected WebSocket clients. |
 | `database.py` | SQLite persistence layer (`aiosqlite`). Write-through caching for sessions and messages. Loads sessions on startup. |
 | `jsonl_parser.py` | Parses Claude Code JSONL session files — extracts metadata, converts message formats, consolidates multi-block messages. |
-| `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format for local resumption via `claude --resume`. |
-| `cli.py` | CLI entry point — `octopus serve` (default), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
+| `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format (with uuid chain, version, timestamps) for local resumption via `claude --resume`. |
+| `cli.py` | CLI entry point — `octopus serve` (default, checks for built frontend), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
 | `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`, `POST /api/sessions/import`. |
 | `routers/ws.py` | WebSocket endpoint at `/ws`. Receives client commands (`send_message`, `approve_tool`, `deny_tool`), streams responses back. Each message send runs as a background `asyncio.Task` so the receive loop stays responsive. |
 
@@ -52,11 +63,18 @@ Remote Claude Code controller — interact with Claude Code from any device via 
 |---|---|
 | `App.tsx` | Root component. Token login screen, then layout with sidebar + main chat area. |
 | `stores/sessionStore.ts` | Zustand store — token, sessions list, active session, messages per session, connection status. |
-| `hooks/useWebSocket.ts` | WebSocket connection with auto-reconnect (3s interval). Uses `getState()` directly for store mutations to avoid React re-render loops. Dispatches incoming messages to the store by type. |
-| `components/SessionList.tsx` | Sidebar — lists sessions, create/delete, select active. Fetches sessions via REST on mount. |
+| `hooks/useWebSocket.ts` | WebSocket connection with auto-reconnect (3s interval). Derives WS URL from `window.location` (supports `ws://` and `wss://`). Uses `getState()` directly for store mutations to avoid React re-render loops. |
+| `components/SessionList.tsx` | Sidebar — lists sessions, create/delete, select active. Uses `window.location.origin` for API calls. |
 | `components/ChatView.tsx` | Main chat view — renders message list, text input, loading indicator. |
 | `components/MessageBubble.tsx` | Renders a single message: user text, assistant markdown, collapsible tool use/result blocks, cost badges, errors. |
 | `components/ToolApproval.tsx` | Renders Allow/Deny buttons when Claude requests tool permission (future use). |
+
+### Build & Dev Config (`web/`)
+
+| File | Purpose |
+|---|---|
+| `vite.config.ts` | Vite build config + dev server proxy (`/api`, `/ws`, `/health` → `localhost:8000`). Also configures vitest. |
+| `playwright.config.ts` | E2E test config — starts both backend and frontend dev servers, runs Chromium tests. |
 
 ## Data Flow
 
@@ -127,12 +145,16 @@ All REST endpoints require `Authorization: Bearer <token>`.
 2. **First message** — `send_message` via WebSocket triggers `_run_claude()`, which creates a `ClaudeSDKClient`, connects, sends the prompt, and streams the response. The SDK spawns `claude` CLI as a subprocess.
 3. **Conversation continuity** — After the first turn, `ResultMessage.session_id` is saved as `claude_session_id`. Subsequent messages pass this as `resume` in `ClaudeCodeOptions`, so Claude maintains conversation context.
 4. **Concurrent sessions** — Each session gets its own `ClaudeSDKClient` instance (and thus its own CLI subprocess). Multiple sessions can run in parallel.
-5. **Import/Export** — `octopus handoff` imports a local Claude Code session; `octopus pull` exports an Octopus session as JSONL for local resumption. Sessions without a `claude_session_id` (e.g. created via web UI before Claude responds) get a generated UUID on pull.
+5. **Import/Export** — `octopus handoff` imports a local Claude Code session; `octopus pull` exports an Octopus session as JSONL (with uuid chain, version metadata) for local resumption. Sessions without a `claude_session_id` get a generated UUID on pull.
 6. **Delete** — Disconnects the SDK client (kills subprocess), removes from memory, and deletes from SQLite (cascade removes messages).
 
 ## Key Design Decisions
 
-**SDK message parser patch**: The `claude-code-sdk` v0.0.25 throws `MessageParseError` on unknown message types like `rate_limit_event`, which kills the response stream. We patch `message_parser.py` to return a `SystemMessage` for unknown types instead of crashing.
+**Single-port serving**: The FastAPI backend serves the built React frontend as static files via `StaticFiles(html=True)` mounted at `/`. API routes are registered before the static mount, so `/api/*`, `/ws`, and `/health` take priority. This means `octopus serve` is the only command needed — no separate frontend process.
+
+**Same-origin URLs**: The frontend uses `window.location.origin` for REST and derives WebSocket protocol from `window.location.protocol`. This means the app works behind any proxy, tunnel, or HTTPS terminator without configuration. In dev mode, Vite's proxy config forwards API/WS requests to the backend.
+
+**SDK message parser patch**: The `claude-code-sdk` throws `MessageParseError` on unknown message types like `rate_limit_event`, which kills the response stream (Python generators are exhausted after an unhandled exception). We patch `message_parser.py` to return a `SystemMessage` for unknown types instead of crashing. This patch must be reapplied after reinstalling deps.
 
 **`CLAUDECODE` env var**: The Claude CLI refuses to start inside another Claude Code session. `main.py` clears this env var at import time so the SDK subprocess can launch.
 
@@ -144,22 +166,33 @@ All REST endpoints require `Authorization: Bearer <token>`.
 
 ## Running
 
-```bash
-# Terminal 1 — Backend
-.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000
+### Production (single command)
 
-# Terminal 2 — Frontend
-cd web && bun dev --host 0.0.0.0
+```bash
+cd web && bun run build && cd ..   # build frontend (once)
+octopus serve                       # serves everything on :8000
 ```
 
-Open `http://localhost:5173`, enter the token from `.env` (`OCTOPUS_AUTH_TOKEN`), create a session, send a message.
+Open `http://localhost:8000`, enter the token from `.env` (`OCTOPUS_AUTH_TOKEN`), create a session, send a message.
+
+### Development (hot-reload)
+
+```bash
+# Terminal 1 — Backend
+.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 2 — Frontend (Vite proxies /api, /ws, /health → :8000)
+cd web && bun dev
+```
+
+Open `http://localhost:5173` for the dev server with hot-reload.
 
 ## Tech Stack
 
 - **Backend**: Python 3.12, FastAPI, uvicorn, pydantic-settings, aiosqlite
-- **Claude integration**: `claude-code-sdk` 0.0.25 (wraps Claude Code CLI subprocess)
+- **Claude integration**: `claude-code-sdk` (wraps Claude Code CLI subprocess)
 - **Frontend**: React 19, TypeScript, Vite, zustand, react-markdown
 - **Auth**: Token-based (`.env` config)
 - **Persistence**: SQLite via aiosqlite (write-through caching)
 - **Communication**: WebSocket (streaming) + REST (CRUD)
-- **Testing**: pytest (backend), vitest (frontend unit), Playwright (E2E)
+- **Testing**: pytest (86 backend), vitest (8 frontend unit), Playwright (17 E2E)
