@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 
-const API_URL = `http://${window.location.hostname}:8000`;
+const API_URL = window.location.origin;
 
 export function SessionList() {
   const [newName, setNewName] = useState("");

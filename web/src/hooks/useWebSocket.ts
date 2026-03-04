@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useSessionStore, type SessionStatus } from "../stores/sessionStore";
 
-const WS_HOST = window.location.hostname || "localhost";
-const WS_URL = `ws://${WS_HOST}:8000/ws`;
+const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
 
 // Access store actions directly (stable references, no re-renders)
 const getState = () => useSessionStore.getState();

@@ -202,6 +202,13 @@ def do_pull(args: argparse.Namespace) -> None:
 
 def do_serve(args: argparse.Namespace) -> None:
     """Execute the serve subcommand (default)."""
+    dist_index = Path(__file__).resolve().parent.parent / "web" / "dist" / "index.html"
+    if not dist_index.exists():
+        print(
+            "Warning: Built frontend not found (web/dist/index.html).\n"
+            "  The API will work, but no UI will be served.\n"
+            "  Run `cd web && bun run build` to build the frontend.\n"
+        )
     from .main import run
     run()
 

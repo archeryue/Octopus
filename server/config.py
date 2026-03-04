@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     default_working_dir: str = "."
-    cors_origins: list[str] = ["http://localhost:5173"]
+    cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
     db_path: str = "octopus.db"
 
     model_config = {"env_prefix": "OCTOPUS_", "env_file": ".env"}
