@@ -277,7 +277,11 @@ class SessionManager:
             except Exception as e:
                 logger.error("SDK stream error (continuing): %s: %s", type(e).__name__, e)
                 continue
-            logger.info("SDK message: %s", type(msg).__name__)
+            if isinstance(msg, (AssistantMessage, UserMessage)):
+                block_types = [type(b).__name__ for b in msg.content]
+                logger.info("SDK message: %s blocks=%s", type(msg).__name__, block_types)
+            else:
+                logger.info("SDK message: %s", type(msg).__name__)
             yield msg
 
     async def _run_claude(
@@ -303,6 +307,8 @@ class SessionManager:
                     if isinstance(msg, AssistantMessage):
                         for block in msg.content:
                             if isinstance(block, TextBlock):
+                                if not block.text or not block.text.strip():
+                                    continue
                                 text_msg = MessageContent(
                                     role=MessageRole.assistant,
                                     type="text",
@@ -354,8 +360,28 @@ class SessionManager:
                                 }
 
                     elif isinstance(msg, UserMessage):
-                        # Tool results echoed back
-                        pass
+                        # Tool results echoed back by auto-approval
+                        for block in msg.content:
+                            if isinstance(block, ToolResultBlock):
+                                result_content = block.content
+                                if isinstance(result_content, list):
+                                    result_content = str(result_content)
+                                result_msg = MessageContent(
+                                    role=MessageRole.tool,
+                                    type="tool_result",
+                                    content=result_content,
+                                    tool_use_id=block.tool_use_id,
+                                    is_error=block.is_error,
+                                )
+                                session.messages.append(result_msg)
+                                await self._persist_message(session, result_msg)
+                                yield {
+                                    "type": "tool_result",
+                                    "session_id": session.id,
+                                    "tool_use_id": block.tool_use_id,
+                                    "output": result_content,
+                                    "is_error": block.is_error,
+                                }
 
                     elif isinstance(msg, ResultMessage):
                         session.claude_session_id = msg.session_id

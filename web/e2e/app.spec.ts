@@ -95,6 +95,9 @@ test.describe("Session Management", () => {
 });
 
 test.describe("Chat", () => {
+  // Claude SDK initialization can take >60s; the global 30s timeout is too short.
+  test.describe.configure({ timeout: 120_000 });
+
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await page.locator('input[type="password"]').fill(TOKEN);

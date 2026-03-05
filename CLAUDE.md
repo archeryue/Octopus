@@ -9,7 +9,7 @@ You MUST verify your changes before considering them done:
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
 4. **E2E tests**: `cd web && bun run test:e2e` (17 tests, Playwright auto-starts servers)
 
-All tests must pass before committing.
+**Zero test failures are acceptable.** All tests must pass before committing. If a test fails, investigate and fix it — do not ignore, skip, or dismiss any failure as "flaky" or "pre-existing".
 
 ## Test Coverage
 
