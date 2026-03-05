@@ -399,6 +399,7 @@ body {
 
 .msg {
   max-width: 100%;
+  flex-shrink: 0;
 }
 
 .msg-label {
@@ -460,7 +461,6 @@ body {
 .msg-tool, .msg-tool-result {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  overflow: hidden;
 }
 
 .msg-tool-result.error {
