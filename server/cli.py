@@ -145,7 +145,11 @@ def do_handoff(args: argparse.Namespace) -> None:
         print(f"Error: HTTP {e.code} — {body}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.URLError as e:
-        print(f"Error: Could not connect to {server} — {e.reason}", file=sys.stderr)
+        print(f"Error: Could not connect to {server}", file=sys.stderr)
+        print(f"  Is the Octopus server running? Start it with:", file=sys.stderr)
+        print(f"    octopus serve", file=sys.stderr)
+        print(f"  Or with Cloudflare Tunnel:", file=sys.stderr)
+        print(f"    octopus serve --tunnel", file=sys.stderr)
         sys.exit(1)
 
 
