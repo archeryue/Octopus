@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .bridges.manager import BridgeManager
 from .config import settings
+from .tunnel import CloudflareTunnel
 from .database import Database
 from .routers import sessions, ws
 from .session_manager import session_manager
@@ -21,6 +22,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -47,7 +49,21 @@ async def lifespan(app: FastAPI):
 
     await bridge_manager.start_all()
 
+    # Start Cloudflare Tunnel if enabled
+    tunnel: CloudflareTunnel | None = None
+    if settings.enable_tunnel:
+        tunnel = CloudflareTunnel(port=settings.port)
+        url = await tunnel.start()
+        if url:
+            print("\n" + "=" * 60)
+            print(f"  Tunnel URL: {url}")
+            print("=" * 60 + "\n")
+            logger.info("Cloudflare Tunnel active: %s", url)
+
     yield
+
+    if tunnel:
+        await tunnel.stop()
 
     await bridge_manager.stop_all()
     await bridge_manager.unregister_broadcast()

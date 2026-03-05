@@ -209,6 +209,12 @@ def do_serve(args: argparse.Namespace) -> None:
             "  The API will work, but no UI will be served.\n"
             "  Run `cd web && bun run build` to build the frontend.\n"
         )
+
+    # CLI --tunnel flag overrides config if explicitly set
+    if getattr(args, "tunnel", None) is not None:
+        from .config import settings
+        settings.enable_tunnel = args.tunnel
+
     from .main import run
     run()
 
@@ -222,7 +228,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
 
     # serve (default)
-    subparsers.add_parser("serve", help="Start the Octopus server")
+    serve_parser = subparsers.add_parser("serve", help="Start the Octopus server")
+    serve_parser.add_argument(
+        "--tunnel",
+        action="store_true",
+        default=None,
+        help="Enable Cloudflare Tunnel for public HTTPS access",
+    )
 
     # handoff
     handoff_parser = subparsers.add_parser(

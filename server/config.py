@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
     db_path: str = "octopus.db"
 
+    # Cloudflare Tunnel (opt-in)
+    enable_tunnel: bool = False
+
     # Bridge configuration (opt-in)
     telegram_bot_token: str | None = None
     telegram_allowed_chat_ids: list[str] = []
