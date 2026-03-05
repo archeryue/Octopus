@@ -277,11 +277,7 @@ class SessionManager:
             except Exception as e:
                 logger.error("SDK stream error (continuing): %s: %s", type(e).__name__, e)
                 continue
-            if isinstance(msg, (AssistantMessage, UserMessage)):
-                block_types = [type(b).__name__ for b in msg.content]
-                logger.info("SDK message: %s blocks=%s", type(msg).__name__, block_types)
-            else:
-                logger.info("SDK message: %s", type(msg).__name__)
+            logger.info("SDK message: %s", type(msg).__name__)
             yield msg
 
     async def _run_claude(
