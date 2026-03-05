@@ -1,7 +1,10 @@
 .env
-.venv/
+.venv
 __pycache__/
 *.pyc
 node_modules/
 web/dist/
+web/test-results/
 .claude/
+.pytest_cache/
+octopus.db*
