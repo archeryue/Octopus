@@ -53,7 +53,7 @@ In development, the Vite dev server runs on port 5173 with hot-reload and proxie
 | `database.py` | SQLite persistence layer (`aiosqlite`). Write-through caching for sessions and messages. Loads sessions on startup. |
 | `jsonl_parser.py` | Parses Claude Code JSONL session files — extracts metadata, converts message formats, consolidates multi-block messages. |
 | `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format (with uuid chain, version, timestamps) for local resumption via `claude --resume`. |
-| `cli.py` | CLI entry point — `octopus serve` (default, checks for built frontend), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
+| `cli.py` | CLI entry point — `octopus serve` (default, checks for built frontend; `--tunnel` enables Cloudflare Tunnel), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
 | `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`, `POST /api/sessions/import`. |
 | `routers/ws.py` | WebSocket endpoint at `/ws`. Receives client commands (`send_message`, `approve_tool`, `deny_tool`), streams responses back. Each message send runs as a background `asyncio.Task` so the receive loop stays responsive. |
 
@@ -171,6 +171,7 @@ All REST endpoints require `Authorization: Bearer <token>`.
 ```bash
 cd web && bun run build && cd ..   # build frontend (once)
 octopus serve                       # serves everything on :8000
+octopus serve --tunnel              # same, with Cloudflare Tunnel for public HTTPS
 ```
 
 Open `http://localhost:8000`, enter the token from `.env` (`OCTOPUS_AUTH_TOKEN`), create a session, send a message.

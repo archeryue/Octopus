@@ -192,9 +192,8 @@ cd web && bun install && bun run build && cd ..
 export OCTOPUS_AUTH_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
 echo "Your token: $OCTOPUS_AUTH_TOKEN"
 
-# Start server + tunnel
-octopus serve &
-cloudflared tunnel --url http://localhost:8000
+# Start server + tunnel (single command)
+octopus serve --tunnel
 
 # Open the printed https:// URL on your phone, paste the token, done.
 ```

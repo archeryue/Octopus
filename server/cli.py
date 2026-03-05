@@ -214,10 +214,12 @@ def do_serve(args: argparse.Namespace) -> None:
             "  Run `cd web && bun run build` to build the frontend.\n"
         )
 
-    # CLI --tunnel flag overrides config if explicitly set
+    # CLI --tunnel flag overrides config if explicitly set.
+    # We set the env var (not the Settings object) so the value survives
+    # uvicorn's reload, which re-imports the module and creates a fresh Settings().
     if getattr(args, "tunnel", None) is not None:
-        from .config import settings
-        settings.enable_tunnel = args.tunnel
+        import os
+        os.environ["OCTOPUS_ENABLE_TUNNEL"] = str(args.tunnel).lower()
 
     from .main import run
     run()

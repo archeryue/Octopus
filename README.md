@@ -29,7 +29,7 @@ octopus serve
 
 Open `http://localhost:8000`, enter your token, create a session, start chatting.
 
-For phone access: use the same URL with your machine's LAN IP, or expose via tunnel (see [deployment plan](docs/future-features.md#public-deployment)).
+For phone access: use `octopus serve --tunnel` for instant public HTTPS via Cloudflare Tunnel, or see [deployment plan](docs/future-features.md#public-deployment) for other options.
 
 ### Development Mode
 
@@ -63,6 +63,7 @@ Open `http://localhost:5173` for the dev server with hot-reload.
 
 ```bash
 octopus serve                  # Start server (API + UI on port 8000)
+octopus serve --tunnel         # Start server with Cloudflare Tunnel (public HTTPS)
 octopus handoff                # Import a local Claude Code session
 octopus pull <session-id>      # Export an Octopus session as local JSONL
 ```
