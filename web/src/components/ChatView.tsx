@@ -20,8 +20,12 @@ export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
   const sessions = useSessionStore((s) => s.sessions);
   const activeSession = useMemo(() => sessions.find((s) => s.id === activeSessionId), [sessions, activeSessionId]);
 
+  const prevMsgCount = useRef(0);
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (messages.length !== prevMsgCount.current) {
+      prevMsgCount.current = messages.length;
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   const handleSend = () => {

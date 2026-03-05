@@ -24,6 +24,9 @@ body {
   background: var(--bg);
   color: var(--text);
   min-height: 100dvh;
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
 }
 
 /* Login */
@@ -69,7 +72,8 @@ body {
 /* Layout */
 .app-layout {
   display: flex;
-  height: 100dvh;
+  position: fixed;
+  inset: 0;
   overflow: hidden;
 }
 
