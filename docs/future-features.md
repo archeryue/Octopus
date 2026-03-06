@@ -1,199 +1,176 @@
-# Future Features
+# Future Features — Long-Running Stability
 
-## Telegram Bot Integration
+Issues and improvements to make Octopus suitable for continuous, long-running operation (days/weeks).
+
+---
+
+## 1. Cap In-Memory Message History ✅ Planned
+
+**Priority**: Critical · **Plan**: [long-running-plan.md #1](long-running-plan.md)
+**Affected**: `server/session_manager.py`
+
+Lazy-load messages from DB on demand. Remove `messages` list from Session dataclass, replace with `_message_count` int. Load via `load_messages()` with pagination.
+
+---
+
+## 2. Sync Messages on WebSocket Reconnect ✅ Planned
+
+**Priority**: Critical · **Plan**: [long-running-plan.md #2](long-running-plan.md)
+**Affected**: `web/src/hooks/useWebSocket.ts`, `web/src/components/SessionList.tsx`
+
+Re-fetch active session messages and session list in `onopen` on reconnect.
+
+---
+
+## ~~3. Persist Active Session ID~~ — Removed
+
+Unnecessary. #2 (sync on reconnect) handles the real problem — the session stays selected in Zustand across reconnects within the same page. On full page reload, re-selecting is acceptable UX.
+
+---
+
+## 4. Decouple Streaming from WebSocket + Session Lock Timeout ✅ Planned
+
+**Priority**: High · **Plan**: [long-running-plan.md #4](long-running-plan.md)
+**Affected**: `server/session_manager.py`, `server/routers/ws.py`
+
+Move task ownership from WS to Session so Claude keeps running when browser is backgrounded. Add lock timeout and force-reset endpoint for stuck subprocesses.
+
+---
+
+## 5. Database Resilience ✅ Planned
+
+**Priority**: High · **Plan**: [long-running-plan.md #5](long-running-plan.md)
+**Affected**: `server/database.py`
+
+Add `_ensure_connected()` for auto-reconnection. Batch commits per Claude response instead of per message.
+
+---
+
+## 6. Clean Up TextBuffer on Bridge Stop ✅ Planned
+
+**Priority**: Medium · **Plan**: [long-running-plan.md #6](long-running-plan.md)
+**Affected**: `server/bridges/base.py`
+
+Add `_cleanup_buffers()` to cancel pending flush tasks and clear `_text_buffers` on bridge stop.
+
+---
+
+## 7. Broadcast Callback Deduplication
 
 **Priority**: Medium
-**Status**: Planned
+**Affected**: `server/session_manager.py`, `server/routers/ws.py`
 
 ### Problem
 
-The web UI requires a browser, which is not always convenient on mobile. A Telegram bot provides a lightweight, always-available interface to interact with Octopus sessions from any device.
+`_broadcast_callbacks` is a plain list. Each WebSocket connection appends a closure. On rapid reconnects, there's a window where the old callback isn't removed before the new one is added, causing duplicate broadcasts to the same client.
 
-### Goal
+### Fix
 
-Connect to Octopus sessions and interact with Claude through Telegram — send messages, receive responses, and manage sessions without opening a browser.
+Use a dict keyed by connection ID instead of a list:
 
-### User Flow
+```python
+self._broadcast_callbacks: dict[str, Callable] = {}
 
-1. Start a chat with the Octopus Telegram bot
-2. Authenticate (e.g. `/login <token>` or a one-time link)
-3. `/sessions` — list active sessions
-4. `/use <session_id>` — attach to a session
-5. Send messages directly — bot forwards to Claude and streams back the response
-6. `/new <name>` — create a new session
-7. Receive push notifications for long-running task completions
+def on_broadcast(self, key: str, callback):
+    self._broadcast_callbacks[key] = callback
 
-### Key Features
-
-- **Session management**: list, create, delete, switch sessions via bot commands
-- **Message relay**: send prompts and receive Claude's responses in chat
-- **Streaming output**: use Telegram's edit-message API to simulate streaming
-- **Approval handling**: when Claude needs tool approval, bot sends an inline keyboard (Approve / Deny)
-- **Notifications**: push a message when a background task completes or Claude is waiting for input
-
-### Proposed Approach
-
-- Use `python-telegram-bot` (async, well-maintained) library
-- Add a `TelegramBridge` service in `server/` that connects to `SessionManager`
-- Bot authenticates users via the same token mechanism as the web UI
-- Subscribe to session events via the existing broadcast/WebSocket system
-- Config: `TELEGRAM_BOT_TOKEN` env var to enable the integration
-
-### Architecture
-
-```
-Telegram <-> Bot Process <-> Octopus API <-> SessionManager <-> Claude SDK
-                               (reuse existing REST + WS endpoints)
+def remove_broadcast(self, key: str):
+    self._broadcast_callbacks.pop(key, None)
 ```
 
 ---
 
-## Public Deployment
+## 8. Session List Auto-Refresh
 
-**Priority**: High
-**Status**: Planned
+**Priority**: Medium
+**Affected**: `web/src/components/SessionList.tsx`
 
-### Goal
+### Problem
 
-Deploy Octopus on a remote machine (VPS/cloud) so you can control Claude Code from anywhere — phone, tablet, another laptop — over the internet.
+`fetchSessions()` only runs on component mount. If a session is created via the Telegram bridge, CLI handoff, or another browser tab, the sidebar doesn't update until page reload.
 
-### Prerequisites
+### Fix
 
-The remote machine needs:
-- Python 3.12+, Node.js/Bun (for building frontend)
-- Claude Code CLI installed and authenticated (`claude` must work)
-- A public IP or domain name
+- Re-fetch sessions on WebSocket reconnect.
+- Add a `session_created` / `session_deleted` broadcast event from the server, and update the sessions list in the WebSocket message handler.
+- Alternatively, poll sessions every 30 seconds as a simpler fallback.
 
-### Phase 1: Harden for Public Exposure
+---
 
-**Auth token** — The default `changeme` token is not safe for the internet.
+## 9. Telegram Bridge Resilience
 
-- [ ] Generate a strong random token: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
-- [ ] Set it via `OCTOPUS_AUTH_TOKEN` env var or `.env` file
-- [ ] Consider adding rate limiting on `/ws` and `/api/sessions` to prevent abuse
+**Priority**: Medium
+**Affected**: `server/bridges/telegram.py`
 
-**HTTPS** — Browsers block `ws://` on HTTPS pages, and tokens are visible in plaintext over HTTP.
+### Problem
 
-- Option A: **Cloudflare Tunnel** (easiest, no port forwarding needed)
-  ```bash
-  cloudflared tunnel --url http://localhost:8000
-  ```
-  Gives you a `https://*.trycloudflare.com` URL instantly. WebSocket upgrades work automatically (`wss://`). Zero config on the server side — our frontend already derives `ws://` vs `wss://` from `window.location.protocol`.
+The poll loop retries with a flat 5-second sleep on errors, with no exponential backoff. If the Telegram API is down for an extended period, this generates rapid error logs. There's also no way to check bridge health from the web UI or API — the bridge could be silently failing.
 
-- Option B: **Reverse proxy with Let's Encrypt**
-  ```nginx
-  server {
-      listen 443 ssl;
-      server_name octopus.yourdomain.com;
-      ssl_certificate /etc/letsencrypt/live/.../fullchain.pem;
-      ssl_certificate_key /etc/letsencrypt/live/.../privkey.pem;
+### Fix
 
-      location / {
-          proxy_pass http://127.0.0.1:8000;
-          proxy_http_version 1.1;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection "upgrade";
-          proxy_set_header Host $host;
-      }
-  }
-  ```
-  Use `certbot` for free SSL certs. The `Upgrade` headers are critical for WebSocket.
+- Add exponential backoff (5s, 10s, 30s, 60s, capped at 5 minutes).
+- Add a bridge health status to the `/health` endpoint (e.g. `{"status": "ok", "bridges": {"telegram": "connected"}}`).
+- Track last successful poll timestamp for staleness detection.
 
-- Option C: **Tailscale/WireGuard** (private network, no public exposure)
-  Install Tailscale on both machines. Access Octopus via the Tailscale IP. No HTTPS needed since traffic is encrypted at the network layer.
+---
 
-### Phase 2: Process Management
+## 10. Disable Uvicorn Reload in Production
 
-**Keep Octopus running** after SSH disconnect:
+**Priority**: Medium
+**Affected**: `server/main.py:104`
 
-- Option A: **systemd** (recommended for Linux VPS)
-  ```ini
-  # /etc/systemd/system/octopus.service
-  [Unit]
-  Description=Octopus - Remote Claude Code Controller
-  After=network.target
+### Problem
 
-  [Service]
-  Type=simple
-  User=deploy
-  WorkingDirectory=/home/deploy/Octopus
-  Environment=OCTOPUS_AUTH_TOKEN=your-secret-token
-  ExecStart=/home/deploy/Octopus/.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000
-  Restart=on-failure
-  RestartSec=5
+`uvicorn.run(..., reload=True)` is always on. In production, this watches the entire project directory for file changes and restarts the server — unnecessary overhead, and it can cause unexpected restarts if logs or the DB file change.
 
-  [Install]
-  WantedBy=multi-user.target
-  ```
-  ```bash
-  sudo systemctl enable octopus
-  sudo systemctl start octopus
-  ```
+### Fix
 
-- Option B: **tmux/screen** (quick and dirty)
-  ```bash
-  tmux new -s octopus
-  cd ~/Octopus && octopus serve
-  # Ctrl-B D to detach
-  ```
+Make `reload` configurable or default to `False`:
 
-### Phase 3: Deployment Script
-
-A one-command deploy workflow:
-
-```bash
-# deploy.sh — run on the remote machine
-#!/bin/bash
-set -e
-
-cd ~/Octopus
-git pull origin main
-
-# Backend
-.venv/bin/pip install -e .
-
-# Frontend
-cd web && bun install && bun run build && cd ..
-
-# Restart
-sudo systemctl restart octopus
-echo "Deployed at $(git log --oneline -1)"
+```python
+def run():
+    uvicorn.run(
+        "server.main:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,  # only reload in dev
+    )
 ```
 
-### Phase 4: Security Checklist
+---
 
-Before going public:
+## 11. Clean Up Frontend Message Store on Session Delete
 
-- [ ] **Strong auth token** — not `changeme`
-- [ ] **HTTPS** — via tunnel, reverse proxy, or VPN
-- [ ] **Firewall** — only expose ports 443 (HTTPS) and 22 (SSH), NOT 8000 directly
-- [ ] **Claude Code permissions** — Octopus runs with `bypassPermissions`; the remote machine should have limited filesystem access or run in a container
-- [ ] **SQLite backup** — `octopus.db` holds all sessions; add a cron job to back it up
-- [ ] **Log rotation** — uvicorn logs can grow; use systemd journal or logrotate
+**Priority**: Low
+**Affected**: `web/src/stores/sessionStore.ts`, `web/src/components/SessionList.tsx`
 
-### Phase 5: Optional Enhancements
+### Problem
 
-- [ ] **Docker image** — `Dockerfile` that bundles Python, Claude CLI, built frontend. Single `docker run` to deploy
-- [ ] **Multi-user auth** — replace single token with user accounts (JWT or session cookies)
-- [ ] **Sandboxed execution** — run Claude Code in a Docker container per session to isolate filesystem access
-- [ ] **Health monitoring** — add `/health` checks to uptime monitoring (UptimeRobot, etc.)
+When a session is deleted, `setSessions` filters it from the list but `messages[sessionId]` remains in the Zustand store forever. Over many create/delete cycles, this accumulates stale data.
 
-### Quick Start (Cloudflare Tunnel)
+### Fix
 
-Fastest path from zero to public:
+Clear messages for the deleted session:
 
-```bash
-# On your remote machine with Claude Code installed:
-git clone <repo> && cd Octopus
-python -m venv .venv && .venv/bin/pip install -e .
-cd web && bun install && bun run build && cd ..
-
-# Set a real token
-export OCTOPUS_AUTH_TOKEN=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-echo "Your token: $OCTOPUS_AUTH_TOKEN"
-
-# Start server + tunnel (single command)
-octopus serve --tunnel
-
-# Open the printed https:// URL on your phone, paste the token, done.
+```typescript
+const deleteSession = async (id: string) => {
+  // ... existing delete logic ...
+  setMessages(id, []);  // or delete the key
+};
 ```
+
+---
+
+## 12. Session Status Recovery After Crash
+
+**Priority**: Low
+**Affected**: `server/session_manager.py`
+
+### Problem
+
+On startup, all sessions are loaded with `status=idle` (the dataclass default). If the server crashed while a session was running, there's no indication to the user. The `claude_session_id` is valid so `resume` will work, but the session appears as if nothing happened.
+
+### Fix
+
+- Log a warning for sessions that had an active `claude_session_id` but no result message as their last entry — they likely crashed mid-response.
+- Optionally, add a `last_activity` timestamp to sessions and show a "session may have been interrupted" indicator in the UI.

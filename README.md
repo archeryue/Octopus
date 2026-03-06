@@ -29,7 +29,7 @@ octopus serve
 
 Open `http://localhost:8000`, enter your token, create a session, start chatting.
 
-For phone access: use `octopus serve --tunnel` for instant public HTTPS via Cloudflare Tunnel, or see [deployment plan](docs/future-features.md#public-deployment) for other options.
+For phone access: use `octopus serve --tunnel` for instant public HTTPS via Cloudflare Tunnel.
 
 ### Development Mode
 
