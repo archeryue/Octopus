@@ -1,12 +1,12 @@
 # Octopus
 
-Remote controller for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run Claude Code on your workstation, interact with it from your phone or any browser.
+Remote controller for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run Claude Code on your workstation, interact with it from your phone, Telegram, or any browser.
 
 ## How It Works
 
 ```
-Browser (phone/tablet/desktop)
-  → WebSocket + REST → FastAPI server (serves UI + API on single port)
+Browser / Telegram Bot
+  → WebSocket + REST / Bridge API → FastAPI server (serves UI + API on single port)
     → claude-code-sdk → Claude Code CLI (local subprocess)
 ```
 
@@ -51,10 +51,13 @@ Open `http://localhost:5173` for the dev server with hot-reload.
 - Multiple concurrent Claude Code sessions
 - Real-time streaming responses via WebSocket
 - Tool use display (collapsible command/result blocks)
+- Tool approval (Allow/Deny) from Web UI or Telegram
 - Conversation continuity (sessions resume across messages)
 - SQLite persistence (sessions and messages survive restarts)
+- **Telegram Bot integration** — interact with Claude Code via Telegram (`/new`, `/sessions`, `/switch`)
 - Session handoff: `octopus handoff` imports local Claude Code sessions
 - Session pull: `octopus pull` exports sessions as JSONL for local `claude --resume`
+- **Cloudflare Tunnel** — `octopus serve --tunnel` for instant public HTTPS
 - HTTPS/WSS support (works behind tunnels and reverse proxies)
 - Mobile-responsive dark UI
 - Token-based auth
@@ -76,11 +79,11 @@ octopus pull <session-id>      # Export an Octopus session as local JSONL
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 86 backend tests
+.venv/bin/pytest tests/ -v        # 95 backend tests
 cd web && bun run test            # 8 frontend unit tests
-cd web && bun run test:e2e        # 17 Playwright e2e tests
+cd web && bun run test:e2e        # 26 Playwright e2e tests (app + handoff/pull + telegram bridge)
 ```
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design, data flow, and WebSocket protocol.
+See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed system design, data flow, and WebSocket protocol.
