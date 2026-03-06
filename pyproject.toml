@@ -24,6 +24,9 @@ test = [
 [project.scripts]
 octopus = "server.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["server*"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

@@ -8,3 +8,4 @@ web/test-results/
 .claude/
 .pytest_cache/
 octopus.db*
+*.egg-info/
