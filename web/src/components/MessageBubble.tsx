@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { Message } from "../stores/sessionStore";
 
 export function MessageBubble({ message }: { message: Message }) {
@@ -14,7 +15,7 @@ export function MessageBubble({ message }: { message: Message }) {
         <div className="msg msg-assistant">
           <div className="msg-label">Claude</div>
           <div className="msg-content markdown">
-            <Markdown>{message.content || ""}</Markdown>
+            <Markdown remarkPlugins={[remarkGfm]}>{message.content || ""}</Markdown>
           </div>
         </div>
       );

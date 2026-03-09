@@ -461,6 +461,32 @@ body {
   margin: 0.4rem 0;
 }
 
+.msg-assistant .markdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+  font-size: 0.9em;
+  overflow-x: auto;
+  display: block;
+}
+
+.msg-assistant .markdown th,
+.msg-assistant .markdown td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.7rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.msg-assistant .markdown th {
+  background: var(--bg-tertiary);
+  font-weight: 600;
+}
+
+.msg-assistant .markdown tr:nth-child(even) {
+  background: var(--bg-tertiary);
+}
+
 /* Tool blocks */
 .msg-tool, .msg-tool-result {
   border: 1px solid var(--border);
