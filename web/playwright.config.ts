@@ -22,6 +22,12 @@ export default defineConfig({
       port: 8000,
       reuseExistingServer: true,
       timeout: 10_000,
+      env: {
+        ...process.env,
+        OCTOPUS_AUTH_TOKEN: "changeme",
+        OCTOPUS_TELEGRAM_BOT_TOKEN: "",
+        OCTOPUS_DB_PATH: ":memory:",
+      },
     },
     {
       command: "bun dev --port 5173",

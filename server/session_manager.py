@@ -5,7 +5,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from claude_code_sdk import (
     AssistantMessage,
@@ -44,8 +44,9 @@ class Session:
     working_dir: str
     status: SessionStatus = SessionStatus.idle
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    messages: list[MessageContent] = field(default_factory=list)
     claude_session_id: str | None = None
+    _message_count: int = field(default=0, repr=False)
+    _active_task: asyncio.Task | None = field(default=None, repr=False)
     _client: ClaudeSDKClient | None = field(default=None, repr=False)
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -54,7 +55,7 @@ class Session:
 class SessionManager:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
-        self._broadcast_callbacks: list[Any] = []
+        self._broadcast_callbacks: dict[str, Callable] = {}
         self.db: Database | None = None
 
     async def initialize(self, db: Database) -> None:
@@ -68,21 +69,18 @@ class SessionManager:
                 created_at=row["created_at"],
                 claude_session_id=row["claude_session_id"],
             )
-            # Load persisted messages
-            msg_rows = await db.load_messages(session.id)
-            for m in msg_rows:
-                session.messages.append(MessageContent(**m))
+            session._message_count = await db.count_messages(session.id)
             self.sessions[session.id] = session
         logger.info("Loaded %d sessions from database", len(rows))
 
-    def on_broadcast(self, callback):
-        self._broadcast_callbacks.append(callback)
+    def on_broadcast(self, key: str, callback: Callable) -> None:
+        self._broadcast_callbacks[key] = callback
 
-    def remove_broadcast(self, callback):
-        self._broadcast_callbacks = [c for c in self._broadcast_callbacks if c is not callback]
+    def remove_broadcast(self, key: str) -> None:
+        self._broadcast_callbacks.pop(key, None)
 
-    async def _broadcast(self, message: dict):
-        for cb in self._broadcast_callbacks:
+    async def _broadcast(self, message: dict) -> None:
+        for cb in list(self._broadcast_callbacks.values()):
             try:
                 await cb(message)
             except Exception:
@@ -137,8 +135,9 @@ class SessionManager:
             )
         if messages:
             for msg in messages:
-                session.messages.append(msg)
                 await self._persist_message(session, msg)
+            if self.db:
+                await self.db.flush()
         return session
 
     async def delete_session(self, session_id: str) -> bool:
@@ -157,7 +156,8 @@ class SessionManager:
     async def _persist_message(self, session: Session, msg: MessageContent) -> None:
         if not self.db:
             return
-        seq = len(session.messages) - 1
+        seq = session._message_count
+        session._message_count += 1
         await self.db.append_message(
             session_id=session.id,
             seq=seq,
@@ -172,6 +172,26 @@ class SessionManager:
             cost=msg.cost,
         )
 
+    async def start_message(self, session_id: str, prompt: str) -> None:
+        """Kick off a message as a background task owned by the session."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        if session._active_task and not session._active_task.done():
+            raise ValueError(f"Session {session_id} is busy")
+
+        session._active_task = asyncio.create_task(
+            self._drive_message(session_id, prompt)
+        )
+
+    async def _drive_message(self, session_id: str, prompt: str) -> None:
+        """Consume the send_message generator as a background task."""
+        try:
+            async for event in self.send_message(session_id, prompt):
+                pass  # send_message persists + broadcasts each event
+        except Exception:
+            logger.exception("Background task error for session %s", session_id)
+
     async def send_message(
         self, session_id: str, prompt: str
     ) -> AsyncIterator[dict[str, Any]]:
@@ -179,14 +199,20 @@ class SessionManager:
         if session is None:
             raise ValueError(f"Session {session_id} not found")
 
-        async with session._lock:
+        try:
+            await asyncio.wait_for(session._lock.acquire(), timeout=5.0)
+        except asyncio.TimeoutError:
+            raise ValueError(f"Session {session_id} is busy")
+
+        try:
             # Record user message
             user_msg = MessageContent(
                 role=MessageRole.user, type="text", content=prompt
             )
-            session.messages.append(user_msg)
             await self._persist_message(session, user_msg)
-            yield {"type": "user_message", "session_id": session_id, "content": prompt}
+            event = {"type": "user_message", "session_id": session_id, "content": prompt}
+            await self._broadcast(event)
+            yield event
 
             session.status = SessionStatus.running
             await self._broadcast(
@@ -195,6 +221,7 @@ class SessionManager:
 
             try:
                 async for event in self._run_claude(session, prompt):
+                    await self._broadcast(event)
                     yield event
             except Exception as e:
                 logger.exception("Claude error in session %s", session_id)
@@ -203,18 +230,44 @@ class SessionManager:
                     type="error",
                     content=str(e),
                 )
-                session.messages.append(error_msg)
                 await self._persist_message(session, error_msg)
-                yield {
+                event = {
                     "type": "error",
                     "session_id": session_id,
                     "message": str(e),
                 }
+                await self._broadcast(event)
+                yield event
             finally:
+                if self.db:
+                    await self.db.flush()
                 session.status = SessionStatus.idle
                 await self._broadcast(
                     {"type": "status", "session_id": session_id, "status": "idle"}
                 )
+        finally:
+            session._lock.release()
+
+    async def reset_session(self, session_id: str) -> None:
+        """Force-reset a stuck session."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+        if session._active_task and not session._active_task.done():
+            session._active_task.cancel()
+        if session._client:
+            try:
+                await session._client.disconnect()
+            except Exception:
+                pass
+            session._client = None
+        if session._lock.locked():
+            session._lock.release()
+        session.status = SessionStatus.idle
+        session._pending_approvals.clear()
+        await self._broadcast(
+            {"type": "status", "session_id": session_id, "status": "idle"}
+        )
 
     async def _make_permission_handler(self, session: Session):
         async def handler(tool_name, input_data, context):
@@ -246,7 +299,6 @@ class SessionManager:
                 tool_input=input_data,
                 tool_use_id=tool_use_id,
             )
-            session.messages.append(msg)
             await self._persist_message(session, msg)
 
             # Wait for user decision
@@ -310,7 +362,6 @@ class SessionManager:
                                     type="text",
                                     content=block.text,
                                 )
-                                session.messages.append(text_msg)
                                 await self._persist_message(session, text_msg)
                                 yield {
                                     "type": "assistant_text",
@@ -325,7 +376,6 @@ class SessionManager:
                                     tool_input=block.input,
                                     tool_use_id=block.id,
                                 )
-                                session.messages.append(tool_msg)
                                 await self._persist_message(session, tool_msg)
                                 yield {
                                     "type": "tool_use",
@@ -345,7 +395,6 @@ class SessionManager:
                                     tool_use_id=block.tool_use_id,
                                     is_error=block.is_error,
                                 )
-                                session.messages.append(result_msg)
                                 await self._persist_message(session, result_msg)
                                 yield {
                                     "type": "tool_result",
@@ -369,7 +418,6 @@ class SessionManager:
                                     tool_use_id=block.tool_use_id,
                                     is_error=block.is_error,
                                 )
-                                session.messages.append(result_msg)
                                 await self._persist_message(session, result_msg)
                                 yield {
                                     "type": "tool_result",
@@ -391,7 +439,6 @@ class SessionManager:
                             session_id=msg.session_id,
                             cost=msg.total_cost_usd,
                         )
-                        session.messages.append(result_msg)
                         await self._persist_message(session, result_msg)
                         yield {
                             "type": "result",

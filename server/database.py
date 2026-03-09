@@ -49,6 +49,7 @@ class Database:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
+        self._dirty: bool = False
 
     async def initialize(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
@@ -57,10 +58,27 @@ class Database:
         await self._conn.executescript(_SCHEMA)
         await self._conn.commit()
 
+    async def _ensure_connected(self) -> None:
+        if self._conn is None:
+            logger.warning("Database connection lost, reconnecting...")
+            self._conn = await aiosqlite.connect(self._db_path)
+            await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._conn.execute("PRAGMA foreign_keys=ON")
+
     async def close(self) -> None:
         if self._conn:
+            if self._dirty:
+                await self._conn.commit()
+                self._dirty = False
             await self._conn.close()
             self._conn = None
+
+    async def flush(self) -> None:
+        """Commit pending writes."""
+        await self._ensure_connected()
+        if self._dirty:
+            await self._conn.commit()
+            self._dirty = False
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -75,19 +93,22 @@ class Database:
         created_at: str,
         claude_session_id: str | None = None,
     ) -> None:
-        await self.conn.execute(
+        await self._ensure_connected()
+        await self._conn.execute(
             "INSERT INTO sessions (id, name, working_dir, created_at, claude_session_id) "
             "VALUES (?, ?, ?, ?, ?)",
             (session_id, name, working_dir, created_at, claude_session_id),
         )
-        await self.conn.commit()
+        await self._conn.commit()
 
     async def delete_session(self, session_id: str) -> None:
-        await self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        await self.conn.commit()
+        await self._ensure_connected()
+        await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        await self._conn.commit()
 
     async def load_sessions(self) -> list[dict[str, Any]]:
-        cursor = await self.conn.execute(
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
             "SELECT id, name, working_dir, created_at, claude_session_id FROM sessions"
         )
         rows = await cursor.fetchall()
@@ -101,6 +122,14 @@ class Database:
             }
             for row in rows
         ]
+
+    async def count_messages(self, session_id: str) -> int:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+        )
+        row = await cursor.fetchone()
+        return row[0]
 
     async def append_message(
         self,
@@ -116,11 +145,12 @@ class Database:
         session_id_ref: str | None = None,
         cost: float | None = None,
     ) -> None:
+        await self._ensure_connected()
         content_str = json.dumps(content) if content is not None else None
         tool_input_str = json.dumps(tool_input) if tool_input is not None else None
         is_error_int = int(is_error) if is_error is not None else None
 
-        await self.conn.execute(
+        await self._conn.execute(
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
             "tool_use_id, is_error, session_id_ref, cost) "
@@ -139,15 +169,23 @@ class Database:
                 cost,
             ),
         )
-        await self.conn.commit()
+        self._dirty = True
 
-    async def load_messages(self, session_id: str) -> list[dict[str, Any]]:
-        cursor = await self.conn.execute(
+    async def load_messages(
+        self, session_id: str, limit: int = 0, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        await self.flush()  # ensure pending writes are visible
+        query = (
             "SELECT role, type, content, tool_name, tool_input, tool_use_id, "
             "is_error, session_id_ref, cost "
-            "FROM messages WHERE session_id = ? ORDER BY seq",
-            (session_id,),
+            "FROM messages WHERE session_id = ? ORDER BY seq"
         )
+        params: list = [session_id]
+        if limit > 0:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+        cursor = await self._conn.execute(query, params)
         rows = await cursor.fetchall()
         results = []
         for row in rows:
@@ -174,22 +212,25 @@ class Database:
     async def save_bridge_mapping(
         self, platform: str, chat_id: str, session_id: str
     ) -> None:
-        await self.conn.execute(
+        await self._ensure_connected()
+        await self._conn.execute(
             "INSERT OR REPLACE INTO bridge_mappings (platform, chat_id, session_id) "
             "VALUES (?, ?, ?)",
             (platform, chat_id, session_id),
         )
-        await self.conn.commit()
+        await self._conn.commit()
 
     async def delete_bridge_mapping(self, platform: str, chat_id: str) -> None:
-        await self.conn.execute(
+        await self._ensure_connected()
+        await self._conn.execute(
             "DELETE FROM bridge_mappings WHERE platform = ? AND chat_id = ?",
             (platform, chat_id),
         )
-        await self.conn.commit()
+        await self._conn.commit()
 
     async def load_bridge_mappings(self) -> list[dict[str, str]]:
-        cursor = await self.conn.execute(
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
             "SELECT platform, chat_id, session_id FROM bridge_mappings"
         )
         rows = await cursor.fetchall()
@@ -199,14 +240,15 @@ class Database:
         ]
 
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
+        await self._ensure_connected()
         allowed = {"name", "working_dir", "claude_session_id"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [session_id]
-        await self.conn.execute(
+        await self._conn.execute(
             f"UPDATE sessions SET {set_clause} WHERE id = ?",
             values,
         )
-        await self.conn.commit()
+        await self._conn.commit()

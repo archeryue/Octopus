@@ -81,6 +81,11 @@ class Bridge(ABC):
         self.manager = manager
         self._text_buffers: dict[str, TextBuffer] = {}
 
+    @property
+    def healthy(self) -> bool:
+        """Override in subclasses to report health status."""
+        return True
+
     @abstractmethod
     async def start(self) -> None:
         """Start the bridge (connect to platform API, begin polling)."""
@@ -88,6 +93,18 @@ class Bridge(ABC):
     @abstractmethod
     async def stop(self) -> None:
         """Stop the bridge gracefully."""
+
+    async def shutdown(self) -> None:
+        """Stop the bridge and clean up text buffers."""
+        await self.stop()
+        await self._cleanup_buffers()
+
+    async def _cleanup_buffers(self) -> None:
+        """Cancel pending flush tasks and clear text buffers."""
+        for buf in self._text_buffers.values():
+            if buf._flush_task and not buf._flush_task.done():
+                buf._flush_task.cancel()
+        self._text_buffers.clear()
 
     # --- Abstract send methods (platform-specific) ---
 

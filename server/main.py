@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
         bridge_manager.register_bridge(telegram)
 
     await bridge_manager.start_all()
+    app.state.bridge_manager = bridge_manager
 
     # Start Cloudflare Tunnel if enabled
     tunnel: CloudflareTunnel | None = None
@@ -86,7 +87,11 @@ app.include_router(ws.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    bridges_health = {}
+    if hasattr(app.state, "bridge_manager"):
+        for name, bridge in app.state.bridge_manager._bridges.items():
+            bridges_health[name] = {"healthy": bridge.healthy}
+    return {"status": "ok", "bridges": bridges_health}
 
 
 # Serve built frontend as static files (SPA catch-all).
@@ -101,7 +106,7 @@ def run():
         "server.main:app",
         host=settings.host,
         port=settings.port,
-        reload=True,
+        reload=settings.debug,
     )
 
 

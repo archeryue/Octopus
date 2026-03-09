@@ -67,7 +67,7 @@ class MockSession:
         self.name = name
         self.working_dir = "."
         self.status = MagicMock(value=status_val)
-        self.messages = []
+        self._message_count = 0
 
 
 class MockSessionManager:
@@ -90,6 +90,9 @@ class MockSessionManager:
     def list_sessions(self):
         return list(self._sessions.values())
 
+    async def start_message(self, session_id: str, prompt: str):
+        pass  # In tests, events reach bridges via broadcast
+
     async def send_message(self, session_id: str, prompt: str):
         yield {"type": "assistant_text", "session_id": session_id, "content": "reply"}
         yield {"type": "result", "session_id": session_id, "cost": 0.001, "is_error": False}
@@ -100,11 +103,12 @@ class MockSessionManager:
     def deny_tool(self, session_id: str, tool_use_id: str, reason: str = ""):
         pass
 
-    def on_broadcast(self, callback):
+    def on_broadcast(self, key: str, callback):
         self._broadcasts.append(callback)
 
-    def remove_broadcast(self, callback):
-        self._broadcasts.remove(callback)
+    def remove_broadcast(self, key: str):
+        if self._broadcasts:
+            self._broadcasts.pop()
 
 
 # --- Fixtures ---
@@ -243,18 +247,28 @@ class TestRouting:
         await manager.handle_incoming("mock", "c1", "hello", bridge)
         assert "No session" in bridge.sent[0][2]["text"]
 
-    async def test_message_streams_events(self, manager, bridge):
+    async def test_message_starts_session_task(self, manager, bridge):
         await manager.handle_incoming("mock", "c1", "/new Test", bridge)
         bridge.sent.clear()
 
+        # Message should call start_message (no error = success)
         await manager.handle_incoming("mock", "c1", "hello world", bridge)
-        # Wait for background task
-        import asyncio
-        await asyncio.sleep(0.1)
+        # No error messages should be sent
+        error_msgs = [s for s in bridge.sent if "Error" in str(s)]
+        assert len(error_msgs) == 0
 
-        # Should have received events via handle_event
+    async def test_broadcast_routes_events_to_bridge(self, manager, bridge):
+        await manager.handle_incoming("mock", "c1", "/new Test", bridge)
+        bridge.sent.clear()
+
+        session_id = manager.get_session_id("mock", "c1")
+        # Simulate broadcast event from session manager
+        await manager._on_broadcast({
+            "type": "result", "session_id": session_id,
+            "cost": 0.001, "is_error": False,
+        })
+
         methods = [s[0] for s in bridge.sent]
-        # assistant_text is buffered, result triggers flush
         assert "send_result" in methods
 
     async def test_stale_mapping_cleaned(self, manager, bridge, session_mgr):

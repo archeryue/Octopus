@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -39,6 +40,13 @@ class TelegramBridge(Bridge):
         self._client: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task | None = None
         self._offset: int = 0
+        self._last_poll_ok: float = 0.0
+
+    @property
+    def healthy(self) -> bool:
+        if self._last_poll_ok == 0:
+            return True  # hasn't polled yet
+        return (time.time() - self._last_poll_ok) < 120
 
     @property
     def max_message_length(self) -> int:
@@ -67,6 +75,7 @@ class TelegramBridge(Bridge):
     # --- Polling ---
 
     async def _poll_loop(self) -> None:
+        backoff = 5
         while True:
             try:
                 resp = await self._client.get(
@@ -81,15 +90,19 @@ class TelegramBridge(Bridge):
                 )
                 if resp.status_code != 200:
                     logger.error("Telegram poll error: %s", resp.status_code)
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 300)
                     continue
 
                 data = resp.json()
                 if not data.get("ok"):
                     logger.error("Telegram API error: %s", data)
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 300)
                     continue
 
+                backoff = 5  # reset on success
+                self._last_poll_ok = time.time()
                 for update in data.get("result", []):
                     self._offset = update["update_id"] + 1
                     asyncio.create_task(self._handle_update(update))
@@ -97,10 +110,12 @@ class TelegramBridge(Bridge):
             except asyncio.CancelledError:
                 raise
             except httpx.TimeoutException:
+                self._last_poll_ok = time.time()
                 continue  # Normal long-poll timeout
             except Exception:
                 logger.exception("Telegram poll error")
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 300)
 
     async def _handle_update(self, update: dict) -> None:
         if "callback_query" in update:

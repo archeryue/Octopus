@@ -37,7 +37,6 @@ class BridgeManager:
         self.db = db
         self._bridges: dict[str, Bridge] = {}
         self._mappings: dict[str, str] = {}  # "platform:chat_id" -> session_id
-        self._active_streams: dict[str, asyncio.Task] = {}
 
     async def initialize(self) -> None:
         """Load persisted chat-session mappings from database."""
@@ -59,13 +58,9 @@ class BridgeManager:
                 logger.exception("Failed to start bridge '%s'", name)
 
     async def stop_all(self) -> None:
-        for task in self._active_streams.values():
-            task.cancel()
-        self._active_streams.clear()
-
         for name, bridge in self._bridges.items():
             try:
-                await bridge.stop()
+                await bridge.shutdown()
                 logger.info("Bridge '%s' stopped", name)
             except Exception:
                 logger.exception("Error stopping bridge '%s'", name)
@@ -116,34 +111,10 @@ class BridgeManager:
             )
             return
 
-        key = self._mapping_key(platform, chat_id)
-        old_task = self._active_streams.pop(key, None)
-        if old_task and not old_task.done():
-            old_task.cancel()
-
-        task = asyncio.create_task(
-            self._stream_to_bridge(platform, chat_id, session_id, text, bridge)
-        )
-        self._active_streams[key] = task
-        task.add_done_callback(lambda t: self._active_streams.pop(key, None))
-
-    async def _stream_to_bridge(
-        self,
-        platform: str,
-        chat_id: str,
-        session_id: str,
-        text: str,
-        bridge: Bridge,
-    ) -> None:
         try:
-            async for event in self.session_mgr.send_message(session_id, text):
-                await bridge.handle_event(chat_id, event)
-        except Exception as e:
-            logger.exception("Stream error for %s:%s", platform, chat_id)
-            try:
-                await bridge.send_error(chat_id, str(e))
-            except Exception:
-                pass
+            await self.session_mgr.start_message(session_id, text)
+        except ValueError as e:
+            await bridge.send_text(chat_id, f"Error: {e}")
 
     # --- Tool approval ---
 
@@ -188,10 +159,10 @@ class BridgeManager:
                     logger.exception("Broadcast to %s failed", key)
 
     async def register_broadcast(self) -> None:
-        self.session_mgr.on_broadcast(self._on_broadcast)
+        self.session_mgr.on_broadcast("bridge_manager", self._on_broadcast)
 
     async def unregister_broadcast(self) -> None:
-        self.session_mgr.remove_broadcast(self._on_broadcast)
+        self.session_mgr.remove_broadcast("bridge_manager")
 
     # --- Command handling ---
 
@@ -261,7 +232,7 @@ class BridgeManager:
                 chat_id,
                 f"Current session: {session.name} ({session.id})\n"
                 f"Status: {session.status.value}\n"
-                f"Messages: {len(session.messages)}\n"
+                f"Messages: {session._message_count}\n"
                 f"Working dir: {session.working_dir}",
             )
 

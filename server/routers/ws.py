@@ -1,6 +1,6 @@
-import asyncio
 import json
 import logging
+import uuid
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
@@ -20,17 +20,15 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
     await ws.accept()
     logger.info("WebSocket client connected")
 
-    # Register broadcast callback for this connection
+    conn_id = uuid.uuid4().hex
+
     async def broadcast(msg: dict):
         try:
             await ws.send_json(msg)
         except Exception:
             pass
 
-    session_manager.on_broadcast(broadcast)
-
-    # Track background tasks for streaming responses
-    tasks: set[asyncio.Task] = set()
+    session_manager.on_broadcast(conn_id, broadcast)
 
     try:
         while True:
@@ -52,12 +50,12 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                     )
                     continue
 
-                # Stream response in background so we can still receive messages
-                task = asyncio.create_task(
-                    _stream_response(ws, session_id, content)
-                )
-                tasks.add(task)
-                task.add_done_callback(tasks.discard)
+                try:
+                    await session_manager.start_message(session_id, content)
+                except ValueError as e:
+                    await ws.send_json(
+                        {"type": "error", "session_id": session_id, "message": str(e)}
+                    )
 
             elif msg_type == "approve_tool":
                 session_id = data.get("session_id")
@@ -98,23 +96,4 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
     except Exception:
         logger.exception("WebSocket error")
     finally:
-        session_manager.remove_broadcast(broadcast)
-        for t in tasks:
-            t.cancel()
-
-
-async def _stream_response(ws: WebSocket, session_id: str, content: str):
-    try:
-        async for event in session_manager.send_message(session_id, content):
-            try:
-                await ws.send_json(event)
-            except Exception:
-                break
-    except Exception as e:
-        logger.exception("Stream error for session %s", session_id)
-        try:
-            await ws.send_json(
-                {"type": "error", "session_id": session_id, "message": str(e)}
-            )
-        except Exception:
-            pass
+        session_manager.remove_broadcast(conn_id)

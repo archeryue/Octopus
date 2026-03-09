@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
     db_path: str = "octopus.db"
 
+    # Dev mode (enables uvicorn reload)
+    debug: bool = False
+
     # Cloudflare Tunnel (opt-in)
     enable_tunnel: bool = False
 

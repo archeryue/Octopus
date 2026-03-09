@@ -72,11 +72,11 @@ async def test_broadcast_registration(manager):
     async def cb(msg):
         calls.append(msg)
 
-    manager.on_broadcast(cb)
-    assert cb in manager._broadcast_callbacks
+    manager.on_broadcast("test", cb)
+    assert "test" in manager._broadcast_callbacks
 
-    manager.remove_broadcast(cb)
-    assert cb not in manager._broadcast_callbacks
+    manager.remove_broadcast("test")
+    assert "test" not in manager._broadcast_callbacks
 
 
 @pytest.mark.asyncio

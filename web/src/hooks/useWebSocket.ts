@@ -96,6 +96,31 @@ export function useWebSocket() {
       ws.onopen = () => {
         getState().setConnected(true);
         if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
+
+        // Re-fetch state after reconnect
+        const { activeSessionId, token: t } = getState();
+        if (t) {
+          fetch(`${window.location.origin}/api/sessions`, {
+            headers: { Authorization: `Bearer ${t}` },
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((sessions) => sessions && getState().setSessions(sessions))
+            .catch(() => {});
+
+          if (activeSessionId) {
+            fetch(
+              `${window.location.origin}/api/sessions/${activeSessionId}`,
+              { headers: { Authorization: `Bearer ${t}` } }
+            )
+              .then((r) => (r.ok ? r.json() : null))
+              .then(
+                (data) =>
+                  data &&
+                  getState().setMessages(activeSessionId, data.messages)
+              )
+              .catch(() => {});
+          }
+        }
       };
 
       ws.onclose = () => {

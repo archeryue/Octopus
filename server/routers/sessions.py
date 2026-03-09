@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
-from ..models import CreateSessionRequest, ImportSessionRequest, SessionDetail, SessionInfo, SessionStatus
+from ..models import CreateSessionRequest, ImportSessionRequest, MessageContent, SessionDetail, SessionInfo, SessionStatus
 from ..session_manager import session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -17,7 +17,7 @@ async def list_sessions(_: str = Depends(verify_token)):
             working_dir=s.working_dir,
             status=s.status,
             created_at=s.created_at,
-            message_count=len(s.messages),
+            message_count=s._message_count,
             claude_session_id=s.claude_session_id,
         )
         for s in sessions
@@ -50,15 +50,17 @@ async def import_session(
         claude_session_id=req.claude_session_id,
         messages=req.messages,
     )
+    messages_raw = await session_manager.db.load_messages(s.id)
+    messages = [MessageContent(**m) for m in messages_raw]
     return SessionDetail(
         id=s.id,
         name=s.name,
         working_dir=s.working_dir,
         status=s.status,
         created_at=s.created_at,
-        message_count=len(s.messages),
+        message_count=s._message_count,
         claude_session_id=s.claude_session_id,
-        messages=s.messages,
+        messages=messages,
     )
 
 
@@ -67,15 +69,17 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
     s = session_manager.get_session(session_id)
     if s is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    messages_raw = await session_manager.db.load_messages(s.id)
+    messages = [MessageContent(**m) for m in messages_raw]
     return SessionDetail(
         id=s.id,
         name=s.name,
         working_dir=s.working_dir,
         status=s.status,
         created_at=s.created_at,
-        message_count=len(s.messages),
+        message_count=s._message_count,
         claude_session_id=s.claude_session_id,
-        messages=s.messages,
+        messages=messages,
     )
 
 
@@ -84,3 +88,12 @@ async def delete_session(session_id: str, _: str = Depends(verify_token)):
     deleted = await session_manager.delete_session(session_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+
+
+@router.post("/{session_id}/reset")
+async def reset_session(session_id: str, _: str = Depends(verify_token)):
+    try:
+        await session_manager.reset_session(session_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    return {"status": "ok"}
