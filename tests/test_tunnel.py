@@ -71,11 +71,10 @@ class TestCloudflaredNotInstalled:
 # --- Successful start tests ---
 
 
-def _mock_process_with_lines(lines: list[bytes]):
-    """Create a mock process whose stderr yields the given lines."""
+def _mock_process_with_lines(lines: list[bytes], *, on_stderr: bool = True):
+    """Create a mock process whose stderr (or stdout) yields the given lines."""
     mock = MagicMock()
     mock.returncode = None
-    mock.stderr = MagicMock()
     line_iter = iter(lines)
 
     async def readline():
@@ -84,7 +83,21 @@ def _mock_process_with_lines(lines: list[bytes]):
         except StopIteration:
             return b""
 
-    mock.stderr.readline = readline
+    async def empty_readline():
+        await asyncio.sleep(100)
+        return b""
+
+    if on_stderr:
+        mock.stderr = MagicMock()
+        mock.stderr.readline = readline
+        mock.stdout = MagicMock()
+        mock.stdout.readline = empty_readline
+    else:
+        mock.stdout = MagicMock()
+        mock.stdout.readline = readline
+        mock.stderr = MagicMock()
+        mock.stderr.readline = empty_readline
+
     mock.terminate = MagicMock()
     mock.kill = MagicMock()
 
@@ -123,6 +136,7 @@ class TestCloudflaredStartSuccess:
         mock_process = MagicMock()
         mock_process.returncode = None
         mock_process.stderr = MagicMock()
+        mock_process.stdout = MagicMock()
         mock_process.terminate = MagicMock()
         mock_process.kill = MagicMock()
 
@@ -131,12 +145,13 @@ class TestCloudflaredStartSuccess:
 
         mock_process.wait = wait
 
-        # Simulate stderr that blocks forever (no URL)
+        # Simulate both streams blocking forever (no URL)
         async def readline():
             await asyncio.sleep(100)
             return b""
 
         mock_process.stderr.readline = readline
+        mock_process.stdout.readline = readline
 
         with patch("server.tunnel.shutil.which", return_value="/usr/bin/cloudflared"):
             with patch(

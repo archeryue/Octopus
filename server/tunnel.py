@@ -36,7 +36,7 @@ class CloudflareTunnel:
         """The public tunnel URL, or None if not yet resolved."""
         return self._url
 
-    async def start(self, timeout: float = 30.0) -> str | None:
+    async def start(self, timeout: float = 60.0) -> str | None:
         """Start cloudflared and wait for the tunnel URL.
 
         Returns the public URL on success, or None if:
@@ -93,21 +93,41 @@ class CloudflareTunnel:
             return None
 
     async def _read_until_url(self) -> str:
-        """Read stderr line by line until the URL is found."""
+        """Read stderr and stdout until the URL is found."""
         assert self._process is not None
         assert self._process.stderr is not None
+        assert self._process.stdout is not None
 
-        while True:
-            line = await self._process.stderr.readline()
-            if not line:
-                # Process exited before we got the URL
-                raise asyncio.CancelledError("cloudflared exited prematurely")
-            decoded = line.decode("utf-8", errors="replace").strip()
-            if decoded:
-                logger.debug("cloudflared: %s", decoded)
-            match = _TUNNEL_URL_RE.search(decoded)
-            if match:
-                return match.group(1)
+        async def _read_stream(stream: asyncio.StreamReader) -> str:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    raise asyncio.CancelledError("stream ended")
+                decoded = line.decode("utf-8", errors="replace").strip()
+                if decoded:
+                    logger.info("cloudflared: %s", decoded)
+                match = _TUNNEL_URL_RE.search(decoded)
+                if match:
+                    return match.group(1)
+
+        # Race both streams — URL may appear on either
+        tasks = [
+            asyncio.create_task(_read_stream(self._process.stderr)),
+            asyncio.create_task(_read_stream(self._process.stdout)),
+        ]
+        try:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+            for t in done:
+                if t.exception() is None:
+                    return t.result()
+            # Both failed
+            raise asyncio.CancelledError("cloudflared exited prematurely")
+        except Exception:
+            for t in tasks:
+                t.cancel()
+            raise
 
     async def _monitor_stderr(self) -> None:
         """Continue reading stderr after URL is found, for logging."""
