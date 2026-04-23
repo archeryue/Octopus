@@ -39,7 +39,7 @@ The only blocking input mechanism is tool approval via `SDKControlPermissionRequ
 
 ## 2. Multi-Backend Support (Claude Code + Codex)
 
-**Priority**: High
+**Priority**: Low
 **Affected**: `server/session_manager.py`, `server/config.py`, new `server/backends/` package
 
 ### Problem
@@ -379,7 +379,7 @@ Sources:
 
 ## 3. Monitoring & Scheduled Tasks
 
-**Priority**: Medium
+**Priority**: High
 **Affected**: new `server/scheduler.py`, `server/routers/schedules.py`, `web/`
 
 ### Context
