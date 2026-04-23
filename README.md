@@ -54,7 +54,10 @@ Open `http://localhost:5173` for the dev server with hot-reload.
 - Tool approval (Allow/Deny) from Web UI or Telegram
 - Conversation continuity (sessions resume across messages)
 - SQLite persistence (sessions and messages survive restarts)
-- **Telegram Bot integration** — interact with Claude Code via Telegram (`/new`, `/sessions`, `/switch`)
+- **Long-running resilience** — Claude keeps running if the browser disconnects; state re-syncs on reconnect; session-owned tasks with lock timeout + `POST /api/sessions/{id}/reset` escape hatch
+- Lazy-loaded message history (scales to long sessions without bloating memory)
+- Auto-reconnecting database with batched commits per turn
+- **Telegram Bot integration** — interact with Claude Code via Telegram (`/new`, `/sessions`, `/switch`); exponential backoff on API errors; per-bridge status in `/health`
 - Session handoff: `octopus handoff` imports local Claude Code sessions
 - Session pull: `octopus pull` exports sessions as JSONL for local `claude --resume`
 - **Cloudflare Tunnel** — `octopus serve --tunnel` for instant public HTTPS
