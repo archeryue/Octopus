@@ -334,6 +334,138 @@ body {
   color: var(--text);
 }
 
+/* Schedules */
+.schedule-section {
+  border-top: 1px solid var(--border);
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.schedule-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+}
+
+.schedule-title {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.btn-schedule-add {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.schedule-form {
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.schedule-form input,
+.schedule-form textarea {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-family: inherit;
+  resize: none;
+}
+
+.schedule-form-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.interval-input {
+  width: 50px;
+  text-align: center;
+}
+
+.schedule-form-row .btn-create {
+  margin-left: auto;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.schedule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.schedule-item.disabled {
+  opacity: 0.5;
+}
+
+.schedule-item-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.schedule-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.schedule-interval {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.schedule-item-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.btn-toggle {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0 0.25rem;
+}
+
+.btn-toggle.on {
+  color: var(--green);
+}
+
+.btn-toggle.off {
+  color: var(--text-muted);
+}
+
+/* Schedule items keep their delete affordance visible (unlike sessions
+   which only reveal on row hover). */
+.schedule-item .btn-delete {
+  opacity: 0.7;
+}
+
+.schedule-item:hover .btn-delete {
+  opacity: 1;
+}
+
 /* Chat */
 .chat-empty {
   flex: 1;
@@ -393,12 +525,16 @@ body {
 
 /* Messages */
 .chat-messages {
-  flex: 1;
-  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.chat-messages [data-virtuoso-scroller] {
   padding: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
+}
+
+.chat-messages [data-item-index] {
+  padding-bottom: 0.75rem;
 }
 
 .msg {
@@ -626,6 +762,16 @@ body {
 @keyframes loading {
   0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
   40% { transform: scale(1); opacity: 1; }
+}
+
+/* Waiting hint */
+.waiting-hint {
+  padding: 0.4rem 1rem;
+  font-size: 0.8rem;
+  color: var(--yellow);
+  font-style: italic;
+  background: rgba(210, 153, 34, 0.05);
+  border-top: 1px solid var(--border);
 }
 
 /* Input bar */

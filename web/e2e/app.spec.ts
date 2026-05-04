@@ -1,19 +1,31 @@
 import { test, expect } from "@playwright/test";
 
 const TOKEN = "changeme";
-const API = "http://localhost:8000/api/sessions";
+const API = "http://localhost:8765/api/sessions";
 
-// Clean up all sessions after the entire test suite
+// Names of sessions this spec creates — only delete these to avoid
+// disturbing sessions in-flight on parallel worker processes.
+const OWNED_NAMES = new Set([
+  "E2E Test Session",
+  "To Delete",
+  "Chat Test",
+]);
+
+// Clean up only sessions created by this spec
 test.afterAll(async ({ request }) => {
   const res = await request.get(API, {
     headers: { Authorization: `Bearer ${TOKEN}` },
   });
   if (res.ok()) {
-    const sessions: { id: string }[] = await res.json();
+    const sessions: { id: string; name: string }[] = await res.json();
     for (const s of sessions) {
-      await request.delete(`${API}/${s.id}`, {
-        headers: { Authorization: `Bearer ${TOKEN}` },
-      });
+      if (OWNED_NAMES.has(s.name)) {
+        await request
+          .delete(`${API}/${s.id}`, {
+            headers: { Authorization: `Bearer ${TOKEN}` },
+          })
+          .catch(() => {});
+      }
     }
   }
 });

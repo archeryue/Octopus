@@ -5,7 +5,9 @@ __pycache__/
 node_modules/
 web/dist/
 web/test-results/
+test-results/
 .claude/
 .pytest_cache/
 octopus.db*
+octopus-dev.db*
 *.egg-info/

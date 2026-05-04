@@ -11,6 +11,17 @@ export interface SessionInfo {
   message_count: number;
 }
 
+export interface Schedule {
+  id: string;
+  session_id: string;
+  name: string;
+  prompt: string;
+  interval_seconds: number;
+  enabled: boolean;
+  created_at: string;
+  last_run_at: string | null;
+}
+
 export interface Message {
   role: "user" | "assistant" | "system" | "tool";
   type: string;
@@ -37,6 +48,9 @@ interface SessionStore {
   messages: Record<string, Message[]>;
   addMessage: (sessionId: string, msg: Message) => void;
   setMessages: (sessionId: string, msgs: Message[]) => void;
+
+  schedules: Schedule[];
+  setSchedules: (s: Schedule[]) => void;
 
   connected: boolean;
   setConnected: (c: boolean) => void;
@@ -73,6 +87,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
     set((s) => ({
       messages: { ...s.messages, [sessionId]: msgs },
     })),
+
+  schedules: [],
+  setSchedules: (schedules) => set({ schedules }),
 
   connected: false,
   setConnected: (c) => set({ connected: c }),

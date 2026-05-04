@@ -16,7 +16,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const TOKEN = "changeme";
-const API = "http://localhost:8000/api/sessions";
+const SERVER_URL = "http://localhost:8765";
+const API = `${SERVER_URL}/api/sessions`;
 const CLI = [".venv/bin/python", "-m", "server.cli"];
 const PROJECT_ROOT = join(__dirname, "..", "..");
 
@@ -31,8 +32,12 @@ interface CliResult {
 }
 
 function runCli(args: string[]): CliResult {
+  // Inject --server <SERVER_URL> after the subcommand if not already provided
+  const finalArgs = args.includes("--server")
+    ? args
+    : [args[0], "--server", SERVER_URL, ...args.slice(1)];
   try {
-    const stdout = execFileSync(CLI[0], [...CLI.slice(1), ...args], {
+    const stdout = execFileSync(CLI[0], [...CLI.slice(1), ...finalArgs], {
       cwd: PROJECT_ROOT,
       encoding: "utf-8",
       timeout: 30_000,
@@ -116,19 +121,32 @@ function makeTempDir(): string {
 }
 
 // ---------------------------------------------------------------------------
-// Cleanup: delete all sessions + temp dirs after suite
+// Cleanup: delete only sessions created by this spec + temp dirs after suite
 // ---------------------------------------------------------------------------
 
+// Names of sessions this spec creates — only delete these to avoid
+// disturbing sessions in-flight on parallel worker processes.
+const OWNED_NAMES = new Set([
+  "Handoff E2E",
+  "Pull No Claude ID",
+  "Pull Test",
+  "Roundtrip Source",
+  "Roundtrip Re-imported",
+  "Cleanup A",
+  "Cleanup B",
+]);
+
 test.afterAll(async ({ request }) => {
-  // Delete all sessions via API (best-effort, ignore errors from active sessions)
+  // Delete only sessions this spec created (best-effort)
   try {
     const res = await request.get(API, {
       headers: { Authorization: `Bearer ${TOKEN}` },
       timeout: 5_000,
     });
     if (res.ok()) {
-      const sessions: { id: string }[] = await res.json();
+      const sessions: { id: string; name: string }[] = await res.json();
       for (const s of sessions) {
+        if (!OWNED_NAMES.has(s.name)) continue;
         try {
           await request.delete(`${API}/${s.id}`, {
             headers: { Authorization: `Bearer ${TOKEN}` },

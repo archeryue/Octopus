@@ -70,3 +70,30 @@ class WsToolDecision(BaseModel):
     session_id: str
     tool_use_id: str
     reason: str | None = None
+
+
+# Schedules
+
+class ScheduleInfo(BaseModel):
+    id: str
+    session_id: str
+    name: str
+    prompt: str
+    interval_seconds: int
+    enabled: bool
+    created_at: str
+    last_run_at: str | None = None
+
+
+class CreateScheduleRequest(BaseModel):
+    session_id: str
+    name: str
+    prompt: str
+    interval_seconds: int = Field(ge=60)
+
+
+class UpdateScheduleRequest(BaseModel):
+    name: str | None = None
+    prompt: str | None = None
+    interval_seconds: int | None = Field(default=None, ge=60)
+    enabled: bool | None = None

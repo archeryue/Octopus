@@ -6,7 +6,7 @@ export default defineConfig({
   timeout: 30_000,
   retries: 0,
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: "http://localhost:5174",
     headless: true,
   },
   projects: [
@@ -18,8 +18,8 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "cd .. && .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000",
-      port: 8000,
+        "cd .. && .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8765",
+      port: 8765,
       reuseExistingServer: true,
       timeout: 10_000,
       env: {
@@ -30,10 +30,14 @@ export default defineConfig({
       },
     },
     {
-      command: "bun dev --port 5173",
-      port: 5173,
+      command: "bun dev --port 5174",
+      port: 5174,
       reuseExistingServer: true,
       timeout: 10_000,
+      env: {
+        ...process.env,
+        OCTOPUS_API_PORT: "8765",
+      },
     },
   ],
 });

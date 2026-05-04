@@ -15,7 +15,8 @@ from .bridges.manager import BridgeManager
 from .config import settings
 from .tunnel import CloudflareTunnel
 from .database import Database
-from .routers import sessions, ws
+from .routers import schedules, sessions, ws
+from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
 logging.basicConfig(
@@ -50,6 +51,13 @@ async def lifespan(app: FastAPI):
     await bridge_manager.start_all()
     app.state.bridge_manager = bridge_manager
 
+    # Initialize scheduler
+    schedule_runner = ScheduleRunner(session_manager, db)
+    await schedule_runner.initialize()
+    app.state.schedule_runner = schedule_runner
+    schedules._db = db
+    schedules._runner = schedule_runner
+
     # Start Cloudflare Tunnel if enabled
     tunnel: CloudflareTunnel | None = None
     if settings.enable_tunnel:
@@ -66,6 +74,7 @@ async def lifespan(app: FastAPI):
     if tunnel:
         await tunnel.stop()
 
+    await schedule_runner.shutdown()
     await bridge_manager.stop_all()
     await bridge_manager.unregister_broadcast()
     await db.close()
@@ -82,6 +91,7 @@ app.add_middleware(
 )
 
 app.include_router(sessions.router)
+app.include_router(schedules.router)
 app.include_router(ws.router)
 
 

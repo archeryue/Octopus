@@ -35,6 +35,18 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 
+CREATE TABLE IF NOT EXISTS schedules (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_run_at TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS bridge_mappings (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
@@ -238,6 +250,68 @@ class Database:
             {"platform": row[0], "chat_id": row[1], "session_id": row[2]}
             for row in rows
         ]
+
+    # --- Schedules ---
+
+    async def save_schedule(
+        self,
+        schedule_id: str,
+        session_id: str,
+        name: str,
+        prompt: str,
+        interval_seconds: int,
+        created_at: str,
+        enabled: bool = True,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO schedules (id, session_id, name, prompt, interval_seconds, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (schedule_id, session_id, name, prompt, interval_seconds, int(enabled), created_at),
+        )
+        await self._conn.commit()
+
+    async def load_schedules(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id, session_id, name, prompt, interval_seconds, enabled, created_at, last_run_at "
+            "FROM schedules"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "session_id": row[1],
+                "name": row[2],
+                "prompt": row[3],
+                "interval_seconds": row[4],
+                "enabled": bool(row[5]),
+                "created_at": row[6],
+                "last_run_at": row[7],
+            }
+            for row in rows
+        ]
+
+    async def delete_schedule(self, schedule_id: str) -> None:
+        await self._ensure_connected()
+        await self._conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+        await self._conn.commit()
+
+    async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
+        await self._ensure_connected()
+        allowed = {"name", "prompt", "interval_seconds", "enabled", "last_run_at"}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        if "enabled" in updates:
+            updates["enabled"] = int(updates["enabled"])
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [schedule_id]
+        await self._conn.execute(
+            f"UPDATE schedules SET {set_clause} WHERE id = ?",
+            values,
+        )
+        await self._conn.commit()
 
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         await self._ensure_connected()

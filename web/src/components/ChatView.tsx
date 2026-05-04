@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { useSessionStore, type Message } from "../stores/sessionStore";
 import { MessageBubble } from "./MessageBubble";
 import { ToolApproval } from "./ToolApproval";
@@ -13,20 +14,60 @@ interface Props {
 
 export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
   const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const messagesMap = useSessionStore((s) => s.messages);
   const messages = activeSessionId ? (messagesMap[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const sessions = useSessionStore((s) => s.sessions);
   const activeSession = useMemo(() => sessions.find((s) => s.id === activeSessionId), [sessions, activeSessionId]);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
-  const prevMsgCount = useRef(0);
+  // Scroll to the bottom when switching into a session whose history has
+  // already loaded. `initialTopMostItemIndex` is captured at mount time, so
+  // it doesn't help when messages arrive asynchronously after the click.
+  const hasMessages = messages.length > 0;
   useEffect(() => {
-    if (messages.length !== prevMsgCount.current) {
-      prevMsgCount.current = messages.length;
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (!activeSessionId || !hasMessages) return;
+    virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
+  }, [activeSessionId, hasMessages]);
+
+  const isRunning = activeSession?.status === "running";
+
+  const isWaitingForResponse = useMemo(() => {
+    if (isRunning || activeSession?.status !== "idle") return false;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.role === "assistant" && m.type === "text") {
+        return /\?\s*$/.test((m.content ?? "").trim());
+      }
     }
-  }, [messages]);
+    return false;
+  }, [messages, isRunning, activeSession?.status]);
+
+  const renderMessage = useCallback(
+    (_index: number, msg: Message) =>
+      msg.type === "tool_approval_request" ? (
+        <ToolApproval
+          message={msg}
+          onApprove={(id) => activeSessionId && approveTool(activeSessionId, id)}
+          onDeny={(id) => activeSessionId && denyTool(activeSessionId, id)}
+        />
+      ) : (
+        <MessageBubble message={msg} />
+      ),
+    [activeSessionId, approveTool, denyTool]
+  );
+
+  const footer = useCallback(
+    () =>
+      isRunning ? (
+        <div className="msg msg-loading">
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+        </div>
+      ) : null,
+    [isRunning]
+  );
 
   const handleSend = () => {
     if (!input.trim() || !activeSessionId) return;
@@ -50,8 +91,6 @@ export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
     );
   }
 
-  const isRunning = activeSession?.status === "running";
-
   return (
     <div className="chat-view">
       <div className="chat-header">
@@ -61,28 +100,20 @@ export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
         </span>
       </div>
 
-      <div className="chat-messages">
-        {messages.map((msg, i) =>
-          msg.type === "tool_approval_request" ? (
-            <ToolApproval
-              key={i}
-              message={msg}
-              onApprove={(id) => approveTool(activeSessionId, id)}
-              onDeny={(id) => denyTool(activeSessionId, id)}
-            />
-          ) : (
-            <MessageBubble key={i} message={msg} />
-          )
-        )}
-        {isRunning && (
-          <div className="msg msg-loading">
-            <span className="loading-dot" />
-            <span className="loading-dot" />
-            <span className="loading-dot" />
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
+      <Virtuoso
+        ref={virtuosoRef}
+        className="chat-messages"
+        data={messages}
+        itemContent={renderMessage}
+        initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
+        followOutput="smooth"
+        increaseViewportBy={{ top: 400, bottom: 400 }}
+        components={{ Footer: footer }}
+      />
+
+      {isWaitingForResponse && (
+        <div className="waiting-hint">Claude is waiting for your response</div>
+      )}
 
       <div className="chat-input-bar">
         <textarea

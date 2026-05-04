@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChatView } from "./components/ChatView";
+import { ScheduleList } from "./components/ScheduleList";
 import { SessionList } from "./components/SessionList";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useSessionStore } from "./stores/sessionStore";
@@ -57,6 +58,7 @@ function AuthenticatedApp({
     <div className="app-layout">
       <div className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <SessionList />
+        <ScheduleList />
         <button
           className="btn btn-logout"
           onClick={() => {
