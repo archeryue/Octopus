@@ -11,11 +11,20 @@ interface Props {
   interrupt: (sessionId: string) => void;
   approveTool: (sessionId: string, toolUseId: string) => void;
   denyTool: (sessionId: string, toolUseId: string) => void;
+  connected: boolean;
+  onToggleSidebar: () => void;
 }
 
 const EMPTY_QUEUE: string[] = [];
 
-export function ChatView({ sendMessage, interrupt, approveTool, denyTool }: Props) {
+export function ChatView({
+  sendMessage,
+  interrupt,
+  approveTool,
+  denyTool,
+  connected,
+  onToggleSidebar,
+}: Props) {
   const [input, setInput] = useState("");
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const messagesMap = useSessionStore((s) => s.messages);
@@ -110,23 +119,44 @@ export function ChatView({ sendMessage, interrupt, approveTool, denyTool }: Prop
     return () => window.removeEventListener("keydown", onEsc);
   }, [activeSessionId, isRunning, interrupt]);
 
+  const header = (
+    <div className="chat-header">
+      <button
+        className="btn btn-menu"
+        onClick={onToggleSidebar}
+        aria-label="Toggle sidebar"
+      >
+        ☰
+      </button>
+      {activeSession && (
+        <>
+          <h3>{activeSession.name || "Session"}</h3>
+          <span className={`status-badge status-${activeSession.status}`}>
+            {activeSession.status}
+          </span>
+        </>
+      )}
+      <span className={`conn-status ${connected ? "on" : "off"}`}>
+        {connected ? "Connected" : "Disconnected"}
+      </span>
+    </div>
+  );
+
   if (!activeSessionId) {
     return (
-      <div className="chat-empty">
-        <h2>Octopus</h2>
-        <p>Create or select a session to start.</p>
+      <div className="chat-view">
+        {header}
+        <div className="chat-empty">
+          <h2>Octopus</h2>
+          <p>Create or select a session to start.</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="chat-view">
-      <div className="chat-header">
-        <h3>{activeSession?.name || "Session"}</h3>
-        <span className={`status-badge status-${activeSession?.status}`}>
-          {activeSession?.status}
-        </span>
-      </div>
+      {header}
 
       <Virtuoso
         ref={virtuosoRef}

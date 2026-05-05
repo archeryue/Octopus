@@ -71,22 +71,13 @@ function AuthenticatedApp({
       </div>
 
       <div className="main-area">
-        <div className="top-bar">
-          <button
-            className="btn btn-menu"
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-          >
-            ☰
-          </button>
-          <span className={`conn-status ${connected ? "on" : "off"}`}>
-            {connected ? "Connected" : "Disconnected"}
-          </span>
-        </div>
         <ChatView
           sendMessage={sendMessage}
           interrupt={interrupt}
           approveTool={approveTool}
           denyTool={denyTool}
+          connected={connected}
+          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         />
       </div>
 
