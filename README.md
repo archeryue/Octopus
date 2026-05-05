@@ -55,6 +55,10 @@ Open `http://localhost:5173` for the dev server with hot-reload.
 - Conversation continuity (sessions resume across messages)
 - SQLite persistence (sessions and messages survive restarts)
 - **Long-running resilience** — Claude keeps running if the browser disconnects; state re-syncs on reconnect; session-owned tasks with lock timeout + `POST /api/sessions/{id}/reset` escape hatch
+- **Scheduled tasks** — set up recurring prompts (every N minutes) per session; APScheduler-driven, skips ticks on busy sessions
+- **Virtualized chat history** — `react-virtuoso` keeps the DOM small even on thousand-message sessions
+- **Mid-turn interrupt + queue** — Esc cancels the current turn; sending while running queues the message and fires it after the current turn ends
+- **Waiting-for-input hint** — visible cue when Claude's last reply ends in a question
 - Lazy-loaded message history (scales to long sessions without bloating memory)
 - Auto-reconnecting database with batched commits per turn
 - **Telegram Bot integration** — interact with Claude Code via Telegram (`/new`, `/sessions`, `/switch`); exponential backoff on API errors; per-bridge status in `/health`
@@ -82,9 +86,9 @@ octopus pull <session-id>      # Export an Octopus session as local JSONL
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 95 backend tests
+.venv/bin/pytest tests/ -v        # 179 backend tests
 cd web && bun run test            # 8 frontend unit tests
-cd web && bun run test:e2e        # 26 Playwright e2e tests (app + handoff/pull + telegram bridge)
+cd web && bun run test:e2e        # 24 Playwright e2e tests (app + handoff/pull + telegram bridge + new features)
 ```
 
 ## Architecture

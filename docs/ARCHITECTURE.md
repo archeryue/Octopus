@@ -56,15 +56,17 @@ In development, the Vite dev server runs on port 5173 with hot-reload and proxie
 | `main.py` | FastAPI app, CORS middleware, route registration, static file serving for built frontend. Clears `CLAUDECODE` env var to allow nested subprocess spawning. Initializes BridgeManager and CloudflareTunnel in the lifespan context. |
 | `config.py` | Pydantic settings loaded from `.env` — auth token, host, port, CORS origins, default working directory, Cloudflare Tunnel toggle, Telegram bot config (token, allowed chat IDs, API base URL). |
 | `auth.py` | Token verification for REST (`Authorization: Bearer <token>`) and WebSocket (`?token=<token>` query param). |
-| `models.py` | Pydantic models for API requests/responses (`CreateSessionRequest`, `ImportSessionRequest`, `SessionInfo`, `SessionDetail`, `MessageContent`, `WsSendMessage`, `WsToolDecision`) and enums (`SessionStatus`, `MessageRole`). |
-| `session_manager.py` | Core component. Manages multiple Claude Code sessions via `claude-code-sdk`. Handles message streaming, tool result forwarding, broadcast to connected WebSocket clients and bridges. Supports interactive tool approval via `PendingApproval` futures. Uses `_receive_safe()` to skip unparseable SDK messages. |
+| `models.py` | Pydantic models for API requests/responses (`CreateSessionRequest`, `ImportSessionRequest`, `SessionInfo`, `SessionDetail`, `MessageContent`, `WsSendMessage`, `WsToolDecision`, `WsInterrupt`, `ScheduleInfo`, `CreateScheduleRequest`, `UpdateScheduleRequest`) and enums (`SessionStatus`, `MessageRole`). |
+| `session_manager.py` | Core component. Manages multiple Claude Code sessions via `claude-code-sdk`. Handles message streaming, tool result forwarding, broadcast to connected WebSocket clients and bridges. Supports interactive tool approval via `PendingApproval` futures, mid-turn interrupt via `interrupt()`, and a per-session pending-message queue that drains after the current turn. Uses `_receive_safe()` to skip unparseable SDK messages. |
+| `scheduler.py` | `ScheduleRunner` — APScheduler-based recurring task runner. Loads enabled schedules from SQLite at startup, fires `session_manager.send_message()` on interval, skips ticks when the target session is busy, updates `last_run_at`. CRUD methods (`add`, `remove`, `set_enabled`) keep the in-memory `AsyncIOScheduler` in sync with DB writes. |
 | `database.py` | SQLite persistence layer (`aiosqlite`). Three tables: `sessions`, `messages`, `bridge_mappings`. Write-through caching, WAL journal mode, foreign key cascading deletes. |
 | `jsonl_parser.py` | Parses Claude Code JSONL session files — extracts metadata (session ID, cwd, first user message), converts message formats, consolidates multi-block messages (merges consecutive text, folds tool_result into tool_use). Filters by primary session ID (hint from filename or most-common count). |
 | `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format (with uuid chain, parentUuid links, version `2.1.62`, timestamps) for local resumption via `claude --resume`. |
 | `tunnel.py` | CloudflareTunnel subprocess manager — starts `cloudflared tunnel --url`, parses the `trycloudflare.com` URL from stderr, monitors the process, and provides graceful stop (terminate with kill fallback). |
 | `cli.py` | CLI entry point — `octopus serve` (default, checks for built frontend; `--tunnel` enables Cloudflare Tunnel), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
-| `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`, `POST /api/sessions/import`. |
-| `routers/ws.py` | WebSocket endpoint at `/ws`. Receives client commands (`send_message`, `approve_tool`, `deny_tool`), streams responses back. Each message send runs as a background `asyncio.Task` so the receive loop stays responsive. |
+| `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`, `POST /api/sessions/import`, `POST /api/sessions/{id}/reset` (clears stuck-busy state). |
+| `routers/schedules.py` | REST CRUD for scheduled tasks — `GET/POST /api/schedules`, `GET/PATCH/DELETE /api/schedules/{id}`. PATCH supports toggling `enabled` and editing name/prompt/interval (triggers reschedule). |
+| `routers/ws.py` | WebSocket endpoint at `/ws`. Receives client commands (`send_message`, `interrupt`, `approve_tool`, `deny_tool`), streams responses back. Each message send runs as a background `asyncio.Task` so the receive loop stays responsive. |
 
 ### Bridge System (`server/bridges/`)
 
@@ -81,10 +83,11 @@ The bridge system provides messaging platform integrations, allowing users to in
 | File | Purpose |
 |---|---|
 | `App.tsx` | Root component. Token login screen, then layout with sidebar + main chat area. Hamburger menu for mobile sidebar toggle with overlay. Logout button. |
-| `stores/sessionStore.ts` | Zustand store — token (persisted to localStorage), sessions list, active session, messages per session, connection status. |
-| `hooks/useWebSocket.ts` | WebSocket connection with auto-reconnect (3s interval). Derives WS URL from `window.location` (supports `ws://` and `wss://`). Uses `getState()` directly for store mutations to avoid React re-render loops. Handles all event types: `assistant_text`, `tool_use`, `tool_result`, `tool_approval_request`, `status`, `result`, `error`. |
+| `stores/sessionStore.ts` | Zustand store — token (persisted to localStorage), sessions list, active session, messages per session, connection status, schedules list. |
+| `hooks/useWebSocket.ts` | WebSocket connection with auto-reconnect (3s interval). Derives WS URL from `window.location` (supports `ws://` and `wss://`). Uses `getState()` directly for store mutations to avoid React re-render loops. Exposes `sendMessage`, `interrupt`, `approveTool`, `denyTool`. Handles all event types: `assistant_text`, `tool_use`, `tool_result`, `tool_approval_request`, `status`, `result`, `error`. |
 | `components/SessionList.tsx` | Sidebar — lists sessions with status dots, create (name + optional working dir), delete, select active, copy session ID to clipboard. Uses `window.location.origin` for API calls. |
-| `components/ChatView.tsx` | Main chat view — renders message list, text input (Enter to send, Shift+Enter for newline), loading indicator with animated dots, auto-scroll on new messages. Input disabled while session is running. |
+| `components/ScheduleList.tsx` | Sidebar section under the active session — list of schedules for the active session with enable/disable toggle and delete button, "+" form to create a new schedule (name, prompt, interval in minutes). Hidden when no session is selected. |
+| `components/ChatView.tsx` | Main chat view — virtualized message list via `react-virtuoso` (constant DOM nodes regardless of history length, auto-pins to bottom on new messages), text input with Enter-to-send and Esc-to-interrupt, "waiting for your response" hint when last assistant message ends with a question, queued-message badge while a turn is in flight (Send queues; the queued message fires after the current turn ends). |
 | `components/MessageBubble.tsx` | Renders a single message: user text, assistant markdown (via react-markdown), collapsible tool use/result blocks with preview (command or file_path), cost badges, errors. |
 | `components/ToolApproval.tsx` | Renders Allow/Deny buttons when Claude requests tool permission. Shows tool name and JSON-formatted input. |
 
@@ -169,6 +172,7 @@ User clicks Allow/Deny
 **Client → Server:**
 ```json
 {"type": "send_message", "session_id": "xxx", "content": "..."}
+{"type": "interrupt", "session_id": "xxx"}
 {"type": "approve_tool", "session_id": "xxx", "tool_use_id": "yyy"}
 {"type": "deny_tool", "session_id": "xxx", "tool_use_id": "yyy", "reason": "..."}
 ```
@@ -193,6 +197,14 @@ POST   /api/sessions              Create session {name, working_dir}
 GET    /api/sessions/{id}         Session details + message history
 DELETE /api/sessions/{id}         Delete session
 POST   /api/sessions/import       Import a session with messages
+POST   /api/sessions/{id}/reset   Force-clear a session's busy/lock state
+
+GET    /api/schedules             List all scheduled tasks
+POST   /api/schedules             Create {session_id, name, prompt, interval_seconds}
+GET    /api/schedules/{id}        Schedule details
+PATCH  /api/schedules/{id}        Toggle enabled / edit name/prompt/interval
+DELETE /api/schedules/{id}        Delete schedule
+
 GET    /health                    Health check
 ```
 
@@ -280,6 +292,18 @@ CREATE TABLE bridge_mappings (
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     PRIMARY KEY (platform, chat_id)
 );
+
+-- Recurring scheduled tasks (interval-based)
+CREATE TABLE schedules (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    last_run_at TEXT
+);
 ```
 
 ## Key Design Decisions
@@ -358,4 +382,5 @@ octopus pull SESSION_ID [--cwd DIR]          # Export session to local JSONL
 - **Communication**: WebSocket (streaming) + REST (CRUD)
 - **Bridges**: Telegram (long-polling via httpx), extensible Bridge ABC
 - **Tunnel**: Cloudflare Tunnel (optional, via `cloudflared` subprocess)
-- **Testing**: pytest (95 backend), vitest (8 frontend unit), Playwright (26 E2E across 3 specs)
+- **Scheduling**: APScheduler (`AsyncIOScheduler`) for interval-based recurring tasks, integrated with FastAPI lifespan
+- **Testing**: pytest (179 backend), vitest (8 frontend unit), Playwright (24 E2E across 4 specs)

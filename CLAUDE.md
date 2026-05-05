@@ -4,10 +4,10 @@
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (95 tests)
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (179 tests)
 2. **Frontend unit tests**: `cd web && bun run test` (8 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (17 tests, Playwright auto-starts servers)
+4. **E2E tests**: `cd web && bun run test:e2e` (24 tests, Playwright auto-starts servers)
 
 **Zero test failures are acceptable.** All tests must pass before committing. If a test fails, investigate and fix it — do not ignore, skip, or dismiss any failure as "flaky" or "pre-existing".
 
@@ -15,17 +15,20 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Count | What it covers |
 |-------|------|-------|----------------|
-| Backend unit | pytest | 95 | Config, models, session manager, REST API (auth, CRUD, 404s), database persistence, JSONL parser/writer, CLI (handoff, pull), import API |
+| Backend unit | pytest | 179 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence, JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner, bridge base/manager/telegram, tunnel config |
 | Frontend unit | vitest | 8 | Zustand store (token, sessions, messages, status) |
-| E2E | Playwright | 17 | Login flow, session create/delete, sending messages to Claude with real responses, Enter key send, input disabled while running, WebSocket connection, mobile responsive layout, CLI handoff import, CLI pull (with/without claude_session_id), roundtrip pull+handoff, API cleanup |
+| E2E | Playwright | 24 | Login, session CRUD, real Claude responses, Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), scheduled-tasks UI, waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling |
 
 ## Project Structure
 
 - `server/` — Python backend (FastAPI)
 - `server/cli.py` — CLI entry point (`serve`, `handoff`, `pull`)
 - `server/database.py` — SQLite persistence layer
+- `server/scheduler.py` — APScheduler-based recurring task runner
 - `server/jsonl_parser.py` — Claude Code JSONL session parser
 - `server/jsonl_writer.py` — JSONL writer for session export
+- `server/routers/` — REST + WebSocket routers (`sessions`, `schedules`, `ws`)
+- `server/bridges/` — Messaging-platform integrations (`telegram`, base + manager)
 - `web/` — React frontend (Vite + TypeScript)
 - `tests/` — Backend tests (pytest)
 - `web/src/**/*.test.ts` — Frontend unit tests (vitest, colocated with source)

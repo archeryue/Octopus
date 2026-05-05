@@ -2,42 +2,7 @@
 
 ---
 
-## 1. Handle Claude Code Interactive Input
-
-**Priority**: Medium
-**Affected**: `server/session_manager.py`, `web/src/components/ChatView.tsx`
-
-### Context
-
-Claude Code sometimes asks the user questions before proceeding — e.g., "Which approach should I take?" or "Pick one of these options:".
-
-### SDK Investigation Result
-
-The Claude Code SDK has no dedicated "ask human" message type. The `Message` union is:
-
-```python
-Message = UserMessage | AssistantMessage | SystemMessage | ResultMessage | StreamEvent
-```
-
-With `permission_mode: "bypassPermissions"`, Claude's questions are normal `AssistantMessage` text blocks, and the turn ends with a `ResultMessage`. The session returns to idle.
-
-**The normal conversation flow already handles it:**
-
-1. Claude asks a question → `AssistantMessage` (text) → `ResultMessage` → status idle
-2. User sees the question in the chat UI / Telegram
-3. User sends a new message with their answer
-4. `send_message()` with `resume` continues the conversation
-
-The only blocking input mechanism is tool approval via `SDKControlPermissionRequest`, which Octopus already handles through `_pending_approvals` and `approve_tool()`.
-
-### UX Improvement (optional)
-
-- **Visual indicator**: When Claude's last message ends with a question, show a "Claude is waiting for your response" hint.
-- **Telegram**: Detect question patterns and avoid sending a "Session complete" indicator.
-
----
-
-## 2. Multi-Backend Support (Claude Code + Codex)
+## 1. Multi-Backend Support (Claude Code + Codex)
 
 **Priority**: Low
 **Affected**: `server/session_manager.py`, `server/config.py`, new `server/backends/` package
@@ -377,29 +342,7 @@ Sources:
 
 ---
 
-## 3. Monitoring & Scheduled Tasks
-
-**Priority**: High
-**Affected**: new `server/scheduler.py`, `server/routers/schedules.py`, `web/`
-
-### Context
-
-Inspired by OpenClaw's 24/7 operation model — the ability to set up recurring tasks, cron-like schedules, and monitoring that runs while the user is away. Examples:
-- Monitor GitHub issues and summarize new ones daily
-- Run periodic health checks on services
-- Schedule data processing or reporting tasks
-- Watch for specific events and trigger session actions
-
-### Possible Approach
-
-- Use APScheduler or a lightweight cron-like scheduler within the server
-- New API routes: create/list/delete scheduled tasks
-- Each scheduled task triggers a `send_message()` to a designated session at the configured interval
-- Frontend: schedule management UI (cron expression or simple interval picker)
-
----
-
-## 4. Email Integration (Read & Write)
+## 2. Email Integration (Read & Write)
 
 **Priority**: Medium
 **Affected**: new `server/bridges/email.py`, `server/config.py`
@@ -417,77 +360,131 @@ Allow Octopus sessions to read and compose emails. This extends the bridge patte
 - Use cases:
   - Forward incoming emails to a session for summarization/triage
   - Have Claude draft replies that the user can review before sending
-  - Scheduled email digests (combines with feature #3)
+  - Scheduled email digests (combines with the scheduling feature already shipped)
 
 ---
 
-## 5. Long Session Performance (Message Virtualization)
+## 3. Eye-Friendly Background Theme
 
-**Priority**: High
-**Affected**: `web/src/components/ChatView.tsx`, `server/routers/sessions.py`
+**Priority**: High (low effort, high quality-of-life)
+**Affected**: `web/src/index.css`
 
 ### Problem
 
-After extended use, a single session can accumulate hundreds or thousands of messages. The frontend renders all of them in the DOM at once, causing:
+The current dark palette uses `--bg: #0d1117` (GitHub-dark). After long sessions it reads as near-black against bright text and tool-use blocks, causing eye strain. Pure-black-on-bright-white contrast is harsh on OLED/IPS panels at full brightness.
 
-- **Browser freeze / jank**: The page becomes unresponsive as React renders thousands of message components.
-- **High memory usage**: Each message with tool use output, code blocks, or diffs holds significant DOM state.
-- **Slow session load**: `GET /api/sessions/{id}` returns all messages; the browser parses and renders the entire history on session switch.
+### Goal
 
-This is especially bad for long-running sessions (feature #2 in long-running-plan.md makes this worse by keeping Claude running while the user is away — the session grows without anyone viewing it).
+Replace the near-black canvas with a softer, slightly warmer dark tone that keeps enough contrast for code blocks and tool output, but reduces glare on extended use.
 
-### Proposed Solutions
+### Possible Approach
 
-#### A. Virtualized scrolling (primary fix)
+Edit the `:root` palette in `web/src/index.css`. Candidates (any of these is a reasonable default — pick one and ship):
 
-Only render messages visible in the viewport. Use a virtualization library like `@tanstack/react-virtual` or `react-virtuoso`:
+| Variable | Current | Proposed |
+|---|---|---|
+| `--bg` | `#0d1117` | `#1b1f24` (slightly lighter, neutral) — or `#1f1d1a` (warm) |
+| `--bg-secondary` | `#161b22` | `#23282f` |
+| `--bg-tertiary` | `#21262d` | `#2d333b` |
+| `--text` | (current) | bump down a touch to ~`#d1d5db` so contrast ratio drops from harsh-white to comfortable |
 
-```typescript
-import { Virtuoso } from "react-virtuoso";
+Keep the accent (green) and red/amber semantic colors as-is.
 
-<Virtuoso
-  data={messages}
-  itemContent={(index, msg) => <MessageBubble message={msg} />}
-  followOutput="smooth"   // auto-scroll on new messages
-  initialTopMostItemIndex={messages.length - 1}
-/>
+### Optional: per-user theme toggle
+
+If a single palette change isn't enough, add a theme switcher:
+- New `theme: "dim" | "dark" | "midnight"` field in zustand store, persisted to localStorage
+- CSS uses `[data-theme="dim"]` selectors on `<body>`
+- Settings dropdown in the sidebar (or a small icon button next to Logout) toggles
+
+MVP: just change the variables. Theme switcher is a nice-to-have.
+
+### Verification
+
+- Visual check on the longest chat view in the app
+- Contrast ratio against `--text`: aim for 7:1 minimum for body text (WCAG AAA), 4.5:1 for code/secondary
+- Re-run e2e tests — none should depend on exact pixel colors, but confirm Playwright snapshots (if any) are updated
+
+### Scope cuts (deferred)
+
+- Light theme
+- System-preference detection (`prefers-color-scheme`)
+- Per-component palette overrides
+
+---
+
+## 4. In-App Markdown Reader
+
+**Priority**: Medium
+**Affected**: new `web/src/components/FileViewer.tsx`, new endpoint in `server/routers/sessions.py` (or new `server/routers/files.py`), `web/src/components/MessageBubble.tsx`
+
+### Context
+
+Claude often produces or edits markdown files in the working directory (READMEs, plans, notes). Today the user has to switch to a separate editor / terminal to read them. A built-in reader lets the user open `.md` files (and other text files) directly inside Octopus right after Claude writes them.
+
+### Goal
+
+When Claude finishes a tool use that wrote/edited a file in the session's `working_dir`, surface a "View" button on that tool block. Clicking opens a side panel or modal that fetches the file content and renders it (markdown → rendered HTML via the same `react-markdown` + `remark-gfm` already used for chat; other text → plain monospace).
+
+### Possible Approach
+
+#### A. Server endpoint
+
+```
+GET /api/sessions/{session_id}/files?path=<relative_or_absolute>
 ```
 
-This keeps DOM node count constant (~20-30 visible messages) regardless of total message count.
+- Resolve the path against the session's `working_dir`
+- **Security**: reject paths outside `working_dir` (use `os.path.realpath` + `commonpath` check) — same risk model as a code-server proxy. Refuse symlinks that escape the dir.
+- Limit response size (e.g., 1 MiB) — anything bigger returns a 413 with a "file too large" hint
+- Detect content type by extension; mark `.md`, `.txt`, `.py`, `.ts`, etc. as text. Refuse binary
+- Auth: standard `Authorization: Bearer <token>`
 
-#### B. Server-side pagination
-
-Add `?limit=N&offset=M` to `GET /api/sessions/{id}` (already planned in long-running-plan.md #1). Frontend loads the latest N messages on session switch, then fetches older messages on scroll-up:
-
-```typescript
-// Initial load: last 100 messages
-const data = await fetch(`/api/sessions/${id}?limit=100`);
-
-// On scroll to top: load previous batch
-const older = await fetch(`/api/sessions/${id}?limit=100&offset=${currentOffset}`);
+Response:
+```json
+{
+  "path": "docs/plan.md",
+  "size": 12034,
+  "mime": "text/markdown",
+  "content": "# Plan\n..."
+}
 ```
 
-#### C. Collapsible message groups (UX improvement)
+#### B. Frontend component
 
-Group consecutive tool_use + tool_result messages into collapsible sections:
+New `FileViewer.tsx` — a slide-in panel (right side, ~40% width on desktop, full-screen modal on mobile) with:
+- Header: file path, close button, copy-path button
+- Body:
+  - For `.md`: `<ReactMarkdown remarkPlugins={[remarkGfm]}>` (reuse the chat config)
+  - For other text: `<pre><code>` with monospace
+- Optional: line numbers for code
 
-- **Collapsed view**: "Used 3 tools (Read, Edit, Bash)" with expand button
-- **Expanded view**: Full tool details (current behavior)
-- Auto-collapse tool groups older than the last 2 turns
-- User can manually collapse/expand any group
+State lives in the zustand store: `viewerOpen`, `viewerPath`, `viewerContent`.
 
-#### D. Session summary / trim
+#### C. Triggering from chat
 
-For very long sessions (1000+ messages), offer a "Summarize & trim" action:
+- In `MessageBubble.tsx`, when rendering a tool_use block for `Write`, `Edit`, `MultiEdit`, or `NotebookEdit`, extract `file_path` from `tool_input` and add a small "View" button next to the existing collapse arrow
+- Clicking calls `openViewer(path)` which fetches and shows the content
+- Also: a top-level "Browse files" button in the chat header to open an arbitrary path under `working_dir` (deferred — MVP is "open the file Claude just touched")
 
-- Send a meta-prompt to Claude asking it to summarize the conversation so far
-- Store the summary as a pinned message at the top
-- Archive old messages (keep in DB but don't load by default)
-- The `resume` session ID keeps Claude's full context — trimming the display doesn't affect Claude's memory
+#### D. Refresh behavior
 
-### Implementation Order
+- The viewer caches the last-fetched content
+- A "Reload" button re-fetches from disk (since Claude may edit again)
+- Optional: auto-reload when a new tool_use targeting the same path lands
 
-1. **Virtualized scrolling** — biggest bang for buck, no backend changes
-2. **Server-side pagination** — already part of long-running-plan #1
-3. **Collapsible tool groups** — UX polish
-4. **Summary/trim** — only needed for extreme cases
+### Scope cuts (deferred)
+
+- Directory tree / file browser
+- Inline editing
+- Diff viewer (show changes vs previous version)
+- Image preview
+- Server-Sent Events for live file watching
+- Syntax highlighting for code (markdown is the focus; code can come later via `react-syntax-highlighter`)
+
+### Risks
+
+- **Path traversal**: must validate `path` against `working_dir` strictly. Add a backend test for `../../etc/passwd` style attacks
+- **Large files**: enforce the size cap server-side; truncate gracefully
+- **Binary files**: detect via null bytes in first 8 KiB or by extension allowlist; refuse with a clear message
+- **Working directory drift**: Claude may `cd` during a session; the file path it writes may be relative to a subdirectory. Resolve relative paths against `working_dir`, not the session's logical cwd at message time
