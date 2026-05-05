@@ -774,6 +774,43 @@ body {
   border-top: 1px solid var(--border);
 }
 
+/* Pending-message queue (shown above the input bar while a turn runs) */
+.queue-list {
+  padding: 0.4rem 1rem 0.5rem;
+  border-top: 1px solid var(--border);
+  background: rgba(127, 127, 127, 0.05);
+  max-height: 140px;
+  overflow-y: auto;
+}
+
+.queue-list-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.3rem;
+}
+
+.queue-item {
+  display: flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding: 0.15rem 0;
+}
+
+.queue-dot {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.queue-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+
 /* Input bar */
 .chat-input-bar {
   display: flex;

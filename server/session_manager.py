@@ -47,9 +47,13 @@ class Session:
     claude_session_id: str | None = None
     _message_count: int = field(default=0, repr=False)
     _active_task: asyncio.Task | None = field(default=None, repr=False)
+    # Per-prompt task that interrupt() targets; the outer _active_task is
+    # the orchestrator loop and survives interrupts so it can drain the queue.
+    _inner_task: asyncio.Task | None = field(default=None, repr=False)
     _client: ClaudeSDKClient | None = field(default=None, repr=False)
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _pending_queue: list[str] = field(default_factory=list, repr=False)
 
 
 class SessionManager:
@@ -144,6 +148,11 @@ class SessionManager:
         session = self.sessions.pop(session_id, None)
         if session is None:
             return False
+        session._pending_queue.clear()
+        if session._inner_task and not session._inner_task.done():
+            session._inner_task.cancel()
+        if session._active_task and not session._active_task.done():
+            session._active_task.cancel()
         if session._client:
             try:
                 await session._client.disconnect()
@@ -173,24 +182,67 @@ class SessionManager:
         )
 
     async def start_message(self, session_id: str, prompt: str) -> None:
-        """Kick off a message as a background task owned by the session."""
+        """Kick off a message, or queue it if the session is already running."""
         session = self.sessions.get(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
+
         if session._active_task and not session._active_task.done():
-            raise ValueError(f"Session {session_id} is busy")
+            session._pending_queue.append(prompt)
+            await self._broadcast(
+                {
+                    "type": "queued",
+                    "session_id": session_id,
+                    "content": prompt,
+                    "queue_length": len(session._pending_queue),
+                }
+            )
+            return
 
         session._active_task = asyncio.create_task(
-            self._drive_message(session_id, prompt)
+            self._drive_messages(session_id, prompt)
         )
 
-    async def _drive_message(self, session_id: str, prompt: str) -> None:
-        """Consume the send_message generator as a background task."""
-        try:
-            async for event in self.send_message(session_id, prompt):
-                pass  # send_message persists + broadcasts each event
-        except Exception:
-            logger.exception("Background task error for session %s", session_id)
+    async def _drive_messages(self, session_id: str, initial_prompt: str) -> None:
+        """Run the initial prompt, then drain any queued prompts.
+
+        Each prompt runs as an inner task that interrupt() can cancel
+        independently, so cancelling one prompt doesn't stop the queue.
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+
+        prompt: str | None = initial_prompt
+        while prompt is not None:
+            inner = asyncio.create_task(self._consume_message(session_id, prompt))
+            session._inner_task = inner
+            try:
+                await inner
+            except asyncio.CancelledError:
+                pass  # interrupt() cancelled the inner task; continue draining
+            except Exception:
+                logger.exception(
+                    "Background task error for session %s", session_id
+                )
+            finally:
+                session._inner_task = None
+
+            if session._pending_queue:
+                prompt = session._pending_queue.pop(0)
+                await self._broadcast(
+                    {
+                        "type": "dequeued",
+                        "session_id": session_id,
+                        "queue_length": len(session._pending_queue),
+                    }
+                )
+            else:
+                prompt = None
+
+    async def _consume_message(self, session_id: str, prompt: str) -> None:
+        async for _event in self.send_message(session_id, prompt):
+            pass  # send_message persists + broadcasts each event
 
     async def send_message(
         self, session_id: str, prompt: str
@@ -248,11 +300,60 @@ class SessionManager:
         finally:
             session._lock.release()
 
+    async def interrupt(self, session_id: str) -> bool:
+        """Cancel the currently running prompt. Queued prompts continue."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            return False
+        inner = session._inner_task
+        if inner is None or inner.done():
+            return False
+
+        # Cancel the task FIRST — synchronous and immediate. The SDK's
+        # disconnect() can block (subprocess teardown), and if we awaited
+        # it before cancelling, the WS handler would stay stuck inside
+        # this coroutine and refuse subsequent interrupt requests.
+        inner.cancel()
+
+        # Then best-effort disconnect, with a tight timeout so a slow
+        # subprocess teardown can't wedge the WS receive loop.
+        if session._client:
+            try:
+                await asyncio.wait_for(session._client.disconnect(), timeout=2.0)
+            except Exception:
+                pass
+
+        # Resolve any pending tool approval futures so the SDK doesn't hang
+        for pending in list(session._pending_approvals.values()):
+            if not pending.future.done():
+                pending.future.set_result(
+                    PermissionResultDeny(message="Interrupted by user")
+                )
+        session._pending_approvals.clear()
+
+        marker = MessageContent(
+            role=MessageRole.system,
+            type="error",
+            content="(interrupted by user)",
+        )
+        await self._persist_message(session, marker)
+        await self._broadcast(
+            {
+                "type": "error",
+                "session_id": session_id,
+                "message": "(interrupted by user)",
+            }
+        )
+        return True
+
     async def reset_session(self, session_id: str) -> None:
         """Force-reset a stuck session."""
         session = self.sessions.get(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
+        session._pending_queue.clear()
+        if session._inner_task and not session._inner_task.done():
+            session._inner_task.cancel()
         if session._active_task and not session._active_task.done():
             session._active_task.cancel()
         if session._client:

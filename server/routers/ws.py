@@ -57,6 +57,11 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                         {"type": "error", "session_id": session_id, "message": str(e)}
                     )
 
+            elif msg_type == "interrupt":
+                session_id = data.get("session_id")
+                if session_id:
+                    await session_manager.interrupt(session_id)
+
             elif msg_type == "approve_tool":
                 session_id = data.get("session_id")
                 tool_use_id = data.get("tool_use_id")

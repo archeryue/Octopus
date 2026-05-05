@@ -8,11 +8,20 @@ const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
 const getState = () => useSessionStore.getState();
 
 function handleWsMessage(data: Record<string, unknown>) {
-  const { addMessage, updateSessionStatus } = getState();
+  const { addMessage, updateSessionStatus, enqueuePending, dequeuePending } =
+    getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
 
   switch (type) {
+    case "queued":
+      enqueuePending(sessionId, data.content as string);
+      break;
+
+    case "dequeued":
+      dequeuePending(sessionId);
+      break;
+
     case "assistant_text":
       addMessage(sessionId, {
         role: "assistant",
@@ -66,6 +75,11 @@ function handleWsMessage(data: Record<string, unknown>) {
       break;
 
     case "user_message":
+      addMessage(sessionId, {
+        role: "user",
+        type: "text",
+        content: data.content as string,
+      });
       break;
 
     case "error":
@@ -113,11 +127,14 @@ export function useWebSocket() {
               { headers: { Authorization: `Bearer ${t}` } }
             )
               .then((r) => (r.ok ? r.json() : null))
-              .then(
-                (data) =>
-                  data &&
-                  getState().setMessages(activeSessionId, data.messages)
-              )
+              .then((data) => {
+                if (!data) return;
+                getState().setMessages(activeSessionId, data.messages);
+                getState().setPendingQueue(
+                  activeSessionId,
+                  data.pending_queue || []
+                );
+              })
               .catch(() => {});
           }
         }
@@ -159,8 +176,17 @@ export function useWebSocket() {
 
   const sendMessage = useCallback(
     (sessionId: string, content: string) => {
-      getState().addMessage(sessionId, { role: "user", type: "text", content });
+      // Don't optimistically add to chat — the backend broadcasts a
+      // user_message event whether the prompt fires immediately or after
+      // dequeue, so a single broadcast handler keeps state consistent.
       send({ type: "send_message", session_id: sessionId, content });
+    },
+    [send]
+  );
+
+  const interrupt = useCallback(
+    (sessionId: string) => {
+      send({ type: "interrupt", session_id: sessionId });
     },
     [send]
   );
@@ -188,5 +214,5 @@ export function useWebSocket() {
     [send]
   );
 
-  return { send, sendMessage, approveTool, denyTool };
+  return { send, sendMessage, interrupt, approveTool, denyTool };
 }

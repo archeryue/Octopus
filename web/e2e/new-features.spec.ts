@@ -9,6 +9,8 @@ const OWNED_NAMES = new Set([
   "Waiting Hint Yes",
   "Waiting Hint No",
   "Virtuoso Long Session",
+  "Queue Test",
+  "Interrupt Test",
 ]);
 
 test.afterAll(async ({ request }) => {
@@ -195,6 +197,102 @@ test.describe("Interactive Input Hint", () => {
 // ---------------------------------------------------------------------------
 // Virtualized chat (react-virtuoso)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Message queue + interrupt
+// ---------------------------------------------------------------------------
+
+test.describe("Message Queue & Interrupt", () => {
+  // Real Claude turns — give them time. Queue scenarios run two turns.
+  test.describe.configure({ timeout: 180_000 });
+
+  test("send while running queues the message, which fires after current turn", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Queue Test");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Queue Test" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Queue Test");
+
+    const input = page.locator(".chat-input-bar textarea");
+
+    // First message
+    await input.fill("What is 100 * 200? Reply with just the number.");
+    await page.locator("button.btn-send").click();
+
+    // Wait for the run to start
+    await expect(
+      page.locator(".status-badge.status-running")
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Send button should now read "Queue"
+    await expect(page.locator("button.btn-send")).toHaveText("Queue");
+
+    // Queue a second message while the first is still running
+    await input.fill("And what is 50 * 50? Reply with just the number.");
+    await page.locator("button.btn-send").click();
+
+    // Queue list should show one pending message
+    await expect(page.locator(".queue-list")).toBeVisible();
+    await expect(page.locator(".queue-item")).toHaveCount(1);
+    await expect(page.locator(".queue-item .queue-content")).toContainText(
+      "50 * 50"
+    );
+
+    // Wait for both runs to finish (two result badges)
+    await expect(page.locator(".result-badge")).toHaveCount(2, {
+      timeout: 120_000,
+    });
+
+    // Queue is drained
+    await expect(page.locator(".queue-item")).toHaveCount(0);
+
+    // Both user messages should be in the chat
+    await expect(page.locator(".msg-user .msg-content")).toContainText([
+      "100 * 200",
+      "50 * 50",
+    ]);
+  });
+
+  test("Esc key interrupts the current turn", async ({ page, request }) => {
+    await createSessionApi(request, "Interrupt Test");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Interrupt Test" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Interrupt Test");
+
+    const input = page.locator(".chat-input-bar textarea");
+
+    // Long-ish prompt so we reliably catch it mid-turn
+    await input.fill("Write a 600-word essay about the history of computers.");
+    await page.locator("button.btn-send").click();
+
+    // Wait for the run to start
+    await expect(
+      page.locator(".status-badge.status-running")
+    ).toBeVisible({ timeout: 15_000 });
+
+    // Press Esc to interrupt — global listener catches it
+    await page.keyboard.press("Escape");
+
+    // The interrupt should land an error marker in the chat
+    await expect(page.locator(".msg-error .msg-content")).toContainText(
+      "interrupted by user",
+      { timeout: 10_000 }
+    );
+
+    // Status returns to idle
+    await expect(page.locator(".status-badge.status-idle")).toBeVisible({
+      timeout: 10_000,
+    });
+  });
+});
 
 test.describe("Virtualized Chat", () => {
   test("renders long conversation through the Virtuoso scroller and pins to bottom", async ({

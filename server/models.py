@@ -55,6 +55,7 @@ class MessageContent(BaseModel):
 
 class SessionDetail(SessionInfo):
     messages: list[MessageContent] = []
+    pending_queue: list[str] = []
 
 
 # WebSocket protocol messages (client -> server)

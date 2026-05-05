@@ -8,17 +8,24 @@ const EMPTY_MESSAGES: Message[] = [];
 
 interface Props {
   sendMessage: (sessionId: string, content: string) => void;
+  interrupt: (sessionId: string) => void;
   approveTool: (sessionId: string, toolUseId: string) => void;
   denyTool: (sessionId: string, toolUseId: string) => void;
 }
 
-export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
+const EMPTY_QUEUE: string[] = [];
+
+export function ChatView({ sendMessage, interrupt, approveTool, denyTool }: Props) {
   const [input, setInput] = useState("");
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const messagesMap = useSessionStore((s) => s.messages);
   const messages = activeSessionId ? (messagesMap[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const sessions = useSessionStore((s) => s.sessions);
   const activeSession = useMemo(() => sessions.find((s) => s.id === activeSessionId), [sessions, activeSessionId]);
+  const pendingQueueMap = useSessionStore((s) => s.pendingQueue);
+  const pendingQueue = activeSessionId
+    ? (pendingQueueMap[activeSessionId] ?? EMPTY_QUEUE)
+    : EMPTY_QUEUE;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   // Scroll to the bottom when switching into a session whose history has
@@ -82,6 +89,27 @@ export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
     }
   };
 
+  // Global Esc handler — interrupt the current turn whether or not the
+  // textarea is focused. Skip when typing in another input (e.g. Schedules
+  // form) so we don't hijack their native Esc behavior.
+  useEffect(() => {
+    if (!activeSessionId || !isRunning) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const inChatInput =
+        tag === "TEXTAREA" &&
+        (e.target as HTMLElement).closest(".chat-input-bar") !== null;
+      const inOtherField =
+        (tag === "INPUT" || tag === "TEXTAREA") && !inChatInput;
+      if (inOtherField) return;
+      e.preventDefault();
+      interrupt(activeSessionId);
+    };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [activeSessionId, isRunning, interrupt]);
+
   if (!activeSessionId) {
     return (
       <div className="chat-empty">
@@ -115,21 +143,38 @@ export function ChatView({ sendMessage, approveTool, denyTool }: Props) {
         <div className="waiting-hint">Claude is waiting for your response</div>
       )}
 
+      {pendingQueue.length > 0 && (
+        <div className="queue-list" aria-label="Queued messages">
+          <div className="queue-list-label">
+            Queued ({pendingQueue.length}) — will fire after the current turn
+          </div>
+          {pendingQueue.map((q, i) => (
+            <div className="queue-item" key={i}>
+              <span className="queue-dot">›</span>
+              <span className="queue-content">{q}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="chat-input-bar">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Send a message..."
+          placeholder={
+            isRunning
+              ? "Send to queue, or press Esc to interrupt…"
+              : "Send a message..."
+          }
           rows={1}
-          disabled={isRunning}
         />
         <button
           className="btn btn-send"
           onClick={handleSend}
-          disabled={!input.trim() || isRunning}
+          disabled={!input.trim()}
         >
-          Send
+          {isRunning ? "Queue" : "Send"}
         </button>
       </div>
     </div>

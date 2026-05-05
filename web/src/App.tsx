@@ -50,7 +50,7 @@ function AuthenticatedApp({
   sidebarOpen: boolean;
   setSidebarOpen: (v: boolean) => void;
 }) {
-  const { sendMessage, approveTool, denyTool } = useWebSocket();
+  const { sendMessage, interrupt, approveTool, denyTool } = useWebSocket();
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
 
@@ -84,6 +84,7 @@ function AuthenticatedApp({
         </div>
         <ChatView
           sendMessage={sendMessage}
+          interrupt={interrupt}
           approveTool={approveTool}
           denyTool={denyTool}
         />

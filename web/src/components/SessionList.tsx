@@ -13,6 +13,7 @@ export function SessionList() {
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setMessages = useSessionStore((s) => s.setMessages);
+  const setPendingQueue = useSessionStore((s) => s.setPendingQueue);
 
   const headers = {
     "Content-Type": "application/json",
@@ -76,6 +77,7 @@ export function SessionList() {
       if (res.ok) {
         const data = await res.json();
         setMessages(id, data.messages || []);
+        setPendingQueue(id, data.pending_queue || []);
       }
     } catch {
       // ignore

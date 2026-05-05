@@ -52,6 +52,14 @@ interface SessionStore {
   schedules: Schedule[];
   setSchedules: (s: Schedule[]) => void;
 
+  // Per-session queue of messages waiting for the current run to finish.
+  // Mirrored from server `queued` / `dequeued` events; not persisted.
+  pendingQueue: Record<string, string[]>;
+  setPendingQueue: (sessionId: string, queue: string[]) => void;
+  enqueuePending: (sessionId: string, content: string) => void;
+  dequeuePending: (sessionId: string) => void;
+  clearPending: (sessionId: string) => void;
+
   connected: boolean;
   setConnected: (c: boolean) => void;
 }
@@ -90,6 +98,37 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   schedules: [],
   setSchedules: (schedules) => set({ schedules }),
+
+  pendingQueue: {},
+  setPendingQueue: (sessionId, queue) =>
+    set((s) => {
+      const next = { ...s.pendingQueue };
+      if (queue.length === 0) delete next[sessionId];
+      else next[sessionId] = queue;
+      return { pendingQueue: next };
+    }),
+  enqueuePending: (sessionId, content) =>
+    set((s) => ({
+      pendingQueue: {
+        ...s.pendingQueue,
+        [sessionId]: [...(s.pendingQueue[sessionId] || []), content],
+      },
+    })),
+  dequeuePending: (sessionId) =>
+    set((s) => {
+      const cur = s.pendingQueue[sessionId] || [];
+      if (cur.length === 0) return s;
+      return {
+        pendingQueue: { ...s.pendingQueue, [sessionId]: cur.slice(1) },
+      };
+    }),
+  clearPending: (sessionId) =>
+    set((s) => {
+      if (!s.pendingQueue[sessionId]) return s;
+      const next = { ...s.pendingQueue };
+      delete next[sessionId];
+      return { pendingQueue: next };
+    }),
 
   connected: false,
   setConnected: (c) => set({ connected: c }),

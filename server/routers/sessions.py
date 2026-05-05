@@ -61,6 +61,7 @@ async def import_session(
         message_count=s._message_count,
         claude_session_id=s.claude_session_id,
         messages=messages,
+        pending_queue=list(s._pending_queue),
     )
 
 
@@ -80,6 +81,7 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
         message_count=s._message_count,
         claude_session_id=s.claude_session_id,
         messages=messages,
+        pending_queue=list(s._pending_queue),
     )
 
 
