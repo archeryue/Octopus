@@ -2,10 +2,12 @@ import { useState } from "react";
 import { ChatView } from "./components/ChatView";
 import { ScheduleList } from "./components/ScheduleList";
 import { SessionList } from "./components/SessionList";
+import { useViewportHeight } from "./hooks/useViewportHeight";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useSessionStore } from "./stores/sessionStore";
 
 function App() {
+  useViewportHeight();
   const token = useSessionStore((s) => s.token);
   const setToken = useSessionStore((s) => s.setToken);
   const [tokenInput, setTokenInput] = useState("");
