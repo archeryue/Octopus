@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { IconX } from "@tabler/icons-react";
 import {
   useSessionStore,
   type CredentialInfo,
@@ -201,13 +202,16 @@ export function CredentialList() {
   // --------------------------------------------------------------- Render
 
   return (
-    <div className="credential-section">
-      <div className="credential-header">
-        <span className="credential-title">Harness</span>
+    <div className="credential-section border-t border-border">
+      <div className="credential-header flex items-center justify-between px-4 py-2">
+        <span className="credential-title text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Harness
+        </span>
         <button
-          className="btn-credential-add"
+          className="btn-credential-add inline-flex h-6 w-6 items-center justify-center rounded-md text-base text-primary hover:bg-accent"
           onClick={startLogin}
           title="Sign in"
+          aria-label="Sign in"
         >
           +
         </button>
@@ -215,25 +219,38 @@ export function CredentialList() {
 
       <div className="credential-list">
         {credentials.map((c) => (
-          <div className="credential-item" key={c.id}>
-            <div className="credential-info">
-              <span className={`credential-badge backend-${c.backend}`}>
+          <div
+            className="credential-item flex items-center justify-between px-4 py-2 border-b border-border text-sm"
+            key={c.id}
+          >
+            <div className="credential-info flex items-center gap-2 min-w-0">
+              <span
+                className={`credential-badge backend-${c.backend} text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                  c.backend === "claude-code"
+                    ? "bg-primary/15 text-primary"
+                    : "bg-secondary text-secondary-foreground"
+                }`}
+              >
                 {c.backend === "claude-code" ? "Claude" : "Codex"}
               </span>
               <span
-                className={`credential-badge auth-${c.auth_type}`}
+                className={`credential-badge auth-${c.auth_type} text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded border ${
+                  c.auth_type === "oauth"
+                    ? "border-primary/40 text-primary"
+                    : "border-border text-muted-foreground"
+                }`}
                 title={c.auth_type === "oauth" ? "Signed in" : "API key"}
               >
                 {c.auth_type === "oauth" ? "OAuth" : "Key"}
               </span>
-              <span className="credential-label">{c.label}</span>
+              <span className="credential-label truncate text-foreground">{c.label}</span>
             </div>
             <button
-              className="btn-delete"
+              className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
               onClick={() => remove(c.id)}
               title="Delete credential"
             >
-              ×
+              <IconX size={14} />
             </button>
           </div>
         ))}
