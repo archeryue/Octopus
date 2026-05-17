@@ -12,6 +12,8 @@ Type=simple
 User=start-up
 WorkingDirectory=/home/start-up
 EnvironmentFile=/home/start-up/Octopus/.env
+# systemd's default PATH excludes ~/.local/bin where `claude` is installed.
+Environment=PATH=/home/start-up/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=/home/start-up/Octopus/.venv/bin/octopus serve
 Restart=always
 RestartSec=5

@@ -24,8 +24,12 @@ from .subprocess_jsonl import SubprocessJsonlBackend
 logger = logging.getLogger(__name__)
 
 
-# Type for the can_use_tool permission callback. Returns either
-# {"allow": True, "input"?: dict} or {"allow": False, "reason"?: str}.
+# Type for the can_use_tool permission callback. Returns the CLI's
+# expected permission-result shape (Claude Code 2.x):
+#   {"behavior": "allow", "updatedInput": dict}
+#   {"behavior": "deny",  "message": str}
+# `updatedInput` is required even when not modifying input — pass the
+# original tool input through to honor the model's request as-is.
 PermissionDecision = dict[str, Any]
 PermissionCallback = Callable[[str, dict[str, Any]], Awaitable[PermissionDecision]]
 
@@ -308,23 +312,33 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
             return
 
         # Without a callback: blanket-allow (matches the legacy bypass).
+        # The CLI's permission schema requires `updatedInput` even when we
+        # aren't modifying it; pass the original tool input through.
         if self._permission_cb is None:
-            await self._send_control_response_success(request_id, {"allow": True})
+            await self._send_control_response_allow(request_id, tool_input)
             return
 
         try:
             decision = await self._permission_cb(tool_name, tool_input)
         except Exception as e:
-            await self._send_control_response_success(
-                request_id, {"allow": False, "reason": f"callback error: {e}"}
-            )
+            await self._send_control_response_deny(request_id, f"callback error: {e}")
             return
 
+        # The callback returns the CLI-shaped decision directly. We don't
+        # translate — that lets callers pass back e.g. `updatedInput` if
+        # they want to rewrite the model's tool arguments.
         await self._send_control_response_success(request_id, decision)
 
     async def _send_control_response_success(
         self, request_id: str, response: dict[str, Any]
     ) -> None:
+        """Wrap a permission-result dict in the control_response envelope.
+
+        `response` must match the CLI's permission-result schema. Prefer
+        the typed `_send_control_response_allow` / `_send_control_response_deny`
+        helpers below; reach for this only when the caller already has a
+        fully-formed decision dict (e.g. straight from a user callback).
+        """
         payload = {
             "type": "control_response",
             "response": {
@@ -334,6 +348,30 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
             },
         }
         await self._write_stdin(json.dumps(payload) + "\n")
+
+    async def _send_control_response_allow(
+        self, request_id: str, updated_input: dict[str, Any] | None = None
+    ) -> None:
+        """Allow the tool to run, passing through (or rewriting) its input.
+
+        The CLI requires `updatedInput` even when we don't intend to change
+        anything — pass the original tool input through to honor the model's
+        request as-is. Sending `{"allow": True}` (the legacy SDK shape) is
+        rejected by the current CLI with a ZodError (see BUG_NEED_FIX #1).
+        """
+        await self._send_control_response_success(
+            request_id,
+            {"behavior": "allow", "updatedInput": updated_input or {}},
+        )
+
+    async def _send_control_response_deny(
+        self, request_id: str, message: str
+    ) -> None:
+        """Deny the tool. `message` is what Claude sees as the rejection text."""
+        await self._send_control_response_success(
+            request_id,
+            {"behavior": "deny", "message": message},
+        )
 
     async def _send_control_response_error(
         self, request_id: str, message: str
@@ -368,11 +406,9 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         if request_id is None:
             return False
         self._pending_incoming.pop(request_id, None)
-        # We deliver the answer via the deny `reason` channel (same trick
-        # the SDK-era code used). Once we confirm what the CLI does with
-        # the answer downstream (feature 7), this can switch to a
-        # positive-result mechanism.
-        await self._send_control_response_success(
-            request_id, {"allow": False, "reason": answer_text}
-        )
+        # Deliver the answer via the deny channel — the CLI surfaces deny
+        # `message` to Claude as the tool's effective response. The MCP-tool
+        # alternative described in future-features.md #7 would be cleaner
+        # but isn't built yet.
+        await self._send_control_response_deny(request_id, answer_text)
         return True

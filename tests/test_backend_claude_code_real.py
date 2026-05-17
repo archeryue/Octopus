@@ -17,6 +17,17 @@ import pytest
 
 from server.backends import BackendEvent, ClaudeCodeBackend
 
+# Widen PATH so shutil.which("claude") finds the binary even when the
+# user's shell didn't export ~/.local/bin (typical for non-interactive
+# pytest invocations). This is a no-op when claude is already on PATH.
+_EXTRA_BIN_DIRS = [
+    os.path.expanduser("~/.local/bin"),
+    "/usr/local/bin",
+]
+for _d in _EXTRA_BIN_DIRS:
+    if _d and _d not in os.environ.get("PATH", "").split(os.pathsep):
+        os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
+
 
 pytestmark = pytest.mark.skipif(
     shutil.which("claude") is None,
@@ -43,6 +54,40 @@ async def _drain(backend: ClaudeCodeBackend, timeout: float = 60.0) -> list[Back
     return events
 
 
+# Strings that, if seen in any tool_result or stderr, indicate our
+# control-protocol payload was rejected by the CLI. The bug that triggered
+# these (BUG_NEED_FIX #1) was fixed; this guard prevents a regression.
+_CONTROL_PROTOCOL_RED_FLAGS = (
+    "ZodError",
+    "Tool permission request failed",
+)
+
+
+def _assert_no_control_protocol_errors(
+    backend: ClaudeCodeBackend, events: list[BackendEvent]
+) -> None:
+    """Fail loudly if the CLI logged a control-protocol error during this
+    run, even if the model recovered (e.g. by retrying the tool call)."""
+    for ev in events:
+        if ev.type != "tool_result":
+            continue
+        content = ev.content or ""
+        for flag in _CONTROL_PROTOCOL_RED_FLAGS:
+            if flag in content:
+                raise AssertionError(
+                    f"CLI control protocol error in tool_result: {content[:300]!r}\n"
+                    f"This means our backend is sending a payload the CLI's "
+                    f"validator rejects. See docs/BUG_NEED_FIX.md."
+                )
+    stderr = backend.stderr_text
+    for flag in _CONTROL_PROTOCOL_RED_FLAGS:
+        if flag in stderr:
+            raise AssertionError(
+                f"CLI control protocol error in stderr: {stderr[:300]!r}\n"
+                f"See docs/BUG_NEED_FIX.md."
+            )
+
+
 # ---------------------------------------------------------------------------
 # Basic happy path
 # ---------------------------------------------------------------------------
@@ -56,6 +101,8 @@ async def test_real_simple_text_then_result():
         events = await _drain(backend, timeout=60.0)
     finally:
         await backend.stop()
+
+    _assert_no_control_protocol_errors(backend, events)
 
     types = [e.type for e in events]
     # Always: at least one text + a result. Thinking blocks may or may not appear.
@@ -87,6 +134,8 @@ async def test_real_tool_use_then_tool_result():
         events = await _drain(backend, timeout=120.0)
     finally:
         await backend.stop()
+
+    _assert_no_control_protocol_errors(backend, events)
 
     types = [e.type for e in events]
     # Expect at least one tool_use + matching tool_result + text + result
@@ -156,6 +205,8 @@ async def test_real_ask_user_question_full_round_trip():
     await asyncio.wait_for(consumer, timeout=60.0)
     await backend.stop()
 
+    _assert_no_control_protocol_errors(backend, events)
+
     types = [e.type for e in events]
     assert "result" in types, f"no terminal result event after answering; saw {types}"
     # After answering, the model usually produces text mentioning the choice.
@@ -187,6 +238,8 @@ async def test_real_resume_across_two_subprocesses():
     finally:
         await b1.stop()
 
+    _assert_no_control_protocol_errors(b1, e1)
+
     result1 = next(e for e in e1 if e.type == "result")
     sid = result1.session_id
     assert sid, "turn 1 didn't yield a resumable session id"
@@ -202,6 +255,8 @@ async def test_real_resume_across_two_subprocesses():
         e2 = await _drain(b2, timeout=60.0)
     finally:
         await b2.stop()
+
+    _assert_no_control_protocol_errors(b2, e2)
 
     text2 = "".join(e.content or "" for e in e2 if e.type == "text")
     assert "MARIGOLD" in text2.upper(), (
@@ -252,6 +307,7 @@ async def test_real_interrupt_terminates_in_flight_turn():
 
     # We don't assert on event types — interrupt may land before or after
     # the model emits anything. The success criterion is: it didn't hang.
+    _assert_no_control_protocol_errors(backend, events)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +333,10 @@ async def test_real_credential_with_bad_key_yields_auth_error():
         events = await _drain(backend, timeout=60.0)
     finally:
         await backend.stop()
+
+    # Even on the failing auth path, we should not be tripping control
+    # protocol validation — those are independent failure modes.
+    _assert_no_control_protocol_errors(backend, events)
 
     # The CLI should report an error result (it can manifest as either an
     # error result or as a stderr-only failure; in either case, no normal

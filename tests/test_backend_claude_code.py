@@ -214,12 +214,15 @@ def test_build_args_no_credential_leaves_env_unchanged():
 @pytest.mark.asyncio
 async def test_permission_callback_invoked_directly():
     """Construct the backend with a callback; call the internal handler
-    directly to verify the wiring (no subprocess involved)."""
+    directly to verify the wiring (no subprocess involved). Asserts the
+    on-wire payload uses the new behavior/updatedInput shape — sending the
+    legacy {"allow": true} would be rejected by the CLI with a ZodError.
+    """
     seen: list[tuple[str, dict[str, Any]]] = []
 
     async def cb(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
         seen.append((tool_name, tool_input))
-        return {"allow": True}
+        return {"behavior": "allow", "updatedInput": tool_input}
 
     backend = ClaudeCodeBackend(permission_callback=cb)
 
@@ -244,4 +247,62 @@ async def test_permission_callback_invoked_directly():
     )
 
     assert seen == [("Bash", {"command": "ls"})]
-    assert any('"allow": true' in s for s in sent)
+    # New shape: {"behavior": "allow", "updatedInput": {"command": "ls"}}
+    assert any('"behavior": "allow"' in s for s in sent)
+    assert any('"updatedInput"' in s for s in sent)
+    # The legacy shape must NOT appear — that's what triggered ZodError.
+    assert not any('"allow": true' in s for s in sent)
+
+
+@pytest.mark.asyncio
+async def test_handler_default_allow_uses_new_shape():
+    """No callback set → default allow path. Verify it sends the new shape
+    with updatedInput (the original tool input passed through), not the
+    legacy {"allow": true}."""
+    backend = ClaudeCodeBackend()
+    sent: list[str] = []
+
+    async def fake_write(payload: str) -> None:
+        sent.append(payload)
+
+    backend._write_stdin = fake_write  # type: ignore[method-assign]
+
+    await backend._handle_control_request(
+        {
+            "type": "control_request",
+            "request_id": "req_y",
+            "request": {
+                "subtype": "can_use_tool",
+                "tool_name": "Bash",
+                "input": {"command": "pwd"},
+            },
+        }
+    )
+
+    assert any('"behavior": "allow"' in s for s in sent)
+    assert any('"updatedInput"' in s and "pwd" in s for s in sent)
+
+
+@pytest.mark.asyncio
+async def test_answer_question_sends_deny_shape():
+    """The user's AskUserQuestion answer must travel back as
+    {"behavior": "deny", "message": ...}, not the legacy
+    {"allow": false, "reason": ...} that triggered ZodError."""
+    backend = ClaudeCodeBackend()
+    sent: list[str] = []
+
+    async def fake_write(payload: str) -> None:
+        sent.append(payload)
+
+    backend._write_stdin = fake_write  # type: ignore[method-assign]
+
+    # Seed a pending question as if the CLI had already asked.
+    backend._pending_incoming["req_q1"] = {"subtype": "can_use_tool"}
+    backend._question_to_request["qid1"] = "req_q1"
+
+    ok = await backend.answer_question("qid1", "User said red")
+    assert ok is True
+
+    assert any('"behavior": "deny"' in s for s in sent)
+    assert any('"message": "User said red"' in s for s in sent)
+    assert not any('"reason"' in s for s in sent)

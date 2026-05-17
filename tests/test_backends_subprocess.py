@@ -171,6 +171,34 @@ async def test_missing_binary_raises(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_binary_resolved_from_fallback_dir(tmp_path, monkeypatch):
+    """If a bare binary name isn't on PATH but lives in ~/.local/bin,
+    the driver should still find it. This mirrors the systemd case where
+    the service's PATH strips per-user install dirs.
+    """
+    fake_bin_dir = tmp_path / ".local" / "bin"
+    fake_bin_dir.mkdir(parents=True)
+    fake_binary = fake_bin_dir / "my-cli-xyzzy"
+    fake_binary.write_text("#!/bin/sh\nexit 0\n")
+    fake_binary.chmod(0o755)
+
+    # Empty PATH (no chance the binary is found via PATH), and HOME pointing
+    # at our tmp dir so the fallback search hits ~/.local/bin under tmp_path.
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    class _Resolvable(_ScriptedBackend):
+        def build_args(self, prompt, working_dir, resume_id, credential=None):
+            return (["my-cli-xyzzy"], {"cwd": working_dir})
+
+    backend = _Resolvable("emit-lines")
+    # start() will resolve and spawn the binary; the trivial script exits 0,
+    # which is fine — we only care that resolution didn't raise.
+    await backend.start("p", str(tmp_path))
+    await backend.stop()
+
+
+@pytest.mark.asyncio
 async def test_stderr_is_captured(tmp_path):
     backend = _ScriptedBackend("fail-exit")
     await backend.start("p", str(tmp_path))

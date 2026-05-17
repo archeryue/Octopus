@@ -188,7 +188,10 @@ def run_ask_user_question():
         _emit_result(subtype="error_during_execution")
         return
     response_body = resp.get("response", {}) or {}
-    answer = response_body.get("reason", "")
+    # New CLI shape: {"behavior": "deny", "message": "..."}
+    # (Old SDK shape was {"allow": False, "reason": "..."} — kept as
+    # a fallback for older traces, but the host now sends the new shape.)
+    answer = response_body.get("message") or response_body.get("reason", "")
     # Now emit a synthetic tool_result reflecting the answer, then text + result.
     _emit({
         "type": "user",

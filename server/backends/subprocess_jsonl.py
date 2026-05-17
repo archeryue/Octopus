@@ -23,6 +23,28 @@ logger = logging.getLogger(__name__)
 _STREAM_END = object()
 
 
+def _which_with_fallback(binary: str) -> str | None:
+    """shutil.which, then retry against PATH + common per-user install dirs.
+
+    systemd's default PATH excludes ~/.local/bin and node/npm global bins,
+    so a CLI installed for the invoking user is invisible to the service
+    unless we add those dirs ourselves.
+    """
+    found = shutil.which(binary)
+    if found is not None:
+        return found
+    home = os.path.expanduser("~")
+    extras = [
+        os.path.join(home, ".local/bin"),
+        os.path.join(home, ".npm-global/bin"),
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+    ]
+    extra_path = os.pathsep.join(extras)
+    full_path = os.pathsep.join(p for p in (os.environ.get("PATH", ""), extra_path) if p)
+    return shutil.which(binary, path=full_path)
+
+
 class SubprocessJsonlBackend(BackendBase):
     """Common subprocess + JSONL machinery for both Claude Code and Codex.
 
@@ -89,10 +111,13 @@ class SubprocessJsonlBackend(BackendBase):
             raise RuntimeError(f"{type(self).__name__} already started")
 
         argv, kwargs = self.build_args(prompt, working_dir, resume_id, credential)
-        # If the subclass used a bare binary name, resolve it on PATH so
-        # errors are obvious ("binary not found") instead of cryptic.
+        # If the subclass used a bare binary name, resolve it. We search the
+        # current PATH plus common per-user install dirs that systemd-style
+        # launchers strip from PATH (npm global, pipx, asdf, etc.) so a user
+        # who can run `claude` in their shell doesn't have to also configure
+        # the service unit.
         if argv and not os.path.isabs(argv[0]):
-            resolved = shutil.which(argv[0])
+            resolved = _which_with_fallback(argv[0])
             if resolved is None:
                 raise FileNotFoundError(
                     f"{argv[0]} not found on PATH — install the CLI first"
