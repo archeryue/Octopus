@@ -170,12 +170,10 @@ async def oauth_start(req: OAuthStartRequest, _: str = Depends(verify_token)):
         )
     try:
         session = await oauth_login_manager.start()
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=503, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
-    return OAuthStartResponse(login_id=session.id, device_url=session.url or "")
+    return OAuthStartResponse(login_id=session.id, device_url=session.url)
 
 
 @router.post(
@@ -187,7 +185,8 @@ async def oauth_complete(
     req: OAuthCompleteRequest, _: str = Depends(verify_token)
 ):
     """Submit the code copied from the OAuth callback, exchange it for a
-    token via the running CLI subprocess, and persist the credential."""
+    long-lived API key via Anthropic's OAuth + api-key endpoints, and
+    persist the credential."""
     db = _require_db()
     try:
         session = await oauth_login_manager.submit_code(req.login_id, req.code)

@@ -196,11 +196,15 @@ async def test_oauth_start_returns_login_id_and_url(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_oauth_start_503_when_binary_missing(client, monkeypatch):
+async def test_oauth_start_502_on_orchestrator_runtime_error(client, monkeypatch):
+    """If the orchestrator raises (e.g. an upstream network blip during
+    early initialization, in some future addition), surface it as a 502
+    so the client knows the gateway / upstream failed rather than a
+    user-input issue."""
     from server import oauth_login
 
     async def fake_start(self):
-        raise FileNotFoundError("claude CLI not found on PATH")
+        raise RuntimeError("upstream unreachable")
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "start", fake_start)
 
@@ -210,7 +214,8 @@ async def test_oauth_start_503_when_binary_missing(client, monkeypatch):
         json={"backend": "claude-code"},
         headers=AUTH,
     )
-    assert res.status_code == 503
+    assert res.status_code == 502
+    assert "upstream unreachable" in res.json()["detail"]
 
 
 @pytest.mark.asyncio
