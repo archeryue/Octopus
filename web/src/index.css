@@ -101,168 +101,25 @@ body {
   min-width: 0;
 }
 
-.btn-menu {
-  display: none;
-  background: none;
-  border: none;
-  color: var(--text);
-  font-size: 1.5rem;
-  cursor: pointer;
-  padding: 0;
-}
-
-.conn-status {
-  font-size: 0.8rem;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
-
-.conn-status::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
-.conn-status.on::before {
-  background: var(--green);
-}
-
-.conn-status.off::before {
-  background: var(--red);
-}
+/* .btn-menu / .conn-status visuals: now in ChatView.tsx via Tailwind. */
 
 /* Session list / items / form: layout + visuals now in SessionList.tsx
  * via Tailwind utilities. Class names .session-list, .session-list-header,
  * .session-item etc. are kept on the DOM as Playwright test hooks. */
 
-/* Buttons */
-.btn {
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: var(--radius);
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 500;
-  transition: background 0.15s;
-}
-
-.btn-send {
-  background: var(--accent-dim);
-  color: #fff;
-}
-
-.btn-send:hover {
-  background: var(--accent);
-}
-
-.btn-send:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.btn-approve {
-  background: var(--green);
-  color: #fff;
-}
-
-.btn-deny {
-  background: var(--red);
-  color: #fff;
-}
-
-.btn-logout {
-  background: transparent;
-  color: var(--text-muted);
-  border-top: 1px solid var(--border);
-  border-radius: 0;
-  padding: 0.75rem;
-  width: 100%;
-  text-align: center;
-}
-
-.btn-logout:hover {
-  background: var(--bg-tertiary);
-  color: var(--text);
-}
+/* Buttons (.btn, .btn-send, .btn-approve, .btn-deny, .btn-logout) are
+ * either rendered through the shadcn Button primitive (which owns its
+ * own styling) or styled inline with Tailwind utilities. The class
+ * names remain on the DOM as Playwright test hooks only. */
 
 /* Schedules */
 /* ScheduleList / CredentialList layout + visuals now in the .tsx files
  * via Tailwind utilities. The class names .schedule-*, .credential-*,
  * .btn-toggle etc. live on the DOM purely as Playwright test hooks. */
 
-/* Chat */
-.chat-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: var(--text-muted);
-}
-
-.chat-empty h2 {
-  color: var(--accent);
-  margin-bottom: 0.5rem;
-}
-
-.chat-view {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-.chat-header {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0 1rem;
-  height: 48px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-secondary);
-}
-
-.chat-header .conn-status {
-  margin-left: auto;
-}
-
-.chat-header h3 {
-  font-size: 0.95rem;
-}
-
-.status-badge {
-  font-size: 0.7rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.status-badge.status-idle {
-  background: var(--bg-tertiary);
-  color: var(--text-muted);
-}
-
-.status-badge.status-running {
-  background: rgba(63, 185, 80, 0.15);
-  color: var(--green);
-}
-
-.status-badge.status-waiting_approval {
-  background: rgba(210, 153, 34, 0.15);
-  color: var(--yellow);
-}
-
-/* Messages */
-.chat-messages {
-  flex: 1 1 0;
-  min-height: 0;
-}
-
+/* Chat shell (chat-view, chat-header, chat-empty, status-badge, conn-status,
+ * chat-messages layout) is in ChatView.tsx via Tailwind. Only the Virtuoso
+ * spacing hooks remain here — they target data attributes Virtuoso renders. */
 .chat-messages [data-virtuoso-scroller] {
   padding: 1rem 0;
 }
@@ -271,36 +128,10 @@ body {
   padding: 0 0.5rem 0.75rem;
 }
 
-.msg {
-  max-width: 100%;
-  flex-shrink: 0;
-}
-
-.msg-label {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-bottom: 0.25rem;
-  font-weight: 600;
-}
-
-.msg-user .msg-content {
-  background: var(--accent-dim);
-  color: #fff;
-  padding: 0.6rem 0.8rem;
-  border-radius: var(--radius);
-  display: inline-block;
-  max-width: 85%;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.msg-assistant .msg-content {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  padding: 0.6rem 0.8rem;
-  border-radius: var(--radius);
-  line-height: 1.5;
-}
+/* Top-level message wrappers (.msg, .msg-user/.msg-assistant/.msg-system/
+ * .msg-error and result-badge) are now styled by MessageBubble.tsx via
+ * Tailwind. The .msg-assistant .markdown selectors below remain because
+ * they target react-markdown's nested output, not our own components. */
 
 .msg-assistant .markdown pre {
   background: var(--bg-tertiary);
@@ -357,351 +188,14 @@ body {
   background: var(--bg-tertiary);
 }
 
-/* Tool blocks */
-.msg-tool, .msg-tool-result {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
+/* Tool block visuals (.msg-tool, .msg-tool-result, .tool-header,
+ * .tool-icon, .tool-name, .tool-result-label, .tool-preview, .tool-detail)
+ * are now in MessageBubble.tsx via Tailwind. */
 
-.msg-tool-result.error {
-  border-color: var(--red);
-}
-
-.tool-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg-tertiary);
-  cursor: pointer;
-  user-select: none;
-}
-
-.tool-icon {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-}
-
-.tool-name, .tool-result-label {
-  font-weight: 600;
-  font-size: 0.85rem;
-  color: var(--accent);
-}
-
-.tool-result-label {
-  color: var(--green);
-}
-
-.msg-tool-result.error .tool-result-label {
-  color: var(--red);
-}
-
-.tool-preview {
-  font-size: 0.8rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-
-.tool-detail {
-  padding: 0.75rem;
-  font-size: 0.8rem;
-  overflow-x: auto;
-  background: var(--bg);
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-/* Approval */
-.msg-approval {
-  border: 2px solid var(--yellow);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.approval-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  background: rgba(210, 153, 34, 0.1);
-  font-size: 0.9rem;
-}
-
-.approval-icon {
-  font-size: 1.1rem;
-}
-
-.approval-detail {
-  padding: 0.75rem;
-  font-size: 0.8rem;
-  background: var(--bg);
-  max-height: 200px;
-  overflow: auto;
-  color: var(--text-muted);
-}
-
-.approval-actions {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  background: var(--bg-secondary);
-}
-
-/* Question prompt (AskUserQuestion) */
-.msg-question {
-  border: 2px solid var(--accent, var(--yellow));
-  border-radius: var(--radius);
-  overflow: hidden;
-  background: var(--bg-secondary);
-}
-
-.msg-question-done {
-  border-style: dashed;
-  opacity: 0.7;
-}
-
-.question-header {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  background: rgba(120, 170, 255, 0.08);
-  font-size: 0.9rem;
-}
-
-.question-icon {
-  font-size: 1.1rem;
-  width: 1.4rem;
-  height: 1.4rem;
-  border-radius: 50%;
-  background: var(--bg-tertiary);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.question-body {
-  padding: 0.75rem;
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-.question-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.question-tag {
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-}
-
-.question-text {
-  font-size: 0.95rem;
-  font-weight: 500;
-}
-
-.question-options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.question-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.5rem 0.6rem;
-  border: 1px solid var(--bg-tertiary);
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: background 0.1s, border-color 0.1s;
-}
-
-.question-option:hover {
-  background: var(--bg-tertiary);
-}
-
-.question-option.selected {
-  border-color: var(--accent, var(--yellow));
-  background: rgba(120, 170, 255, 0.08);
-}
-
-.question-option input {
-  margin-top: 0.2rem;
-}
-
-.question-option-label {
-  font-size: 0.9rem;
-}
-
-.question-option-desc {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-top: 0.15rem;
-}
-
-.question-other {
-  width: 100%;
-  padding: 0.4rem 0.6rem;
-  font-size: 0.85rem;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--bg-tertiary);
-  border-radius: var(--radius);
-}
-
-.question-other:focus {
-  outline: none;
-  border-color: var(--accent, var(--yellow));
-}
-
-.question-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-  padding: 0.6rem 0.75rem;
-  background: var(--bg);
-  border-top: 1px solid var(--bg-tertiary);
-}
-
-.msg-question-answer {
-  font-style: italic;
-  white-space: pre-wrap;
-}
-
-/* System messages */
-.msg-system {
-  text-align: center;
-  padding: 0.25rem 0;
-}
-
-.result-badge {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  background: var(--bg-tertiary);
-  padding: 0.2rem 0.6rem;
-  border-radius: 10px;
-}
-
-.msg-error .msg-content {
-  background: rgba(248, 81, 73, 0.1);
-  border: 1px solid var(--red);
-  color: var(--red);
-  padding: 0.6rem 0.8rem;
-  border-radius: var(--radius);
-}
-
-/* Loading dots */
-.msg-loading {
-  display: flex;
-  gap: 0.3rem;
-  padding: 0.5rem;
-}
-
-.loading-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-muted);
-  animation: loading 1.4s infinite ease-in-out both;
-}
-
-.loading-dot:nth-child(1) { animation-delay: -0.32s; }
-.loading-dot:nth-child(2) { animation-delay: -0.16s; }
-
-@keyframes loading {
-  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-  40% { transform: scale(1); opacity: 1; }
-}
-
-/* Waiting hint */
-.waiting-hint {
-  padding: 0.4rem 1rem;
-  font-size: 0.8rem;
-  color: var(--yellow);
-  font-style: italic;
-  background: rgba(210, 153, 34, 0.05);
-  border-top: 1px solid var(--border);
-}
-
-/* Pending-message queue (shown above the input bar while a turn runs) */
-.queue-list {
-  padding: 0.4rem 1rem 0.5rem;
-  border-top: 1px solid var(--border);
-  background: rgba(127, 127, 127, 0.05);
-  max-height: 140px;
-  overflow-y: auto;
-}
-
-.queue-list-label {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-bottom: 0.3rem;
-}
-
-.queue-item {
-  display: flex;
-  gap: 0.4rem;
-  align-items: flex-start;
-  font-size: 0.85rem;
-  color: var(--text-muted);
-  padding: 0.15rem 0;
-}
-
-.queue-dot {
-  color: var(--accent);
-  flex-shrink: 0;
-}
-
-.queue-content {
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-
-/* Input bar */
-.chat-input-bar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.75rem 1rem;
-  padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--border);
-  background: var(--bg-secondary);
-}
-
-.chat-input-bar textarea {
-  flex: 1;
-  padding: 0.6rem 0.75rem;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 0.95rem;
-  font-family: inherit;
-  resize: none;
-  min-height: 42px;
-  max-height: 120px;
-}
-
-.chat-input-bar textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-}
+/* ToolApproval (.msg-approval, .approval-*) and QuestionPrompt (.msg-question,
+ * .question-*) visuals: now in their .tsx files via Tailwind. Class names
+ * remain on the DOM for test hooks. .msg-system / .result-badge / .msg-error
+ * are styled inline in MessageBubble.tsx. */
 
 /* Mobile responsive */
 @media (max-width: 768px) {
@@ -724,10 +218,6 @@ body {
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
     z-index: 99;
-  }
-
-  .btn-menu {
-    display: block;
   }
 
   .msg-user .msg-content {

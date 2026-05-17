@@ -78,7 +78,7 @@ function AuthenticatedApp({
         <ScheduleList />
         <CredentialList />
         <button
-          className="btn btn-logout"
+          className="btn-logout mt-auto w-full border-t border-border px-4 py-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
           onClick={() => {
             setToken("");
             window.location.reload();

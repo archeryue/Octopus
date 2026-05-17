@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { IconMenu2 } from "@tabler/icons-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   useSessionStore,
@@ -8,6 +9,7 @@ import {
 import { MessageBubble } from "./MessageBubble";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
+import { Button } from "./ui/button";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -107,15 +109,17 @@ export function ChatView({
         const questions =
           (msg.tool_input?.questions as PendingQuestion["questions"]) || [];
         return (
-          <div className="msg msg-question msg-question-done">
-            <div className="question-header">
-              <span className="question-icon">?</span>
+          <div className="msg msg-question msg-question-done rounded-lg border border-dashed border-border bg-muted/30 overflow-hidden opacity-75">
+            <div className="question-header flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+              <span aria-hidden className="text-xs">?</span>
               <strong>Claude asked</strong>
             </div>
-            <div className="question-body">
+            <div className="question-body px-3 pb-3 space-y-1">
               {questions.map((q, i) => (
                 <div className="question-item" key={i}>
-                  <div className="question-text">{q.question}</div>
+                  <div className="question-text text-sm text-foreground">
+                    {q.question}
+                  </div>
                 </div>
               ))}
             </div>
@@ -130,10 +134,10 @@ export function ChatView({
   const footer = useCallback(
     () =>
       isRunning ? (
-        <div className="msg msg-loading">
-          <span className="loading-dot" />
-          <span className="loading-dot" />
-          <span className="loading-dot" />
+        <div className="msg msg-loading flex gap-1.5 px-3 py-2">
+          <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.32s]" />
+          <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.16s]" />
+          <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse" />
         </div>
       ) : null,
     [isRunning]
@@ -173,24 +177,45 @@ export function ChatView({
     return () => window.removeEventListener("keydown", onEsc);
   }, [activeSessionId, isRunning, interrupt]);
 
+  const statusBadgeClasses = (status: string | undefined) => {
+    const base =
+      "status-badge text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full";
+    if (status === "running")
+      return `${base} status-running bg-primary/15 text-primary`;
+    if (status === "waiting_approval")
+      return `${base} status-waiting_approval bg-yellow-400/15 text-yellow-400`;
+    return `${base} status-idle bg-muted text-muted-foreground`;
+  };
+
   const header = (
-    <div className="chat-header">
+    <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-card">
       <button
-        className="btn btn-menu"
+        className="btn btn-menu inline-flex items-center justify-center size-8 rounded-md text-foreground hover:bg-accent md:hidden"
         onClick={onToggleSidebar}
         aria-label="Toggle sidebar"
       >
-        ☰
+        <IconMenu2 size={18} />
       </button>
       {activeSession && (
         <>
-          <h3>{activeSession.name || "Session"}</h3>
-          <span className={`status-badge status-${activeSession.status}`}>
+          <h3 className="text-sm font-semibold text-foreground truncate">
+            {activeSession.name || "Session"}
+          </h3>
+          <span className={statusBadgeClasses(activeSession.status)}>
             {activeSession.status}
           </span>
         </>
       )}
-      <span className={`conn-status ${connected ? "on" : "off"}`}>
+      <span
+        className={`conn-status ${
+          connected ? "on" : "off"
+        } ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground`}
+      >
+        <span
+          className={`inline-block size-2 rounded-full ${
+            connected ? "bg-emerald-500" : "bg-destructive"
+          }`}
+        />
         {connected ? "Connected" : "Disconnected"}
       </span>
     </div>
@@ -198,23 +223,23 @@ export function ChatView({
 
   if (!activeSessionId) {
     return (
-      <div className="chat-view">
+      <div className="chat-view flex-1 flex flex-col min-h-0">
         {header}
-        <div className="chat-empty">
-          <h2>Octopus</h2>
-          <p>Create or select a session to start.</p>
+        <div className="chat-empty flex-1 flex flex-col items-center justify-center text-muted-foreground gap-1">
+          <h2 className="text-2xl font-semibold text-primary">Octopus</h2>
+          <p className="text-sm">Create or select a session to start.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="chat-view">
+    <div className="chat-view flex-1 flex flex-col min-h-0">
       {header}
 
       <Virtuoso
         ref={virtuosoRef}
-        className="chat-messages"
+        className="chat-messages flex-1 min-h-0"
         data={messages}
         itemContent={renderMessage}
         initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
@@ -224,24 +249,32 @@ export function ChatView({
       />
 
       {isWaitingForResponse && (
-        <div className="waiting-hint">Claude is waiting for your response</div>
+        <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
+          Claude is waiting for your response
+        </div>
       )}
 
       {pendingQueue.length > 0 && (
-        <div className="queue-list" aria-label="Queued messages">
-          <div className="queue-list-label">
+        <div
+          className="queue-list shrink-0 border-t border-border bg-muted/30 px-4 py-2 text-xs"
+          aria-label="Queued messages"
+        >
+          <div className="queue-list-label text-muted-foreground mb-1">
             Queued ({pendingQueue.length}) — will fire after the current turn
           </div>
           {pendingQueue.map((q, i) => (
-            <div className="queue-item" key={i}>
-              <span className="queue-dot">›</span>
-              <span className="queue-content">{q}</span>
+            <div
+              className="queue-item flex items-start gap-1.5 text-foreground"
+              key={i}
+            >
+              <span className="queue-dot text-muted-foreground shrink-0">›</span>
+              <span className="queue-content truncate">{q}</span>
             </div>
           ))}
         </div>
       )}
 
-      <div className="chat-input-bar">
+      <div className="chat-input-bar flex items-end gap-2 px-4 py-3 border-t border-border bg-card shrink-0">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -252,14 +285,15 @@ export function ChatView({
               : "Send a message..."
           }
           rows={1}
+          className="flex-1 min-h-[40px] max-h-40 resize-y rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
         />
-        <button
-          className="btn btn-send"
+        <Button
+          className="btn btn-send shrink-0"
           onClick={handleSend}
           disabled={!input.trim()}
         >
           {isRunning ? "Queue" : "Send"}
-        </button>
+        </Button>
       </div>
     </div>
   );

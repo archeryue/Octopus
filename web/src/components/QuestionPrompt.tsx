@@ -1,5 +1,8 @@
 import { useState } from "react";
+import { IconHelpCircle } from "@tabler/icons-react";
 import type { PendingQuestion } from "../stores/sessionStore";
+import { Button } from "./ui/button";
+import { Input } from "./ui/input";
 
 export interface AnswerPayload {
   selected?: string[];
@@ -52,26 +55,36 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
   };
 
   return (
-    <div className="msg msg-question">
-      <div className="question-header">
-        <span className="question-icon">?</span>
+    <div className="msg msg-question rounded-lg border-2 border-primary/40 bg-card overflow-hidden">
+      <div className="question-header flex items-center gap-2 px-3 py-2 bg-primary/10 text-sm text-foreground">
+        <IconHelpCircle size={16} className="text-primary shrink-0" />
         <strong>Claude is asking</strong>
       </div>
-      <div className="question-body">
+      <div className="question-body px-3 py-3 space-y-4">
         {question.questions.map((q, i) => {
           const multi = !!q.multiSelect;
           const selected = answers[i]?.selected || [];
           const inputName = `q-${question.question_id}-${i}`;
           return (
-            <div className="question-item" key={i}>
-              {q.header && <div className="question-tag">{q.header}</div>}
-              <div className="question-text">{q.question}</div>
-              <div className="question-options">
+            <div className="question-item space-y-2" key={i}>
+              {q.header && (
+                <div className="question-tag text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  {q.header}
+                </div>
+              )}
+              <div className="question-text text-sm font-medium text-foreground">
+                {q.question}
+              </div>
+              <div className="question-options flex flex-col gap-1.5">
                 {q.options.map((opt, j) => {
                   const isSelected = selected.includes(opt.label);
                   return (
                     <label
-                      className={`question-option ${isSelected ? "selected" : ""}`}
+                      className={`question-option flex items-start gap-2 px-3 py-2 rounded-md border cursor-pointer transition-colors ${
+                        isSelected
+                          ? "selected border-primary bg-primary/10"
+                          : "border-border hover:bg-accent"
+                      }`}
                       key={j}
                     >
                       <input
@@ -83,20 +96,25 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
                             ? toggleMulti(i, opt.label)
                             : setSelected(i, [opt.label])
                         }
+                        className="mt-0.5 accent-primary"
                       />
-                      <span className="question-option-label">{opt.label}</span>
-                      {opt.description && (
-                        <span className="question-option-desc">
-                          {opt.description}
-                        </span>
-                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="question-option-label text-sm text-foreground">
+                          {opt.label}
+                        </div>
+                        {opt.description && (
+                          <div className="question-option-desc text-xs text-muted-foreground mt-0.5">
+                            {opt.description}
+                          </div>
+                        )}
+                      </div>
                     </label>
                   );
                 })}
               </div>
-              <input
+              <Input
                 type="text"
-                className="question-other"
+                className="question-other h-9 text-sm"
                 placeholder="Or type your own answer…"
                 value={answers[i]?.text || ""}
                 onChange={(e) => setText(i, e.target.value)}
@@ -105,14 +123,14 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
           );
         })}
       </div>
-      <div className="question-actions">
-        <button
+      <div className="question-actions flex justify-end gap-2 px-3 py-2 border-t border-border">
+        <Button
           className="btn btn-approve"
           onClick={handleSubmit}
           disabled={!canSubmit}
         >
           Submit
-        </button>
+        </Button>
       </div>
     </div>
   );
