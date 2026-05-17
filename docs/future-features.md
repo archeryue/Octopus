@@ -2,74 +2,64 @@
 
 ---
 
-## 1. Multi-Backend Support (Claude Code + Codex)
+## 1. Multi-Backend Support via Direct CLI Subprocess (Claude Code + Codex)
 
-**Priority**: Low
-**Affected**: `server/session_manager.py`, `server/config.py`, new `server/backends/` package
+**Priority**: High (foundation for Codex support, Connectors, AskUserQuestion done properly)
+**Affected**: `server/session_manager.py`, `server/config.py`, new `server/backends/` package, eventually retires the `claude-code-sdk` dependency entirely
 
 ### Problem
 
-Octopus is tightly coupled to the Claude Code SDK. The `Session` dataclass has Claude-specific fields (`claude_session_id`, `_client: ClaudeSDKClient`), and `_run_claude()` directly imports and uses Claude SDK types (`AssistantMessage`, `ToolUseBlock`, `ResultMessage`, etc.).
+Octopus is tightly coupled to the Claude Code Python SDK. The `Session` dataclass holds an SDK client (`_client: ClaudeSDKClient`), and `_run_claude()` imports SDK message types (`AssistantMessage`, `ToolUseBlock`, etc.) directly. The SDK is pre-1.0 (`v0.0.25`), already drifts from the CLI (we patch `message_parser.py` locally), and — most importantly — hides the JSONL wire protocol from us. That hiding has concrete costs:
 
-To support OpenAI Codex (or other coding agents in the future), we need an abstraction layer that normalizes the differences between backends.
+- Built-in tools like `AskUserQuestion` have no clean integration path (today's `PermissionResultDeny`-as-answer is a semantic hack; see section 6).
+- Adding a second backend (Codex) would create a *second* lifecycle/error model since Codex has no official Python SDK and must be subprocess-wrapped anyway.
+- Any feature the SDK doesn't expose (custom permission protocols, mid-stream injection) is blocked until upstream catches up.
 
-### SDK Comparison
+### Direction
 
-**Claude Code SDK** is an official Anthropic package (`claude-code-sdk` on PyPI).
+**Drop the SDK. Wrap both Claude Code and Codex via direct CLI subprocess + JSONL.** One abstraction, two concrete backends that share the same lifecycle, error handling, and event-normalization machinery. The CLI's JSONL protocol is the actually-stable interface (the SDK is just a thin wrapper over it).
 
-**Codex SDK** — OpenAI only provides an official **TypeScript SDK** (`@openai/codex-sdk` on npm). There is **no official Python SDK** from OpenAI. The `openai-codex-sdk` package on PyPI is a **third-party community project**. Several community alternatives exist:
-- [comfuture/codex-sdk-python](https://github.com/comfuture/codex-sdk-python)
-- [yor-dev/python-codex-sdk](https://github.com/yor-dev/python-codex-sdk)
-- [spdcoding/codex-python-sdk](https://github.com/spdcoding/codex-python-sdk)
+This is also what the official Claude Code TypeScript SDK does, and what the official Codex TypeScript SDK does. We're aligning Octopus with the upstream pattern instead of inheriting Python-SDK-specific quirks.
 
-An [open issue (#5320)](https://github.com/openai/codex/issues/5320) on the Codex repo proposes an official Python SDK, but it has not been accepted.
+### Backend comparison (informational)
 
-**For Octopus integration, we have two options:**
-1. Use a community Python SDK (risk: may break or become unmaintained)
-2. Wrap the Codex CLI directly via subprocess + JSONL parsing (same approach the official TypeScript SDK uses internally — more stable, no third-party dependency)
+Both backends are subprocess-driven. Differences live below the `BackendBase` interface:
 
-Option 2 is recommended since the Codex CLI's `--json` output format is the stable interface.
-
-| Aspect | Claude Code SDK (Python, official) | Codex CLI (direct subprocess) |
+| Aspect | Claude Code CLI (direct subprocess) | Codex CLI (direct subprocess) |
 |---|---|---|
-| Package | `claude-code-sdk` (v0.0.25) | `codex` CLI via npm (`@openai/codex`) |
-| Interface | Python SDK wrapping CLI subprocess | Direct subprocess with `--json` flag |
-| Main class | `ClaudeSDKClient` | N/A — spawn `codex exec --json` |
-| Session unit | Async context manager, `client.query()` | `codex exec --json <prompt>` |
-| Streaming | `client.receive_response()` → async iterator of typed `Message` | JSONL on stdout: `item.started`, `item.completed`, `turn.completed` |
-| Message types | `UserMessage`, `AssistantMessage`, `SystemMessage`, `ResultMessage`, `StreamEvent` | Events: `thread.started`, `turn.started/completed/failed`, `item.started/updated/completed` |
-| Content blocks | `TextBlock`, `ThinkingBlock`, `ToolUseBlock`, `ToolResultBlock` | Items: agent messages, reasoning, command executions, file changes, MCP tool calls |
-| Session resume | `ClaudeCodeOptions(resume="session_id")` | `codex resume <session-id>` or `--last` |
-| Permission model | `permission_mode` + `can_use_tool` callback | `--sandbox` modes: read-only, workspace-write, full-access |
-| Cost tracking | `ResultMessage.total_cost_usd` | Token usage in event metadata |
-| Tool approval | `SDKControlPermissionRequest` → async callback | Sandbox-level, no per-tool callback |
-| Hooks | `PreToolUse`, `PostToolUse`, `Stop`, etc. | Not available |
-| MCP servers | Built-in support via `mcp_servers` option | Configured via `~/.codex/config.toml` |
+| Binary | `claude` (npm `@anthropic-ai/claude-code`) | `codex` (npm `@openai/codex`) |
+| Stream flags | `--input-format=stream-json --output-format=stream-json` | `exec --json` (or `resume … --json`) |
+| Session unit | Streaming stdin/stdout JSONL | One-shot exec per turn, JSONL on stdout |
+| Event vocabulary | `user`, `assistant`, `system`, `result`, plus control protocol | `thread.started`, `turn.started/completed/failed`, `item.started/updated/completed` |
+| Content blocks | `text`, `thinking`, `tool_use`, `tool_result` | Items: agent messages, reasoning, commands, file changes, MCP |
+| Session resume | `--resume <id>` (or `--continue`) | `codex resume <id>` or `--last` |
+| Permissions | `--permission-mode` + control-protocol `can_use_tool` callbacks | `--sandbox` modes (read-only / workspace-write / full-access) |
+| Per-tool callback | Yes (control protocol) | No — sandbox-level only |
+| Cost tracking | `result` event's `total_cost_usd` | Token usage in event metadata |
+| Auth | `claude login` writes `~/.claude/auth.json`, or env `ANTHROPIC_API_KEY` | `codex login` (OAuth) or env `OPENAI_API_KEY` |
+| Built-in `AskUserQuestion` | Yes — currently undefined behavior in headless mode | No (no native equivalent) |
 
 ### Proposed Design
 
-#### A. Backend abstraction
-
-Create a `server/backends/` package with a base protocol and per-backend implementations:
+#### A. Package layout
 
 ```
 server/backends/
-    __init__.py        # exports BackendBase, get_backend()
-    base.py            # abstract base class
-    claude_code.py     # Claude Code SDK wrapper
-    codex.py           # OpenAI Codex wrapper
+    __init__.py            # exports BackendBase, BackendEvent, get_backend()
+    base.py                # BackendEvent dataclass + BackendBase ABC
+    subprocess_jsonl.py    # Shared subprocess driver (spawn / stdout reader / stdin writer / shutdown)
+    claude_code.py         # ClaudeCodeBackend(SubprocessJsonlBackend)
+    codex.py               # CodexBackend(SubprocessJsonlBackend)
 ```
+
+#### B. Base abstraction
 
 ```python
 # server/backends/base.py
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import AsyncIterator, Any
-
 @dataclass
 class BackendEvent:
     """Normalized event emitted by any backend."""
-    type: str          # "text", "tool_use", "tool_result", "result", "error"
+    type: str          # "text", "tool_use", "tool_result", "result", "error", "question_request"
     content: str | None = None
     tool_name: str | None = None
     tool_input: Any = None
@@ -77,178 +67,90 @@ class BackendEvent:
     is_error: bool = False
     cost: float | None = None
     session_id: str | None = None  # backend-specific session/thread ID for resume
-    raw: dict | None = None        # original event for backend-specific handling
+    raw: dict | None = None        # original wire event, for debugging / future-proofing
 
 class BackendBase(ABC):
-    @abstractmethod
-    async def start(self, prompt: str, working_dir: str, resume_id: str | None = None) -> None:
-        """Start a query. Non-blocking — use stream() to get events."""
+    name: str  # "claude-code" | "codex"
 
     @abstractmethod
-    async def stream(self) -> AsyncIterator[BackendEvent]:
-        """Yield normalized events from the backend."""
+    async def start(self, prompt: str, working_dir: str, resume_id: str | None = None) -> None: ...
 
     @abstractmethod
-    async def stop(self) -> None:
-        """Stop the current query and clean up."""
+    def stream(self) -> AsyncIterator[BackendEvent]: ...
 
     @abstractmethod
-    async def approve_tool(self, tool_use_id: str) -> bool:
-        """Approve a pending tool use. No-op if backend doesn't support per-tool approval."""
+    async def stop(self) -> None: ...
 
-    @abstractmethod
-    async def deny_tool(self, tool_use_id: str, reason: str = "") -> bool:
-        """Deny a pending tool use."""
+    async def interrupt(self) -> None:
+        """Best-effort cancel. Default impl just calls stop()."""
+        await self.stop()
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Backend display name (e.g., 'claude-code', 'codex')."""
-```
-
-#### B. Claude Code backend
-
-Extract current `_run_claude()` logic into the backend class:
-
-```python
-# server/backends/claude_code.py
-class ClaudeCodeBackend(BackendBase):
-    name = "claude-code"
-
-    async def start(self, prompt, working_dir, resume_id=None):
-        opts = ClaudeCodeOptions(
-            cwd=working_dir,
-            permission_mode="bypassPermissions",
-        )
-        if resume_id:
-            opts.resume = resume_id
-        self._client = ClaudeSDKClient(opts)
-        await self._client.connect()
-        await self._client.query(prompt)
-
-    async def stream(self) -> AsyncIterator[BackendEvent]:
-        async for msg in self._client.receive_response():
-            if isinstance(msg, AssistantMessage):
-                for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        yield BackendEvent(type="text", content=block.text)
-                    elif isinstance(block, ToolUseBlock):
-                        yield BackendEvent(type="tool_use", tool_name=block.name,
-                                          tool_input=block.input, tool_use_id=block.id)
-                    elif isinstance(block, ToolResultBlock):
-                        yield BackendEvent(type="tool_result", content=block.content,
-                                          tool_use_id=block.tool_use_id, is_error=block.is_error)
-            elif isinstance(msg, ResultMessage):
-                yield BackendEvent(type="result", session_id=msg.session_id,
-                                  cost=msg.total_cost_usd)
-
-    async def stop(self):
-        if self._client:
-            await self._client.disconnect()
-            self._client = None
-```
-
-#### C. Codex backend (direct subprocess, no third-party SDK)
-
-```python
-# server/backends/codex.py
-import asyncio
-import json
-import shutil
-
-class CodexBackend(BackendBase):
-    name = "codex"
-
-    async def start(self, prompt, working_dir, resume_id=None):
-        codex_bin = shutil.which("codex")
-        if not codex_bin:
-            raise RuntimeError("codex CLI not found — install via: npm install -g @openai/codex")
-
-        cmd = [codex_bin, "exec", "--json", "--sandbox", "workspace-write", prompt]
-        if resume_id:
-            cmd = [codex_bin, "resume", resume_id, "--json"]
-
-        self._process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=working_dir,
-        )
-
-    async def stream(self) -> AsyncIterator[BackendEvent]:
-        async for line in self._process.stdout:
-            line = line.decode().strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            event_type = event.get("type", "")
-
-            if event_type == "item.completed":
-                item = event.get("item", {})
-                yield self._normalize_item(item)
-            elif event_type == "item.updated":
-                # Partial text streaming
-                item = event.get("item", {})
-                if item.get("type") == "message":
-                    yield BackendEvent(type="text", content=item.get("text", ""), raw=event)
-            elif event_type == "turn.completed":
-                yield BackendEvent(
-                    type="result",
-                    session_id=event.get("session_id"),
-                    raw=event,  # contains usage/token counts
-                )
-            elif event_type == "turn.failed":
-                yield BackendEvent(
-                    type="error",
-                    content=event.get("error", "Unknown error"),
-                    is_error=True,
-                    raw=event,
-                )
-
-    def _normalize_item(self, item: dict) -> BackendEvent:
-        """Convert a Codex item.completed item into a BackendEvent."""
-        item_type = item.get("type", "")
-        if item_type == "message":
-            return BackendEvent(type="text", content=item.get("text", ""), raw=item)
-        elif item_type == "command_execution":
-            return BackendEvent(
-                type="tool_use",
-                tool_name="command",
-                tool_input={"command": item.get("command", "")},
-                tool_use_id=item.get("id"),
-                raw=item,
-            )
-        elif item_type == "file_change":
-            return BackendEvent(
-                type="tool_use",
-                tool_name="file_change",
-                tool_input={"path": item.get("path", ""), "diff": item.get("diff", "")},
-                tool_use_id=item.get("id"),
-                raw=item,
-            )
-        else:
-            return BackendEvent(type="text", content=str(item), raw=item)
-
-    async def stop(self):
-        if self._process and self._process.returncode is None:
-            self._process.terminate()
-            await self._process.wait()
-        self._process = None
-
-    async def approve_tool(self, tool_use_id):
-        return False  # Codex uses sandbox modes, no per-tool approval
-
-    async def deny_tool(self, tool_use_id, reason=""):
+    async def answer_question(self, question_id: str, answer_text: str) -> bool:
+        """Provide an answer for a pending AskUserQuestion. Default: not supported."""
         return False
 ```
 
-#### D. Session changes
+#### C. Shared subprocess driver
 
-Replace Claude-specific fields with backend-generic ones:
+`SubprocessJsonlBackend` (in `subprocess_jsonl.py`) is the shared parent for both backends. It owns:
+- `asyncio.create_subprocess_exec` lifecycle (spawn, terminate, kill if hangs)
+- An stdout reader task that decodes one JSON object per line and pushes onto an `asyncio.Queue`
+- An stderr reader (for debug logs / error surfacing)
+- An stdin writer (used by Claude for streaming prompts and control-protocol responses)
+- Graceful + forceful shutdown with timeouts
+- An abstract `_normalize(raw: dict) -> BackendEvent | None` hook that subclasses implement
+
+Subclasses only need to: build the command-line args in `start()`, and translate raw events in `_normalize()`. Lifecycle and I/O are shared.
+
+#### D. ClaudeCodeBackend (CLI-direct, replaces SDK)
+
+```python
+class ClaudeCodeBackend(SubprocessJsonlBackend):
+    name = "claude-code"
+    binary = "claude"
+
+    def build_args(self, prompt, working_dir, resume_id):
+        args = [self.binary, "--input-format=stream-json", "--output-format=stream-json",
+                "--permission-mode=default"]
+        if resume_id:
+            args += ["--resume", resume_id]
+        return args, {"cwd": working_dir}
+
+    async def _send_prompt(self, prompt: str) -> None:
+        # Claude reads JSONL on stdin; first send the user turn.
+        msg = {"type": "user", "message": {"role": "user", "content": prompt}}
+        await self._write_stdin(json.dumps(msg) + "\n")
+
+    def _normalize(self, raw: dict) -> BackendEvent | None:
+        # Map raw CLI events (user/assistant/system/result/control_request) to BackendEvent.
+        # Exact field names come from the Phase 1b protocol-notes doc.
+        ...
+```
+
+The control-protocol handling (e.g. CLI asks host for `can_use_tool` decision; host responds via stdin) is implemented here, not in `session_manager`. That's where AskUserQuestion can be intercepted *correctly* — by detecting the tool name in the control request and routing it through the same `answer_question` future that the UI resolves.
+
+#### E. CodexBackend
+
+```python
+class CodexBackend(SubprocessJsonlBackend):
+    name = "codex"
+    binary = "codex"
+
+    def build_args(self, prompt, working_dir, resume_id):
+        if resume_id:
+            return [self.binary, "resume", resume_id, "--json"], {"cwd": working_dir}
+        return [self.binary, "exec", "--json", "--sandbox", "workspace-write", prompt], {"cwd": working_dir}
+
+    async def _send_prompt(self, prompt: str) -> None:
+        # Codex takes the prompt as a CLI argument (no stdin streaming on exec).
+        pass
+
+    def _normalize(self, raw: dict) -> BackendEvent | None:
+        # Map item.started/updated/completed + turn.* → BackendEvent
+        ...
+```
+
+#### F. Session and database changes
 
 ```python
 @dataclass
@@ -256,89 +158,47 @@ class Session:
     id: str
     name: str
     working_dir: str
-    backend: str = "claude-code"           # which backend this session uses
-    backend_session_id: str | None = None  # was: claude_session_id
-    status: SessionStatus = SessionStatus.idle
-    created_at: str = ...
-    _backend_instance: BackendBase | None = None  # was: _client
-    _message_count: int = 0
-    _active_task: asyncio.Task | None = None
-    _pending_approvals: dict[str, PendingApproval] = ...
-    _lock: asyncio.Lock = ...
-```
-
-#### E. SessionManager changes
-
-Replace `_run_claude()` with a backend-agnostic `_run_backend()`:
-
-```python
-async def _run_backend(self, session: Session, prompt: str) -> AsyncIterator[dict[str, Any]]:
-    backend = get_backend(session.backend)
-    session._backend_instance = backend
-    try:
-        await backend.start(prompt, session.working_dir, session.backend_session_id)
-        async for event in backend.stream():
-            msg = self._event_to_message(event)
-            await self._persist_message(session, msg)
-            yield self._event_to_ws(session.id, event)
-
-        # Update resume ID from the last result event
-        if event.type == "result" and event.session_id:
-            session.backend_session_id = event.session_id
-            if self.db:
-                await self.db.update_session_field(
-                    session.id, backend_session_id=event.session_id
-                )
-    finally:
-        await backend.stop()
-        session._backend_instance = None
-```
-
-#### F. Configuration
-
-```python
-# config.py
-class Settings(BaseSettings):
+    backend: str = "claude-code"           # "claude-code" | "codex"
+    backend_session_id: str | None = None  # rename of claude_session_id
     ...
-    default_backend: str = "claude-code"  # "claude-code" | "codex"
-    codex_model: str | None = None        # optional model override for codex
 ```
 
-#### G. Frontend changes
+Schema migration:
+- Add column `sessions.backend TEXT NOT NULL DEFAULT 'claude-code'`
+- Rename `sessions.claude_session_id` → `sessions.backend_session_id` (or add the new column and migrate values, then drop the old one)
 
-- Session creation dialog: add backend selector dropdown (Claude Code / Codex)
-- Session list: show which backend each session uses (small badge/icon)
-- The chat UI itself stays the same — `BackendEvent` normalizes the output
+#### G. SessionManager changes
 
-#### H. Database migration
+Replace `_run_claude()` with a backend-agnostic `_run_backend()` that delegates to `session.backend_instance.stream()`. All Claude-specific imports leave `session_manager.py`.
 
-Rename `claude_session_id` column to `backend_session_id`. Add `backend` column to sessions table.
+#### H. Frontend changes
 
-### Implementation Order
+- Session creation dialog: backend selector (Claude Code / Codex)
+- Session list: small backend badge per session
+- Chat UI is unchanged — events are already normalized
 
-1. Create `server/backends/base.py` with the abstract interface
-2. Create `server/backends/claude_code.py` — extract current `_run_claude()` logic into the backend class
-3. Refactor `session_manager.py` to use the backend abstraction (no behavior change yet)
-4. Run all tests — everything should pass with no behavior change
-5. Add `backend` field to Session and database
-6. Install Codex CLI (`npm install -g @openai/codex`) and create `server/backends/codex.py` (direct subprocess, no third-party Python SDK)
-7. Add backend selector to frontend
+### Implementation order
+
+1. **Phase 1a** ✅ — Update this doc.
+2. **Phase 1b** — Run the CLI standalone, capture sample JSONL for normal flows + AskUserQuestion + tool use + resume. Commit findings to `docs/cli-protocol-notes.md`. This is the *source of truth* for what `_normalize()` has to handle.
+3. **Phase 1c** — Build `BackendBase`, `BackendEvent`, and `SubprocessJsonlBackend`. Unit-test the shared driver against a tiny fake CLI script that emits known JSONL.
+4. **Phase 1d** — Build `ClaudeCodeBackend` parallel to the existing SDK path. Per-session `backend` field selects which path runs (`claude-code-sdk` legacy vs `claude-code-cli` new). Run both against the same prompts and compare outputs.
+5. **Phase 1e** — Cut over: `session_manager` uses only the backend interface. Delete the SDK code path, drop `claude-code-sdk` from `pyproject.toml`, delete the local `message_parser.py` patch.
+6. **Phase 1f** — Add `CodexBackend` (depends on Codex CLI being installable in the dev environment).
+7. **Phase 1g** — Frontend backend selector + per-session badge.
 
 ### Risks
 
-- **Leaky abstraction**: The two backends have different item/event granularity. Claude Code emits per-block events (TextBlock, ToolUseBlock), while Codex emits per-item events (item.completed with various item types). The `BackendEvent` normalization in `_normalize_item()` needs careful mapping.
-- **Tool approval divergence**: Claude Code has per-tool `can_use_tool` callbacks. Codex uses sandbox-level permissions with no per-tool approval. The `approve_tool()` method is a no-op for Codex.
-- **Session resume semantics**: Claude Code uses opaque session IDs. Codex uses thread IDs persisted in `~/.codex/sessions/`. Both map to `backend_session_id` but the underlying mechanics differ.
-- **Cost tracking**: Claude Code reports `total_cost_usd`. Codex reports token usage counts. We may need to normalize or display both formats.
-- **No official Codex Python SDK**: We wrap the CLI directly via subprocess + JSONL. This is the same approach the official TypeScript SDK uses, so it's stable. But we own the JSONL parsing — if Codex changes its event format, we need to update.
-- **Testing**: Need to test both backends independently. A mock backend implementing `BackendBase` would help for unit tests without requiring either CLI to be installed.
+- **Wire format drift**: the CLI's JSONL output format isn't fully documented. We freeze our expectations in `cli-protocol-notes.md` and add a regression test that replays the recorded JSONL through `_normalize()`. CLI upgrades that change fields will fail this test loudly.
+- **Control protocol complexity**: `can_use_tool`, hooks, and MCP all live in a side-channel control protocol that Phase 1b needs to characterize. If it's too gnarly we ship Phase 1e without those features and add them incrementally.
+- **Codex feature gap**: no per-tool approval, no hooks. `BackendBase.answer_question` and similar will be no-ops for Codex. The Frontend should hide the per-tool approval UI when the active session is Codex.
+- **Auth surfaces differ**: Claude Code uses `~/.claude/auth.json` or `ANTHROPIC_API_KEY`; Codex uses `codex login` or `OPENAI_API_KEY`. Covered by section 7 below.
+- **Tests must run without either CLI installed**: backend unit tests use a fake CLI script (a Python file that emits canned JSONL). Only the e2e suite hits the real CLI.
 
 Sources:
-- [Codex SDK docs](https://developers.openai.com/codex/sdk/)
-- [openai-codex-sdk on PyPI](https://pypi.org/project/openai-codex-sdk/)
-- [Codex SDK npm package](https://www.npmjs.com/package/@openai/codex-sdk)
-- [Codex TypeScript SDK README](https://github.com/openai/codex/blob/main/sdk/typescript/README.md)
-- [Proposal: Python SDK for Codex (Issue #5320)](https://github.com/openai/codex/issues/5320)
+- [Codex CLI repo](https://github.com/openai/codex)
+- [Codex TypeScript SDK README](https://github.com/openai/codex/blob/main/sdk/typescript/README.md) — confirms subprocess+JSONL is the official wrapping pattern
+- Local Claude Code CLI (the `claude` binary in this dev environment) — empirically characterized in `docs/cli-protocol-notes.md`
 
 ---
 
@@ -488,3 +348,144 @@ State lives in the zustand store: `viewerOpen`, `viewerPath`, `viewerContent`.
 - **Large files**: enforce the size cap server-side; truncate gracefully
 - **Binary files**: detect via null bytes in first 8 KiB or by extension allowlist; refuse with a clear message
 - **Working directory drift**: Claude may `cd` during a session; the file path it writes may be relative to a subdirectory. Resolve relative paths against `working_dir`, not the session's logical cwd at message time
+
+---
+
+## 5. Sidebar Reorganization: Sessions / Schedules / Connectors
+
+**Priority**: High (foundational — unlocks future integrations)
+**Affected**: `web/src/App.tsx`, `web/src/components/SessionList.tsx`, `web/src/components/ScheduleList.tsx`, new `web/src/components/ConnectorList.tsx`, new `server/routers/connectors.py`, generalization of `server/bridges/`
+
+### Goal
+
+Reshape the sidebar around three top-level sections:
+
+1. **Sessions** — current session list (unchanged)
+2. **Schedules** — current scheduled-task list (already exists, currently nested differently)
+3. **Connectors** — *new* — manage integrations (Email, GitHub, Lark, Telegram, …) that can be attached to sessions to let them do "interesting things" beyond plain chat
+
+### Why now
+
+Connectors generalize the existing `server/bridges/` pattern (today Telegram is the only one, configured via env vars). Surfacing it in the UI lets users:
+- Define a connector once (credentials, scope, config)
+- Attach it to any session, so Claude in that session can read/send via that channel
+- Configure inbound routing (incoming events become user messages in a chosen session) and outbound capabilities (Claude can act through the connector)
+
+Once the section exists, adding Email (feature #2), GitHub, Lark, etc. becomes incremental work rather than each one requiring its own UI plumbing.
+
+### Design forks (resolve during planning)
+
+- **Connector role**: outbound-only (tools) vs inbound-only (event routing) vs unified — affects data model and UX
+- **Scoping**: global definitions attached per-session vs fully per-session config — affects credential management
+- **Relationship to MCP**: thin UI over Claude Code SDK's MCP config vs a separate, bridge-based system — affects whether inbound flows are supported
+
+A reasonable starting point: unified (both directions), globally defined with per-session attachment, kept separate from MCP (since MCP doesn't model inbound flows well and the bridge pattern already proves this works for Telegram).
+
+### Implementation sketch
+
+1. Generalize `server/bridges/` into a connector framework (rename/refactor as needed). Each connector has `name`, `type`, `config`, `enabled`, and an attached-sessions list
+2. New REST endpoints under `/api/connectors` for CRUD + per-session attach/detach
+3. Sidebar gains a 3-tab switcher; each tab renders its own list component
+4. Connector detail panel: type-specific config form (email creds, GitHub PAT, etc.)
+5. Session view shows a small "Connectors" chip with the attached integrations
+6. Migrate the existing Telegram bridge into the new framework
+
+### Scope cuts (deferred)
+
+- OAuth flows (start with API keys / app passwords)
+- Per-connector tool allowlists in the UI (rely on the connector itself to gate what it exposes)
+- Live event log view per connector
+
+---
+
+## 6. Per-Backend Auth Management in the WebUI
+
+**Priority**: High (depends on feature 1)
+**Affected**: `web/src/components/SettingsPanel.tsx` (new), `server/routers/auth_backends.py` (new), `server/database.py` (schema migration)
+
+### Goal
+
+Today auth for Claude Code lives outside Octopus (env var `ANTHROPIC_API_KEY` or `~/.claude/auth.json`). Once we support Codex too, users need a single in-app place to:
+- See which backends are authenticated
+- Sign in / sign out per backend
+- Override per-session (e.g., one session uses a personal Claude account, another uses a team OpenAI key)
+
+### Approach
+
+#### A. Storage
+
+New table `backend_credentials`:
+
+```sql
+CREATE TABLE backend_credentials (
+    id TEXT PRIMARY KEY,
+    backend TEXT NOT NULL,       -- "claude-code" | "codex"
+    label TEXT NOT NULL,         -- "Personal Anthropic", "Work OpenAI"
+    auth_type TEXT NOT NULL,     -- "api_key" | "oauth"
+    secret_encrypted TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+```
+
+Secrets encrypted at rest with a key derived from `OCTOPUS_AUTH_TOKEN` (or a dedicated `OCTOPUS_SECRET_KEY`). Optional `session.credential_id` foreign key to override per-session; default falls back to the first credential of the right backend.
+
+#### B. REST endpoints
+
+```
+GET    /api/auth/backends                 # list credentials (label + backend only, never the secret)
+POST   /api/auth/backends                 # create
+PATCH  /api/auth/backends/{id}            # rename / rotate secret
+DELETE /api/auth/backends/{id}            # remove
+POST   /api/auth/backends/{id}/test       # verify credential still works
+```
+
+#### C. Backend integration
+
+`BackendBase.start()` gains an optional `credential: Credential | None` parameter. The concrete backend either:
+- Sets the appropriate env var on the subprocess (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`)
+- Writes a temporary auth file the CLI will read (for OAuth tokens — for `claude` that means materializing the equivalent of `~/.claude/auth.json` in a per-session config dir)
+
+`SessionManager` resolves the credential when starting a session run and passes it through.
+
+#### D. Frontend
+
+- New "Settings" panel in the sidebar (or footer next to Logout) with two tabs: *Claude Code* and *Codex*
+- Each tab lists configured credentials, with "Add", "Test", "Rename", "Delete" actions
+- Session creation form gets an optional "Use credential" dropdown (defaults to first matching credential)
+- Visual indicator on a session if its credential test fails (badge in the session list)
+
+### Scope cuts
+
+- Multi-user / team auth (single-user model for now — the credential table is just "which sets of keys this Octopus instance can use")
+- OAuth flow inside Octopus for Codex (start with paste-the-key UX; OAuth comes later)
+- Key rotation reminders / expiry warnings
+
+---
+
+## 7. AskUserQuestion: Native Handling via Direct CLI Control Protocol
+
+**Priority**: Medium (cosmetic cleanup of a working feature; depends on feature 1)
+**Affected**: `server/backends/claude_code.py`, `server/session_manager.py`
+
+### Today's state
+
+Shipped: `can_use_tool` callback intercepts `AskUserQuestion`, broadcasts a `question_request` event, awaits the user's answer through a Future, returns `PermissionResultDeny(message=answer)`. The model reads the deny message as the answer. Works in practice but is a semantic hack — the answer is delivered via a "denial reason" channel.
+
+### After feature 1 lands
+
+With direct CLI ownership we know exactly how the CLI sources answers (Phase 1b will have documented this in `cli-protocol-notes.md`). Three likely paths:
+
+1. **The CLI reads the answer from stdin** — our subprocess driver owns stdin, so we write the answer ourselves when we see the `tool_use` event for `AskUserQuestion`. Claude sees a normal positive tool_result. Clean.
+2. **The CLI uses a control-protocol message asking the host for the answer** — `ClaudeCodeBackend` already handles control messages (for `can_use_tool`); we add another handler that responds with the answer. Also clean.
+3. **The CLI tries to render its own UI and fails in headless mode** — we keep `disallowed_tools=["AskUserQuestion"]` and register our own equivalent as an MCP tool (or just inject a system prompt that asks Claude to use a custom mechanism). Slightly less clean but still better than the deny-message hack.
+
+Phase 1b answers which path applies, and feature 7 then implements whichever is correct.
+
+### Migration
+
+Existing UI (`QuestionPrompt.tsx`, store state, `answer_question` WS message) stays unchanged — only the backend wire-up changes. The `BackendEvent` for `question_request` is already in the abstraction; the difference is *how* the backend produces it and *how* the answer flows back to the CLI.
+
+### Scope cuts
+
+- No new UI work (the form already exists)
+- No backwards compatibility with the SDK path (feature 1 already retires it)
