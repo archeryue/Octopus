@@ -108,3 +108,71 @@ The Python SDK's `interrupt()` sends a control_request over stdin. We need to ca
 - What does the `control_request` JSON shape look like on the wire? (SDK source suggests `{type: "control_request", request_id, request: {subtype: "can_use_tool", tool_name, input, ...}}`, but capture it live to be sure.)
 - How is interrupt sent? Format of `control_request` with `subtype: "interrupt"`?
 - Does `--resume` accept a session ID that doesn't yet exist on disk (e.g., when we want to specify our own)? `--session-id <uuid>` flag exists for this — confirm semantics.
+
+---
+
+## OAuth / login surface (CLI v2.1.143)
+
+Reverse-engineered from the bundled `cli.js`, not run against the live CLI (the host I'm researching from won't let me spawn `claude` for permission reasons).
+
+### Endpoints + constants (hardcoded in CLI)
+
+```
+CLAUDE_AI_AUTHORIZE_URL:   https://claude.ai/oauth/authorize
+CONSOLE_AUTHORIZE_URL:     https://console.anthropic.com/oauth/authorize
+TOKEN_URL:                 https://console.anthropic.com/v1/oauth/token
+MANUAL_REDIRECT_URL:       https://console.anthropic.com/oauth/code/callback
+CLAUDEAI_SUCCESS_URL:      https://console.anthropic.com/oauth/code/success?app=claude-code
+CONSOLE_SUCCESS_URL:       https://console.anthropic.com/buy_credits?returnUrl=...
+API_KEY_URL:               https://api.anthropic.com/api/oauth/claude_cli/create_api_key
+ROLES_URL:                 https://api.anthropic.com/api/oauth/claude_cli/roles
+CLIENT_ID:                 9d1c250a-e61b-4...  (truncated in dump)
+SCOPES:                    [..., "user:profile", ...]
+```
+
+### Flow shape (PKCE + manual code paste)
+
+The CLI uses an Ink (React-for-terminal) UI driven by a state machine:
+
+```
+idle → ready_to_start → waiting_for_login(url) → creating_api_key → success | error
+```
+
+Key functions in the bundled JS:
+- `startOAuthFlow(onUrl, opts)` — opens the authorize URL in a browser, returns a promise that resolves with `{accessToken, scopes, ...}` after the user pastes the code back.
+- `opts = {loginWithClaudeAi, inferenceOnly, expiresIn, orgUUID}`
+- For `claude setup-token`: `inferenceOnly=true, expiresIn=31536000` (1 year). The token is shown to the user; nothing else stored.
+- For regular login (`/login` slash command): token is stored, role + permission checks happen, success.
+
+### Entry points
+
+| How user starts login | Triggers |
+|---|---|
+| `claude` (no auth present) | TUI prompts; user types `/login` |
+| `/login` slash command in REPL | Starts OAuth flow inline |
+| `claude setup-token` | Headless-ish: runs the OAuth flow to issue a long-lived (1-year) token, prints the token, exits. Requires Claude subscription. |
+| `claude auth status` | Read-only — confirmed working (returns JSON) |
+
+### What the manual code paste looks like
+
+After OAuth completes in the browser, the redirect lands the user at `MANUAL_REDIRECT_URL` (`console.anthropic.com/oauth/code/callback`) which displays an auth code. The user copies it back to the CLI input prompt. The CLI then POSTs the code to `TOKEN_URL` and gets back an access token.
+
+### Implications for Octopus
+
+Most pragmatic path for in-app login:
+1. Spawn `claude setup-token` in a PTY (Ink TUI needs a TTY) with `HOME` pointed at a fresh per-credential dir.
+2. Read stdout, regex-extract the authorize URL (matches `https://claude.ai/oauth/authorize?...` or `https://console.anthropic.com/oauth/authorize?...`).
+3. Surface URL to UI → user opens in browser → completes login → copies code from `oauth/code/callback`.
+4. UI sends the code back to Octopus; Octopus writes it to the subprocess stdin (the CLI's prompt expects exactly the pasted code).
+5. CLI completes token exchange, prints `sk-ant-…` token, exits.
+6. Octopus captures the token from stdout, stores it as a credential (the existing encrypted-API-key storage works as-is — the OAuth token IS an API key, just long-lived).
+7. Session spawn unchanged: `ANTHROPIC_API_KEY=<token>` on the subprocess env.
+
+### What's still unverified
+
+- Whether `claude setup-token` will actually accept a piped/PTY non-tty interactive input gracefully (Ink might require a real TTY — Python's `pty` module solves this).
+- Exact regex pattern that reliably extracts the authorize URL from the styled Ink output.
+- Exact format of what stdout looks like when the token is displayed (so we know what to grep for).
+- Whether `setup-token` requires a TTY check that PTY satisfies.
+
+Phase OAuth-7 will close these — that step asks the user to walk through one real login on their machine and we adjust based on what we actually observe.

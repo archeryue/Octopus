@@ -396,35 +396,88 @@ test.describe("Credentials Panel", () => {
     }
   });
 
-  test("add and delete a credential via the sidebar", async ({ page }) => {
+  test("add and delete a credential via the sidebar (API-key advanced flow)", async ({
+    page,
+  }) => {
     await login(page);
 
-    // Section title is visible
-    await expect(page.locator(".credential-title")).toHaveText("Credentials");
+    // Section title is now "Accounts" — the OAuth-first redesign.
+    await expect(page.locator(".credential-title")).toHaveText("Accounts");
 
-    // Open the add form
-    await page.locator(".btn-credential-add").click();
-    await expect(page.locator(".credential-form")).toBeVisible();
+    // The default "+ Sign in" button runs the OAuth path, which spawns
+    // `claude setup-token` against the real network — too heavy for this
+    // test. Use the "Advanced: paste an API key" disclosure to add a
+    // credential without going through OAuth.
+    await page.locator(".credential-advanced > summary").click();
+    await expect(page.locator(".credential-advanced .credential-form")).toBeVisible();
 
-    // Fill: default backend is claude-code, set label + secret
     await page
-      .locator('.credential-form input[placeholder="Label (e.g. Personal)"]')
+      .locator('.credential-advanced .credential-form input[placeholder="Label (e.g. Work key)"]')
       .fill("E2E Cred");
     await page
-      .locator('.credential-form input[placeholder="API key"]')
+      .locator('.credential-advanced .credential-form input[placeholder="sk-ant-…"]')
       .fill("sk-e2e-test-key");
-    await page.locator(".credential-form .btn-create").click();
+    await page
+      .locator(".credential-advanced .credential-form .btn-cred-submit")
+      .click();
 
-    // The new credential shows up in the list with its label and backend badge
+    // The new credential shows up in the list with backend + auth-type badges
     const item = page.locator(".credential-item", { hasText: "E2E Cred" });
     await expect(item).toBeVisible();
-    await expect(item.locator(".credential-badge")).toHaveText("Claude");
+    await expect(item.locator(".credential-badge.backend-claude-code")).toHaveText("Claude");
+    await expect(item.locator(".credential-badge.auth-api_key")).toHaveText("Key");
 
-    // Delete it — form vanishes from the list
+    // Delete it — entry vanishes
     await item.locator(".btn-delete").click();
     await expect(
       page.locator(".credential-item", { hasText: "E2E Cred" })
     ).toHaveCount(0);
+  });
+
+  test("sign-in starts OAuth flow and exposes the device URL", async ({
+    page,
+  }) => {
+    // We can't reach the real Anthropic endpoint from this test, but we
+    // CAN intercept the /oauth/start call to verify the UI wires up the
+    // returned URL correctly. The "Bug ZodError" e2e already exercises
+    // the end-to-end OAuth flow against the live network on the user's
+    // verification pass (OAuth-7).
+    await page.route("**/api/credentials/oauth/start", (route) => {
+      route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({
+          login_id: "intercepted-login",
+          device_url:
+            "https://claude.ai/oauth/authorize?client_id=test&state=abc",
+        }),
+      });
+    });
+    await page.route("**/api/credentials/oauth/cancel", (route) => {
+      route.fulfill({ status: 204, body: "" });
+    });
+
+    await login(page);
+    // Click the "+ Sign in" button
+    await page.locator(".btn-credential-add", { hasText: "Sign in" }).click();
+
+    // The device URL appears as a clickable link with the OAuth URL
+    const urlLink = page.locator(".credential-device-url");
+    await expect(urlLink).toBeVisible();
+    await expect(urlLink).toContainText("claude.ai/oauth/authorize");
+    await expect(urlLink).toHaveAttribute("target", "_blank");
+
+    // Step-2 inputs appear
+    await expect(
+      page.locator('.credential-form input[placeholder="Label (e.g. Personal)"]')
+    ).toBeVisible();
+    await expect(
+      page.locator('.credential-form input[placeholder="Code from browser"]')
+    ).toBeVisible();
+
+    // Cancel returns to idle
+    await page.locator(".btn-credential-add", { hasText: "×" }).click();
+    await expect(urlLink).toHaveCount(0);
   });
 
   test("create-session form shows credential selector when credentials exist", async ({

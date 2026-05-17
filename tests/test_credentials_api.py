@@ -146,3 +146,192 @@ async def test_create_rejects_empty_secret(client):
         headers=AUTH,
     )
     assert res.status_code == 422  # pydantic validation
+
+
+# ---------------------------------------------------------------------------
+# OAuth (in-app subscription login)
+# ---------------------------------------------------------------------------
+
+
+class _StubLoginSession:
+    """Stand-in for server.oauth_login.LoginSession that the orchestrator
+    would have produced. Lets the REST tests run without spawning a real
+    `claude` subprocess."""
+
+    def __init__(self, state, url=None, token=None, message=None):
+        from server.oauth_login import LoginState
+
+        self.id = "login-xyz"
+        self.state = state
+        self.url = url
+        self.token = token
+        self.message = message
+        # The real LoginSession has more fields the router doesn't read;
+        # we deliberately omit them to keep the stub small.
+
+    def __getattr__(self, name):  # pragma: no cover — defensive
+        return None
+
+
+@pytest.mark.asyncio
+async def test_oauth_start_returns_login_id_and_url(client, monkeypatch):
+    from server import oauth_login
+    from server.oauth_login import LoginState
+
+    async def fake_start(self):
+        return _StubLoginSession(LoginState.awaiting_code, url="https://claude.ai/oauth/authorize?fake")
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "start", fake_start)
+
+    c, _ = client
+    res = await c.post(
+        "/api/credentials/oauth/start",
+        json={"backend": "claude-code"},
+        headers=AUTH,
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["login_id"] == "login-xyz"
+    assert body["device_url"].startswith("https://claude.ai/oauth/authorize")
+
+
+@pytest.mark.asyncio
+async def test_oauth_start_503_when_binary_missing(client, monkeypatch):
+    from server import oauth_login
+
+    async def fake_start(self):
+        raise FileNotFoundError("claude CLI not found on PATH")
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "start", fake_start)
+
+    c, _ = client
+    res = await c.post(
+        "/api/credentials/oauth/start",
+        json={"backend": "claude-code"},
+        headers=AUTH,
+    )
+    assert res.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_oauth_start_rejects_codex_for_now(client):
+    c, _ = client
+    res = await c.post(
+        "/api/credentials/oauth/start",
+        json={"backend": "codex"},
+        headers=AUTH,
+    )
+    assert res.status_code == 400
+    assert "claude-code" in res.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_complete_persists_credential(client, monkeypatch):
+    from server import oauth_login
+    from server.crypto import decrypt
+    from server.oauth_login import LoginState
+
+    async def fake_submit(self, login_id, code):
+        assert login_id == "login-xyz"
+        assert code == "the-code"
+        return _StubLoginSession(
+            LoginState.success, token="sk-ant-fake-oauth-token-abcdef1234567890"
+        )
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+
+    c, db = client
+    res = await c.post(
+        "/api/credentials/oauth/complete",
+        json={"login_id": "login-xyz", "code": "the-code", "label": "Personal"},
+        headers=AUTH,
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["label"] == "Personal"
+    assert body["auth_type"] == "oauth"
+    assert body["backend"] == "claude-code"
+    assert "secret" not in body  # never leaks the token
+
+    rows = await db.load_credentials()
+    assert len(rows) == 1
+    assert decrypt(rows[0]["secret_encrypted"], TOKEN).startswith("sk-ant-fake-oauth")
+
+
+@pytest.mark.asyncio
+async def test_oauth_complete_returns_500_on_no_token(client, monkeypatch):
+    from server import oauth_login
+    from server.oauth_login import LoginState
+
+    async def fake_submit(self, login_id, code):
+        return _StubLoginSession(LoginState.error, message="token exchange failed")
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+
+    c, _ = client
+    res = await c.post(
+        "/api/credentials/oauth/complete",
+        json={"login_id": "login-xyz", "code": "bad-code", "label": "L"},
+        headers=AUTH,
+    )
+    assert res.status_code == 500
+
+
+@pytest.mark.asyncio
+async def test_oauth_complete_404_unknown_id(client, monkeypatch):
+    from server import oauth_login
+
+    async def fake_submit(self, login_id, code):
+        raise KeyError(login_id)
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+
+    c, _ = client
+    res = await c.post(
+        "/api/credentials/oauth/complete",
+        json={"login_id": "ghost", "code": "x", "label": "L"},
+        headers=AUTH,
+    )
+    assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_oauth_cancel_is_idempotent(client, monkeypatch):
+    from server import oauth_login
+
+    called: list[str] = []
+
+    async def fake_cancel(self, login_id):
+        called.append(login_id)
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "cancel", fake_cancel)
+
+    c, _ = client
+    res = await c.post(
+        "/api/credentials/oauth/cancel",
+        json={"login_id": "login-xyz"},
+        headers=AUTH,
+    )
+    assert res.status_code == 204
+    res = await c.post(
+        "/api/credentials/oauth/cancel",
+        json={"login_id": "login-xyz"},
+        headers=AUTH,
+    )
+    assert res.status_code == 204
+    assert called == ["login-xyz", "login-xyz"]
+
+
+@pytest.mark.asyncio
+async def test_oauth_endpoints_require_auth(client):
+    c, _ = client
+    for path, body in [
+        ("/api/credentials/oauth/start", {"backend": "claude-code"}),
+        (
+            "/api/credentials/oauth/complete",
+            {"login_id": "x", "code": "y", "label": "L"},
+        ),
+        ("/api/credentials/oauth/cancel", {"login_id": "x"}),
+    ]:
+        res = await c.post(path, json=body)
+        assert res.status_code in (401, 403), (path, res.status_code)

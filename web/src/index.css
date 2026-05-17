@@ -524,15 +524,76 @@ body {
   font-family: inherit;
 }
 
-.credential-form .btn-create {
+.credential-form .btn-cred-submit {
   align-self: flex-end;
   padding: 0.3rem 0.6rem;
   font-size: 0.75rem;
 }
 
+.credential-form-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
 .credential-error {
   color: var(--red);
   font-size: 0.7rem;
+  word-break: break-word;
+}
+
+.credential-status {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.credential-status strong {
+  color: var(--text);
+}
+
+.credential-device-url {
+  display: block;
+  padding: 0.5rem 0.6rem;
+  background: var(--bg-tertiary);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  font-size: 0.7rem;
+  font-family: var(--mono, "Menlo", monospace);
+  color: var(--accent);
+  word-break: break-all;
+  text-decoration: none;
+}
+
+.credential-device-url:hover {
+  text-decoration: underline;
+}
+
+.credential-advanced {
+  padding: 0.25rem 1rem 0;
+  font-size: 0.7rem;
+}
+
+.credential-advanced > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 0.25rem 0;
+}
+
+.credential-advanced > summary:hover {
+  color: var(--text);
+}
+
+.credential-badge.auth-oauth {
+  color: var(--green);
+}
+
+.credential-badge.auth-api_key {
+  color: var(--yellow);
+}
+
+.btn-credential-add {
+  white-space: nowrap;
 }
 
 .credential-empty {

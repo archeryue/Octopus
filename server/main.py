@@ -76,6 +76,10 @@ async def lifespan(app: FastAPI):
     if tunnel:
         await tunnel.stop()
 
+    # Clean up any in-flight OAuth login subprocesses before we tear down DB.
+    from .oauth_login import oauth_login_manager
+    await oauth_login_manager.shutdown()
+
     await schedule_runner.shutdown()
     await bridge_manager.stop_all()
     await bridge_manager.unregister_broadcast()
