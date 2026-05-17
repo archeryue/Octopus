@@ -1,43 +1,39 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
-from ..models import CreateSessionRequest, ImportSessionRequest, MessageContent, SessionDetail, SessionInfo, SessionStatus
+from ..models import CreateSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
 from ..session_manager import session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
-@router.get("", response_model=list[SessionInfo])
-async def list_sessions(_: str = Depends(verify_token)):
-    sessions = session_manager.list_sessions()
-    return [
-        SessionInfo(
-            id=s.id,
-            name=s.name,
-            working_dir=s.working_dir,
-            status=s.status,
-            created_at=s.created_at,
-            message_count=s._message_count,
-            claude_session_id=s.claude_session_id,
-        )
-        for s in sessions
-    ]
-
-
-@router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)
-async def create_session(
-    req: CreateSessionRequest, _: str = Depends(verify_token)
-):
-    s = await session_manager.create_session(req.name, req.working_dir)
+def _to_session_info(s, message_count: int | None = None) -> SessionInfo:
     return SessionInfo(
         id=s.id,
         name=s.name,
         working_dir=s.working_dir,
         status=s.status,
         created_at=s.created_at,
-        message_count=0,
+        message_count=s._message_count if message_count is None else message_count,
         claude_session_id=s.claude_session_id,
+        credential_id=s.credential_id,
     )
+
+
+@router.get("", response_model=list[SessionInfo])
+async def list_sessions(_: str = Depends(verify_token)):
+    sessions = session_manager.list_sessions()
+    return [_to_session_info(s) for s in sessions]
+
+
+@router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)
+async def create_session(
+    req: CreateSessionRequest, _: str = Depends(verify_token)
+):
+    s = await session_manager.create_session(
+        req.name, req.working_dir, credential_id=req.credential_id
+    )
+    return _to_session_info(s, message_count=0)
 
 
 @router.post("/import", response_model=SessionDetail, status_code=status.HTTP_201_CREATED)
@@ -48,6 +44,7 @@ async def import_session(
         name=req.name,
         working_dir=req.working_dir,
         claude_session_id=req.claude_session_id,
+        credential_id=req.credential_id,
         messages=req.messages,
     )
     messages_raw = await session_manager.db.load_messages(s.id)
@@ -60,8 +57,13 @@ async def import_session(
         created_at=s.created_at,
         message_count=s._message_count,
         claude_session_id=s.claude_session_id,
+        credential_id=s.credential_id,
         messages=messages,
         pending_queue=list(s._pending_queue),
+        pending_questions=[
+            PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
+            for q in s._pending_questions.values()
+        ],
     )
 
 
@@ -80,8 +82,13 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
         created_at=s.created_at,
         message_count=s._message_count,
         claude_session_id=s.claude_session_id,
+        credential_id=s.credential_id,
         messages=messages,
         pending_queue=list(s._pending_queue),
+        pending_questions=[
+            PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
+            for q in s._pending_questions.values()
+        ],
     )
 
 

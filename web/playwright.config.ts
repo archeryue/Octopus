@@ -24,6 +24,11 @@ export default defineConfig({
       timeout: 10_000,
       env: {
         ...process.env,
+        // The backend spawns the `claude` CLI directly via PATH lookup.
+        // ~/.local/bin is the typical install location and may not be on
+        // a non-interactive shell's PATH. Prepend it so the e2e server
+        // can find the binary without the user having to configure shell.
+        PATH: `${process.env.HOME ?? ""}/.local/bin:${process.env.PATH ?? ""}`,
         OCTOPUS_AUTH_TOKEN: "changeme",
         OCTOPUS_TELEGRAM_BOT_TOKEN: "",
         OCTOPUS_DB_PATH: ":memory:",

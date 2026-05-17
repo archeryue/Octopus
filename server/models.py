@@ -15,12 +15,14 @@ class SessionStatus(str, Enum):
 class CreateSessionRequest(BaseModel):
     name: str = "New Session"
     working_dir: str | None = None
+    credential_id: str | None = None
 
 
 class ImportSessionRequest(BaseModel):
     name: str = "Imported Session"
     working_dir: str | None = None
     claude_session_id: str | None = None
+    credential_id: str | None = None
     messages: list[MessageContent] = []
 
 
@@ -32,6 +34,7 @@ class SessionInfo(BaseModel):
     created_at: str
     message_count: int = 0
     claude_session_id: str | None = None
+    credential_id: str | None = None
 
 
 class MessageRole(str, Enum):
@@ -53,9 +56,15 @@ class MessageContent(BaseModel):
     cost: float | None = None
 
 
+class PendingQuestionInfo(BaseModel):
+    question_id: str
+    questions: list[dict[str, Any]]
+
+
 class SessionDetail(SessionInfo):
     messages: list[MessageContent] = []
     pending_queue: list[str] = []
+    pending_questions: list[PendingQuestionInfo] = []
 
 
 # WebSocket protocol messages (client -> server)
@@ -98,3 +107,38 @@ class UpdateScheduleRequest(BaseModel):
     prompt: str | None = None
     interval_seconds: int | None = Field(default=None, ge=60)
     enabled: bool | None = None
+
+
+# Backend credentials
+
+
+class BackendKind(str, Enum):
+    claude_code = "claude-code"
+    codex = "codex"
+
+
+class AuthType(str, Enum):
+    api_key = "api_key"
+    oauth = "oauth"
+
+
+class CredentialInfo(BaseModel):
+    """Credential metadata returned to clients — never includes the secret."""
+
+    id: str
+    backend: BackendKind
+    label: str
+    auth_type: AuthType
+    created_at: str
+
+
+class CreateCredentialRequest(BaseModel):
+    backend: BackendKind
+    label: str
+    auth_type: AuthType = AuthType.api_key
+    secret: str = Field(min_length=1)
+
+
+class UpdateCredentialRequest(BaseModel):
+    label: str | None = None
+    secret: str | None = Field(default=None, min_length=1)

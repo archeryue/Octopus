@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ChatView } from "./components/ChatView";
+import { CredentialList } from "./components/CredentialList";
 import { ScheduleList } from "./components/ScheduleList";
 import { SessionList } from "./components/SessionList";
 import { useViewportHeight } from "./hooks/useViewportHeight";
@@ -52,7 +53,8 @@ function AuthenticatedApp({
   sidebarOpen: boolean;
   setSidebarOpen: (v: boolean) => void;
 }) {
-  const { sendMessage, interrupt, approveTool, denyTool } = useWebSocket();
+  const { sendMessage, interrupt, approveTool, denyTool, answerQuestion } =
+    useWebSocket();
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
 
@@ -61,6 +63,7 @@ function AuthenticatedApp({
       <div className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <SessionList />
         <ScheduleList />
+        <CredentialList />
         <button
           className="btn btn-logout"
           onClick={() => {
@@ -78,6 +81,7 @@ function AuthenticatedApp({
           interrupt={interrupt}
           approveTool={approveTool}
           denyTool={denyTool}
+          answerQuestion={answerQuestion}
           connected={connected}
           onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
         />

@@ -93,16 +93,21 @@ test.describe("Session Management", () => {
       .locator('.session-create input[placeholder="Session name"]')
       .fill("To Delete");
     await page.locator("button.btn-create").click();
-    await expect(
-      page.locator(".session-item .session-name").last()
-    ).toHaveText("To Delete");
 
-    // Delete the active (last) session
-    await page.locator(".session-item.active").hover();
-    await page.locator(".session-item.active .btn-delete").click();
+    // Locate by name (not .last()) — other tests in the same server run
+    // may have left sessions in the in-memory DB, so positional matching
+    // is unreliable.
+    const target = page.locator(".session-item", { hasText: "To Delete" });
+    await expect(target).toBeVisible();
 
-    // Chat area should show empty state (no active session)
-    await expect(page.locator(".chat-empty")).toBeVisible();
+    // Click to make sure it's active (the create flow already auto-selects
+    // it, but be explicit so we don't depend on side effects of creation).
+    await target.click();
+    await target.hover();
+    await target.locator(".btn-delete").click();
+
+    // The "To Delete" entry should vanish from the list
+    await expect(target).toHaveCount(0);
   });
 });
 

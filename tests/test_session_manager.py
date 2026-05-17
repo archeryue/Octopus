@@ -271,11 +271,13 @@ async def test_interrupt_twice_in_a_row_each_works(manager, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_interrupt_does_not_wedge_on_slow_disconnect(manager, monkeypatch):
-    """If the SDK client's disconnect() hangs, interrupt() must still
-    return promptly (within the timeout) so the WS receive loop isn't
-    blocked from processing subsequent interrupts."""
-    session = await manager.create_session("SlowDisconnect")
+async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatch):
+    """If the backend's stop()/interrupt() hangs, the manager's interrupt()
+    must still return promptly (within the timeout) so the WS receive loop
+    isn't blocked from processing subsequent interrupts."""
+    from server.backends import BackendBase
+
+    session = await manager.create_session("SlowStop")
 
     async def stub_consume(session_id: str, prompt: str) -> None:
         try:
@@ -283,9 +285,23 @@ async def test_interrupt_does_not_wedge_on_slow_disconnect(manager, monkeypatch)
         except asyncio.CancelledError:
             raise
 
-    class HangingClient:
-        async def disconnect(self):
+    class HangingBackend(BackendBase):
+        name = "hanging"
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            pass
+
+        def stream(self):
+            async def _gen():
+                await asyncio.sleep(60)
+                yield  # never reached
+            return _gen()
+
+        async def stop(self):
             await asyncio.sleep(60)  # would hang interrupt() if not timed out
+
+        async def interrupt(self):
+            await asyncio.sleep(60)
 
     monkeypatch.setattr(manager, "_consume_message", stub_consume)
     await manager.start_message(session.id, "x")
@@ -294,14 +310,14 @@ async def test_interrupt_does_not_wedge_on_slow_disconnect(manager, monkeypatch)
             break
         await asyncio.sleep(0.01)
 
-    # Plant the hanging client on the session
-    session._client = HangingClient()  # type: ignore[assignment]
+    # Plant the hanging backend on the session
+    session._backend = HangingBackend()  # type: ignore[assignment]
 
-    # interrupt() must return within the disconnect timeout (2s) + a margin
+    # interrupt() must return within the backend-interrupt timeout (2s) + a margin
     try:
         ok = await asyncio.wait_for(manager.interrupt(session.id), timeout=4.0)
     except asyncio.TimeoutError:
-        pytest.fail("interrupt() blocked on hanging disconnect — WS would be wedged")
+        pytest.fail("interrupt() blocked on hanging backend — WS would be wedged")
 
     assert ok is True
 
@@ -315,6 +331,266 @@ async def test_interrupt_does_not_wedge_on_slow_disconnect(manager, monkeypatch)
 async def test_interrupt_when_idle_returns_false(manager):
     session = await manager.create_session("Idle")
     assert await manager.interrupt(session.id) is False
+
+
+@pytest.mark.asyncio
+async def test_format_answers_handles_select_and_text(manager):
+    questions = [
+        {"question": "Favorite color?", "options": []},
+        {"question": "Notes?", "options": []},
+    ]
+    answers = [
+        {"selected": ["blue"]},
+        {"text": "I like teal too"},
+    ]
+    out = SessionManager._format_answers(questions, answers)
+    assert "Favorite color?" in out
+    assert "blue" in out
+    assert "Notes?" in out
+    assert "I like teal too" in out
+
+
+@pytest.mark.asyncio
+async def test_answer_question_unknown_returns_false(manager):
+    session = await manager.create_session("UnknownQ")
+    assert await manager.answer_question(session.id, "nope", []) is False
+
+
+@pytest.mark.asyncio
+async def test_answer_question_routes_through_backend(manager):
+    """End-to-end Q&A wiring: when a backend reports a pending question,
+    answer_question() formats answers, calls backend.answer_question(),
+    persists the answer, and broadcasts a question_answer event."""
+    from server.session_manager import PendingQuestion
+
+    session = await manager.create_session("Q")
+    events: list[dict] = []
+
+    async def cb(msg: dict) -> None:
+        events.append(msg)
+
+    manager.on_broadcast("test", cb)
+
+    # Simulate a backend that already received a control_request from the
+    # CLI and is sitting on a pending question.
+    delivered_answers: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        async def answer_question(self, question_id: str, answer_text: str) -> bool:
+            delivered_answers.append((question_id, answer_text))
+            return True
+
+    session._backend = FakeBackend()  # type: ignore[assignment]
+    session._pending_questions["q-1"] = PendingQuestion(
+        question_id="q-1",
+        questions=[{"question": "Pick one", "options": [{"label": "A"}]}],
+    )
+
+    ok = await manager.answer_question(session.id, "q-1", [{"selected": ["A"]}])
+    assert ok is True
+    # Backend got the formatted text
+    assert delivered_answers == [("q-1", "Q: Pick one\nA: A")]
+    # Pending question cleared, broadcast emitted
+    assert "q-1" not in session._pending_questions
+    assert any(e["type"] == "question_answer" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_answer_question_returns_false_if_backend_rejects(manager):
+    """If the backend says no (e.g. question already answered), don't
+    persist or broadcast an answer."""
+    from server.session_manager import PendingQuestion
+
+    session = await manager.create_session("Q-reject")
+    events: list[dict] = []
+
+    async def cb(msg: dict) -> None:
+        events.append(msg)
+
+    manager.on_broadcast("reject", cb)
+
+    class FakeBackend:
+        async def answer_question(self, question_id, answer_text):
+            return False
+
+    session._backend = FakeBackend()  # type: ignore[assignment]
+    session._pending_questions["q-2"] = PendingQuestion(
+        question_id="q-2",
+        questions=[{"question": "X?", "options": []}],
+    )
+
+    ok = await manager.answer_question(session.id, "q-2", [{"text": "anything"}])
+    assert ok is False
+    assert not any(e["type"] == "question_answer" for e in events)
+    # State unchanged
+    assert "q-2" in session._pending_questions
+
+
+@pytest.mark.asyncio
+async def test_event_to_message_content_maps_question_request():
+    """The translation layer keeps the persisted shape stable so existing
+    UI handling for question_request messages doesn't break."""
+    from server.backends import BackendEvent
+    from server.session_manager import SessionManager
+
+    ev = BackendEvent(
+        type="question_request",
+        tool_use_id="q-99",
+        tool_input={"questions": [{"question": "X?", "options": []}]},
+    )
+    msg = SessionManager._event_to_message_content(ev)
+    assert msg is not None
+    assert msg.type == "question_request"
+    assert msg.tool_name == "AskUserQuestion"
+    assert msg.tool_use_id == "q-99"
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_returns_decrypted_secret(manager):
+    """When a session has credential_id, _resolve_credential should fetch
+    and decrypt the row."""
+    from datetime import datetime, timezone
+    from server.config import settings
+    from server.crypto import encrypt
+
+    now = datetime.now(timezone.utc).isoformat()
+    enc = encrypt("sk-ant-secret", settings.auth_token)
+    await manager.db.save_credential(
+        credential_id="c-1",
+        backend="claude-code",
+        label="L",
+        auth_type="api_key",
+        secret_encrypted=enc,
+        created_at=now,
+    )
+    session = await manager.create_session("S", credential_id="c-1")
+    cred = await manager._resolve_credential(session)
+    assert cred is not None
+    assert cred.backend == "claude-code"
+    assert cred.auth_type == "api_key"
+    assert cred.secret == "sk-ant-secret"
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_returns_none_when_missing(manager):
+    session = await manager.create_session("S", credential_id="ghost")
+    cred = await manager._resolve_credential(session)
+    assert cred is None
+
+
+@pytest.mark.asyncio
+async def test_credential_env_var_reaches_spawned_subprocess(manager):
+    """End-to-end-ish: when a session has a credential, the *decrypted*
+    secret really lands in the env dict that would be passed to
+    asyncio.create_subprocess_exec.
+
+    Covers the chain: DB row → _resolve_credential → BackendCredential →
+    SessionManager._make_backend → ClaudeCodeBackend.build_args.
+    """
+    from datetime import datetime, timezone
+    from server.config import settings
+    from server.crypto import encrypt
+
+    # Seed a credential
+    enc = encrypt("sk-real-secret", settings.auth_token)
+    await manager.db.save_credential(
+        credential_id="c-env",
+        backend="claude-code",
+        label="EnvTest",
+        auth_type="api_key",
+        secret_encrypted=enc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    session = await manager.create_session("EnvSession", credential_id="c-env")
+
+    # 1. Resolve through the session_manager pipeline
+    cred = await manager._resolve_credential(session)
+    assert cred is not None and cred.secret == "sk-real-secret"
+
+    # 2. The backend factory the session_manager would use must then turn
+    # that credential into a real env on the subprocess invocation.
+    backend = manager._make_backend(session)
+    argv, kwargs = backend.build_args(
+        "prompt", session.working_dir, None, credential=cred
+    )
+    env = kwargs.get("env") or {}
+    assert env.get("ANTHROPIC_API_KEY") == "sk-real-secret", (
+        f"decrypted secret didn't make it to subprocess env: {env.get('ANTHROPIC_API_KEY')!r}"
+    )
+
+    # argv should be the real claude CLI with stream-json flags
+    argv_str = " ".join(str(a) for a in argv)
+    assert "claude" in argv_str
+    assert "--input-format=stream-json" in argv_str
+
+    # And a sanity check on the *negative* path: a session with no
+    # credential must NOT inject one (unless the parent shell already had).
+    bare_session = await manager.create_session("Bare")
+    bare_backend = manager._make_backend(bare_session)
+    _, bare_kwargs = bare_backend.build_args(
+        "p", bare_session.working_dir, None, credential=None
+    )
+    import os as _os
+    assert (bare_kwargs.get("env") or {}).get("ANTHROPIC_API_KEY") == _os.environ.get(
+        "ANTHROPIC_API_KEY"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_backend_translates_events_end_to_end(manager):
+    """Stub the backend to produce a sequence of events and verify
+    _run_backend translates each one to the expected WS message shape."""
+    from server.backends import BackendBase, BackendEvent
+
+    session = await manager.create_session("E2E")
+
+    events_to_emit = [
+        BackendEvent(type="text", content="hello"),
+        BackendEvent(
+            type="tool_use",
+            tool_name="Bash",
+            tool_input={"command": "ls"},
+            tool_use_id="t1",
+        ),
+        BackendEvent(
+            type="tool_result", content="out", tool_use_id="t1", is_error=False
+        ),
+        BackendEvent(
+            type="result", session_id="claude-sid-1", cost=0.01, num_turns=1
+        ),
+    ]
+
+    class ScriptedBackend(BackendBase):
+        name = "scripted"
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            pass
+
+        def stream(self):
+            async def _gen():
+                for e in events_to_emit:
+                    yield e
+            return _gen()
+
+        async def stop(self):
+            pass
+
+    # Patch the factory so _run_backend uses our scripted backend
+    def fake_factory(s):
+        return ScriptedBackend()
+
+    manager._make_backend = fake_factory  # type: ignore[method-assign]
+
+    ws_msgs = [m async for m in manager._run_backend(session, "go")]
+    types = [m["type"] for m in ws_msgs]
+    assert types == ["assistant_text", "tool_use", "tool_result", "result"]
+    assert ws_msgs[0]["content"] == "hello"
+    assert ws_msgs[1]["tool"] == "Bash"
+    assert ws_msgs[2]["output"] == "out"
+    assert ws_msgs[3]["claude_session_id"] == "claude-sid-1"
+
+    # Resume id was persisted
+    assert session.claude_session_id == "claude-sid-1"
 
 
 @pytest.mark.asyncio

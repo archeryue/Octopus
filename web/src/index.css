@@ -475,6 +475,126 @@ body {
   gap: 0.25rem;
 }
 
+/* Credentials section (mirrors schedule layout) */
+.credential-section {
+  border-top: 1px solid var(--border);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.credential-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 1rem;
+}
+
+.credential-title {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.btn-credential-add {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.credential-form {
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.credential-form input,
+.credential-form select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.8rem;
+  font-family: inherit;
+}
+
+.credential-form .btn-create {
+  align-self: flex-end;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.credential-error {
+  color: var(--red);
+  font-size: 0.7rem;
+}
+
+.credential-empty {
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.credential-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.credential-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.4rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+
+.credential-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.credential-badge {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  padding: 0.1rem 0.4rem;
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+}
+
+.credential-badge.backend-claude-code {
+  color: var(--accent);
+}
+
+.credential-badge.backend-codex {
+  color: var(--green);
+}
+
+.credential-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-credential-select {
+  width: 100%;
+  padding: 0.4rem 0.5rem;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 0.8rem;
+}
+
 .btn-toggle {
   background: none;
   border: none;
@@ -760,6 +880,134 @@ body {
   gap: 0.5rem;
   padding: 0.6rem 0.75rem;
   background: var(--bg-secondary);
+}
+
+/* Question prompt (AskUserQuestion) */
+.msg-question {
+  border: 2px solid var(--accent, var(--yellow));
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.msg-question-done {
+  border-style: dashed;
+  opacity: 0.7;
+}
+
+.question-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: rgba(120, 170, 255, 0.08);
+  font-size: 0.9rem;
+}
+
+.question-icon {
+  font-size: 1.1rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.question-body {
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.question-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.question-tag {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.question-text {
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+
+.question-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.question-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--bg-tertiary);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.question-option:hover {
+  background: var(--bg-tertiary);
+}
+
+.question-option.selected {
+  border-color: var(--accent, var(--yellow));
+  background: rgba(120, 170, 255, 0.08);
+}
+
+.question-option input {
+  margin-top: 0.2rem;
+}
+
+.question-option-label {
+  font-size: 0.9rem;
+}
+
+.question-option-desc {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+}
+
+.question-other {
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--bg-tertiary);
+  border-radius: var(--radius);
+}
+
+.question-other:focus {
+  outline: none;
+  border-color: var(--accent, var(--yellow));
+}
+
+.question-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border-top: 1px solid var(--bg-tertiary);
+}
+
+.msg-question-answer {
+  font-style: italic;
+  white-space: pre-wrap;
 }
 
 /* System messages */

@@ -7,10 +7,10 @@ Remote controller for [Claude Code](https://docs.anthropic.com/en/docs/claude-co
 ```
 Browser / Telegram Bot
   → WebSocket + REST / Bridge API → FastAPI server (serves UI + API on single port)
-    → claude-code-sdk → Claude Code CLI (local subprocess)
+    → Claude Code CLI (local subprocess, JSONL stream protocol)
 ```
 
-Octopus wraps your local Claude Code CLI via the official Python SDK. No extra API costs — it uses your existing Claude Code subscription.
+Octopus drives the `claude` CLI directly via its stream-json protocol. No extra API costs — it uses your existing Claude Code subscription.
 
 ## Quick Start
 
@@ -62,6 +62,8 @@ Open `http://localhost:5173` for the dev server with hot-reload.
 - Lazy-loaded message history (scales to long sessions without bloating memory)
 - Auto-reconnecting database with batched commits per turn
 - **Telegram Bot integration** — interact with Claude Code via Telegram (`/new`, `/sessions`, `/switch`); exponential backoff on API errors; per-bridge status in `/health`
+- **AskUserQuestion form** — when Claude calls the structured-question tool, the WebUI renders a multiple-choice form; the answer is relayed back through the CLI control protocol
+- **Per-backend credentials** — store API keys in-app (encrypted at rest) and attach them per-session; falls back to the CLI's default auth (`claude login`) when none attached
 - Session handoff: `octopus handoff` imports local Claude Code sessions
 - Session pull: `octopus pull` exports sessions as JSONL for local `claude --resume`
 - **Cloudflare Tunnel** — `octopus serve --tunnel` for instant public HTTPS
@@ -80,15 +82,15 @@ octopus pull <session-id>      # Export an Octopus session as local JSONL
 
 ## Tech Stack
 
-**Backend**: Python 3.12 / FastAPI / claude-code-sdk / aiosqlite
+**Backend**: Python 3.12 / FastAPI / `claude` CLI subprocess / aiosqlite / cryptography (Fernet)
 **Frontend**: React 19 / TypeScript / Vite / zustand
 
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 179 backend tests
+.venv/bin/pytest tests/ -v        # 226 backend tests (incl. real-CLI integration tests when `claude` is on PATH)
 cd web && bun run test            # 8 frontend unit tests
-cd web && bun run test:e2e        # 24 Playwright e2e tests (app + handoff/pull + telegram bridge + new features)
+cd web && bun run test:e2e        # 30 Playwright e2e tests (app + handoff/pull + telegram bridge + new features + real-CLI e2e)
 ```
 
 ## Architecture

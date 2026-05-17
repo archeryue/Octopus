@@ -6,6 +6,7 @@ const API_URL = window.location.origin;
 export function SessionList() {
   const [newName, setNewName] = useState("");
   const [workingDir, setWorkingDir] = useState("");
+  const [credentialId, setCredentialId] = useState<string>("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
@@ -14,6 +15,8 @@ export function SessionList() {
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setMessages = useSessionStore((s) => s.setMessages);
   const setPendingQueue = useSessionStore((s) => s.setPendingQueue);
+  const credentials = useSessionStore((s) => s.credentials);
+  const claudeCreds = credentials.filter((c) => c.backend === "claude-code");
 
   const headers = {
     "Content-Type": "application/json",
@@ -40,6 +43,7 @@ export function SessionList() {
         body: JSON.stringify({
           name,
           working_dir: workingDir.trim() || null,
+          credential_id: credentialId || null,
         }),
       });
       if (res.ok) {
@@ -48,6 +52,7 @@ export function SessionList() {
         setActiveSessionId(session.id);
         setNewName("");
         setWorkingDir("");
+        setCredentialId("");
       }
     } catch {
       // ignore
@@ -147,6 +152,20 @@ export function SessionList() {
           onChange={(e) => setWorkingDir(e.target.value)}
           placeholder="Working directory (optional)"
         />
+        {claudeCreds.length > 0 && (
+          <select
+            className="session-credential-select"
+            value={credentialId}
+            onChange={(e) => setCredentialId(e.target.value)}
+          >
+            <option value="">Default auth (CLI login)</option>
+            {claudeCreds.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        )}
         <button className="btn btn-create" onClick={createSession}>
           + New Session
         </button>

@@ -1,28 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable
 
-from claude_code_sdk import (
-    AssistantMessage,
-    ClaudeCodeOptions,
-    ClaudeSDKClient,
-    PermissionResultAllow,
-    PermissionResultDeny,
-    ResultMessage,
-    SystemMessage,
-    TextBlock,
-    ToolUseBlock,
-    ToolResultBlock,
-    UserMessage,
-)
-from claude_code_sdk._errors import MessageParseError
-
+from .backends import BackendBase, BackendCredential, BackendEvent, ClaudeCodeBackend
 from .config import settings
+from .crypto import decrypt
 from .database import Database
 from .models import MessageContent, MessageRole, SessionStatus
 
@@ -31,10 +19,30 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PendingApproval:
+    """Held for legacy WS approve_tool/deny_tool messages.
+
+    The CLI-direct backend handles tool permissions itself via the control
+    protocol, so we don't populate this from the new code path — it's
+    retained only so existing WS clients don't get errors on the old
+    message types.
+    """
+
     tool_name: str
     tool_input: dict[str, Any]
     tool_use_id: str
     future: asyncio.Future
+
+
+@dataclass
+class PendingQuestion:
+    """Mirror of an AskUserQuestion the backend is currently asking us.
+
+    The backend owns the actual control-protocol future; this is just the
+    info we surface to the UI so reload-on-reconnect can re-render the form.
+    """
+
+    question_id: str
+    questions: list[dict[str, Any]]
 
 
 @dataclass
@@ -45,13 +53,15 @@ class Session:
     status: SessionStatus = SessionStatus.idle
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     claude_session_id: str | None = None
+    credential_id: str | None = None
     _message_count: int = field(default=0, repr=False)
     _active_task: asyncio.Task | None = field(default=None, repr=False)
     # Per-prompt task that interrupt() targets; the outer _active_task is
     # the orchestrator loop and survives interrupts so it can drain the queue.
     _inner_task: asyncio.Task | None = field(default=None, repr=False)
-    _client: ClaudeSDKClient | None = field(default=None, repr=False)
+    _backend: BackendBase | None = field(default=None, repr=False)
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
+    _pending_questions: dict[str, PendingQuestion] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _pending_queue: list[str] = field(default_factory=list, repr=False)
 
@@ -72,6 +82,7 @@ class SessionManager:
                 working_dir=row["working_dir"],
                 created_at=row["created_at"],
                 claude_session_id=row["claude_session_id"],
+                credential_id=row.get("credential_id"),
             )
             session._message_count = await db.count_messages(session.id)
             self.sessions[session.id] = session
@@ -96,12 +107,18 @@ class SessionManager:
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
 
-    async def create_session(self, name: str, working_dir: str | None = None) -> Session:
+    async def create_session(
+        self,
+        name: str,
+        working_dir: str | None = None,
+        credential_id: str | None = None,
+    ) -> Session:
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
             name=name,
             working_dir=working_dir or settings.default_working_dir,
+            credential_id=credential_id,
         )
         self.sessions[sid] = session
         if self.db:
@@ -111,6 +128,7 @@ class SessionManager:
                 working_dir=session.working_dir,
                 created_at=session.created_at,
                 claude_session_id=session.claude_session_id,
+                credential_id=session.credential_id,
             )
         return session
 
@@ -119,6 +137,7 @@ class SessionManager:
         name: str,
         working_dir: str | None = None,
         claude_session_id: str | None = None,
+        credential_id: str | None = None,
         messages: list[MessageContent] | None = None,
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
@@ -127,6 +146,7 @@ class SessionManager:
             name=name,
             working_dir=working_dir or settings.default_working_dir,
             claude_session_id=claude_session_id,
+            credential_id=credential_id,
         )
         self.sessions[sid] = session
         if self.db:
@@ -136,6 +156,7 @@ class SessionManager:
                 working_dir=session.working_dir,
                 created_at=session.created_at,
                 claude_session_id=session.claude_session_id,
+                credential_id=session.credential_id,
             )
         if messages:
             for msg in messages:
@@ -149,13 +170,14 @@ class SessionManager:
         if session is None:
             return False
         session._pending_queue.clear()
+        session._pending_questions.clear()
         if session._inner_task and not session._inner_task.done():
             session._inner_task.cancel()
         if session._active_task and not session._active_task.done():
             session._active_task.cancel()
-        if session._client:
+        if session._backend:
             try:
-                await session._client.disconnect()
+                await session._backend.stop()
             except Exception:
                 pass
         if self.db:
@@ -272,11 +294,11 @@ class SessionManager:
             )
 
             try:
-                async for event in self._run_claude(session, prompt):
-                    await self._broadcast(event)
-                    yield event
+                async for ws_event in self._run_backend(session, prompt):
+                    await self._broadcast(ws_event)
+                    yield ws_event
             except Exception as e:
-                logger.exception("Claude error in session %s", session_id)
+                logger.exception("Backend error in session %s", session_id)
                 error_msg = MessageContent(
                     role=MessageRole.system,
                     type="error",
@@ -309,27 +331,21 @@ class SessionManager:
         if inner is None or inner.done():
             return False
 
-        # Cancel the task FIRST — synchronous and immediate. The SDK's
-        # disconnect() can block (subprocess teardown), and if we awaited
+        # Cancel the task FIRST — synchronous and immediate. The backend's
+        # stop() can take a moment (subprocess teardown), and if we awaited
         # it before cancelling, the WS handler would stay stuck inside
         # this coroutine and refuse subsequent interrupt requests.
         inner.cancel()
 
-        # Then best-effort disconnect, with a tight timeout so a slow
+        # Then best-effort interrupt, with a tight timeout so a slow
         # subprocess teardown can't wedge the WS receive loop.
-        if session._client:
+        if session._backend:
             try:
-                await asyncio.wait_for(session._client.disconnect(), timeout=2.0)
+                await asyncio.wait_for(session._backend.interrupt(), timeout=2.0)
             except Exception:
                 pass
 
-        # Resolve any pending tool approval futures so the SDK doesn't hang
-        for pending in list(session._pending_approvals.values()):
-            if not pending.future.done():
-                pending.future.set_result(
-                    PermissionResultDeny(message="Interrupted by user")
-                )
-        session._pending_approvals.clear()
+        session._pending_questions.clear()
 
         marker = MessageContent(
             role=MessageRole.system,
@@ -356,228 +372,302 @@ class SessionManager:
             session._inner_task.cancel()
         if session._active_task and not session._active_task.done():
             session._active_task.cancel()
-        if session._client:
+        if session._backend:
             try:
-                await session._client.disconnect()
+                await session._backend.stop()
             except Exception:
                 pass
-            session._client = None
+            session._backend = None
         if session._lock.locked():
             session._lock.release()
         session.status = SessionStatus.idle
         session._pending_approvals.clear()
+        session._pending_questions.clear()
         await self._broadcast(
             {"type": "status", "session_id": session_id, "status": "idle"}
         )
 
-    async def _make_permission_handler(self, session: Session):
-        async def handler(tool_name, input_data, context):
-            tool_use_id = uuid.uuid4().hex[:16]
-            loop = asyncio.get_running_loop()
-            future = loop.create_future()
-            pending = PendingApproval(
-                tool_name=tool_name,
-                tool_input=input_data,
-                tool_use_id=tool_use_id,
-                future=future,
-            )
-            session._pending_approvals[tool_use_id] = pending
-            session.status = SessionStatus.waiting_approval
+    # ------------------------------------------------------------------ backend run loop
 
-            # Notify frontend about pending approval
-            approval_msg = {
-                "type": "tool_approval_request",
-                "session_id": session.id,
-                "tool_use_id": tool_use_id,
-                "tool_name": tool_name,
-                "tool_input": input_data,
-            }
-            await self._broadcast(approval_msg)
-            msg = MessageContent(
-                role=MessageRole.tool,
-                type="tool_approval_request",
-                tool_name=tool_name,
-                tool_input=input_data,
-                tool_use_id=tool_use_id,
-            )
-            await self._persist_message(session, msg)
-
-            # Wait for user decision
-            try:
-                result = await future
-            finally:
-                session._pending_approvals.pop(tool_use_id, None)
-                if not session._pending_approvals:
-                    session.status = SessionStatus.running
-
-            return result
-
-        return handler
-
-    @staticmethod
-    async def _receive_safe(client: ClaudeSDKClient):
-        """Iterate over SDK responses, skipping messages the SDK can't parse."""
-        it = client.receive_response().__aiter__()
-        while True:
-            try:
-                msg = await it.__anext__()
-            except StopAsyncIteration:
-                logger.info("SDK stream ended (StopAsyncIteration)")
-                break
-            except MessageParseError as e:
-                logger.warning("Skipping unparseable SDK message: %s", e)
-                continue
-            except Exception as e:
-                logger.error("SDK stream error (continuing): %s: %s", type(e).__name__, e)
-                continue
-            logger.info("SDK message: %s", type(msg).__name__)
-            yield msg
-
-    async def _run_claude(
+    async def _run_backend(
         self, session: Session, prompt: str
     ) -> AsyncIterator[dict[str, Any]]:
-        # Build options
-        opts_kwargs: dict[str, Any] = {
-            "cwd": session.working_dir,
-            "permission_mode": "bypassPermissions",
-        }
+        """Drive one turn through the configured backend, translating each
+        BackendEvent into a (persist, broadcast) pair."""
 
-        if session.claude_session_id:
-            opts_kwargs["resume"] = session.claude_session_id
+        backend = self._make_backend(session)
+        session._backend = backend
 
-        options = ClaudeCodeOptions(**opts_kwargs)
+        credential = await self._resolve_credential(session)
 
-        async with ClaudeSDKClient(options) as client:
-            session._client = client
-            try:
-                await client.query(prompt)
+        try:
+            await backend.start(
+                prompt,
+                session.working_dir,
+                session.claude_session_id,
+                credential=credential,
+            )
 
-                async for msg in self._receive_safe(client):
-                    if isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, TextBlock):
-                                if not block.text or not block.text.strip():
-                                    continue
-                                text_msg = MessageContent(
-                                    role=MessageRole.assistant,
-                                    type="text",
-                                    content=block.text,
-                                )
-                                await self._persist_message(session, text_msg)
-                                yield {
-                                    "type": "assistant_text",
-                                    "session_id": session.id,
-                                    "content": block.text,
-                                }
-                            elif isinstance(block, ToolUseBlock):
-                                tool_msg = MessageContent(
-                                    role=MessageRole.assistant,
-                                    type="tool_use",
-                                    tool_name=block.name,
-                                    tool_input=block.input,
-                                    tool_use_id=block.id,
-                                )
-                                await self._persist_message(session, tool_msg)
-                                yield {
-                                    "type": "tool_use",
-                                    "session_id": session.id,
-                                    "tool": block.name,
-                                    "input": block.input,
-                                    "tool_use_id": block.id,
-                                }
-                            elif isinstance(block, ToolResultBlock):
-                                result_content = block.content
-                                if isinstance(result_content, list):
-                                    result_content = str(result_content)
-                                result_msg = MessageContent(
-                                    role=MessageRole.tool,
-                                    type="tool_result",
-                                    content=result_content,
-                                    tool_use_id=block.tool_use_id,
-                                    is_error=block.is_error,
-                                )
-                                await self._persist_message(session, result_msg)
-                                yield {
-                                    "type": "tool_result",
-                                    "session_id": session.id,
-                                    "tool_use_id": block.tool_use_id,
-                                    "output": result_content,
-                                    "is_error": block.is_error,
-                                }
+            async for event in backend.stream():
+                # Persist whichever message shape this event maps to
+                msg_content = self._event_to_message_content(event)
+                if msg_content is not None:
+                    await self._persist_message(session, msg_content)
 
-                    elif isinstance(msg, UserMessage):
-                        # Tool results echoed back by auto-approval
-                        for block in msg.content:
-                            if isinstance(block, ToolResultBlock):
-                                result_content = block.content
-                                if isinstance(result_content, list):
-                                    result_content = str(result_content)
-                                result_msg = MessageContent(
-                                    role=MessageRole.tool,
-                                    type="tool_result",
-                                    content=result_content,
-                                    tool_use_id=block.tool_use_id,
-                                    is_error=block.is_error,
-                                )
-                                await self._persist_message(session, result_msg)
-                                yield {
-                                    "type": "tool_result",
-                                    "session_id": session.id,
-                                    "tool_use_id": block.tool_use_id,
-                                    "output": result_content,
-                                    "is_error": block.is_error,
-                                }
+                # Track pending question state for reconnect re-render
+                if event.type == "question_request" and event.tool_use_id:
+                    questions = (
+                        (event.tool_input or {}).get("questions") or []
+                    )
+                    session._pending_questions[event.tool_use_id] = PendingQuestion(
+                        question_id=event.tool_use_id,
+                        questions=questions,
+                    )
 
-                    elif isinstance(msg, ResultMessage):
-                        session.claude_session_id = msg.session_id
+                # Update resume id when result arrives
+                if event.type == "result":
+                    if event.session_id:
+                        session.claude_session_id = event.session_id
                         if self.db:
                             await self.db.update_session_field(
-                                session.id, claude_session_id=msg.session_id
+                                session.id, claude_session_id=event.session_id
                             )
-                        result_msg = MessageContent(
-                            role=MessageRole.system,
-                            type="result",
-                            session_id=msg.session_id,
-                            cost=msg.total_cost_usd,
-                        )
-                        await self._persist_message(session, result_msg)
-                        yield {
-                            "type": "result",
-                            "session_id": session.id,
-                            "claude_session_id": msg.session_id,
-                            "cost": msg.total_cost_usd,
-                            "turns": msg.num_turns,
-                            "duration_ms": msg.duration_ms,
-                            "is_error": msg.is_error,
-                        }
 
-                    elif isinstance(msg, SystemMessage):
-                        pass
-            finally:
-                session._client = None
+                # Translate into the WS message shape the front-end expects
+                ws_event = self._event_to_ws_message(session.id, event)
+                if ws_event is not None:
+                    yield ws_event
+        finally:
+            try:
+                await backend.stop()
+            except Exception:
+                logger.exception("backend.stop() failed cleanly for session %s", session.id)
+            session._backend = None
+
+    def _make_backend(self, session: Session) -> BackendBase:
+        """Instantiate the backend for a session. Currently only Claude Code.
+
+        Future: dispatch on `session.backend` field ("claude-code" | "codex").
+        """
+        return ClaudeCodeBackend()
+
+    async def _resolve_credential(self, session: Session) -> BackendCredential | None:
+        """Look up the session's credential and decrypt the secret.
+
+        Returns None when no credential is attached — the backend then falls
+        back to whatever auth the CLI finds in its own config.
+        """
+        if not session.credential_id or self.db is None:
+            return None
+        row = await self.db.get_credential(session.credential_id)
+        if row is None:
+            logger.warning(
+                "Session %s references missing credential %s; running without auth override",
+                session.id,
+                session.credential_id,
+            )
+            return None
+        try:
+            plaintext = decrypt(row["secret_encrypted"], settings.auth_token)
+        except ValueError:
+            logger.warning(
+                "Could not decrypt credential %s (wrong auth token?); running without auth override",
+                session.credential_id,
+            )
+            return None
+        return BackendCredential(
+            backend=row["backend"],
+            auth_type=row["auth_type"],
+            secret=plaintext,
+        )
+
+    # ------------------------------------------------------------------ event translation
+
+    @staticmethod
+    def _event_to_message_content(event: BackendEvent) -> MessageContent | None:
+        if event.type == "text":
+            if not event.content or not event.content.strip():
+                return None
+            return MessageContent(
+                role=MessageRole.assistant, type="text", content=event.content
+            )
+        if event.type == "thinking":
+            # Persist thinking as a typed message; the UI can choose to hide
+            # it. Don't filter at the persistence layer.
+            return MessageContent(
+                role=MessageRole.assistant,
+                type="thinking",
+                content=event.content,
+            )
+        if event.type == "tool_use":
+            return MessageContent(
+                role=MessageRole.assistant,
+                type="tool_use",
+                tool_name=event.tool_name,
+                tool_input=event.tool_input,
+                tool_use_id=event.tool_use_id,
+            )
+        if event.type == "tool_result":
+            return MessageContent(
+                role=MessageRole.tool,
+                type="tool_result",
+                content=event.content,
+                tool_use_id=event.tool_use_id,
+                is_error=event.is_error,
+            )
+        if event.type == "question_request":
+            return MessageContent(
+                role=MessageRole.assistant,
+                type="question_request",
+                tool_name="AskUserQuestion",
+                tool_input=event.tool_input,
+                tool_use_id=event.tool_use_id,
+            )
+        if event.type == "result":
+            return MessageContent(
+                role=MessageRole.system,
+                type="result",
+                session_id=event.session_id,
+                cost=event.cost,
+            )
+        return None
+
+    @staticmethod
+    def _event_to_ws_message(session_id: str, event: BackendEvent) -> dict[str, Any] | None:
+        if event.type == "text":
+            if not event.content or not event.content.strip():
+                return None
+            return {
+                "type": "assistant_text",
+                "session_id": session_id,
+                "content": event.content,
+            }
+        if event.type == "thinking":
+            # We persist thinking but don't broadcast it by default — the
+            # UI doesn't render it today.
+            return None
+        if event.type == "tool_use":
+            return {
+                "type": "tool_use",
+                "session_id": session_id,
+                "tool": event.tool_name,
+                "input": event.tool_input,
+                "tool_use_id": event.tool_use_id,
+            }
+        if event.type == "tool_result":
+            return {
+                "type": "tool_result",
+                "session_id": session_id,
+                "tool_use_id": event.tool_use_id,
+                "output": event.content,
+                "is_error": event.is_error,
+            }
+        if event.type == "question_request":
+            return {
+                "type": "question_request",
+                "session_id": session_id,
+                "question_id": event.tool_use_id,
+                "questions": (event.tool_input or {}).get("questions") or [],
+            }
+        if event.type == "result":
+            return {
+                "type": "result",
+                "session_id": session_id,
+                "claude_session_id": event.session_id,
+                "cost": event.cost,
+                "turns": event.num_turns,
+                "duration_ms": event.duration_ms,
+                "is_error": event.is_error,
+            }
+        return None
+
+    # ------------------------------------------------------------------ Q&A wiring
+
+    async def answer_question(
+        self,
+        session_id: str,
+        question_id: str,
+        answers: list[dict[str, Any]],
+    ) -> bool:
+        session = self.sessions.get(session_id)
+        if not session or session._backend is None:
+            return False
+        pending = session._pending_questions.get(question_id)
+        if pending is None:
+            return False
+        answer_text = self._format_answers(pending.questions, answers)
+        ok = await session._backend.answer_question(question_id, answer_text)
+        if not ok:
+            return False
+        # Record the answer in history and notify the UI
+        ans_msg = MessageContent(
+            role=MessageRole.user,
+            type="question_answer",
+            tool_use_id=question_id,
+            content=answer_text,
+        )
+        await self._persist_message(session, ans_msg)
+        await self._broadcast(
+            {
+                "type": "question_answer",
+                "session_id": session_id,
+                "question_id": question_id,
+                "content": answer_text,
+            }
+        )
+        session._pending_questions.pop(question_id, None)
+        return True
+
+    @staticmethod
+    def _format_answers(
+        questions: list[dict[str, Any]], answers: list[dict[str, Any]]
+    ) -> str:
+        """Render the user's answers as a string Claude can read.
+
+        `answers` is a list aligned with `questions`; each entry has
+        either {"selected": [labels]} or {"text": "free-form"}.
+        """
+        lines: list[str] = []
+        for i, q in enumerate(questions):
+            question_text = q.get("question", "")
+            ans = answers[i] if i < len(answers) else {}
+            if ans.get("text"):
+                lines.append(f"Q: {question_text}\nA: {ans['text']}")
+            else:
+                selected = ans.get("selected") or []
+                if isinstance(selected, str):
+                    selected = [selected]
+                lines.append(
+                    f"Q: {question_text}\nA: {', '.join(selected) if selected else '(no answer)'}"
+                )
+        return "\n\n".join(lines)
+
+    # ------------------------------------------------------------------ legacy tool approval (no-op surface)
 
     async def approve_tool(self, session_id: str, tool_use_id: str) -> bool:
+        """Legacy SDK-era hook. The CLI-direct backend handles tool
+        permissions internally, so this is effectively a no-op."""
         session = self.sessions.get(session_id)
         if not session:
             return False
         pending = session._pending_approvals.get(tool_use_id)
         if not pending or pending.future.done():
             return False
-        pending.future.set_result(PermissionResultAllow())
+        pending.future.set_result(True)
         return True
 
     async def deny_tool(
         self, session_id: str, tool_use_id: str, reason: str = ""
     ) -> bool:
+        """Legacy SDK-era hook. The CLI-direct backend handles tool
+        permissions internally, so this is effectively a no-op."""
         session = self.sessions.get(session_id)
         if not session:
             return False
         pending = session._pending_approvals.get(tool_use_id)
         if not pending or pending.future.done():
             return False
-        pending.future.set_result(
-            PermissionResultDeny(message=reason or "Denied by user")
-        )
+        pending.future.set_result(False)
         return True
 
 

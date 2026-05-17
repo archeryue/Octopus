@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useSessionStore, type SessionStatus } from "../stores/sessionStore";
+import {
+  useSessionStore,
+  type PendingQuestion,
+  type SessionStatus,
+} from "../stores/sessionStore";
 
 const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
@@ -8,8 +12,14 @@ const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
 const getState = () => useSessionStore.getState();
 
 function handleWsMessage(data: Record<string, unknown>) {
-  const { addMessage, updateSessionStatus, enqueuePending, dequeuePending } =
-    getState();
+  const {
+    addMessage,
+    updateSessionStatus,
+    enqueuePending,
+    dequeuePending,
+    addPendingQuestion,
+    removePendingQuestion,
+  } = getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
 
@@ -60,6 +70,35 @@ function handleWsMessage(data: Record<string, unknown>) {
       });
       updateSessionStatus(sessionId, "waiting_approval");
       break;
+
+    case "question_request": {
+      const questionId = data.question_id as string;
+      const questions = (data.questions as PendingQuestion["questions"]) || [];
+      addMessage(sessionId, {
+        role: "assistant",
+        type: "question_request",
+        tool_name: "AskUserQuestion",
+        tool_input: { questions },
+        tool_use_id: questionId,
+      });
+      addPendingQuestion(sessionId, {
+        question_id: questionId,
+        questions,
+      });
+      break;
+    }
+
+    case "question_answer": {
+      const questionId = data.question_id as string;
+      addMessage(sessionId, {
+        role: "user",
+        type: "question_answer",
+        content: data.content as string,
+        tool_use_id: questionId,
+      });
+      removePendingQuestion(sessionId, questionId);
+      break;
+    }
 
     case "status":
       updateSessionStatus(sessionId, data.status as SessionStatus);
@@ -133,6 +172,10 @@ export function useWebSocket() {
                 getState().setPendingQueue(
                   activeSessionId,
                   data.pending_queue || []
+                );
+                getState().setPendingQuestions(
+                  activeSessionId,
+                  data.pending_questions || []
                 );
               })
               .catch(() => {});
@@ -214,5 +257,21 @@ export function useWebSocket() {
     [send]
   );
 
-  return { send, sendMessage, interrupt, approveTool, denyTool };
+  const answerQuestion = useCallback(
+    (
+      sessionId: string,
+      questionId: string,
+      answers: { selected?: string[]; text?: string }[]
+    ) => {
+      send({
+        type: "answer_question",
+        session_id: sessionId,
+        question_id: questionId,
+        answers,
+      });
+    },
+    [send]
+  );
+
+  return { send, sendMessage, interrupt, approveTool, denyTool, answerQuestion };
 }

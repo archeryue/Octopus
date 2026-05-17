@@ -3,7 +3,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Clear this so claude-code-sdk subprocess doesn't think it's nested
+# Clear this so the `claude` CLI subprocess doesn't think it's nested
+# inside another Claude Code session (which would change its behavior).
 os.environ.pop("CLAUDECODE", None)
 
 import uvicorn
@@ -15,7 +16,7 @@ from .bridges.manager import BridgeManager
 from .config import settings
 from .tunnel import CloudflareTunnel
 from .database import Database
-from .routers import schedules, sessions, ws
+from .routers import credentials, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
     app.state.schedule_runner = schedule_runner
     schedules._db = db
     schedules._runner = schedule_runner
+    credentials.set_db(db)
 
     # Start Cloudflare Tunnel if enabled
     tunnel: CloudflareTunnel | None = None
@@ -92,6 +94,7 @@ app.add_middleware(
 
 app.include_router(sessions.router)
 app.include_router(schedules.router)
+app.include_router(credentials.router)
 app.include_router(ws.router)
 
 

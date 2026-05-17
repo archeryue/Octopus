@@ -27,7 +27,18 @@ export function MessageBubble({ message }: { message: Message }) {
       return <ToolResultBlock message={message} />;
 
     case "tool_approval_request":
-      return null; // handled by ToolApproval component
+    case "question_request":
+      return null; // handled by ToolApproval / QuestionPrompt component
+
+    case "question_answer":
+      return (
+        <div className="msg msg-user">
+          <div className="msg-label">You</div>
+          <div className="msg-content msg-question-answer">
+            {message.content}
+          </div>
+        </div>
+      );
 
     case "result":
       return (

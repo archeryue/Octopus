@@ -9,6 +9,17 @@ export interface SessionInfo {
   status: SessionStatus;
   created_at: string;
   message_count: number;
+  credential_id?: string | null;
+}
+
+export type BackendKind = "claude-code" | "codex";
+
+export interface CredentialInfo {
+  id: string;
+  backend: BackendKind;
+  label: string;
+  auth_type: "api_key" | "oauth";
+  created_at: string;
 }
 
 export interface Schedule {
@@ -34,6 +45,23 @@ export interface Message {
   cost?: number;
 }
 
+export interface QuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface QuestionItem {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: QuestionOption[];
+}
+
+export interface PendingQuestion {
+  question_id: string;
+  questions: QuestionItem[];
+}
+
 interface SessionStore {
   token: string;
   setToken: (t: string) => void;
@@ -52,6 +80,9 @@ interface SessionStore {
   schedules: Schedule[];
   setSchedules: (s: Schedule[]) => void;
 
+  credentials: CredentialInfo[];
+  setCredentials: (c: CredentialInfo[]) => void;
+
   // Per-session queue of messages waiting for the current run to finish.
   // Mirrored from server `queued` / `dequeued` events; not persisted.
   pendingQueue: Record<string, string[]>;
@@ -59,6 +90,12 @@ interface SessionStore {
   enqueuePending: (sessionId: string, content: string) => void;
   dequeuePending: (sessionId: string) => void;
   clearPending: (sessionId: string) => void;
+
+  // Active AskUserQuestion prompts waiting for the user's answer.
+  pendingQuestions: Record<string, PendingQuestion[]>;
+  setPendingQuestions: (sessionId: string, qs: PendingQuestion[]) => void;
+  addPendingQuestion: (sessionId: string, q: PendingQuestion) => void;
+  removePendingQuestion: (sessionId: string, questionId: string) => void;
 
   connected: boolean;
   setConnected: (c: boolean) => void;
@@ -99,6 +136,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
   schedules: [],
   setSchedules: (schedules) => set({ schedules }),
 
+  credentials: [],
+  setCredentials: (credentials) => set({ credentials }),
+
   pendingQueue: {},
   setPendingQueue: (sessionId, queue) =>
     set((s) => {
@@ -128,6 +168,31 @@ export const useSessionStore = create<SessionStore>((set) => ({
       const next = { ...s.pendingQueue };
       delete next[sessionId];
       return { pendingQueue: next };
+    }),
+
+  pendingQuestions: {},
+  setPendingQuestions: (sessionId, qs) =>
+    set((s) => {
+      const next = { ...s.pendingQuestions };
+      if (qs.length === 0) delete next[sessionId];
+      else next[sessionId] = qs;
+      return { pendingQuestions: next };
+    }),
+  addPendingQuestion: (sessionId, q) =>
+    set((s) => ({
+      pendingQuestions: {
+        ...s.pendingQuestions,
+        [sessionId]: [...(s.pendingQuestions[sessionId] || []), q],
+      },
+    })),
+  removePendingQuestion: (sessionId, questionId) =>
+    set((s) => {
+      const cur = s.pendingQuestions[sessionId] || [];
+      const filtered = cur.filter((q) => q.question_id !== questionId);
+      const next = { ...s.pendingQuestions };
+      if (filtered.length === 0) delete next[sessionId];
+      else next[sessionId] = filtered;
+      return { pendingQuestions: next };
     }),
 
   connected: false,

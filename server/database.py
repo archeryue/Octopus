@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS bridge_mappings (
     PRIMARY KEY (platform, chat_id),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS backend_credentials (
+    id TEXT PRIMARY KEY,
+    backend TEXT NOT NULL,         -- "claude-code" | "codex"
+    label TEXT NOT NULL,
+    auth_type TEXT NOT NULL,       -- "api_key" | "oauth"
+    secret_encrypted TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_credentials_backend
+  ON backend_credentials(backend);
 """
 
 
@@ -68,7 +80,19 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(_SCHEMA)
+        await self._apply_migrations()
         await self._conn.commit()
+
+    async def _apply_migrations(self) -> None:
+        """Idempotent additive migrations for tables that pre-existed."""
+        # sessions.credential_id was added when per-backend auth landed.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN credential_id TEXT"
+            )
+        except Exception:
+            # Column already exists — SQLite has no IF NOT EXISTS for ALTER COLUMN
+            pass
 
     async def _ensure_connected(self) -> None:
         if self._conn is None:
@@ -104,12 +128,21 @@ class Database:
         working_dir: str,
         created_at: str,
         claude_session_id: str | None = None,
+        credential_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
         await self._conn.execute(
-            "INSERT INTO sessions (id, name, working_dir, created_at, claude_session_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (session_id, name, working_dir, created_at, claude_session_id),
+            "INSERT INTO sessions "
+            "(id, name, working_dir, created_at, claude_session_id, credential_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                name,
+                working_dir,
+                created_at,
+                claude_session_id,
+                credential_id,
+            ),
         )
         await self._conn.commit()
 
@@ -121,7 +154,8 @@ class Database:
     async def load_sessions(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT id, name, working_dir, created_at, claude_session_id FROM sessions"
+            "SELECT id, name, working_dir, created_at, claude_session_id, credential_id "
+            "FROM sessions"
         )
         rows = await cursor.fetchall()
         return [
@@ -131,6 +165,7 @@ class Database:
                 "working_dir": row[2],
                 "created_at": row[3],
                 "claude_session_id": row[4],
+                "credential_id": row[5],
             }
             for row in rows
         ]
@@ -313,9 +348,89 @@ class Database:
         )
         await self._conn.commit()
 
+    # --- Backend credentials ---
+
+    async def save_credential(
+        self,
+        credential_id: str,
+        backend: str,
+        label: str,
+        auth_type: str,
+        secret_encrypted: str,
+        created_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO backend_credentials "
+            "(id, backend, label, auth_type, secret_encrypted, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (credential_id, backend, label, auth_type, secret_encrypted, created_at),
+        )
+        await self._conn.commit()
+
+    async def load_credentials(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id, backend, label, auth_type, secret_encrypted, created_at "
+            "FROM backend_credentials ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "backend": row[1],
+                "label": row[2],
+                "auth_type": row[3],
+                "secret_encrypted": row[4],
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
+
+    async def get_credential(self, credential_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id, backend, label, auth_type, secret_encrypted, created_at "
+            "FROM backend_credentials WHERE id = ?",
+            (credential_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row[0],
+            "backend": row[1],
+            "label": row[2],
+            "auth_type": row[3],
+            "secret_encrypted": row[4],
+            "created_at": row[5],
+        }
+
+    async def update_credential(self, credential_id: str, **fields: Any) -> None:
+        await self._ensure_connected()
+        allowed = {"label", "secret_encrypted"}
+        updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [credential_id]
+        await self._conn.execute(
+            f"UPDATE backend_credentials SET {set_clause} WHERE id = ?",
+            values,
+        )
+        await self._conn.commit()
+
+    async def delete_credential(self, credential_id: str) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM backend_credentials WHERE id = ?", (credential_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         await self._ensure_connected()
-        allowed = {"name", "working_dir", "claude_session_id"}
+        allowed = {"name", "working_dir", "claude_session_id", "credential_id"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return

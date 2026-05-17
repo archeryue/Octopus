@@ -93,6 +93,23 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                             }
                         )
 
+            elif msg_type == "answer_question":
+                session_id = data.get("session_id")
+                question_id = data.get("question_id")
+                answers = data.get("answers")
+                if session_id and question_id and isinstance(answers, list):
+                    ok = await session_manager.answer_question(
+                        session_id, question_id, answers
+                    )
+                    if not ok:
+                        await ws.send_json(
+                            {
+                                "type": "error",
+                                "session_id": session_id,
+                                "message": "No pending question found",
+                            }
+                        )
+
             else:
                 logger.debug("Ignoring unknown client message type: %s", msg_type)
 

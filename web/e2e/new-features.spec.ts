@@ -11,6 +11,10 @@ const OWNED_NAMES = new Set([
   "Virtuoso Long Session",
   "Queue Test",
   "Interrupt Test",
+  "Asked Question",
+  "Real Q Session",
+  "Resume Session",
+  "Bad Cred Session",
 ]);
 
 test.afterAll(async ({ request }) => {
@@ -58,7 +62,7 @@ async function createSessionApi(
 async function importSessionApi(
   request: APIRequestContext,
   name: string,
-  messages: { role: string; type: string; content: string }[]
+  messages: Record<string, unknown>[]
 ): Promise<{ id: string }> {
   const res = await request.post(`${API}/sessions/import`, {
     headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
@@ -220,8 +224,13 @@ test.describe("Message Queue & Interrupt", () => {
 
     const input = page.locator(".chat-input-bar textarea");
 
-    // First message
-    await input.fill("What is 100 * 200? Reply with just the number.");
+    // First message — force tool use with sleeps so the CLI-direct path
+    // is genuinely still running when we send the queued message. A plain
+    // text prompt completes too fast to reliably catch with Playwright.
+    await input.fill(
+      "Use the Bash tool to run `sleep 4`, then `sleep 4` again, " +
+      "then say: 100 * 200 = 20000"
+    );
     await page.locator("button.btn-send").click();
 
     // Wait for the run to start
@@ -269,14 +278,24 @@ test.describe("Message Queue & Interrupt", () => {
 
     const input = page.locator(".chat-input-bar textarea");
 
-    // Long-ish prompt so we reliably catch it mid-turn
-    await input.fill("Write a 600-word essay about the history of computers.");
+    // Long-running prompt — force tool use with sleeps so the model is
+    // genuinely mid-turn when Esc fires. The CLI-direct path is fast
+    // enough that a plain-text prompt can finish before Playwright
+    // sees the status flip.
+    await input.fill(
+      "Use the Bash tool to run `sleep 3`, then `sleep 3` again, " +
+      "then `sleep 3` once more, then say done."
+    );
     await page.locator("button.btn-send").click();
 
     // Wait for the run to start
     await expect(
       page.locator(".status-badge.status-running")
     ).toBeVisible({ timeout: 15_000 });
+
+    // Small buffer so we don't press Esc *before* the subprocess registers
+    // its handler. The sleeps above give us ~9s of headroom.
+    await page.waitForTimeout(1500);
 
     // Press Esc to interrupt — global listener catches it
     await page.keyboard.press("Escape");
@@ -335,5 +354,342 @@ test.describe("Virtualized Chat", () => {
     const rendered = await page.locator(".chat-messages .msg").count();
     expect(rendered).toBeGreaterThan(0);
     expect(rendered).toBeLessThan(2 * PAIRS);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AskUserQuestion rendering
+// ---------------------------------------------------------------------------
+//
+// The interactive form path (broadcast → form → answer → resume) is covered
+// by backend unit tests in tests/test_session_manager.py since triggering a
+// real SDK AskUserQuestion call from Playwright would require a live agent.
+// This e2e covers the rendering of a question that exists in chat history.
+
+// ---------------------------------------------------------------------------
+// Credentials Panel
+// ---------------------------------------------------------------------------
+
+test.describe("Credentials Panel", () => {
+  // Clean up credentials our test creates so we don't pollute later runs.
+  const ownedLabels = new Set(["E2E Cred", "E2E Cred Renamed"]);
+
+  test.afterAll(async ({ request }) => {
+    try {
+      const res = await request.get(`${API}/credentials`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+        timeout: 5_000,
+      });
+      if (!res.ok()) return;
+      const items: { id: string; label: string }[] = await res.json();
+      for (const i of items) {
+        if (!ownedLabels.has(i.label)) continue;
+        await request
+          .delete(`${API}/credentials/${i.id}`, {
+            headers: { Authorization: `Bearer ${TOKEN}` },
+            timeout: 3_000,
+          })
+          .catch(() => {});
+      }
+    } catch {
+      // best-effort
+    }
+  });
+
+  test("add and delete a credential via the sidebar", async ({ page }) => {
+    await login(page);
+
+    // Section title is visible
+    await expect(page.locator(".credential-title")).toHaveText("Credentials");
+
+    // Open the add form
+    await page.locator(".btn-credential-add").click();
+    await expect(page.locator(".credential-form")).toBeVisible();
+
+    // Fill: default backend is claude-code, set label + secret
+    await page
+      .locator('.credential-form input[placeholder="Label (e.g. Personal)"]')
+      .fill("E2E Cred");
+    await page
+      .locator('.credential-form input[placeholder="API key"]')
+      .fill("sk-e2e-test-key");
+    await page.locator(".credential-form .btn-create").click();
+
+    // The new credential shows up in the list with its label and backend badge
+    const item = page.locator(".credential-item", { hasText: "E2E Cred" });
+    await expect(item).toBeVisible();
+    await expect(item.locator(".credential-badge")).toHaveText("Claude");
+
+    // Delete it — form vanishes from the list
+    await item.locator(".btn-delete").click();
+    await expect(
+      page.locator(".credential-item", { hasText: "E2E Cred" })
+    ).toHaveCount(0);
+  });
+
+  test("create-session form shows credential selector when credentials exist", async ({
+    page,
+    request,
+  }) => {
+    // Seed one via API so the selector has something to show.
+    const res = await request.post(`${API}/credentials`, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      data: {
+        backend: "claude-code",
+        label: "E2E Cred Renamed",
+        auth_type: "api_key",
+        secret: "sk-e2e-2",
+      },
+    });
+    expect(res.ok()).toBeTruthy();
+
+    await login(page);
+
+    // Selector is rendered, default option is "Default auth (CLI login)",
+    // and our seeded credential is selectable.
+    const selector = page.locator(".session-credential-select");
+    await expect(selector).toBeVisible();
+    await expect(selector.locator("option")).toContainText([
+      "Default auth (CLI login)",
+      "E2E Cred Renamed",
+    ]);
+  });
+});
+
+test.describe("AskUserQuestion rendering", () => {
+  test("imported question_request renders the asked-question summary", async ({
+    page,
+    request,
+  }) => {
+    await importSessionApi(request, "Asked Question", [
+      { role: "user", type: "text", content: "I need your input" },
+      {
+        role: "assistant",
+        type: "question_request",
+        tool_name: "AskUserQuestion",
+        tool_use_id: "q-imported-1",
+        tool_input: {
+          questions: [
+            {
+              question: "Which database should we use?",
+              header: "DB",
+              multiSelect: false,
+              options: [
+                { label: "Postgres", description: "Battle tested" },
+                { label: "SQLite", description: "Simple" },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        role: "user",
+        type: "question_answer",
+        tool_use_id: "q-imported-1",
+        content: "Q: Which database should we use?\nA: Postgres",
+      },
+    ]);
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Asked Question" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Asked Question");
+
+    // The historical question renders as the dashed-border summary
+    const summary = page.locator(".msg-question-done");
+    await expect(summary).toBeVisible();
+    await expect(summary).toContainText("Claude asked");
+    await expect(summary).toContainText("Which database should we use?");
+
+    // The user's answer renders as a user bubble with italic body
+    const answer = page.locator(".msg-question-answer");
+    await expect(answer).toBeVisible();
+    await expect(answer).toContainText("Postgres");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end against the real Claude CLI: AskUserQuestion + resume
+// ---------------------------------------------------------------------------
+//
+// These hit the real model. Costs ~$0.01-0.05 per run. They run last and
+// are skipped if the Octopus server can't reach claude on PATH (the assert
+// below catches that). Both also have generous timeouts since real API
+// latency varies.
+
+test.describe("Real CLI end-to-end", () => {
+  test.setTimeout(120_000);
+
+  test("AskUserQuestion: real model → form → answer → reply", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Real Q Session");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Real Q Session" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Real Q Session");
+
+    // Nudge the model to invoke AskUserQuestion directly with our chosen
+    // options, so the form is deterministic. The schema requires `description`
+    // on every option, so we spell them out fully.
+    const prompt =
+      "Use the AskUserQuestion tool right now with this exact JSON for the questions argument: " +
+      '[{"question":"Pick a color","header":"Choice","multiSelect":false,' +
+      '"options":[' +
+      '{"label":"red","description":"the color red"},' +
+      '{"label":"blue","description":"the color blue"}' +
+      "]}]. " +
+      "Do not write any text before the tool call.";
+
+    await page.locator(".chat-input-bar textarea").fill(prompt);
+    await page.locator("button.btn-send").click();
+
+    // The QuestionPrompt form should appear (interactive, not the dashed
+    // "Claude asked" summary that fires when the question is already answered).
+    const form = page.locator(".msg-question:not(.msg-question-done)");
+    await expect(form).toBeVisible({ timeout: 60_000 });
+    await expect(form).toContainText("Pick a color");
+    await expect(form.locator(".question-option-label", { hasText: "red" }))
+      .toBeVisible();
+
+    // Pick "red" and submit
+    await form
+      .locator(".question-option", { hasText: "red" })
+      .locator("input")
+      .check();
+    await form.locator(".btn-approve").click();
+
+    // The user-side answer bubble lands first; then a follow-up assistant
+    // response should reference "red" in some way (the model usually
+    // acknowledges or restates the chosen option). We assert on the
+    // answer bubble — that proves the round-trip completed (UI → WS →
+    // session_manager.answer_question → backend.answer_question →
+    // control_response → CLI → next event from model).
+    await expect(page.locator(".msg-question-answer")).toContainText("red", {
+      timeout: 30_000,
+    });
+
+    // And the turn eventually completes
+    await expect(page.locator(".result-badge").first()).toBeVisible({
+      timeout: 60_000,
+    });
+  });
+
+  test("Credential override: bad key attached to session causes auth failure", async ({
+    page,
+    request,
+  }) => {
+    // Seed a deliberately invalid credential via API (the UI works too,
+    // but API is fewer steps and what we already test in Credentials Panel).
+    const credRes = await request.post(`${API}/credentials`, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      data: {
+        backend: "claude-code",
+        label: "Bad Key (E2E)",
+        auth_type: "api_key",
+        secret: "sk-ant-bogus-octopus-e2e",
+      },
+    });
+    expect(credRes.ok()).toBeTruthy();
+    const credId = (await credRes.json()).id;
+
+    // Create a session that uses the bad credential
+    const sessRes = await request.post(`${API}/sessions`, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      data: {
+        name: "Bad Cred Session",
+        working_dir: "/tmp",
+        credential_id: credId,
+      },
+    });
+    expect(sessRes.ok()).toBeTruthy();
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Bad Cred Session" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Bad Cred Session");
+
+    // Send a prompt — should fail because the bogus key overrides the
+    // (otherwise-working) default OAuth, proving the env-var injection
+    // actually reaches the CLI.
+    await page
+      .locator(".chat-input-bar textarea")
+      .fill("Reply with: HI");
+    await page.locator("button.btn-send").click();
+
+    // We expect either an error bubble OR a result badge marking error
+    // (the CLI surfaces auth failures as a result with is_error=true).
+    // No happy "HI" text should appear.
+    await expect(
+      page
+        .locator(".msg-error, .msg-system .result-badge")
+        .first()
+    ).toBeVisible({ timeout: 60_000 });
+
+    // Belt-and-braces: ensure no successful assistant text "HI" landed.
+    const assistantTexts = await page
+      .locator(".msg-assistant .msg-content")
+      .allInnerTexts();
+    const joined = assistantTexts.join(" ");
+    expect(joined).not.toMatch(/^HI$/);
+
+    // Cleanup: delete the credential so it doesn't accumulate
+    await request
+      .delete(`${API}/credentials/${credId}`, {
+        headers: { Authorization: `Bearer ${TOKEN}` },
+      })
+      .catch(() => {});
+  });
+
+  test("Resume: turn 2 has context from turn 1", async ({ page, request }) => {
+    await createSessionApi(request, "Resume Session");
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Resume Session" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Resume Session");
+
+    // Turn 1 — plant a fact, wait for the result badge.
+    await page
+      .locator(".chat-input-bar textarea")
+      .fill(
+        "Remember this exact word for later: PINEAPPLE. Reply only with OK."
+      );
+    await page.locator("button.btn-send").click();
+    await expect(page.locator(".result-badge").first()).toBeVisible({
+      timeout: 60_000,
+    });
+
+    // Turn 2 — ask for the word. If resume works, the answer contains it.
+    await page
+      .locator(".chat-input-bar textarea")
+      .fill("What word did I ask you to remember? Reply only with that word.");
+    await page.locator("button.btn-send").click();
+
+    // Wait for the second turn's result; the most recent assistant text
+    // before it should mention PINEAPPLE (case-insensitive, in case the
+    // model lower-cases).
+    await expect(page.locator(".result-badge").nth(1)).toBeVisible({
+      timeout: 60_000,
+    });
+    const allAssistant = await page
+      .locator(".msg-assistant .msg-content")
+      .allInnerTexts();
+    const joined = allAssistant.join(" ").toUpperCase();
+    expect(joined).toContain("PINEAPPLE");
   });
 });

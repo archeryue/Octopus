@@ -1,0 +1,294 @@
+"""End-to-end ClaudeCodeBackend tests against the real `claude` binary.
+
+These cost real API calls (haiku, cheapest model). Auto-skipped when claude
+isn't on PATH so CI without the binary still passes. Sits alongside
+test_backend_claude_code.py (fake CLI) — the fake tests are kept as fast
+regression checks for the wire-format parser; these prove the format is
+actually correct.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shutil
+
+import pytest
+
+from server.backends import BackendEvent, ClaudeCodeBackend
+
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("claude") is None,
+    reason="claude CLI not on PATH; install or skip real-CLI tests",
+)
+
+CWD = os.getcwd()
+
+
+async def _drain(backend: ClaudeCodeBackend, timeout: float = 60.0) -> list[BackendEvent]:
+    events: list[BackendEvent] = []
+
+    async def collect() -> None:
+        async for ev in backend.stream():
+            events.append(ev)
+
+    try:
+        await asyncio.wait_for(collect(), timeout=timeout)
+    except asyncio.TimeoutError:
+        raise AssertionError(
+            f"stream() didn't terminate within {timeout}s. "
+            f"Collected so far: {[e.type for e in events]}"
+        )
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Basic happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_simple_text_then_result():
+    backend = ClaudeCodeBackend(model="haiku")
+    await backend.start("Reply with exactly: PONG", CWD)
+    try:
+        events = await _drain(backend, timeout=60.0)
+    finally:
+        await backend.stop()
+
+    types = [e.type for e in events]
+    # Always: at least one text + a result. Thinking blocks may or may not appear.
+    assert "result" in types
+    assert "text" in types
+    text_concat = "".join(e.content or "" for e in events if e.type == "text")
+    assert "PONG" in text_concat
+    # Result carries cost, duration, and the session id we can resume on.
+    result = next(e for e in events if e.type == "result")
+    assert result.session_id is not None
+    assert result.cost is not None and result.cost >= 0.0
+    assert result.duration_ms is not None and result.duration_ms > 0
+
+
+# ---------------------------------------------------------------------------
+# Tool use chain
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_tool_use_then_tool_result():
+    backend = ClaudeCodeBackend(model="haiku")
+    await backend.start(
+        "Use the Bash tool to run this exact command: echo PONG_FROM_BASH. "
+        "Then say 'done' and stop.",
+        CWD,
+    )
+    try:
+        events = await _drain(backend, timeout=120.0)
+    finally:
+        await backend.stop()
+
+    types = [e.type for e in events]
+    # Expect at least one tool_use + matching tool_result + text + result
+    tool_use = next((e for e in events if e.type == "tool_use"), None)
+    assert tool_use is not None, f"no tool_use event; saw {types}"
+    assert tool_use.tool_name == "Bash"
+    assert "command" in (tool_use.tool_input or {})
+
+    # The tool_result echo should match by tool_use_id and contain the output
+    tr = next(
+        (e for e in events if e.type == "tool_result" and e.tool_use_id == tool_use.tool_use_id),
+        None,
+    )
+    assert tr is not None, "no matching tool_result"
+    assert tr.is_error is False
+    assert "PONG_FROM_BASH" in (tr.content or "")
+
+
+# ---------------------------------------------------------------------------
+# AskUserQuestion via real control protocol
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_ask_user_question_full_round_trip():
+    """Real model → control_request for AskUserQuestion → backend emits
+    question_request → answer_question() → CLI continues with the answer."""
+
+    backend = ClaudeCodeBackend(model="haiku")
+    prompt = (
+        "Use the AskUserQuestion tool right now with this exact JSON for the questions argument: "
+        '[{"question":"Pick a color","header":"Choice","multiSelect":false,'
+        '"options":['
+        '{"label":"red","description":"the color red"},'
+        '{"label":"blue","description":"the color blue"}'
+        "]}]. Do not write text before the tool call."
+    )
+
+    await backend.start(prompt, CWD)
+    events: list[BackendEvent] = []
+
+    async def consume() -> None:
+        async for ev in backend.stream():
+            events.append(ev)
+
+    consumer = asyncio.create_task(consume())
+
+    # Wait for question_request to arrive
+    question_id: str | None = None
+    for _ in range(600):  # up to ~60s
+        for ev in events:
+            if ev.type == "question_request":
+                question_id = ev.tool_use_id
+                break
+        if question_id:
+            break
+        await asyncio.sleep(0.1)
+
+    assert question_id is not None, (
+        f"never saw question_request from real CLI; events={[e.type for e in events]}"
+    )
+
+    # Answer "red" — backend should send a control_response, CLI resumes
+    ok = await backend.answer_question(question_id, "red")
+    assert ok is True
+
+    await asyncio.wait_for(consumer, timeout=60.0)
+    await backend.stop()
+
+    types = [e.type for e in events]
+    assert "result" in types, f"no terminal result event after answering; saw {types}"
+    # After answering, the model usually produces text mentioning the choice.
+    final_text = "".join(e.content or "" for e in events if e.type == "text")
+    # Don't insist on exact phrasing — model can vary — just that "red" is
+    # referenced somewhere in its follow-up reasoning/text.
+    combined = (final_text + " ".join(e.content or "" for e in events if e.type == "thinking")).lower()
+    assert "red" in combined, f"answer wasn't reflected in model's continuation: {final_text!r}"
+
+
+# ---------------------------------------------------------------------------
+# Multi-turn resume
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_resume_across_two_subprocesses():
+    """Turn 1 plants a fact; turn 2 spawns a fresh backend with --resume
+    and proves it still has the context."""
+
+    # Turn 1
+    b1 = ClaudeCodeBackend(model="haiku")
+    await b1.start(
+        "Remember this exact word for later: MARIGOLD. Reply only with OK.",
+        CWD,
+    )
+    try:
+        e1 = await _drain(b1, timeout=60.0)
+    finally:
+        await b1.stop()
+
+    result1 = next(e for e in e1 if e.type == "result")
+    sid = result1.session_id
+    assert sid, "turn 1 didn't yield a resumable session id"
+
+    # Turn 2 — fresh backend, --resume
+    b2 = ClaudeCodeBackend(model="haiku")
+    await b2.start(
+        "What was the exact word I asked you to remember? Reply only with that word.",
+        CWD,
+        resume_id=sid,
+    )
+    try:
+        e2 = await _drain(b2, timeout=60.0)
+    finally:
+        await b2.stop()
+
+    text2 = "".join(e.content or "" for e in e2 if e.type == "text")
+    assert "MARIGOLD" in text2.upper(), (
+        f"resumed turn didn't recall the planted word. Got: {text2!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Interrupt control_request
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_interrupt_terminates_in_flight_turn():
+    """Send a prompt that would take a while; immediately interrupt; the
+    stream should terminate without hanging."""
+
+    backend = ClaudeCodeBackend(model="haiku")
+    # Prompt that's likely to take multiple turns / tool uses so we have
+    # time to interrupt before result lands.
+    await backend.start(
+        "Write a 2000-word essay on the history of paper clips, "
+        "broken into 10 sections, with citations for each.",
+        CWD,
+    )
+    events: list[BackendEvent] = []
+
+    async def consume() -> None:
+        async for ev in backend.stream():
+            events.append(ev)
+
+    consumer = asyncio.create_task(consume())
+
+    # Give the model a moment to start streaming
+    await asyncio.sleep(2.0)
+
+    # Interrupt — should send the control_request and not hang
+    await asyncio.wait_for(backend.interrupt(), timeout=10.0)
+
+    # Consumer should wrap up promptly after interrupt + stop
+    try:
+        await asyncio.wait_for(consumer, timeout=15.0)
+    except asyncio.TimeoutError:
+        consumer.cancel()
+        raise AssertionError(
+            f"stream() didn't terminate after interrupt; collected {len(events)} events"
+        )
+
+    # We don't assert on event types — interrupt may land before or after
+    # the model emits anything. The success criterion is: it didn't hang.
+
+
+# ---------------------------------------------------------------------------
+# Credential override (real API)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_credential_with_bad_key_yields_auth_error():
+    """A credential with an obviously-invalid API key must override the
+    default OAuth and cause the CLI to surface an auth error in its result.
+    Proves the env-var injection actually takes effect at the CLI."""
+    from server.backends import BackendCredential
+
+    backend = ClaudeCodeBackend(model="haiku")
+    bad_cred = BackendCredential(
+        backend="claude-code",
+        auth_type="api_key",
+        secret="sk-ant-bogus-key-octopus-test",
+    )
+    await backend.start("Reply with: HI", CWD, credential=bad_cred)
+    try:
+        events = await _drain(backend, timeout=60.0)
+    finally:
+        await backend.stop()
+
+    # The CLI should report an error result (it can manifest as either an
+    # error result or as a stderr-only failure; in either case, no normal
+    # successful text response is expected).
+    result = next((e for e in events if e.type == "result"), None)
+    if result is not None:
+        assert result.is_error is True, (
+            f"bad credential should have failed but got success result: {result.raw}"
+        )
+    else:
+        # No result event means the subprocess died before completing —
+        # that's also a valid auth-failure signal.
+        assert any(e.type == "error" for e in events) or not any(
+            e.type == "text" for e in events
+        ), f"bad credential produced unexpected normal flow: {[e.type for e in events]}"

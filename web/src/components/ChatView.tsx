@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
-import { useSessionStore, type Message } from "../stores/sessionStore";
+import {
+  useSessionStore,
+  type Message,
+  type PendingQuestion,
+} from "../stores/sessionStore";
 import { MessageBubble } from "./MessageBubble";
+import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
 
 const EMPTY_MESSAGES: Message[] = [];
@@ -11,17 +16,24 @@ interface Props {
   interrupt: (sessionId: string) => void;
   approveTool: (sessionId: string, toolUseId: string) => void;
   denyTool: (sessionId: string, toolUseId: string) => void;
+  answerQuestion: (
+    sessionId: string,
+    questionId: string,
+    answers: AnswerPayload[]
+  ) => void;
   connected: boolean;
   onToggleSidebar: () => void;
 }
 
 const EMPTY_QUEUE: string[] = [];
+const EMPTY_QUESTIONS: PendingQuestion[] = [];
 
 export function ChatView({
   sendMessage,
   interrupt,
   approveTool,
   denyTool,
+  answerQuestion,
   connected,
   onToggleSidebar,
 }: Props) {
@@ -35,6 +47,10 @@ export function ChatView({
   const pendingQueue = activeSessionId
     ? (pendingQueueMap[activeSessionId] ?? EMPTY_QUEUE)
     : EMPTY_QUEUE;
+  const pendingQuestionsMap = useSessionStore((s) => s.pendingQuestions);
+  const pendingQuestions = activeSessionId
+    ? (pendingQuestionsMap[activeSessionId] ?? EMPTY_QUESTIONS)
+    : EMPTY_QUESTIONS;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   // Scroll to the bottom when switching into a session whose history has
@@ -60,17 +76,55 @@ export function ChatView({
   }, [messages, isRunning, activeSession?.status]);
 
   const renderMessage = useCallback(
-    (_index: number, msg: Message) =>
-      msg.type === "tool_approval_request" ? (
-        <ToolApproval
-          message={msg}
-          onApprove={(id) => activeSessionId && approveTool(activeSessionId, id)}
-          onDeny={(id) => activeSessionId && denyTool(activeSessionId, id)}
-        />
-      ) : (
-        <MessageBubble message={msg} />
-      ),
-    [activeSessionId, approveTool, denyTool]
+    (_index: number, msg: Message) => {
+      if (msg.type === "tool_approval_request") {
+        return (
+          <ToolApproval
+            message={msg}
+            onApprove={(id) =>
+              activeSessionId && approveTool(activeSessionId, id)
+            }
+            onDeny={(id) => activeSessionId && denyTool(activeSessionId, id)}
+          />
+        );
+      }
+      if (msg.type === "question_request") {
+        const pending = pendingQuestions.find(
+          (q) => q.question_id === msg.tool_use_id
+        );
+        if (pending && activeSessionId) {
+          return (
+            <QuestionPrompt
+              question={pending}
+              onSubmit={(id, answers) =>
+                answerQuestion(activeSessionId, id, answers)
+              }
+            />
+          );
+        }
+        // Already answered or no live state — render a compact summary so the
+        // chat history shows what was asked.
+        const questions =
+          (msg.tool_input?.questions as PendingQuestion["questions"]) || [];
+        return (
+          <div className="msg msg-question msg-question-done">
+            <div className="question-header">
+              <span className="question-icon">?</span>
+              <strong>Claude asked</strong>
+            </div>
+            <div className="question-body">
+              {questions.map((q, i) => (
+                <div className="question-item" key={i}>
+                  <div className="question-text">{q.question}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+      return <MessageBubble message={msg} />;
+    },
+    [activeSessionId, approveTool, denyTool, answerQuestion, pendingQuestions]
   );
 
   const footer = useCallback(
