@@ -3,6 +3,17 @@ import {
   useSessionStore,
   type CredentialInfo,
 } from "../stores/sessionStore";
+import { Button } from "./ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
 
 const API = `${window.location.origin}/api/credentials`;
 
@@ -22,15 +33,14 @@ async function friendlyErrorMessage(
       const detail = body?.detail;
       if (typeof detail === "string" && detail.trim()) return detail;
       if (Array.isArray(detail) && detail.length) {
-        return detail.map((d: unknown) => String((d as { msg?: string })?.msg ?? d)).join("; ");
+        return detail
+          .map((d: unknown) => String((d as { msg?: string })?.msg ?? d))
+          .join("; ");
       }
     } catch {
       // fall through to status-only message
     }
   }
-  // 502 / 503 from a tunnel or reverse proxy usually means the Octopus
-  // backend timed out or wasn't reachable — most likely fix is to check
-  // the server logs.
   if (res.status === 502 || res.status === 504) {
     return (
       `Could not ${action} — the Octopus backend didn't respond in time ` +
@@ -43,11 +53,11 @@ async function friendlyErrorMessage(
   return `Could not ${action} — HTTP ${res.status}`;
 }
 
-type AddState =
+type FlowState =
   | { kind: "idle" }
-  | { kind: "starting" }                                   // POST /oauth/start in flight
+  | { kind: "starting" }
   | { kind: "awaiting_code"; loginId: string; deviceUrl: string }
-  | { kind: "submitting" }                                 // POST /oauth/complete in flight
+  | { kind: "submitting" }
   | { kind: "error"; message: string };
 
 export function CredentialList() {
@@ -55,7 +65,8 @@ export function CredentialList() {
   const credentials = useSessionStore((s) => s.credentials);
   const setCredentials = useSessionStore((s) => s.setCredentials);
 
-  const [addState, setAddState] = useState<AddState>({ kind: "idle" });
+  const [open, setOpen] = useState(false);
+  const [flow, setFlow] = useState<FlowState>({ kind: "idle" });
   const [label, setLabel] = useState("");
   const [code, setCode] = useState("");
 
@@ -83,7 +94,8 @@ export function CredentialList() {
   // --------------------------------------------------------------- OAuth flow
 
   const startLogin = async () => {
-    setAddState({ kind: "starting" });
+    setOpen(true);
+    setFlow({ kind: "starting" });
     try {
       const res = await fetch(`${API}/oauth/start`, {
         method: "POST",
@@ -91,34 +103,31 @@ export function CredentialList() {
         body: JSON.stringify({ backend: "claude-code" }),
       });
       if (!res.ok) {
-        setAddState({
+        setFlow({
           kind: "error",
           message: await friendlyErrorMessage(res, "start login"),
         });
         return;
       }
       const body: { login_id: string; device_url: string } = await res.json();
-      setAddState({
+      setFlow({
         kind: "awaiting_code",
         loginId: body.login_id,
         deviceUrl: body.device_url,
       });
     } catch (e) {
-      setAddState({ kind: "error", message: String(e) });
+      setFlow({ kind: "error", message: String(e) });
     }
   };
 
   const submitCode = async () => {
-    if (addState.kind !== "awaiting_code") return;
+    if (flow.kind !== "awaiting_code") return;
     if (!label.trim() || !code.trim()) {
-      setAddState({
-        kind: "error",
-        message: "Label and code are both required",
-      });
+      setFlow({ kind: "error", message: "Label and code are both required" });
       return;
     }
-    const loginId = addState.loginId;
-    setAddState({ kind: "submitting" });
+    const loginId = flow.loginId;
+    setFlow({ kind: "submitting" });
     try {
       const res = await fetch(`${API}/oauth/complete`, {
         method: "POST",
@@ -130,7 +139,7 @@ export function CredentialList() {
         }),
       });
       if (!res.ok) {
-        setAddState({
+        setFlow({
           kind: "error",
           message: await friendlyErrorMessage(res, "complete login"),
         });
@@ -138,17 +147,15 @@ export function CredentialList() {
       }
       const created: CredentialInfo = await res.json();
       setCredentials([...credentials, created]);
-      setLabel("");
-      setCode("");
-      setAddState({ kind: "idle" });
+      closeAndReset();
     } catch (e) {
-      setAddState({ kind: "error", message: String(e) });
+      setFlow({ kind: "error", message: String(e) });
     }
   };
 
-  const cancelLogin = async () => {
-    if (addState.kind === "awaiting_code") {
-      const loginId = addState.loginId;
+  const cancelInflightLogin = async () => {
+    if (flow.kind === "awaiting_code") {
+      const loginId = flow.loginId;
       try {
         await fetch(`${API}/oauth/cancel`, {
           method: "POST",
@@ -159,9 +166,23 @@ export function CredentialList() {
         // best-effort
       }
     }
+  };
+
+  const closeAndReset = () => {
+    setOpen(false);
     setLabel("");
     setCode("");
-    setAddState({ kind: "idle" });
+    setFlow({ kind: "idle" });
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      // Closing the dialog mid-flow should cancel any in-flight login
+      void cancelInflightLogin();
+      closeAndReset();
+    } else {
+      setOpen(true);
+    }
   };
 
   // --------------------------------------------------------------- Delete
@@ -179,89 +200,18 @@ export function CredentialList() {
 
   // --------------------------------------------------------------- Render
 
-  const adding = addState.kind !== "idle";
-
   return (
     <div className="credential-section">
       <div className="credential-header">
         <span className="credential-title">Harness</span>
         <button
           className="btn-credential-add"
-          onClick={adding ? cancelLogin : startLogin}
-          title={adding ? "Cancel" : "Sign in"}
+          onClick={startLogin}
+          title="Sign in"
         >
-          {adding ? "×" : "+"}
+          +
         </button>
       </div>
-
-      {addState.kind === "starting" && (
-        <div className="credential-form">
-          <div className="credential-status">
-            Starting login… (spawning <code>claude setup-token</code>)
-          </div>
-        </div>
-      )}
-
-      {addState.kind === "awaiting_code" && (
-        <div className="credential-form">
-          <div className="credential-status">
-            <strong>1.</strong> Open this URL in your browser, sign in, then
-            copy the code shown on the page:
-          </div>
-          <a
-            className="credential-device-url"
-            href={addState.deviceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {addState.deviceUrl}
-          </a>
-          <div className="credential-status">
-            <strong>2.</strong> Paste the code below and name this account:
-          </div>
-          <input
-            type="text"
-            placeholder="Label (e.g. Personal)"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Code from browser"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-          />
-          <div className="credential-form-buttons">
-            <button
-              className="btn btn-cred-submit"
-              onClick={submitCode}
-              disabled={!label.trim() || !code.trim()}
-            >
-              Finish sign-in
-            </button>
-          </div>
-        </div>
-      )}
-
-      {addState.kind === "submitting" && (
-        <div className="credential-form">
-          <div className="credential-status">
-            Exchanging code for token…
-          </div>
-        </div>
-      )}
-
-      {addState.kind === "error" && (
-        <div className="credential-form">
-          <div className="credential-error">{addState.message}</div>
-          <button
-            className="btn btn-cred-submit"
-            onClick={() => setAddState({ kind: "idle" })}
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
 
       <div className="credential-list">
         {credentials.map((c) => (
@@ -288,6 +238,108 @@ export function CredentialList() {
           </div>
         ))}
       </div>
+
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign in with Claude Code</DialogTitle>
+            <DialogDescription>
+              Octopus stores the resulting long-lived API key encrypted at rest.
+            </DialogDescription>
+          </DialogHeader>
+
+          {flow.kind === "starting" && (
+            <div className="text-sm text-muted-foreground">
+              Preparing OAuth login…
+            </div>
+          )}
+
+          {flow.kind === "awaiting_code" && (
+            <div className="space-y-4">
+              <div>
+                <div className="text-sm text-foreground mb-2">
+                  <span className="font-semibold">Step 1.</span>{" "}
+                  Open this URL, sign in, then copy the code shown.
+                </div>
+                <a
+                  className="credential-device-url block break-all rounded-md border border-dashed border-border bg-muted/40 px-3 py-2 text-xs font-mono text-primary hover:underline"
+                  href={flow.deviceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {flow.deviceUrl}
+                </a>
+              </div>
+
+              <div>
+                <div className="text-sm text-foreground mb-2">
+                  <span className="font-semibold">Step 2.</span>{" "}
+                  Name this account and paste the code:
+                </div>
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="cred-label">Label</Label>
+                    <Input
+                      id="cred-label"
+                      placeholder="e.g. Personal"
+                      value={label}
+                      onChange={(e) => setLabel(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="cred-code">Code from browser</Label>
+                    <Input
+                      id="cred-code"
+                      placeholder="paste here"
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {flow.kind === "submitting" && (
+            <div className="text-sm text-muted-foreground">
+              Exchanging code for token…
+            </div>
+          )}
+
+          {flow.kind === "error" && (
+            <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {flow.message}
+            </div>
+          )}
+
+          <DialogFooter>
+            {flow.kind === "error" ? (
+              <Button
+                variant="outline"
+                onClick={() => setFlow({ kind: "idle" })}
+              >
+                Try again
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                onClick={() => handleOpenChange(false)}
+              >
+                Cancel
+              </Button>
+            )}
+            {flow.kind === "awaiting_code" && (
+              <Button
+                className="btn-cred-submit"
+                onClick={submitCode}
+                disabled={!label.trim() || !code.trim()}
+              >
+                Finish sign-in
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

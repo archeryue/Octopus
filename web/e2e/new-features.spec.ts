@@ -278,26 +278,22 @@ test.describe("Message Queue & Interrupt", () => {
 
     const input = page.locator(".chat-input-bar textarea");
 
-    // Long-running prompt — force tool use with sleeps so the model is
-    // genuinely mid-turn when Esc fires. The CLI-direct path is fast
-    // enough that a plain-text prompt can finish before Playwright
-    // sees the status flip.
+    // Force a genuinely long-running tool call. We previously asked the
+    // model for three separate `sleep 3` invocations, but Claude tends to
+    // collapse those into a single `sleep 3 && sleep 3 && sleep 3` Bash
+    // call that finishes before Playwright presses Esc. A single explicit
+    // `sleep 30` gives us a wide window regardless of how the model
+    // chooses to compose tool calls.
     await input.fill(
-      "Use the Bash tool to run `sleep 3`, then `sleep 3` again, " +
-      "then `sleep 3` once more, then say done."
+      "Use the Bash tool to run exactly: sleep 30. Then say done."
     );
     await page.locator("button.btn-send").click();
 
-    // Wait for the run to start
+    // Wait for the run to start, then press Esc immediately — no extra
+    // settling delay so we don't race the model into finishing.
     await expect(
       page.locator(".status-badge.status-running")
     ).toBeVisible({ timeout: 15_000 });
-
-    // Small buffer so we don't press Esc *before* the subprocess registers
-    // its handler. The sleeps above give us ~9s of headroom.
-    await page.waitForTimeout(1500);
-
-    // Press Esc to interrupt — global listener catches it
     await page.keyboard.press("Escape");
 
     // The interrupt should land an error marker in the chat
@@ -463,23 +459,25 @@ test.describe("Credentials Panel", () => {
       .first()
       .click();
 
+    // The sign-in dialog opens
+    const dialog = page.locator('[role="dialog"]', {
+      hasText: "Sign in with Claude Code",
+    });
+    await expect(dialog).toBeVisible();
+
     // The device URL appears as a clickable link with the OAuth URL
-    const urlLink = page.locator(".credential-device-url");
+    const urlLink = dialog.locator(".credential-device-url");
     await expect(urlLink).toBeVisible();
     await expect(urlLink).toContainText("claude.ai/oauth/authorize");
     await expect(urlLink).toHaveAttribute("target", "_blank");
 
-    // Step-2 inputs appear
-    await expect(
-      page.locator('.credential-form input[placeholder="Label (e.g. Personal)"]')
-    ).toBeVisible();
-    await expect(
-      page.locator('.credential-form input[placeholder="Code from browser"]')
-    ).toBeVisible();
+    // Step-2 inputs appear inside the dialog
+    await expect(dialog.locator("#cred-label")).toBeVisible();
+    await expect(dialog.locator("#cred-code")).toBeVisible();
 
-    // Cancel returns to idle (button toggles to ×)
-    await page.locator(".credential-section .btn-credential-add").first().click();
-    await expect(urlLink).toHaveCount(0);
+    // Cancel closes the dialog
+    await dialog.locator("button", { hasText: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
   });
 
   test("create-session form shows credential selector when credentials exist", async ({

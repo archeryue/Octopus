@@ -66,44 +66,8 @@ body {
 }
 
 /* Login */
-.login-screen {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: var(--app-h, 100dvh);
-  padding: 1rem;
-}
-
-.login-card {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 2rem;
-  width: 100%;
-  max-width: 360px;
-  text-align: center;
-}
-
-.login-card h1 {
-  margin-bottom: 0.5rem;
-  color: var(--accent);
-}
-
-.login-card p {
-  color: var(--text-muted);
-  margin-bottom: 1rem;
-}
-
-.login-card input {
-  width: 100%;
-  padding: 0.75rem;
-  margin-bottom: 0.75rem;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 1rem;
-}
+/* Login styles moved to Tailwind utilities on the JSX. Class names
+   .login-screen and .btn-login are kept as test hooks only. */
 
 /* Layout */
 .app-layout {
@@ -340,12 +304,12 @@ body {
   transition: background 0.15s;
 }
 
-.btn-create, .btn-login, .btn-send {
+.btn-create, .btn-send {
   background: var(--accent-dim);
   color: #fff;
 }
 
-.btn-create:hover, .btn-login:hover, .btn-send:hover {
+.btn-create:hover, .btn-send:hover {
   background: var(--accent);
 }
 

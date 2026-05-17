@@ -1,0 +1,123 @@
+@import "tailwindcss";
+
+/* Octopus design tokens — adapted from vm0's HSL-token system.
+ *
+ * Dark-only for now (no theme switcher yet). Accent kept as the blue
+ * we already use in index.css; gray scale and semantic mappings mirror
+ * vm0's dark theme structure so future shadcn/Radix primitives drop in
+ * cleanly.
+ *
+ * All values are `H S% L%` triplets so they compose with Tailwind's
+ * alpha syntax: `bg-background/80`. */
+
+@theme {
+  /* Color scales referenced by both Tailwind utilities and semantic tokens */
+  --color-gray-50: hsl(var(--gray-50));
+  --color-gray-100: hsl(var(--gray-100));
+  --color-gray-200: hsl(var(--gray-200));
+  --color-gray-300: hsl(var(--gray-300));
+  --color-gray-400: hsl(var(--gray-400));
+  --color-gray-500: hsl(var(--gray-500));
+  --color-gray-600: hsl(var(--gray-600));
+  --color-gray-700: hsl(var(--gray-700));
+  --color-gray-800: hsl(var(--gray-800));
+  --color-gray-900: hsl(var(--gray-900));
+  --color-gray-950: hsl(var(--gray-950));
+
+  /* Semantic colors — what components actually use */
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* Radius scale */
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+
+  /* Typography */
+  --font-family-sans:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-family-mono:
+    "JetBrains Mono", "Menlo", "Monaco", ui-monospace, monospace;
+
+  /* Tabler icons — consistent stroke weight across the app */
+  --icon-stroke-width: 1.5;
+}
+
+@layer base {
+  :root {
+    /* Gray scale — dark, cool neutral. Tuned to match Octopus's existing
+     * #0d1117-ish backdrop while giving us discrete steps for surfaces. */
+    --gray-50:  240 4% 10%;  /* deepest page bg */
+    --gray-100: 240 4% 14%;  /* sidebar, card */
+    --gray-200: 240 4% 18%;  /* borders, inputs */
+    --gray-300: 240 4% 22%;  /* hover, accent */
+    --gray-400: 240 4% 28%;
+    --gray-500: 240 5% 38%;
+    --gray-600: 240 5% 50%;
+    --gray-700: 240 6% 62%;  /* muted text */
+    --gray-800: 240 6% 74%;
+    --gray-900: 240 8% 88%;
+    --gray-950: 230 8% 95%;  /* primary text */
+
+    /* Semantic mappings */
+    --background:           var(--gray-50);
+    --foreground:           var(--gray-950);
+
+    --card:                 var(--gray-100);
+    --card-foreground:      var(--gray-950);
+
+    --popover:              var(--gray-100);
+    --popover-foreground:   var(--gray-950);
+
+    /* Octopus accent — the existing blue (#58a6ff ≈ 213 100% 67%) */
+    --primary:              213 100% 67%;
+    --primary-foreground:   240 4% 10%;
+
+    --secondary:            var(--gray-200);
+    --secondary-foreground: var(--gray-950);
+
+    --muted:                var(--gray-200);
+    --muted-foreground:     var(--gray-700);
+
+    --accent:               var(--gray-300);
+    --accent-foreground:    var(--gray-950);
+
+    --destructive:          0 72% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border:               var(--gray-200);
+    --input:                var(--gray-200);
+    --ring:                 213 100% 67%;
+
+    --radius: 0.5rem;
+  }
+
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-family-sans);
+  }
+
+  /* Tabler icons share a consistent stroke. */
+  svg[class*="tabler-icon"] {
+    stroke-width: var(--icon-stroke-width);
+  }
+}
