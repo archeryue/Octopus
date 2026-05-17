@@ -396,38 +396,37 @@ test.describe("Credentials Panel", () => {
     }
   });
 
-  test("add and delete a credential via the sidebar (API-key advanced flow)", async ({
-    page,
-  }) => {
+  test("delete a credential via the sidebar", async ({ page, request }) => {
+    // Seed via API — the UI's only add path is OAuth, which can't run
+    // in the test env. Deletion is the in-UI path we verify here.
+    const res = await request.post(`${API}/credentials`, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      data: {
+        backend: "claude-code",
+        label: "E2E Cred",
+        auth_type: "api_key",
+        secret: "sk-e2e-test-key",
+      },
+    });
+    expect(res.ok()).toBeTruthy();
+
     await login(page);
 
-    // Section title is now "Accounts" — the OAuth-first redesign.
-    await expect(page.locator(".credential-title")).toHaveText("Accounts");
+    await expect(page.locator(".credential-title")).toHaveText("Harness");
 
-    // The default "+ Sign in" button runs the OAuth path, which spawns
-    // `claude setup-token` against the real network — too heavy for this
-    // test. Use the "Advanced: paste an API key" disclosure to add a
-    // credential without going through OAuth.
-    await page.locator(".credential-advanced > summary").click();
-    await expect(page.locator(".credential-advanced .credential-form")).toBeVisible();
-
-    await page
-      .locator('.credential-advanced .credential-form input[placeholder="Label (e.g. Work key)"]')
-      .fill("E2E Cred");
-    await page
-      .locator('.credential-advanced .credential-form input[placeholder="sk-ant-…"]')
-      .fill("sk-e2e-test-key");
-    await page
-      .locator(".credential-advanced .credential-form .btn-cred-submit")
-      .click();
-
-    // The new credential shows up in the list with backend + auth-type badges
     const item = page.locator(".credential-item", { hasText: "E2E Cred" });
     await expect(item).toBeVisible();
-    await expect(item.locator(".credential-badge.backend-claude-code")).toHaveText("Claude");
-    await expect(item.locator(".credential-badge.auth-api_key")).toHaveText("Key");
+    await expect(
+      item.locator(".credential-badge.backend-claude-code")
+    ).toHaveText("Claude");
+    await expect(item.locator(".credential-badge.auth-api_key")).toHaveText(
+      "Key"
+    );
 
-    // Delete it — entry vanishes
+    // Delete it via the UI
     await item.locator(".btn-delete").click();
     await expect(
       page.locator(".credential-item", { hasText: "E2E Cred" })
@@ -458,8 +457,11 @@ test.describe("Credentials Panel", () => {
     });
 
     await login(page);
-    // Click the "+ Sign in" button
-    await page.locator(".btn-credential-add", { hasText: "Sign in" }).click();
+    // Click the "+" button in the Harness section header
+    await page
+      .locator(".credential-section .btn-credential-add")
+      .first()
+      .click();
 
     // The device URL appears as a clickable link with the OAuth URL
     const urlLink = page.locator(".credential-device-url");
@@ -475,8 +477,8 @@ test.describe("Credentials Panel", () => {
       page.locator('.credential-form input[placeholder="Code from browser"]')
     ).toBeVisible();
 
-    // Cancel returns to idle
-    await page.locator(".btn-credential-add", { hasText: "×" }).click();
+    // Cancel returns to idle (button toggles to ×)
+    await page.locator(".credential-section .btn-credential-add").first().click();
     await expect(urlLink).toHaveCount(0);
   });
 
@@ -500,6 +502,9 @@ test.describe("Credentials Panel", () => {
     expect(res.ok()).toBeTruthy();
 
     await login(page);
+
+    // Open the create-session form via the Sessions section's "+" button.
+    await page.locator(".btn-session-add").click();
 
     // Selector is rendered, default option is "Default auth (CLI login)",
     // and our seeded credential is selectable.

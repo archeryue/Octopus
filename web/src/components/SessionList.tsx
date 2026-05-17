@@ -8,6 +8,7 @@ export function SessionList() {
   const [workingDir, setWorkingDir] = useState("");
   const [credentialId, setCredentialId] = useState<string>("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
   const setSessions = useSessionStore((s) => s.setSessions);
@@ -53,6 +54,7 @@ export function SessionList() {
         setNewName("");
         setWorkingDir("");
         setCredentialId("");
+        setShowForm(false);
       }
     } catch {
       // ignore
@@ -98,6 +100,13 @@ export function SessionList() {
     <div className="session-list">
       <div className="session-list-header">
         <h2>Sessions</h2>
+        <button
+          className="btn-session-add"
+          onClick={() => setShowForm((v) => !v)}
+          title={showForm ? "Cancel" : "New session"}
+        >
+          {showForm ? "×" : "+"}
+        </button>
       </div>
 
       <div className="session-list-items">
@@ -139,37 +148,39 @@ export function SessionList() {
         ))}
       </div>
 
-      <div className="session-create">
-        <input
-          type="text"
-          value={newName}
-          onChange={(e) => setNewName(e.target.value)}
-          placeholder="Session name"
-        />
-        <input
-          type="text"
-          value={workingDir}
-          onChange={(e) => setWorkingDir(e.target.value)}
-          placeholder="Working directory (optional)"
-        />
-        {claudeCreds.length > 0 && (
-          <select
-            className="session-credential-select"
-            value={credentialId}
-            onChange={(e) => setCredentialId(e.target.value)}
-          >
-            <option value="">Default auth (CLI login)</option>
-            {claudeCreds.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        )}
-        <button className="btn btn-create" onClick={createSession}>
-          + New Session
-        </button>
-      </div>
+      {showForm && (
+        <div className="session-create">
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="Session name"
+          />
+          <input
+            type="text"
+            value={workingDir}
+            onChange={(e) => setWorkingDir(e.target.value)}
+            placeholder="Working directory (optional)"
+          />
+          {claudeCreds.length > 0 && (
+            <select
+              className="session-credential-select"
+              value={credentialId}
+              onChange={(e) => setCredentialId(e.target.value)}
+            >
+              <option value="">Default auth (CLI login)</option>
+              {claudeCreds.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          )}
+          <button className="btn btn-create" onClick={createSession}>
+            Create
+          </button>
+        </div>
+      )}
     </div>
   );
 }

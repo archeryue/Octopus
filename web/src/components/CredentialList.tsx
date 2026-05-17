@@ -6,6 +6,43 @@ import {
 
 const API = `${window.location.origin}/api/credentials`;
 
+/** Parse a non-OK fetch Response into a short message safe to show the user.
+ *
+ * If the body is JSON (FastAPI's standard `{detail: ...}` shape), pull
+ * `detail`. If it's HTML (Cloudflare 502, nginx error page, etc.), don't
+ * dump it into the UI — show the status code with a short hint instead. */
+async function friendlyErrorMessage(
+  res: Response,
+  action: string
+): Promise<string> {
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    try {
+      const body = await res.json();
+      const detail = body?.detail;
+      if (typeof detail === "string" && detail.trim()) return detail;
+      if (Array.isArray(detail) && detail.length) {
+        return detail.map((d: unknown) => String((d as { msg?: string })?.msg ?? d)).join("; ");
+      }
+    } catch {
+      // fall through to status-only message
+    }
+  }
+  // 502 / 503 from a tunnel or reverse proxy usually means the Octopus
+  // backend timed out or wasn't reachable — most likely fix is to check
+  // the server logs.
+  if (res.status === 502 || res.status === 504) {
+    return (
+      `Could not ${action} — the Octopus backend didn't respond in time ` +
+      `(${res.status} from gateway). Check the server logs for details.`
+    );
+  }
+  if (res.status === 503) {
+    return `Could not ${action} — server unavailable (503). Check the server logs.`;
+  }
+  return `Could not ${action} — HTTP ${res.status}`;
+}
+
 type AddState =
   | { kind: "idle" }
   | { kind: "starting" }                                   // POST /oauth/start in flight
@@ -21,7 +58,6 @@ export function CredentialList() {
   const [addState, setAddState] = useState<AddState>({ kind: "idle" });
   const [label, setLabel] = useState("");
   const [code, setCode] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const headers = {
     "Content-Type": "application/json",
@@ -55,10 +91,9 @@ export function CredentialList() {
         body: JSON.stringify({ backend: "claude-code" }),
       });
       if (!res.ok) {
-        const detail = await res.text();
         setAddState({
           kind: "error",
-          message: detail || `Failed to start login (${res.status})`,
+          message: await friendlyErrorMessage(res, "start login"),
         });
         return;
       }
@@ -95,10 +130,9 @@ export function CredentialList() {
         }),
       });
       if (!res.ok) {
-        const detail = await res.text();
         setAddState({
           kind: "error",
-          message: detail || `Login failed (${res.status})`,
+          message: await friendlyErrorMessage(res, "complete login"),
         });
         return;
       }
@@ -130,48 +164,6 @@ export function CredentialList() {
     setAddState({ kind: "idle" });
   };
 
-  // --------------------------------------------------------------- Advanced: paste API key
-
-  const [apiKeyLabel, setApiKeyLabel] = useState("");
-  const [apiKeySecret, setApiKeySecret] = useState("");
-  const [apiKeyBusy, setApiKeyBusy] = useState(false);
-  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
-
-  const submitApiKey = async () => {
-    if (!apiKeyLabel.trim() || !apiKeySecret.trim()) {
-      setApiKeyError("Label and key are both required");
-      return;
-    }
-    setApiKeyBusy(true);
-    setApiKeyError(null);
-    try {
-      const res = await fetch(API, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          backend: "claude-code",
-          label: apiKeyLabel.trim(),
-          auth_type: "api_key",
-          secret: apiKeySecret.trim(),
-        }),
-      });
-      if (!res.ok) {
-        const detail = await res.text();
-        setApiKeyError(detail || `Failed (${res.status})`);
-        return;
-      }
-      const created: CredentialInfo = await res.json();
-      setCredentials([...credentials, created]);
-      setApiKeyLabel("");
-      setApiKeySecret("");
-      setShowAdvanced(false);
-    } catch (e) {
-      setApiKeyError(String(e));
-    } finally {
-      setApiKeyBusy(false);
-    }
-  };
-
   // --------------------------------------------------------------- Delete
 
   const remove = async (id: string) => {
@@ -192,25 +184,14 @@ export function CredentialList() {
   return (
     <div className="credential-section">
       <div className="credential-header">
-        <span className="credential-title">Accounts</span>
-        {!adding && (
-          <button
-            className="btn-credential-add"
-            onClick={startLogin}
-            title="Sign in with Claude Code"
-          >
-            + Sign in
-          </button>
-        )}
-        {adding && (
-          <button
-            className="btn-credential-add"
-            onClick={cancelLogin}
-            title="Cancel"
-          >
-            ×
-          </button>
-        )}
+        <span className="credential-title">Harness</span>
+        <button
+          className="btn-credential-add"
+          onClick={adding ? cancelLogin : startLogin}
+          title={adding ? "Cancel" : "Sign in"}
+        >
+          {adding ? "×" : "+"}
+        </button>
       </div>
 
       {addState.kind === "starting" && (
@@ -282,49 +263,7 @@ export function CredentialList() {
         </div>
       )}
 
-      {addState.kind === "idle" && (
-        <details
-          className="credential-advanced"
-          open={showAdvanced}
-          onToggle={(e) => setShowAdvanced((e.target as HTMLDetailsElement).open)}
-        >
-          <summary>Advanced: paste an API key</summary>
-          <div className="credential-form">
-            <input
-              type="text"
-              placeholder="Label (e.g. Work key)"
-              value={apiKeyLabel}
-              onChange={(e) => setApiKeyLabel(e.target.value)}
-            />
-            <input
-              type="password"
-              placeholder="sk-ant-…"
-              value={apiKeySecret}
-              onChange={(e) => setApiKeySecret(e.target.value)}
-            />
-            {apiKeyError && (
-              <div className="credential-error">{apiKeyError}</div>
-            )}
-            <button
-              className="btn btn-cred-submit"
-              onClick={submitApiKey}
-              disabled={apiKeyBusy}
-            >
-              {apiKeyBusy ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </details>
-      )}
-
       <div className="credential-list">
-        {credentials.length === 0 && !adding && (
-          <div className="credential-empty">
-            No accounts yet. Click <strong>+ Sign in</strong> above to log in
-            with a Claude Code subscription, or expand{" "}
-            <em>Advanced</em> to paste an API key. Without an account,
-            sessions will use <code>claude</code>'s default auth on the host.
-          </div>
-        )}
         {credentials.map((c) => (
           <div className="credential-item" key={c.id}>
             <div className="credential-info">

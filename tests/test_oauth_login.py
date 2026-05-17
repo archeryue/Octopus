@@ -118,7 +118,7 @@ async def test_token_timeout_raises(monkeypatch):
 
     mgr = await _run_with_fake(monkeypatch, "hang-token")
     session = await mgr.start()
-    with pytest.raises(RuntimeError, match="Timed out waiting for token"):
+    with pytest.raises(RuntimeError, match="Timed out .* waiting for token"):
         await mgr.submit_code(session.id, "any")
     assert mgr.get(session.id).state == LoginState.error
 

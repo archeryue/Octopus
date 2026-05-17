@@ -181,6 +181,7 @@ body {
 .session-list-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 1rem;
   height: 48px;
   flex-shrink: 0;
@@ -191,6 +192,15 @@ body {
   font-size: 1rem;
   color: var(--text-muted);
   font-weight: 600;
+}
+
+.btn-session-add {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 0.25rem;
 }
 
 .session-list-items {
@@ -567,21 +577,6 @@ body {
 
 .credential-device-url:hover {
   text-decoration: underline;
-}
-
-.credential-advanced {
-  padding: 0.25rem 1rem 0;
-  font-size: 0.7rem;
-}
-
-.credential-advanced > summary {
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 0.25rem 0;
-}
-
-.credential-advanced > summary:hover {
-  color: var(--text);
 }
 
 .credential-badge.auth-oauth {

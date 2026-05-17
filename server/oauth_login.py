@@ -120,6 +120,12 @@ class OAuthLoginManager:
         master_fd, slave_fd = pty.openpty()
         session._master_fd = master_fd
 
+        logger.info(
+            "OAuth login %s: spawning %s setup-token (pty master_fd=%d)",
+            login_id,
+            binary,
+            master_fd,
+        )
         try:
             session._process = await asyncio.create_subprocess_exec(
                 binary,
@@ -137,6 +143,7 @@ class OAuthLoginManager:
             session.state = LoginState.error
             session.message = f"spawn failed: {e}"
             self._sessions.pop(login_id, None)
+            logger.exception("OAuth login %s: spawn failed", login_id)
             raise
         finally:
             # The subprocess inherits the slave fd; we must not keep our
@@ -154,23 +161,40 @@ class OAuthLoginManager:
         try:
             await asyncio.wait_for(session._url_event.wait(), timeout=_URL_TIMEOUT_S)
         except asyncio.TimeoutError:
+            captured = _strip_ansi("".join(session._output))
             await self._cleanup(session)
             session.state = LoginState.error
             session.message = (
-                "Timed out waiting for authorize URL from `claude setup-token`. "
-                f"Last output (tail): {''.join(session._output)[-400:]!r}"
+                f"Timed out after {_URL_TIMEOUT_S:.0f}s waiting for authorize URL "
+                f"from `claude setup-token`. Last output: {captured[-600:]!r}"
+            )
+            logger.warning(
+                "OAuth login %s: URL timeout. Full captured output (ansi-stripped):\n%s",
+                login_id,
+                captured,
             )
             raise RuntimeError(session.message)
 
         if session.url is None:
+            captured = _strip_ansi("".join(session._output))
             await self._cleanup(session)
             session.state = LoginState.error
             session.message = (
                 "`claude setup-token` exited before printing an authorize URL. "
-                f"Output (tail): {''.join(session._output)[-400:]!r}"
+                f"Output: {captured[-600:]!r}"
+            )
+            logger.warning(
+                "OAuth login %s: subprocess exited without URL. Output (ansi-stripped):\n%s",
+                login_id,
+                captured,
             )
             raise RuntimeError(session.message)
 
+        logger.info(
+            "OAuth login %s: got URL, awaiting user code (url=%s)",
+            login_id,
+            session.url,
+        )
         session.state = LoginState.awaiting_code
         return session
 
@@ -193,26 +217,45 @@ class OAuthLoginManager:
             raise RuntimeError("login session has no PTY (already cleaned up?)")
 
         session.state = LoginState.finalizing
+        logger.info(
+            "OAuth login %s: submitting code (%d chars)", login_id, len(code.strip())
+        )
         # The CLI's prompt expects the code + Enter. Write both.
         os.write(session._master_fd, (code.strip() + "\n").encode())
 
         try:
             await asyncio.wait_for(session._token_event.wait(), timeout=_TOKEN_TIMEOUT_S)
         except asyncio.TimeoutError:
+            captured = _strip_ansi("".join(session._output))
             await self._cleanup(session)
             session.state = LoginState.error
             session.message = (
-                "Timed out waiting for token after submitting code. "
-                f"Last output (tail): {''.join(session._output)[-400:]!r}"
+                f"Timed out after {_TOKEN_TIMEOUT_S:.0f}s waiting for token. "
+                f"Last output: {captured[-600:]!r}"
+            )
+            logger.warning(
+                "OAuth login %s: token timeout. Full captured output:\n%s",
+                login_id,
+                captured,
             )
             raise RuntimeError(session.message)
 
         if session.token is None:
+            captured = _strip_ansi("".join(session._output))
             await self._cleanup(session)
             session.state = LoginState.error
-            session.message = "subprocess exited without producing a token"
+            session.message = (
+                "subprocess exited without producing a token. "
+                f"Output: {captured[-600:]!r}"
+            )
+            logger.warning(
+                "OAuth login %s: subprocess exited without token. Output:\n%s",
+                login_id,
+                captured,
+            )
             raise RuntimeError(session.message)
 
+        logger.info("OAuth login %s: token captured, success", login_id)
         session.state = LoginState.success
         await self._cleanup(session)
         return session

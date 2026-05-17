@@ -66,6 +66,7 @@ test.describe("Session Management", () => {
   });
 
   test("creates a new session", async ({ page }) => {
+    await page.locator(".btn-session-add").click();
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("E2E Test Session");
@@ -89,6 +90,7 @@ test.describe("Session Management", () => {
 
   test("deletes a session", async ({ page }) => {
     // Create a session first
+    await page.locator(".btn-session-add").click();
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("To Delete");
@@ -122,6 +124,7 @@ test.describe("Chat", () => {
     await expect(page.locator(".session-list-header")).toBeVisible();
 
     // Create a session
+    await page.locator(".btn-session-add").click();
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Chat Test");

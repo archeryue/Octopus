@@ -275,6 +275,7 @@ test.describe("Handoff & Pull CLI", () => {
     await login(page);
 
     // Create session and send a message
+    await page.locator(".btn-session-add").click();
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Pull Test");
@@ -351,6 +352,7 @@ test.describe("Handoff & Pull CLI", () => {
     await login(page);
 
     // Create session and send a message
+    await page.locator(".btn-session-add").click();
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Roundtrip Source");
