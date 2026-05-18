@@ -13,7 +13,7 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content inline-block rounded-lg bg-primary px-7 py-5 text-sm text-primary-foreground whitespace-pre-wrap break-words">
+            <div className="msg-content inline-block rounded-lg bg-primary px-10 py-6 text-sm text-primary-foreground whitespace-pre-wrap break-words">
               {message.content}
             </div>
           </div>
@@ -23,7 +23,7 @@ export function MessageBubble({ message }: { message: Message }) {
           <div className="msg-label text-xs font-semibold text-muted-foreground">
             Claude
           </div>
-          <div className="msg-content markdown rounded-lg border border-border bg-card px-7 py-5 text-sm leading-7">
+          <div className="msg-content markdown rounded-lg border border-border bg-card px-10 py-6 text-sm leading-7">
             <Markdown remarkPlugins={[remarkGfm]}>
               {message.content || ""}
             </Markdown>
@@ -48,7 +48,7 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content msg-question-answer inline-block rounded-lg bg-primary/80 px-7 py-5 text-sm text-primary-foreground italic whitespace-pre-wrap break-words">
+            <div className="msg-content msg-question-answer inline-block rounded-lg bg-primary/80 px-10 py-6 text-sm text-primary-foreground italic whitespace-pre-wrap break-words">
               {message.content}
             </div>
           </div>
@@ -70,7 +70,7 @@ export function MessageBubble({ message }: { message: Message }) {
           <div className="msg-label text-xs font-semibold text-destructive">
             Error
           </div>
-          <div className="msg-content rounded-lg border border-destructive/40 bg-destructive/10 px-7 py-5 text-sm text-destructive whitespace-pre-wrap break-words">
+          <div className="msg-content rounded-lg border border-destructive/40 bg-destructive/10 px-10 py-6 text-sm text-destructive whitespace-pre-wrap break-words">
             {message.content}
           </div>
         </div>

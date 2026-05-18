@@ -87,7 +87,7 @@ function AuthenticatedApp({
         aria-label="Sidebar"
       >
         {/* Wordmark — vm0 has an org switcher here; we just brand it. */}
-        <div className="shrink-0 flex items-center justify-between gap-2 px-6 pt-6 pb-4">
+        <div className="shrink-0 flex items-center justify-between gap-2 px-8 pt-6 pb-4">
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
               O
@@ -109,14 +109,14 @@ function AuthenticatedApp({
         {/* Scrollable middle: sessions / schedules / harness sections.
          * px-5 on the nav inset + px-3 on each item pill = 32px from
          * sidebar edge to item text. Hover pill itself insets 20px. */}
-        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-6 pt-3">
+        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-8 pt-3">
           <SessionList />
           <ScheduleList />
           <CredentialList />
         </nav>
 
         {/* Account footer. */}
-        <div className="shrink-0 border-t border-sidebar-border px-6 py-4">
+        <div className="shrink-0 border-t border-sidebar-border px-8 py-4">
           <AccountDropdown onSignOut={signOut} />
         </div>
       </aside>

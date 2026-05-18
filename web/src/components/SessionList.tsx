@@ -101,7 +101,7 @@ export function SessionList() {
 
   return (
     <div className="session-list shrink-0 pb-6">
-      <div className="session-list-header group flex h-10 items-center justify-between rounded-lg px-4 hover:bg-sidebar-accent transition-colors">
+      <div className="session-list-header group flex h-10 items-center justify-between rounded-lg px-5 hover:bg-sidebar-accent transition-colors">
         <h2 className="text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Sessions
         </h2>
@@ -119,7 +119,7 @@ export function SessionList() {
         {sessions.map((s) => (
           <div
             key={s.id}
-            className={`session-item group flex items-center gap-3 rounded-lg px-4 py-3 cursor-pointer transition-colors ${
+            className={`session-item group flex items-center gap-3 rounded-lg px-5 py-3 cursor-pointer transition-colors ${
               s.id === activeSessionId
                 ? "active bg-[hsl(var(--gray-200))] text-foreground"
                 : "text-sidebar-foreground hover:bg-sidebar-accent"

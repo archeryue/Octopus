@@ -203,7 +203,7 @@ export function CredentialList() {
 
   return (
     <div className="credential-section shrink-0 pb-6 pt-3">
-      <div className="credential-header group flex h-10 items-center justify-between rounded-lg px-4 hover:bg-sidebar-accent transition-colors">
+      <div className="credential-header group flex h-10 items-center justify-between rounded-lg px-5 hover:bg-sidebar-accent transition-colors">
         <span className="credential-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Harness
         </span>
@@ -220,7 +220,7 @@ export function CredentialList() {
       <div className="credential-list flex flex-col gap-1.5 mt-3">
         {credentials.map((c) => (
           <div
-            className="credential-item group flex items-center gap-3 rounded-lg px-4 py-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+            className="credential-item group flex items-center gap-3 rounded-lg px-5 py-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
             key={c.id}
           >
             <span

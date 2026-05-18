@@ -26,7 +26,7 @@ export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="btn-account flex w-full items-center gap-3 rounded-lg p-3 text-left hover:bg-sidebar-accent transition-colors"
+          className="btn-account flex w-full items-center gap-3 rounded-lg px-5 py-3 text-left hover:bg-sidebar-accent transition-colors"
           aria-label="Account menu"
         >
           <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-200 text-primary-700 text-sm font-semibold">
