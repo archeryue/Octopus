@@ -373,6 +373,27 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
             {"behavior": "deny", "message": message},
         )
 
+    async def _send_control_response_with_content(
+        self, request_id: str, content: str
+    ) -> None:
+        """Return content as the tool's effective result.
+
+        The CLI's `can_use_tool` schema exposes only allow/deny. There's
+        no "block the tool but synthesize this result on its behalf"
+        option, so we use the deny channel: `behavior=deny, message=…`.
+        Claude reads the deny `message` as the tool's response and
+        continues normally. We use this for AskUserQuestion answers
+        (user provides the content the built-in tool would've gathered
+        interactively).
+
+        Cleaner alternative — register our own MCP tool, disable the
+        built-in via `--disallowed-tools`, return the answer as a real
+        tool_result — is tracked as future-features #4. It's a half-day
+        investment we'll do alongside the next reason to add MCP
+        plumbing.
+        """
+        await self._send_control_response_deny(request_id, content)
+
     async def _send_control_response_error(
         self, request_id: str, message: str
     ) -> None:
@@ -406,9 +427,8 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         if request_id is None:
             return False
         self._pending_incoming.pop(request_id, None)
-        # Deliver the answer via the deny channel — the CLI surfaces deny
-        # `message` to Claude as the tool's effective response. The MCP-tool
-        # alternative described in future-features.md #7 would be cleaner
-        # but isn't built yet.
-        await self._send_control_response_deny(request_id, answer_text)
+        # Use the with_content path (not raw _send_control_response_deny)
+        # to make the intent at the call site clear — we're returning a
+        # tool result, not refusing the tool.
+        await self._send_control_response_with_content(request_id, answer_text)
         return True

@@ -102,28 +102,46 @@ directly from the chat (`View` button next to `Write` / `Edit` /
 ## 4. AskUserQuestion: replace deny-as-answer with a custom MCP tool
 
 **Priority**: Low — code-smell cleanup, not a user-visible bug
-**Affected**: `server/backends/claude_code.py`, new MCP tool definition
+**Affected**: new `server/mcp/`, new HTTP callback endpoint,
+`server/backends/claude_code.py` spawn flags
 
 Today's flow: when the CLI asks "can_use_tool AskUserQuestion?", we
 emit a `question_request` event, hold the control_request, and when
-the user answers we respond with `behavior=deny, message=<answer>`.
-The CLI surfaces the deny `message` to Claude verbatim — Claude reads
-it as the tool's effective response and continues. The real-CLI e2e
-test (`new-features.spec.ts::AskUserQuestion: real model → form …`)
+the user answers we respond with `behavior=deny, message=<answer>`
+(via the `_send_control_response_with_content` helper). The CLI
+surfaces the deny `message` to Claude verbatim — Claude reads it as
+the tool's effective response and continues. The real-CLI e2e test
+(`new-features.spec.ts::AskUserQuestion: real model → form …`)
 passes, so this works.
 
 The semantic awkwardness: we're using the "denied with reason" path
-for what's really "answered with content". A cleaner alternative
-exists but is more work: register our own MCP server that exposes
-`AskUserQuestion`, disable the CLI's built-in via
-`disallowed_tools=["AskUserQuestion"]`, and return the answer as a
-normal tool_result. This avoids the protocol-shape mismatch but
-introduces an MCP server we have to lifecycle.
+for what's really "answered with content". The CLI's `can_use_tool`
+schema exposes only allow/deny — there's no third "block-with-result"
+option, so the deny channel is the only API surface that fits.
 
-Verdict: leave the current shape until we have another reason to add
-MCP plumbing (e.g. exposing more host-side tools). Keep the existing
-behavior covered by the e2e tripwire that fails on any `ZodError` or
-`Tool permission request failed` text.
+Cleaner alternative — register our own MCP server that exposes
+`ask_user_question`, disable the CLI's built-in via
+`--disallowed-tools "AskUserQuestion"`, and return the answer as a
+normal tool_result. Scope:
+
+1. `server/mcp/server.py` — stdio MCP server (via the `mcp` Python
+   SDK, already installed). Implements `ask_user_question` tool.
+2. New `POST /api/internal/ask` endpoint — the MCP subprocess calls
+   it with the question payload + a session_id passed via env. The
+   endpoint emits `question_request` and awaits the answer (long
+   HTTP hold; FastAPI handles it).
+3. `ClaudeCodeBackend.build_args` adds `--disallowed-tools
+   AskUserQuestion --mcp-config <tempfile.json>
+   --append-system-prompt "use mcp__octopus__ask_user_question
+   instead of AskUserQuestion"`. The tempfile is written per-spawn
+   with the MCP server command + env vars (OCTOPUS_API_URL,
+   OCTOPUS_AUTH_TOKEN, OCTOPUS_SESSION_ID).
+4. Real-CLI e2e: the existing AskUserQuestion test should pass
+   end-to-end, but the rendered tool_use block will now show
+   `mcp__octopus__ask_user_question` instead of `AskUserQuestion`.
+
+Estimated half-day. Will land alongside the next reason to add MCP
+plumbing (e.g. exposing other host-side tools to Claude).
 
 ---
 
