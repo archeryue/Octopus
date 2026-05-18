@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "generate:contracts": "../.venv/bin/python ../scripts/dump-openapi.py > .openapi.json && openapi-typescript .openapi.json -o src/api/contracts.ts && rm .openapi.json",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -45,6 +47,7 @@
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
     "jsdom": "^28.1.0",
+    "openapi-typescript": "^7.13.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^7.3.1",

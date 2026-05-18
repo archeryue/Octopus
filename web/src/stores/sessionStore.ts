@@ -1,38 +1,25 @@
 import { create } from "zustand";
+import type {
+  BackendKind as ApiBackendKind,
+  CredentialInfo as ApiCredentialInfo,
+  ScheduleInfo,
+  SessionInfo as ApiSessionInfo,
+  SessionStatus as ApiSessionStatus,
+} from "../api";
 
-export type SessionStatus = "idle" | "running" | "waiting_approval";
+// Re-export contract types under the names the rest of the frontend
+// already uses. Source of truth is `web/src/api/contracts.ts`, regenerated
+// from FastAPI's openapi.json via `bun run generate:contracts`.
+export type SessionStatus = ApiSessionStatus;
+export type SessionInfo = ApiSessionInfo;
+export type BackendKind = ApiBackendKind;
+export type CredentialInfo = ApiCredentialInfo;
+export type Schedule = ScheduleInfo;
 
-export interface SessionInfo {
-  id: string;
-  name: string;
-  working_dir: string;
-  status: SessionStatus;
-  created_at: string;
-  message_count: number;
-  credential_id?: string | null;
-}
-
-export type BackendKind = "claude-code" | "codex";
-
-export interface CredentialInfo {
-  id: string;
-  backend: BackendKind;
-  label: string;
-  auth_type: "api_key" | "oauth";
-  created_at: string;
-}
-
-export interface Schedule {
-  id: string;
-  session_id: string;
-  name: string;
-  prompt: string;
-  interval_seconds: number;
-  enabled: boolean;
-  created_at: string;
-  last_run_at: string | null;
-}
-
+// `Message` is a UI-only shape: it's how WS events are normalized for
+// rendering, not 1-to-1 with `MessageContent` from the contract (which has
+// `content: unknown` because tool_result can carry arbitrary JSON). Leave
+// hand-rolled.
 export interface Message {
   role: "user" | "assistant" | "system" | "tool";
   type: string;

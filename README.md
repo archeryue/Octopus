@@ -88,10 +88,18 @@ octopus pull <session-id>      # Export an Octopus session as local JSONL
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 226 backend tests (incl. real-CLI integration tests when `claude` is on PATH)
+.venv/bin/pytest tests/ -v        # 259 backend tests (incl. real-CLI integration tests when `claude` is on PATH)
 cd web && bun run test            # 8 frontend unit tests
-cd web && bun run test:e2e        # 30 Playwright e2e tests (app + handoff/pull + telegram bridge + new features + real-CLI e2e)
+cd web && bun run typecheck       # tsc --noEmit
+cd web && bun run test:e2e        # 31 Playwright e2e tests (app + handoff/pull + telegram bridge + new features + real-CLI e2e)
 ```
+
+### Pre-commit hooks (optional)
+
+Install [lefthook](https://github.com/evilmartians/lefthook) and run
+`./scripts/setup-hooks.sh` to enable per-commit checks: `tsc --noEmit`
+when web TS changes, `pytest tests/` when server Python changes. Both
+skip when no relevant files are staged, so doc-only commits are fast.
 
 ## Architecture
 

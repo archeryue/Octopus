@@ -11,3 +11,6 @@ test-results/
 octopus.db*
 octopus-dev.db*
 *.egg-info/
+
+# Intermediate file from `bun run generate:contracts`
+web/.openapi.json

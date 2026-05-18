@@ -1,0 +1,30 @@
+# lefthook — pre-commit checks.
+#
+# Install once:
+#   brew install lefthook    # or:  npm install -g lefthook
+#   lefthook install
+#
+# Or run the bundled bootstrap:
+#   ./scripts/setup-hooks.sh
+#
+# What it does:
+# - When TS files change, runs `tsc --noEmit` in web/ before letting the
+#   commit through.
+# - When backend Python changes, runs the full pytest suite (~30s; fast
+#   enough for a per-commit gate).
+# - Skips both if neither set is touched (e.g. doc-only commits).
+
+pre-commit:
+  parallel: true
+  commands:
+    tsc:
+      tags: frontend
+      glob: "web/src/**/*.{ts,tsx}"
+      run: cd web && bun run typecheck
+      fail_text: "TypeScript errors. Run 'cd web && bun run typecheck' for detail."
+
+    pytest:
+      tags: backend
+      glob: "{server,tests}/**/*.py"
+      run: .venv/bin/pytest tests/ -q --tb=short
+      fail_text: "Backend tests failed. Run '.venv/bin/pytest tests/ -v' for detail."
