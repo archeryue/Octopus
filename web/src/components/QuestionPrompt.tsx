@@ -56,11 +56,11 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
 
   return (
     <div className="msg msg-question rounded-lg border-[0.7px] border-primary/30 bg-card overflow-hidden">
-      <div className="question-header flex items-center gap-2.5 px-5 py-4 bg-primary-50 text-sm text-foreground">
+      <div className="question-header flex items-center gap-2.5 px-6 py-5 bg-primary-50 text-sm text-foreground">
         <IconHelpCircle size={18} className="text-primary shrink-0" />
         <strong>Claude is asking</strong>
       </div>
-      <div className="question-body px-5 py-5 space-y-5">
+      <div className="question-body px-6 py-6 space-y-5">
         {question.questions.map((q, i) => {
           const multi = !!q.multiSelect;
           const selected = answers[i]?.selected || [];
@@ -123,7 +123,7 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
           );
         })}
       </div>
-      <div className="question-actions flex justify-end gap-2 px-5 py-3 border-t border-border">
+      <div className="question-actions flex justify-end gap-2 px-6 py-4 border-t border-border">
         <Button
           className="btn btn-approve"
           onClick={handleSubmit}

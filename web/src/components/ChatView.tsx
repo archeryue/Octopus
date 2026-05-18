@@ -290,7 +290,7 @@ export function ChatView({
         </div>
       )}
 
-      <div className="chat-input-bar flex items-end gap-3 px-6 py-4 border-t border-border bg-card shrink-0">
+      <div className="chat-input-bar flex items-end gap-3 px-6 pb-6 pt-4 bg-background shrink-0">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}

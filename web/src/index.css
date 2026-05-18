@@ -98,11 +98,11 @@ body {
 
 /* Virtuoso spacing hooks — target data attributes the lib renders. */
 .chat-messages [data-virtuoso-scroller] {
-  padding: 1rem 0;
+  padding: 1.75rem 0;
 }
 
 .chat-messages [data-item-index] {
-  padding: 0 0.5rem 0.75rem;
+  padding: 0 1.5rem 1.25rem;
 }
 
 /* Markdown nested output — react-markdown wraps assistant text in
