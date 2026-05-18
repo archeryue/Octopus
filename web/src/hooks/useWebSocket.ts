@@ -11,6 +11,29 @@ const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
 // Access store actions directly (stable references, no re-renders)
 const getState = () => useSessionStore.getState();
 
+/** Snapshot-baseline dedup for WS message events.
+ *
+ * Events that correspond to a DB message row carry `seq`
+ * (server-assigned). After loading a snapshot the store sets
+ * `lastAppliedSeq[sessionId]` to `next_message_seq - 1`; any
+ * subsequently-broadcast event with `seq <= baseline` is already in
+ * the snapshot and must be dropped to avoid double-rendering.
+ *
+ * Events without `seq` (status / queued / dequeued /
+ * tool_approval_request) are ephemeral and always applied.
+ *
+ * Exported only so the unit tests can exercise the guard directly;
+ * call sites (handleWsMessage) consume it internally.
+ */
+export function shouldApplyWsEvent(
+  seq: number | null | undefined,
+  baseline: number | undefined
+): boolean {
+  if (typeof seq !== "number") return true;
+  const b = typeof baseline === "number" ? baseline : -1;
+  return seq > b;
+}
+
 function handleWsMessage(data: Record<string, unknown>) {
   const {
     addMessage,
@@ -25,16 +48,9 @@ function handleWsMessage(data: Record<string, unknown>) {
   const sessionId = data.session_id as string;
   const type = data.type as string;
 
-  // Seq-based dedup. Events that correspond to a DB message row carry
-  // `seq` (server-assigned); we drop any event whose seq is already
-  // covered by the snapshot's `next_message_seq` (set on
-  // `setMessages` via lastAppliedSeq). Events without seq
-  // (status / queued / dequeued / tool_approval_request) are ephemeral
-  // and always applied.
   const seq = typeof data.seq === "number" ? (data.seq as number) : null;
   if (seq !== null && sessionId) {
-    const baseline = lastAppliedSeq[sessionId] ?? -1;
-    if (seq <= baseline) {
+    if (!shouldApplyWsEvent(seq, lastAppliedSeq[sessionId])) {
       return; // already in snapshot; ignore to avoid duplicate
     }
     setLastAppliedSeq(sessionId, seq);

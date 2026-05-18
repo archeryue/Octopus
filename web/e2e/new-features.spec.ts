@@ -1,3 +1,4 @@
+import * as http from "node:http";
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 
 const TOKEN = "changeme";
@@ -15,6 +16,7 @@ const OWNED_NAMES = new Set([
   "Real Q Session",
   "Resume Session",
   "Bad Cred Session",
+  "Webhook Fire Probe",
 ]);
 
 test.afterAll(async ({ request }) => {
@@ -763,3 +765,233 @@ test.describe("Real CLI end-to-end", () => {
     expect(joined).toContain("PINEAPPLE");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Settings dialog (future-features #7)
+// ---------------------------------------------------------------------------
+
+test.describe("Settings dialog", () => {
+  test("opens via gear, renders General / Account / Notifications tabs", async ({
+    page,
+  }) => {
+    await login(page);
+
+    await expect(page.locator(".btn-settings")).toBeVisible();
+    await page.locator(".btn-settings").click();
+    await expect(page.locator('[role="dialog"]')).toBeVisible();
+    await expect(page.locator('[role="dialog"]')).toContainText("Settings");
+
+    const tabs = await page.locator('[role="tab"]').allInnerTexts();
+    expect(tabs).toEqual(["General", "Account", "Notifications"]);
+
+    // General — shows the current origin + Version. We compare against
+    // window.location.origin from the page itself rather than the test
+    // file's SERVER_URL because Playwright loads the vite dev server
+    // (:5174) which proxies API/WS to the backend on :8765.
+    const general = page.locator('[role="tabpanel"]:visible');
+    const origin = await page.evaluate(() => window.location.origin);
+    await expect(general).toContainText(origin);
+    await expect(general).toContainText("Version");
+
+    // Account — shows the full token (no truncation) + Copy / Sign out
+    await page.locator('[role="tab"]', { hasText: "Account" }).click();
+    const account = page.locator('[role="tabpanel"]:visible');
+    await expect(account).toContainText(TOKEN);
+    await expect(account).toContainText("Sign out");
+    await expect(account.locator(".btn-copy-token")).toBeVisible();
+
+    // Notifications — should show the empty-state hint + Add webhook btn
+    await page.locator('[role="tab"]', { hasText: "Notifications" }).click();
+    const notif = page.locator('[role="tabpanel"]:visible');
+    await expect(notif).toContainText("Webhook targets");
+    await expect(notif.locator(".btn-notifier-add")).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Notifier framework — UI CRUD + real-CLI webhook fire on session idle
+// (future-features #5)
+// ---------------------------------------------------------------------------
+
+async function clearAllNotifiers(request: APIRequestContext): Promise<void> {
+  try {
+    const list = await request.get(`${API}/notifiers`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    if (!list.ok()) return;
+    const items: { id: string }[] = await list.json();
+    for (const n of items) {
+      await request
+        .delete(`${API}/notifiers/${n.id}`, {
+          headers: { Authorization: `Bearer ${TOKEN}` },
+        })
+        .catch(() => {});
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+test.describe("Notifier framework", () => {
+  test.beforeEach(async ({ request }) => {
+    await clearAllNotifiers(request);
+  });
+  test.afterAll(async ({ request }) => {
+    await clearAllNotifiers(request);
+  });
+
+  test("add / list / delete a webhook via the Settings dialog", async ({
+    page,
+    request,
+  }) => {
+    await login(page);
+    await page.locator(".btn-settings").click();
+    await page.locator('[role="tab"]', { hasText: "Notifications" }).click();
+    await page.waitForTimeout(200);
+
+    await page.locator(".btn-notifier-add").click();
+    await page.locator("#notifier-label").fill("CRUD probe");
+    await page
+      .locator("#notifier-url")
+      .fill("https://example.invalid/hook");
+    await page.locator(".btn-notifier-create").click();
+
+    // UI shows the new row
+    await expect(page.locator(".notifier-item")).toHaveCount(1);
+    await expect(page.locator(".notifier-item")).toContainText("CRUD probe");
+    await expect(page.locator(".notifier-item")).toContainText(
+      "https://example.invalid/hook"
+    );
+
+    // Server persisted it (REST source of truth)
+    const listRes = await request.get(`${API}/notifiers`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const items: Array<{ id: string; label: string; config: { url: string } }> =
+      await listRes.json();
+    const ours = items.find((n) => n.label === "CRUD probe");
+    expect(ours).toBeDefined();
+    expect(ours!.config.url).toBe("https://example.invalid/hook");
+
+    // Delete via hover + click; row removed from UI AND from DB
+    await page.hover(".notifier-item");
+    await page.locator(".notifier-item .btn-delete").click();
+    await expect(page.locator(".notifier-item")).toHaveCount(0);
+
+    const afterRes = await request.get(`${API}/notifiers`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const after: Array<{ label: string }> = await afterRes.json();
+    expect(after.find((n) => n.label === "CRUD probe")).toBeUndefined();
+  });
+
+  test("webhook fires when a real session goes idle (real-CLI)", async ({
+    page,
+    request,
+  }) => {
+    test.skip(
+      !process.env.CLAUDE_BIN && !process.env.PATH?.split(":").length,
+      "claude CLI required"
+    );
+
+    // 1. Stand up a tiny HTTP listener on a random local port. The
+    //    backend POSTs the session_idle payload here; we read it
+    //    after the turn finishes.
+    const received: Array<Record<string, unknown>> = [];
+    const server = http.createServer((req, res) => {
+      if (req.method === "POST") {
+        let body = "";
+        req.on("data", (c) => (body += c));
+        req.on("end", () => {
+          try {
+            received.push(JSON.parse(body));
+          } catch {
+            // ignore malformed
+          }
+          res.writeHead(200);
+          res.end();
+        });
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve())
+    );
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    const hookUrl = `http://127.0.0.1:${port}/hook`;
+
+    let notifierId: string | undefined;
+    let sessionId: string | undefined;
+    try {
+      // 2. Register the webhook target.
+      const create = await request.post(`${API}/notifiers`, {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        data: {
+          type: "webhook",
+          label: "FireProbe",
+          config: { url: hookUrl },
+        },
+      });
+      expect(create.ok()).toBeTruthy();
+      notifierId = (await create.json()).id;
+
+      // 3. Create the session via API, THEN log in (login fetches the
+      //    session list on mount, so order matters).
+      const sess = await createSessionApi(request, "Webhook Fire Probe");
+      sessionId = sess.id;
+      await login(page);
+      await page
+        .locator(".session-item .session-name", {
+          hasText: "Webhook Fire Probe",
+        })
+        .click();
+      await page.locator(".chat-input-bar textarea").fill("Reply only with OK.");
+      await page.locator("button.btn-send").click();
+      // Wait for the turn to complete (result badge appears).
+      await expect(page.locator(".result-badge").first()).toBeVisible({
+        timeout: 60_000,
+      });
+      // Notifier fires in `_drive_messages`'s post-loop hook after the
+      // queue drains. Give the gather + POST a moment to land on our
+      // listener (httpx + node http roundtrip ≈ tens of ms).
+      const deadline = Date.now() + 5_000;
+      while (received.length === 0 && Date.now() < deadline) {
+        await page.waitForTimeout(100);
+      }
+
+      expect(received.length).toBeGreaterThanOrEqual(1);
+      const ev = received[0] as {
+        type: string;
+        session_id: string;
+        session_name: string;
+        title: string;
+      };
+      expect(ev.type).toBe("session_idle");
+      expect(ev.session_id).toBe(sess.id);
+      expect(ev.session_name).toBe("Webhook Fire Probe");
+    } finally {
+      if (notifierId) {
+        await request
+          .delete(`${API}/notifiers/${notifierId}`, {
+            headers: { Authorization: `Bearer ${TOKEN}` },
+          })
+          .catch(() => {});
+      }
+      if (sessionId) {
+        await request
+          .delete(`${API}/sessions/${sessionId}`, {
+            headers: { Authorization: `Bearer ${TOKEN}` },
+          })
+          .catch(() => {});
+      }
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
