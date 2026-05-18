@@ -68,7 +68,7 @@ export function ScheduleList() {
 
   return (
     <div className="schedule-section shrink-0 pb-6 pt-3">
-      <div className="schedule-header group flex h-10 items-center justify-between rounded-lg px-3 hover:bg-sidebar-accent transition-colors">
+      <div className="schedule-header group flex h-10 items-center justify-between rounded-lg px-4 hover:bg-sidebar-accent transition-colors">
         <span className="schedule-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Schedules
         </span>
@@ -121,7 +121,7 @@ export function ScheduleList() {
         {sessionSchedules.map((sched) => (
           <div
             key={sched.id}
-            className={`schedule-item group flex items-center gap-3 rounded-lg px-3 py-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors ${
+            className={`schedule-item group flex items-center gap-3 rounded-lg px-4 py-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors ${
               !sched.enabled ? "disabled opacity-50" : ""
             }`}
           >

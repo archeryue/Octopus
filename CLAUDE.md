@@ -36,15 +36,21 @@ You MUST verify your changes before considering them done:
 
 ## Commands
 
+> **Frontend gotcha**: the backend serves `web/dist/` (the built SPA),
+> not `web/src/`. Any source change needs `cd web && bun run build`
+> before `octopus serve` / `uvicorn server.main:app` users will see it.
+> For live HMR, run `cd web && bun dev` and hit the dev server's port
+> (5173) instead of the backend.
+
 ```bash
 # Backend
 .venv/bin/pytest tests/ -v              # run backend tests
-.venv/bin/uvicorn server.main:app       # start server
+.venv/bin/uvicorn server.main:app       # start server (serves web/dist/)
 
 # Frontend
 cd web && bun run test                  # run frontend unit tests
-cd web && bun run build                 # typecheck + build
-cd web && bun dev                       # start dev server
+cd web && bun run build                 # typecheck + build (refreshes web/dist/)
+cd web && bun dev                       # live dev server on :5173
 
 # E2E (Playwright)
 cd web && bun run test:e2e              # run e2e tests (headless)
