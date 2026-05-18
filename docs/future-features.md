@@ -99,22 +99,31 @@ directly from the chat (`View` button next to `Write` / `Edit` /
 
 ---
 
-## 4. AskUserQuestion: drop the deny-as-answer hack
+## 4. AskUserQuestion: replace deny-as-answer with a custom MCP tool
 
-**Priority**: Low (the current shape works, this is cleanup)
-**Affected**: `server/backends/claude_code.py`
+**Priority**: Low — code-smell cleanup, not a user-visible bug
+**Affected**: `server/backends/claude_code.py`, new MCP tool definition
 
-We currently deliver the user's answer to `AskUserQuestion` by
-returning `PermissionResultDeny(message=answer)` through the
-permission control protocol. It works because Claude reads the deny
-"reason" as the answer text, but the semantics are wrong (we're not
-actually denying anything).
+Today's flow: when the CLI asks "can_use_tool AskUserQuestion?", we
+emit a `question_request` event, hold the control_request, and when
+the user answers we respond with `behavior=deny, message=<answer>`.
+The CLI surfaces the deny `message` to Claude verbatim — Claude reads
+it as the tool's effective response and continues. The real-CLI e2e
+test (`new-features.spec.ts::AskUserQuestion: real model → form …`)
+passes, so this works.
 
-Once we have a clear handle on which control-protocol path the CLI
-expects for AskUserQuestion answers (Phase 1b notes captured this for
-the Claude side), reroute through that. Existing UI
-(`QuestionPrompt.tsx`, store state, `answer_question` WS message)
-stays unchanged — only the backend wire-up flips.
+The semantic awkwardness: we're using the "denied with reason" path
+for what's really "answered with content". A cleaner alternative
+exists but is more work: register our own MCP server that exposes
+`AskUserQuestion`, disable the CLI's built-in via
+`disallowed_tools=["AskUserQuestion"]`, and return the answer as a
+normal tool_result. This avoids the protocol-shape mismatch but
+introduces an MCP server we have to lifecycle.
+
+Verdict: leave the current shape until we have another reason to add
+MCP plumbing (e.g. exposing more host-side tools). Keep the existing
+behavior covered by the e2e tripwire that fails on any `ZodError` or
+`Tool permission request failed` text.
 
 ---
 
@@ -151,7 +160,8 @@ session-status transitions.
 ## 6. Per-session WebSocket reconnect — drop the setMessages race
 
 **Priority**: Low (narrow window, not user-reported)
-**Affected**: `web/src/hooks/useWebSocket.ts`
+**Affected**: `web/src/hooks/useWebSocket.ts`, `server/session_manager.py`,
+`server/database.py`, `server/routers/sessions.py`
 
 On WS reconnect, `onopen` fetches `/api/sessions/{activeId}` and calls
 `setMessages` with the result, which replaces the in-memory array. If
@@ -160,11 +170,32 @@ arriving and `setMessages` running, that event lands via `onmessage`
 and then gets stomped by `setMessages`.
 
 The persistence order (persist → broadcast) means the data is never
-lost (the next refetch would catch it), but the live UI can briefly
-miss the most-recent event until the next event triggers a re-render.
+lost on the server (the next reconnect's refetch would catch it),
+but the live UI can briefly miss the most-recent event until the
+next event triggers a re-render.
 
-Fix: dedupe by message seq, or buffer WS messages while a refetch is
-in-flight and apply them after `setMessages`.
+**Why this needs more than a one-file fix**: naive buffer-and-replay
+double-applies any event that's already in the snapshot. Safe dedup
+needs a monotonic key on each WS event that's stable across
+snapshot + broadcast. The natural choice is the `messages.seq`
+column the DB already maintains.
+
+**Plan**:
+1. `database.load_messages` returns `seq` per row.
+2. `_persist_message` captures the assigned seq.
+3. `session_manager` includes `seq` on every WS event whose payload
+   corresponds to a DB row (`user_message`, `assistant_text`,
+   `tool_use`, `tool_result`, `result`, `error`, `question_*`).
+4. `SessionDetail` response includes the snapshot's high-water-mark
+   seq.
+5. Frontend tracks `lastAppliedSeq` per session in the store, drops
+   any incoming event with `seq <= lastAppliedSeq`, and bumps the
+   counter on every successful apply.
+6. On `setMessages`, set `lastAppliedSeq` to the max seq in the
+   snapshot.
+
+Tracking under "low priority" because the window is small and
+nothing is actually lost from the DB.
 
 ---
 
