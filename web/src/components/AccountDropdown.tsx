@@ -26,17 +26,17 @@ export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="btn-account flex w-full items-center gap-2 rounded-lg p-2 text-left hover:bg-sidebar-accent transition-colors"
+          className="btn-account flex w-full items-center gap-3 rounded-lg p-2.5 text-left hover:bg-sidebar-accent transition-colors"
           aria-label="Account menu"
         >
-          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-primary-200 text-primary-700 text-xs font-medium">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary-200 text-primary-700 text-sm font-semibold">
             {initial}
           </span>
           <span className="flex-1 min-w-0">
             <span className="block text-sm font-medium leading-tight truncate text-sidebar-foreground">
               Octopus
             </span>
-            <span className="block text-xs leading-tight truncate mt-px text-sidebar-foreground/70 font-mono">
+            <span className="block text-xs leading-tight truncate mt-1 text-sidebar-foreground/70 font-mono">
               {display}
             </span>
           </span>

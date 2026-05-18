@@ -6,8 +6,8 @@
    * light palette so they read consistently against `bg-card`. */
   --bg-tertiary: hsl(216 26% 96%);   /* matches --gray-50 */
   --border: hsl(215 21% 89%);        /* matches --gray-200 */
-  --accent: hsl(20 99% 47%);         /* matches --primary-700 */
-  --accent-dim: hsl(14 92% 74%);     /* matches --primary-500 */
+  --accent: hsl(222 76% 30%);        /* matches --primary-700 (dark blue) */
+  --accent-dim: hsl(218 72% 56%);    /* matches --primary-500 */
   --green: #2da44e;
   --red: #cf222e;
   --yellow: #bf8700;

@@ -90,14 +90,18 @@
     --gray-900: 220 19% 13%;  /* #1A1E26 */
     --gray-950: 220 18% 10%;  /* #14171D */
 
-    /* Primary scale — vm0's orange */
-    --primary-50:  15 100% 96%;  /* #FCF3F0 */
-    --primary-100: 14 100% 93%;  /* #FDE7DF */
-    --primary-200: 14 100% 89%;  /* #FFD5C5 */
-    --primary-300: 14 100% 85%;  /* #FFC5B0 */
-    --primary-500: 14  92% 74%;  /* #F4A288 */
-    --primary-600: 15  80% 66%;  /* #EB8868 */
-    --primary-700: 20  99% 47%;  /* #ED4E01 — the brand orange */
+    /* Primary scale — dark blue (user requested white + dark blue). Hue
+     * locked around 220° (true blue, not teal/violet); the 700 stop is
+     * the brand accent used on filled buttons, focus rings, and active
+     * pills. Lighter stops are used for tinted backgrounds + avatar
+     * tiles. */
+    --primary-50:  214 100% 97%;  /* #EEF5FE */
+    --primary-100: 213 100% 93%;  /* #DCEAFD */
+    --primary-200: 214 100% 88%;  /* #C2DCFB */
+    --primary-300: 215  92% 80%;  /* #A2C5F4 */
+    --primary-500: 218  72% 56%;  /* #4A82DA */
+    --primary-600: 219  78% 42%;  /* #1B53BC */
+    --primary-700: 222  76% 30%;  /* #133E8B — the brand dark blue */
 
     /* Semantic mappings (light theme) */
     --background:           214 20% 98.5%;
