@@ -8,6 +8,10 @@ class Settings(BaseSettings):
     default_working_dir: str = "."
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
     db_path: str = "octopus.db"
+    # User-uploaded attachments live here, one subdir per session_id.
+    # `~` is expanded at use time (not config load time) so tests that
+    # override $HOME via monkeypatch see the override.
+    attachments_dir: str = "~/.octopus/attachments"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False

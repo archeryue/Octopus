@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS messages (
     is_error INTEGER,
     session_id_ref TEXT,
     cost REAL,
+    attachments TEXT,                       -- JSON list[AttachmentMetadata], null when none
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
@@ -162,6 +163,14 @@ class Database:
         except Exception:
             logger.exception("credential storage-split backfill failed")
 
+        # messages.attachments was added with the file/image upload feature.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE messages ADD COLUMN attachments TEXT"
+            )
+        except Exception:
+            pass
+
     async def _ensure_connected(self) -> None:
         if self._conn is None:
             logger.warning("Database connection lost, reconnecting...")
@@ -265,17 +274,21 @@ class Database:
         is_error: bool | None = None,
         session_id_ref: str | None = None,
         cost: float | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> None:
         await self._ensure_connected()
         content_str = json.dumps(content) if content is not None else None
         tool_input_str = json.dumps(tool_input) if tool_input is not None else None
         is_error_int = int(is_error) if is_error is not None else None
+        attachments_str = (
+            json.dumps(attachments) if attachments else None
+        )
 
         await self._conn.execute(
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
-            "tool_use_id, is_error, session_id_ref, cost) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tool_use_id, is_error, session_id_ref, cost, attachments) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 seq,
@@ -288,6 +301,7 @@ class Database:
                 is_error_int,
                 session_id_ref,
                 cost,
+                attachments_str,
             ),
         )
         self._dirty = True
@@ -299,7 +313,7 @@ class Database:
         await self.flush()  # ensure pending writes are visible
         query = (
             "SELECT seq, role, type, content, tool_name, tool_input, tool_use_id, "
-            "is_error, session_id_ref, cost "
+            "is_error, session_id_ref, cost, attachments "
             "FROM messages WHERE session_id = ? ORDER BY seq"
         )
         params: list = [session_id]
@@ -313,6 +327,7 @@ class Database:
             content = json.loads(row[3]) if row[3] is not None else None
             tool_input = json.loads(row[5]) if row[5] is not None else None
             is_error = bool(row[7]) if row[7] is not None else None
+            attachments = json.loads(row[10]) if row[10] is not None else []
             results.append(
                 {
                     "seq": row[0],
@@ -325,6 +340,7 @@ class Database:
                     "is_error": is_error,
                     "session_id": row[8],
                     "cost": row[9],
+                    "attachments": attachments,
                 }
             )
         return results

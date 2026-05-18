@@ -3,18 +3,49 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Callable
 
+from .attachments import (
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    AttachmentError,
+    delete_session_attachments,
+    get_path as get_attachment_path,
+)
 from .backends import BackendBase, BackendCredential, BackendEvent, ClaudeCodeBackend
 from .config import settings
-from .crypto import decrypt
+from .crypto import decrypt, encrypt
 from .database import Database
-from .models import MessageContent, MessageRole, SessionStatus
+from .oauth_errors import RefreshErrorCode
+from .oauth_providers import OAuthTokenSet, get_provider
+from .models import (
+    AttachmentMetadata,
+    MessageContent,
+    MessageRole,
+    PendingQuestionInfo,
+    SessionDetail,
+    SessionStatus,
+)
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class QueuedPrompt:
+    """A user turn waiting to run.
+
+    Carries both the raw prompt text and any attachments the user
+    uploaded with it — we resolve attachments → absolute paths only at
+    spawn time (not at enqueue time) so the agent sees the same prompt
+    shape regardless of whether the turn ran immediately or after a
+    queue drain.
+    """
+
+    prompt: str
+    attachment_ids: list[str]
 
 
 @dataclass
@@ -63,7 +94,7 @@ class Session:
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
     _pending_questions: dict[str, PendingQuestion] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-    _pending_queue: list[str] = field(default_factory=list, repr=False)
+    _pending_queue: list[QueuedPrompt] = field(default_factory=list, repr=False)
 
 
 class SessionManager:
@@ -349,6 +380,11 @@ class SessionManager:
                 pass
         if self.db:
             await self.db.delete_session(session_id)
+        # Best-effort: wipe any uploaded files for this session. We do
+        # this after the DB delete so the FK cascade has already removed
+        # message rows pointing at them — if rmtree fails, the session
+        # row is still gone, which is the user-visible expectation.
+        delete_session_attachments(session_id)
         return True
 
     async def _persist_message(
@@ -376,17 +412,36 @@ class SessionManager:
             is_error=msg.is_error,
             session_id_ref=msg.session_id,
             cost=msg.cost,
+            attachments=[a.model_dump() for a in msg.attachments] if msg.attachments else None,
         )
         return seq
 
-    async def start_message(self, session_id: str, prompt: str) -> None:
-        """Kick off a message, or queue it if the session is already running."""
+    async def start_message(
+        self,
+        session_id: str,
+        prompt: str,
+        attachment_ids: list[str] | None = None,
+    ) -> None:
+        """Kick off a message, or queue it if the session is already running.
+
+        `attachment_ids` are previously-uploaded files (see
+        `POST /api/sessions/{id}/attachments`). They're carried with the
+        prompt through the queue and resolved to absolute paths at spawn
+        time so the agent's `Read` tool can open them.
+        """
         session = self.sessions.get(session_id)
         if session is None:
             raise ValueError(f"Session {session_id} not found")
 
+        if attachment_ids and len(attachment_ids) > MAX_ATTACHMENTS_PER_MESSAGE:
+            raise ValueError(
+                f"too many attachments: max {MAX_ATTACHMENTS_PER_MESSAGE}"
+            )
+
+        queued = QueuedPrompt(prompt=prompt, attachment_ids=list(attachment_ids or []))
+
         if session._active_task and not session._active_task.done():
-            session._pending_queue.append(prompt)
+            session._pending_queue.append(queued)
             await self._broadcast(
                 {
                     "type": "queued",
@@ -398,10 +453,12 @@ class SessionManager:
             return
 
         session._active_task = asyncio.create_task(
-            self._drive_messages(session_id, prompt)
+            self._drive_messages(session_id, queued)
         )
 
-    async def _drive_messages(self, session_id: str, initial_prompt: str) -> None:
+    async def _drive_messages(
+        self, session_id: str, initial: QueuedPrompt
+    ) -> None:
         """Run the initial prompt, then drain any queued prompts.
 
         Each prompt runs as an inner task that interrupt() can cancel
@@ -411,9 +468,9 @@ class SessionManager:
         if session is None:
             return
 
-        prompt: str | None = initial_prompt
-        while prompt is not None:
-            inner = asyncio.create_task(self._consume_message(session_id, prompt))
+        current: QueuedPrompt | None = initial
+        while current is not None:
+            inner = asyncio.create_task(self._consume_message(session_id, current))
             session._inner_task = inner
             try:
                 await inner
@@ -469,12 +526,19 @@ class SessionManager:
                 "notifier_manager.fire raised for session %s", session.id
             )
 
-    async def _consume_message(self, session_id: str, prompt: str) -> None:
-        async for _event in self.send_message(session_id, prompt):
+    async def _consume_message(
+        self, session_id: str, queued: QueuedPrompt
+    ) -> None:
+        async for _event in self.send_message(
+            session_id, queued.prompt, queued.attachment_ids
+        ):
             pass  # send_message persists + broadcasts each event
 
     async def send_message(
-        self, session_id: str, prompt: str
+        self,
+        session_id: str,
+        prompt: str,
+        attachment_ids: list[str] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         session = self.sessions.get(session_id)
         if session is None:
@@ -486,9 +550,41 @@ class SessionManager:
             raise ValueError(f"Session {session_id} is busy")
 
         try:
-            # Record user message
+            # Resolve attachment ids → on-disk paths so the prompt can
+            # cite absolute paths the agent's `Read` tool will open.
+            # Missing files are dropped (with a logged warning) rather
+            # than failing the whole turn — the user already typed the
+            # prompt; an orphaned id from a deleted file shouldn't eat it.
+            attachments_meta: list[AttachmentMetadata] = []
+            attachment_paths: list[str] = []
+            for aid in attachment_ids or []:
+                path = get_attachment_path(session_id, aid)
+                if path is None or not path.is_file():
+                    logger.warning(
+                        "Session %s: dropped missing attachment %s", session_id, aid
+                    )
+                    continue
+                # Reconstruct the user-visible filename from the on-disk
+                # `<id>__<filename>` layout.
+                fname = path.name.split("__", 1)[1] if "__" in path.name else path.name
+                attachments_meta.append(
+                    AttachmentMetadata(
+                        id=aid,
+                        filename=fname,
+                        size=path.stat().st_size,
+                        mime_type=_guess_mime(fname),
+                    )
+                )
+                attachment_paths.append(str(path))
+
+            # Record user message — content is the *raw* prompt the user
+            # typed; the augmented `<attachments>` block is only what we
+            # hand to the backend.
             user_msg = MessageContent(
-                role=MessageRole.user, type="text", content=prompt
+                role=MessageRole.user,
+                type="text",
+                content=prompt,
+                attachments=attachments_meta,
             )
             seq = await self._persist_message(session, user_msg)
             event: dict[str, Any] = {
@@ -496,6 +592,8 @@ class SessionManager:
                 "session_id": session_id,
                 "content": prompt,
             }
+            if attachments_meta:
+                event["attachments"] = [a.model_dump() for a in attachments_meta]
             if seq is not None:
                 event["seq"] = seq
             await self._broadcast(event)
@@ -506,8 +604,12 @@ class SessionManager:
                 {"type": "status", "session_id": session_id, "status": "running"}
             )
 
+            augmented_prompt = _augment_prompt_with_attachments(
+                prompt, attachment_paths
+            )
+
             try:
-                async for ws_event in self._run_backend(session, prompt):
+                async for ws_event in self._run_backend(session, augmented_prompt):
                     await self._broadcast(ws_event)
                     yield ws_event
             except Exception as e:
@@ -1063,6 +1165,37 @@ class SessionManager:
             return False
         pending.future.set_result(False)
         return True
+
+
+def _guess_mime(filename: str) -> str:
+    """Lightweight MIME guess for replayed attachments.
+
+    Mirrors the upload-time logic in `server.attachments._detect_mime`,
+    but we don't have the client's declared MIME at replay so we always
+    derive from the filename extension.
+    """
+    import mimetypes
+
+    guess, _ = mimetypes.guess_type(filename)
+    return guess or "application/octet-stream"
+
+
+def _augment_prompt_with_attachments(prompt: str, paths: list[str]) -> str:
+    """Prepend an `<attachments>` block listing absolute paths.
+
+    The agent (Claude Code, Codex, anything with a Read tool) sees the
+    paths in its input and can open them on demand. Format kept terse
+    and obvious — one path per line so the model doesn't have to parse
+    anything clever.
+    """
+    if not paths:
+        return prompt
+    lines = ["<attachments>"]
+    lines.extend(f"- {p}" for p in paths)
+    lines.append("</attachments>")
+    lines.append("")
+    lines.append(prompt)
+    return "\n".join(lines)
 
 
 # Singleton

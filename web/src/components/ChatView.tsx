@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { IconMenu2 } from "@tabler/icons-react";
+import {
+  IconArrowUp,
+  IconFile,
+  IconMenu2,
+  IconPaperclip,
+  IconPlayerStop,
+  IconX,
+} from "@tabler/icons-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
   useSessionStore,
+  type AttachmentMetadata,
   type Message,
   type PendingQuestion,
 } from "../stores/sessionStore";
@@ -13,8 +21,31 @@ import { Button } from "./ui/button";
 
 const EMPTY_MESSAGES: Message[] = [];
 
+// Mirror of server/attachments.py MAX_ATTACHMENTS_PER_MESSAGE. Kept as a
+// constant rather than a contract type because it's a UX cap (so we can
+// disable the file picker once full), not a wire shape.
+const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+
+// A file the user picked but hasn't sent yet. Lives in the composer
+// only — once the WS send_message fires, the server's user_message
+// broadcast carries the AttachmentMetadata into the chat history.
+interface PendingAttachment {
+  // Stable id used as React key + remove-target. Independent from the
+  // server-assigned attachment id (which only exists after upload).
+  uid: string;
+  file: File;
+  status: "uploading" | "ready" | "error";
+  meta?: AttachmentMetadata;
+  error?: string;
+}
+
 interface Props {
-  sendMessage: (sessionId: string, content: string) => void;
+  sendMessage: (
+    sessionId: string,
+    content: string,
+    attachmentIds?: string[]
+  ) => void;
   interrupt: (sessionId: string) => void;
   approveTool: (sessionId: string, toolUseId: string) => void;
   denyTool: (sessionId: string, toolUseId: string) => void;
@@ -40,11 +71,25 @@ export function ChatView({
   onToggleSidebar,
 }: Props) {
   const [input, setInput] = useState("");
+  const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  // Counter for nested dragenter/dragleave events — without this the
+  // overlay flickers as the cursor crosses child elements (textarea,
+  // chips, etc.) because each crossing fires a leave on the parent.
+  const dragCounter = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const messagesMap = useSessionStore((s) => s.messages);
   const messages = activeSessionId ? (messagesMap[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const sessions = useSessionStore((s) => s.sessions);
-  const activeSession = useMemo(() => sessions.find((s) => s.id === activeSessionId), [sessions, activeSessionId]);
+  const archivedSessions = useSessionStore((s) => s.archivedSessions);
+  const activeSession = useMemo(
+    () =>
+      sessions.find((s) => s.id === activeSessionId) ??
+      archivedSessions.find((s) => s.id === activeSessionId),
+    [sessions, archivedSessions, activeSessionId]
+  );
+  const isArchived = !!activeSession?.archived;
   const pendingQueueMap = useSessionStore((s) => s.pendingQueue);
   const pendingQueue = activeSessionId
     ? (pendingQueueMap[activeSessionId] ?? EMPTY_QUEUE)
@@ -126,10 +171,140 @@ export function ChatView({
           </div>
         );
       }
-      return <MessageBubble message={msg} />;
+      return <MessageBubble message={msg} sessionId={activeSessionId ?? ""} />;
     },
     [activeSessionId, approveTool, denyTool, answerQuestion, pendingQuestions]
   );
+
+  // ---- attachments: upload, paste, drop, picker, chips ------------------
+
+  const uploadOne = useCallback(
+    async (sessionId: string, file: File): Promise<AttachmentMetadata> => {
+      const token = useSessionStore.getState().token;
+      const form = new FormData();
+      form.append("file", file, file.name);
+      const res = await fetch(
+        `${window.location.origin}/api/sessions/${encodeURIComponent(
+          sessionId
+        )}/attachments`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: form,
+        }
+      );
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `upload failed (${res.status})`);
+      }
+      return (await res.json()) as AttachmentMetadata;
+    },
+    []
+  );
+
+  const addFiles = useCallback(
+    (files: File[]) => {
+      if (!activeSessionId || files.length === 0) return;
+      // Cap total at server's MAX_ATTACHMENTS_PER_MESSAGE; truncate the
+      // overflow rather than rejecting so the user gets *some* attached.
+      const room = MAX_ATTACHMENTS_PER_MESSAGE - pendingAttachments.length;
+      if (room <= 0) return;
+      const accepted = files.slice(0, room).filter((f) => {
+        if (f.size > MAX_FILE_BYTES) {
+          // eslint-disable-next-line no-console
+          console.warn(`Attachment ${f.name} exceeds 25MB cap, skipping`);
+          return false;
+        }
+        return true;
+      });
+      const newPending: PendingAttachment[] = accepted.map((file) => ({
+        uid: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        status: "uploading",
+      }));
+      setPendingAttachments((prev) => [...prev, ...newPending]);
+      // Kick off uploads in parallel; each one mutates its own slot.
+      for (const p of newPending) {
+        uploadOne(activeSessionId, p.file)
+          .then((meta) => {
+            setPendingAttachments((prev) =>
+              prev.map((x) =>
+                x.uid === p.uid ? { ...x, status: "ready", meta } : x
+              )
+            );
+          })
+          .catch((err: Error) => {
+            setPendingAttachments((prev) =>
+              prev.map((x) =>
+                x.uid === p.uid
+                  ? { ...x, status: "error", error: err.message }
+                  : x
+              )
+            );
+          });
+      }
+    },
+    [activeSessionId, pendingAttachments.length, uploadOne]
+  );
+
+  const removeAttachment = useCallback((uid: string) => {
+    setPendingAttachments((prev) => prev.filter((x) => x.uid !== uid));
+  }, []);
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      // Don't preventDefault on text pastes — only intercept when files
+      // are present (clipboard images, copied files).
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (files.length === 0) return;
+      e.preventDefault();
+      addFiles(files);
+    },
+    [addFiles]
+  );
+
+  const handleDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      dragCounter.current = 0;
+      setIsDragOver(false);
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length > 0) addFiles(files);
+    },
+    [addFiles]
+  );
+
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    // Only react to drags that actually carry files, otherwise we'd
+    // flash the overlay when the user is just rearranging text.
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    dragCounter.current += 1;
+    setIsDragOver(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  }, []);
+
+  const hasUploadInFlight = pendingAttachments.some(
+    (a) => a.status === "uploading"
+  );
+  const readyAttachmentIds = pendingAttachments
+    .filter((a) => a.status === "ready" && a.meta)
+    .map((a) => a.meta!.id);
 
   const footer = useCallback(
     () =>
@@ -144,8 +319,14 @@ export function ChatView({
   );
 
   const handleSend = async () => {
-    if (!input.trim() || !activeSessionId) return;
+    if (!activeSessionId) return;
     const trimmed = input.trim();
+    // Allow attachment-only turns — if the user attached files and
+    // didn't type anything, we still want to send.
+    if (!trimmed && readyAttachmentIds.length === 0) return;
+    // Block while uploads are still in flight so we don't drop attachments
+    // the user just added but the server hasn't finished receiving.
+    if (hasUploadInFlight) return;
 
     // /archive command — intercept client-side. Hides the current
     // session and seamlessly swaps the active id to a fresh session
@@ -185,8 +366,17 @@ export function ChatView({
       return;
     }
 
-    sendMessage(activeSessionId, trimmed);
+    sendMessage(
+      activeSessionId,
+      trimmed,
+      readyAttachmentIds.length > 0 ? readyAttachmentIds : undefined
+    );
     setInput("");
+    // Drop both ready uploads (they're now associated with the message
+    // we just sent) and any failed uploads (the user can retry by
+    // re-attaching). Leave in-flight uploads alone — addFiles already
+    // prevents that case by blocking send while one is pending.
+    setPendingAttachments([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -290,8 +480,32 @@ export function ChatView({
   }
 
   return (
-    <div className="chat-view flex-1 flex flex-col min-h-0">
+    <div
+      className="chat-view flex-1 flex flex-col min-h-0 relative"
+      onDragEnter={isArchived ? undefined : handleDragEnter}
+      onDragLeave={isArchived ? undefined : handleDragLeave}
+      onDragOver={isArchived ? undefined : handleDragOver}
+      onDrop={isArchived ? undefined : handleDrop}
+    >
       {header}
+
+      {isDragOver && !isArchived && (
+        <div className="chat-drop-overlay absolute inset-0 z-20 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary/60 pointer-events-none">
+          <div className="rounded-lg bg-background/90 px-6 py-4 text-center shadow-lg">
+            <IconPaperclip
+              size={24}
+              className="mx-auto mb-1 text-primary"
+              aria-hidden
+            />
+            <div className="text-sm font-medium text-foreground">
+              Drop files to attach
+            </div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              Up to {MAX_ATTACHMENTS_PER_MESSAGE} files, 25 MB each
+            </div>
+          </div>
+        </div>
+      )}
 
       <Virtuoso
         ref={virtuosoRef}
@@ -330,27 +544,149 @@ export function ChatView({
         </div>
       )}
 
-      <div className="chat-input-bar flex items-end gap-2 px-4 py-3 bg-background shrink-0">
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={
-            isRunning
-              ? "Send to queue, or press Esc to interrupt…"
-              : "Send a message..."
-          }
-          rows={1}
-          className="flex-1 min-h-[40px] max-h-40 resize-y rounded-lg border-[0.7px] border-gray-400 bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-[3px] focus:ring-primary/10"
-        />
-        <Button
-          className="btn btn-send shrink-0"
-          onClick={handleSend}
-          disabled={!input.trim()}
-        >
-          {isRunning ? "Queue" : "Send"}
-        </Button>
-      </div>
+      {isArchived ? (
+        <div className="chat-archived-banner px-4 py-3 border-t border-border bg-muted/40 text-sm text-muted-foreground flex items-center justify-between gap-3 shrink-0">
+          <span>
+            This session is <strong className="text-foreground">archived</strong>{" "}
+            — viewing read-only history. Unarchive from the sidebar to
+            continue the conversation.
+          </span>
+        </div>
+      ) : (
+        <div className="chat-input-bar px-4 py-1.5 bg-background shrink-0">
+          {/* Rounded card containing chips + textarea + bottom action row.
+              Layout copied from VM0 (zero-composer) but tuned shorter
+              for Octopus' chat panel: the textarea auto-grows with
+              content (field-sizing-content) so the empty composer is a
+              single comfortable line, not a hero-sized block. */}
+          <div className="zero-composer overflow-hidden rounded-xl border-[0.7px] border-gray-400 bg-card shadow-sm focus-within:border-primary/70 focus-within:ring-[3px] focus-within:ring-primary/10 transition-colors">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              data-testid="attachment-file-input"
+              onChange={(e) => {
+                const files = Array.from(e.target.files ?? []);
+                addFiles(files);
+                // Reset so picking the same file twice in a row still fires.
+                e.target.value = "";
+              }}
+            />
+
+            {pendingAttachments.length > 0 && (
+              <div
+                className="chat-attachment-chips flex flex-wrap gap-2 px-3 pt-2"
+                aria-label="Attachments"
+              >
+                {pendingAttachments.map((p) => (
+                  <div
+                    key={p.uid}
+                    className={`attachment-pending inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${
+                      p.status === "error"
+                        ? "border-destructive/60 bg-destructive/5 text-destructive"
+                        : "border-border bg-muted/40 text-foreground"
+                    }`}
+                    title={
+                      p.status === "error"
+                        ? p.error || "upload failed"
+                        : p.file.name
+                    }
+                  >
+                    <IconFile
+                      size={14}
+                      className="text-muted-foreground shrink-0"
+                    />
+                    <span className="font-medium truncate max-w-[10rem]">
+                      {p.file.name}
+                    </span>
+                    {p.status === "uploading" && (
+                      <span className="text-muted-foreground">uploading…</span>
+                    )}
+                    {p.status === "error" && (
+                      <span className="text-destructive">failed</span>
+                    )}
+                    <button
+                      type="button"
+                      className="attachment-remove text-muted-foreground hover:text-foreground"
+                      aria-label={`Remove ${p.file.name}`}
+                      onClick={() => removeAttachment(p.uid)}
+                    >
+                      <IconX size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              placeholder={
+                isRunning
+                  ? "Send to queue, or press Esc to interrupt…"
+                  : "Send a message…"
+              }
+              rows={1}
+              // field-sizing-content makes the textarea grow with its
+              // content (Tailwind v4 / native CSS), so the empty state is
+              // one comfortable line and we don't need JS auto-grow.
+              // max-h caps growth before it eats the chat.
+              className="w-full resize-none field-sizing-content bg-transparent px-3 pt-2 pb-0 text-sm text-foreground placeholder:text-muted-foreground/50 border-0 outline-none focus:outline-none focus:ring-0 max-h-48"
+            />
+
+            <div className="composer-actions flex items-center justify-between gap-2 px-1.5 pb-1.5">
+              <div className="flex items-center gap-1 text-muted-foreground">
+                <button
+                  type="button"
+                  className="btn btn-attach inline-flex items-center justify-center size-8 rounded-lg transition-colors duration-200 hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
+                  aria-label="Attach file"
+                  title="Attach file"
+                  disabled={
+                    pendingAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE
+                  }
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <IconPaperclip size={16} stroke={1.5} />
+                </button>
+              </div>
+              <div className="flex items-center gap-1">
+                {isRunning ? (
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="btn btn-stop rounded-lg h-8 w-8 p-0 shrink-0"
+                    onClick={() =>
+                      activeSessionId && interrupt(activeSessionId)
+                    }
+                    aria-label="Stop"
+                    title="Stop (Esc)"
+                  >
+                    <IconPlayerStop size={14} />
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  className="btn btn-send rounded-lg h-8 w-8 p-0 shrink-0"
+                  onClick={handleSend}
+                  disabled={
+                    hasUploadInFlight ||
+                    (!input.trim() && readyAttachmentIds.length === 0)
+                  }
+                  aria-label={isRunning ? "Queue message" : "Send message"}
+                  title={isRunning ? "Queue (current turn is running)" : "Send"}
+                >
+                  <IconArrowUp size={14} />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

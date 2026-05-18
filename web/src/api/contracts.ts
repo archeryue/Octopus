@@ -99,6 +99,63 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unarchive Session
+         * @description Bring an archived session back as a live session.
+         *
+         *     Flips the DB row's `archived=0` and reloads it into the in-memory
+         *     session map so writes (sendMessage, schedules, etc.) work again.
+         */
+        post: operations["unarchive_session_api_sessions__session_id__unarchive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Attachment */
+        post: operations["upload_attachment_api_sessions__session_id__attachments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Attachment */
+        get: operations["download_attachment_api_sessions__session_id__attachments__attachment_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedules": {
         parameters: {
             query?: never;
@@ -295,6 +352,24 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AttachmentMetadata
+         * @description Metadata for a user-uploaded file attached to a message.
+         *
+         *     Only what clients need to render the chip / fetch the file. The
+         *     on-disk path lives in `server.attachments` and is derivable from
+         *     `session_id + id` — we don't ship it to the client.
+         */
+        AttachmentMetadata: {
+            /** Id */
+            id: string;
+            /** Filename */
+            filename: string;
+            /** Size */
+            size: number;
+            /** Mime Type */
+            mime_type: string;
+        };
+        /**
          * AuthType
          * @enum {string}
          */
@@ -304,6 +379,11 @@ export interface components {
          * @enum {string}
          */
         BackendKind: "claude-code" | "codex";
+        /** Body_upload_attachment_api_sessions__session_id__attachments_post */
+        Body_upload_attachment_api_sessions__session_id__attachments_post: {
+            /** File */
+            file: string;
+        };
         /** CreateCredentialRequest */
         CreateCredentialRequest: {
             backend: components["schemas"]["BackendKind"];
@@ -431,6 +511,11 @@ export interface components {
             session_id?: string | null;
             /** Cost */
             cost?: number | null;
+            /**
+             * Attachments
+             * @default []
+             */
+            attachments: components["schemas"]["AttachmentMetadata"][];
             /** Seq */
             seq?: number | null;
         };
@@ -860,6 +945,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unarchive_session_api_sessions__session_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_attachment_api_sessions__session_id__attachments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_attachment_api_sessions__session_id__attachments_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentMetadata"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_attachment_api_sessions__session_id__attachments__attachment_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                attachment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

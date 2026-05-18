@@ -68,7 +68,7 @@ async def import_session(
         claude_session_id=s.claude_session_id,
         credential_id=s.credential_id,
         messages=messages,
-        pending_queue=list(s._pending_queue),
+        pending_queue=[qp.prompt for qp in s._pending_queue],
         pending_questions=[
             PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
             for q in s._pending_questions.values()
@@ -82,31 +82,38 @@ async def import_session(
 
 @router.get("/{session_id}", response_model=SessionDetail)
 async def get_session(session_id: str, _: str = Depends(verify_token)):
+    # Live session: read straight from the in-memory state (includes
+    # pending queue / pending questions / live status).
     s = session_manager.get_session(session_id)
-    if s is None:
+    if s is not None:
+        messages_raw = await session_manager.db.load_messages(s.id)
+        messages = [MessageContent(**m) for m in messages_raw]
+        return SessionDetail(
+            id=s.id,
+            name=s.name,
+            working_dir=s.working_dir,
+            status=s.status,
+            created_at=s.created_at,
+            message_count=s._message_count,
+            claude_session_id=s.claude_session_id,
+            credential_id=s.credential_id,
+            messages=messages,
+            pending_queue=[qp.prompt for qp in s._pending_queue],
+            pending_questions=[
+                PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
+                for q in s._pending_questions.values()
+            ],
+            # High-water mark: clients use this as the dedup baseline so any
+            # WS event with seq < next_message_seq is treated as already
+            # applied (it's in the messages list above).
+            next_message_seq=s._message_count,
+        )
+
+    # Archived session: not in memory; read history straight from DB.
+    archived_detail = await session_manager.load_archived_session_detail(session_id)
+    if archived_detail is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
-    messages_raw = await session_manager.db.load_messages(s.id)
-    messages = [MessageContent(**m) for m in messages_raw]
-    return SessionDetail(
-        id=s.id,
-        name=s.name,
-        working_dir=s.working_dir,
-        status=s.status,
-        created_at=s.created_at,
-        message_count=s._message_count,
-        claude_session_id=s.claude_session_id,
-        credential_id=s.credential_id,
-        messages=messages,
-        pending_queue=list(s._pending_queue),
-        pending_questions=[
-            PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
-            for q in s._pending_questions.values()
-        ],
-        # High-water mark: clients use this as the dedup baseline so any
-        # WS event with seq < next_message_seq is treated as already
-        # applied (it's in the messages list above).
-        next_message_seq=s._message_count,
-    )
+    return archived_detail
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -150,7 +150,7 @@ async def test_start_message_queues_when_busy(manager, monkeypatch):
 
     # Second start_message should queue rather than fire
     await manager.start_message(session.id, "second")
-    assert session._pending_queue == ["second"]
+    assert [qp.prompt for qp in session._pending_queue] == ["second"]
 
     queued = [e for e in events if e["type"] == "queued"]
     assert len(queued) == 1
@@ -192,7 +192,7 @@ async def test_interrupt_cancels_current_and_advances_queue(manager, monkeypatch
     assert started == ["first"]
 
     await manager.start_message(session.id, "second")
-    assert session._pending_queue == ["second"]
+    assert [qp.prompt for qp in session._pending_queue] == ["second"]
 
     ok = await manager.interrupt(session.id)
     assert ok is True
@@ -241,7 +241,7 @@ async def test_interrupt_twice_in_a_row_each_works(manager, monkeypatch):
     assert started == ["first"]
 
     await manager.start_message(session.id, "second")
-    assert session._pending_queue == ["second"]
+    assert [qp.prompt for qp in session._pending_queue] == ["second"]
 
     # First interrupt
     assert await manager.interrupt(session.id) is True
@@ -818,7 +818,7 @@ async def test_delete_session_clears_queue(manager, monkeypatch):
     await manager.start_message(session.id, "first")
     await asyncio.sleep(0)
     await manager.start_message(session.id, "second")
-    assert session._pending_queue == ["second"]
+    assert [qp.prompt for qp in session._pending_queue] == ["second"]
 
     await manager.delete_session(session.id)
     assert session._pending_queue == []

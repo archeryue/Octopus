@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
   useSessionStore,
+  type Message,
   type PendingQuestion,
   type SessionStatus,
 } from "../stores/sessionStore";
@@ -151,6 +152,7 @@ function handleWsMessage(data: Record<string, unknown>) {
         role: "user",
         type: "text",
         content: data.content as string,
+        attachments: (data.attachments as Message["attachments"]) ?? undefined,
       });
       break;
 
@@ -182,6 +184,7 @@ function handleWsMessage(data: Record<string, unknown>) {
           claude_session_id: null,
           credential_id:
             store.sessions.find((s) => s.id === oldId)?.credential_id ?? null,
+          archived: false,
         });
       }
       store.setSessions(next);
@@ -292,11 +295,19 @@ export function useWebSocket() {
   }, []);
 
   const sendMessage = useCallback(
-    (sessionId: string, content: string) => {
+    (sessionId: string, content: string, attachmentIds?: string[]) => {
       // Don't optimistically add to chat — the backend broadcasts a
       // user_message event whether the prompt fires immediately or after
       // dequeue, so a single broadcast handler keeps state consistent.
-      send({ type: "send_message", session_id: sessionId, content });
+      const payload: Record<string, unknown> = {
+        type: "send_message",
+        session_id: sessionId,
+        content,
+      };
+      if (attachmentIds && attachmentIds.length > 0) {
+        payload.attachment_ids = attachmentIds;
+      }
+      send(payload);
     },
     [send]
   );

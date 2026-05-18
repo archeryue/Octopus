@@ -44,14 +44,24 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
             if msg_type == "send_message":
                 session_id = data.get("session_id")
                 content = data.get("content", "")
-                if not session_id or not content:
+                raw_aids = data.get("attachment_ids") or []
+                attachment_ids = (
+                    [a for a in raw_aids if isinstance(a, str)]
+                    if isinstance(raw_aids, list)
+                    else []
+                )
+                # Allow attachment-only turns (no text), but require *some*
+                # signal so we don't kick a backend turn off an empty payload.
+                if not session_id or (not content and not attachment_ids):
                     await ws.send_json(
                         {"type": "error", "message": "session_id and content required"}
                     )
                     continue
 
                 try:
-                    await session_manager.start_message(session_id, content)
+                    await session_manager.start_message(
+                        session_id, content, attachment_ids=attachment_ids
+                    )
                 except ValueError as e:
                     await ws.send_json(
                         {"type": "error", "session_id": session_id, "message": str(e)}

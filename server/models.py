@@ -49,6 +49,20 @@ class MessageRole(str, Enum):
     tool = "tool"
 
 
+class AttachmentMetadata(BaseModel):
+    """Metadata for a user-uploaded file attached to a message.
+
+    Only what clients need to render the chip / fetch the file. The
+    on-disk path lives in `server.attachments` and is derivable from
+    `session_id + id` — we don't ship it to the client.
+    """
+
+    id: str
+    filename: str
+    size: int
+    mime_type: str
+
+
 class MessageContent(BaseModel):
     role: MessageRole
     type: str  # "text", "tool_use", "tool_result", "error", "result"
@@ -59,6 +73,10 @@ class MessageContent(BaseModel):
     is_error: bool | None = None
     session_id: str | None = None
     cost: float | None = None
+    # User-uploaded attachments associated with this message (only ever
+    # set on user-role messages today). Persisted as JSON in the DB and
+    # round-trips back via load_messages.
+    attachments: list[AttachmentMetadata] = []
     # Per-session monotonic sequence. Set when the message is loaded from
     # DB or persisted; clients use it to dedupe WebSocket events against
     # the snapshot returned by `GET /api/sessions/{id}` after a reconnect.
@@ -87,6 +105,11 @@ class WsSendMessage(BaseModel):
     type: str = "send_message"
     session_id: str
     content: str
+    # IDs of attachments previously uploaded via
+    # `POST /api/sessions/{id}/attachments`. The session manager resolves
+    # them to absolute disk paths and prepends a `<attachments>` block to
+    # the prompt so the agent can `Read` them.
+    attachment_ids: list[str] = []
 
 
 class WsToolDecision(BaseModel):

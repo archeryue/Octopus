@@ -29,6 +29,7 @@ describe("sessionStore", () => {
         status: "idle" as const,
         created_at: "2026-01-01",
         message_count: 0,
+        archived: false,
       },
     ];
     setSessions(sessions);
@@ -73,6 +74,7 @@ describe("sessionStore", () => {
         status: "idle",
         created_at: "2026-01-01",
         message_count: 0,
+        archived: false,
       },
     ]);
 
@@ -85,6 +87,25 @@ describe("sessionStore", () => {
     expect(useSessionStore.getState().connected).toBe(false);
     setConnected(true);
     expect(useSessionStore.getState().connected).toBe(true);
+  });
+
+  it("preserves attachments on user messages", () => {
+    const { addMessage } = useSessionStore.getState();
+    const att = {
+      id: "att123",
+      filename: "screenshot.png",
+      size: 1024,
+      mime_type: "image/png",
+    };
+    addMessage("s1", {
+      role: "user",
+      type: "text",
+      content: "what is this",
+      attachments: [att],
+    });
+    const msgs = useSessionStore.getState().messages["s1"];
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].attachments).toEqual([att]);
   });
 
   it("keeps messages separate per session", () => {

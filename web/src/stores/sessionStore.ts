@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AttachmentMetadata as ApiAttachmentMetadata,
   BackendKind as ApiBackendKind,
   CredentialInfo as ApiCredentialInfo,
   ScheduleInfo,
@@ -15,6 +16,7 @@ export type SessionInfo = ApiSessionInfo;
 export type BackendKind = ApiBackendKind;
 export type CredentialInfo = ApiCredentialInfo;
 export type Schedule = ScheduleInfo;
+export type AttachmentMetadata = ApiAttachmentMetadata;
 
 // `Message` is a UI-only shape: it's how WS events are normalized for
 // rendering, not 1-to-1 with `MessageContent` from the contract (which has
@@ -30,6 +32,10 @@ export interface Message {
   is_error?: boolean;
   session_id?: string;
   cost?: number;
+  // User-uploaded files attached to this message. Present on user
+  // messages that the user attached files to (image, PDF, anything).
+  // The chat UI renders thumbnails / file chips below the message text.
+  attachments?: AttachmentMetadata[];
 }
 
 export interface QuestionOption {
@@ -56,6 +62,13 @@ interface SessionStore {
   sessions: SessionInfo[];
   setSessions: (s: SessionInfo[]) => void;
   updateSessionStatus: (id: string, status: SessionStatus) => void;
+
+  // Mirror of `archived=true` rows from `GET /api/sessions?include_archived=true`.
+  // SessionList fetches into this lazily when the user expands the
+  // archived section; ChatView reads it so it can detect when the
+  // active session is archived (show read-only banner, hide input).
+  archivedSessions: SessionInfo[];
+  setArchivedSessions: (s: SessionInfo[]) => void;
 
   activeSessionId: string | null;
   setActiveSessionId: (id: string | null) => void;
@@ -105,6 +118,8 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   sessions: [],
   setSessions: (sessions) => set({ sessions }),
+  archivedSessions: [],
+  setArchivedSessions: (archivedSessions) => set({ archivedSessions }),
   updateSessionStatus: (id, status) =>
     set((s) => ({
       sessions: s.sessions.map((sess) =>

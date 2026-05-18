@@ -13,6 +13,7 @@
 
 import type { components } from "./contracts";
 
+export type AttachmentMetadata = components["schemas"]["AttachmentMetadata"];
 export type AuthType = components["schemas"]["AuthType"];
 export type BackendKind = components["schemas"]["BackendKind"];
 export type CredentialInfo = components["schemas"]["CredentialInfo"];

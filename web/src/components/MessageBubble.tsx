@@ -1,10 +1,80 @@
 import { useState } from "react";
-import { IconChevronDown, IconChevronRight, IconTool } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronRight, IconTool, IconFile } from "@tabler/icons-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Message } from "../stores/sessionStore";
+import {
+  useSessionStore,
+  type AttachmentMetadata,
+  type Message,
+} from "../stores/sessionStore";
 
-export function MessageBubble({ message }: { message: Message }) {
+interface MessageBubbleProps {
+  message: Message;
+  sessionId: string;
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentList({
+  attachments,
+  sessionId,
+}: {
+  attachments: AttachmentMetadata[];
+  sessionId: string;
+}) {
+  const token = useSessionStore((s) => s.token);
+  return (
+    <div className="msg-attachments mt-2 flex flex-wrap gap-2">
+      {attachments.map((a) => {
+        // Token is appended as a query param because <img src> and
+        // <a download> can't carry custom headers. Same auth value as the
+        // bearer header — the server accepts either.
+        const url = `${window.location.origin}/api/sessions/${encodeURIComponent(
+          sessionId
+        )}/attachments/${encodeURIComponent(a.id)}?token=${encodeURIComponent(token)}`;
+        const isImage = a.mime_type.startsWith("image/");
+        if (isImage) {
+          return (
+            <a
+              key={a.id}
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+              className="attachment-thumb block rounded-md border border-border overflow-hidden bg-muted/40 hover:border-primary/60 transition-colors"
+              title={`${a.filename} (${formatBytes(a.size)})`}
+            >
+              <img
+                src={url}
+                alt={a.filename}
+                className="block max-h-40 max-w-[16rem] object-contain"
+              />
+            </a>
+          );
+        }
+        return (
+          <a
+            key={a.id}
+            href={url}
+            download={a.filename}
+            target="_blank"
+            rel="noreferrer"
+            className="attachment-chip inline-flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-foreground hover:border-primary/60 transition-colors"
+          >
+            <IconFile size={14} className="text-muted-foreground shrink-0" />
+            <span className="font-medium truncate max-w-[12rem]">{a.filename}</span>
+            <span className="text-muted-foreground">{formatBytes(a.size)}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
   switch (message.type) {
     case "text":
       return message.role === "user" ? (
@@ -16,6 +86,12 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-content inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground whitespace-pre-wrap break-words">
               {message.content}
             </div>
+            {message.attachments && message.attachments.length > 0 && (
+              <AttachmentList
+                attachments={message.attachments}
+                sessionId={sessionId}
+              />
+            )}
           </div>
         </div>
       ) : (
