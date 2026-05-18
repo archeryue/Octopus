@@ -140,38 +140,56 @@ items to shadcn primitives. Drop the per-section CSS in `index.css`.
 Tool blocks (collapsible JSON), result badges, error messages — all
 look technical-bare. Apply the new tokens + Card primitive.
 
-### B-3 Provider abstraction (backend)
-Steal `ConnectorConfig` + `ProviderHandler` split from
-`vm0/turbo/packages/connectors/src/oauth-providers/provider-types.ts`.
-Even with only Claude OAuth, framing it this way means the next
-provider (GitHub / Lark / etc.) is one new file in each registry.
-Reference: research synthesis #2 in the prior assistant message.
+### B-3 Provider abstraction (backend) — DONE
+Done in `server/oauth_providers.py`. `OAuthProvider` Protocol +
+`ClaudeCodeProvider` concrete + `PROVIDERS` registry +
+`get_provider(name)` lookup. `OAuthLoginManager` is now
+provider-agnostic — it just calls `provider.build_authorize_url(...)`,
+`provider.exchange_code(...)`, `provider.mint_api_key(...)`. Adding a
+new provider (GitHub / Lark / Codex) is one new class + one registry
+entry.
 
-### B-4 Credential storage split
-Two tables: `credentials` (metadata: type, status, `token_expires_at`,
-`needs_reconnect`, `last_refresh_error_code`) + `credential_secrets`
-(AES-encrypted ciphertext). Add `serverOnly` flag on secret-field
-configs so refresh tokens never reach the spawned subprocess env.
-Reference: research synthesis #3.
-
-### B-5 Typed refresh-error codes
-`"refresh_token_expired" | "refresh_token_reused" |
-"refresh_token_invalidated" | "refresh_token_other"`. UI shows
-"re-sign-in" vs "we'll retry" based on this. Prerequisite for any
-non-Claude provider with refresh tokens.
-
-### B-6 Engineering hygiene
-- `lefthook.yml` at repo root: pre-commit runs `tsc --noEmit`,
-  prettier on staged files, fast pytest subset on staged Python.
-  Reference: `vm0/lefthook.yml`.
-- Generated TS contracts from FastAPI's `/openapi.json` so frontend
-  imports match backend response shapes.
+### B-6 Engineering hygiene — DONE
+- `lefthook.yml` at repo root runs `tsc --noEmit` on staged
+  `web/src/**/*.{ts,tsx}` and fast pytest on staged
+  `{server,tests}/**/*.py`. Bootstrap via `scripts/setup-hooks.sh`.
+- TS contracts generated from FastAPI's `/openapi.json` into
+  `web/src/api/contracts.ts` via `bun run generate:contracts`.
+  Re-exported under stable names from `web/src/api/index.ts`.
 
 ### B-7 Settings dialog with tab nav
 Move per-section sidebar UI (Sessions / Schedules / Harness) into a
 single Settings dialog with internal tab nav. Pattern:
 `vm0/turbo/apps/platform/.../settings-dialog` (Radix Dialog +
 internal Sidebar). Reduces sidebar clutter, mobile-friendly.
+
+---
+
+## Deferred until needed
+
+### B-4 Credential storage split
+Two tables: `credentials` (metadata: type, status, `token_expires_at`,
+`needs_reconnect`, `last_refresh_error_code`) + `credential_secrets`
+(AES-encrypted ciphertext). Add `serverOnly` flag on secret-field
+configs so refresh tokens never reach the spawned subprocess env.
+
+**Why deferred:** the split's payoff is hiding refresh tokens from the
+subprocess and tracking per-credential refresh state. Claude Code's
+flow mints a long-lived `sk-ant-` key that *is* the credential — no
+refresh token to hide, no expiry to track. Adds schema migration risk
++ encryption-at-rest complexity for zero current user-visible benefit.
+Pull this when adding a second provider (GitHub / Lark / Codex) that
+issues short-lived access tokens + refresh tokens.
+
+### B-5 Typed refresh-error codes
+`"refresh_token_expired" | "refresh_token_reused" |
+"refresh_token_invalidated" | "refresh_token_other"`. UI shows
+"re-sign-in" vs "we'll retry" based on this.
+
+**Why deferred:** prerequisite for refresh-token-based providers.
+Claude Code's `sk-ant-` key doesn't expire short-term, so there's no
+refresh path to surface errors from. Pull alongside B-4 when adding
+the second provider.
 
 ---
 
