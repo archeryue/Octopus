@@ -68,7 +68,7 @@ Open `http://localhost:5173` for the dev server with hot-reload.
 - Session pull: `octopus pull` exports sessions as JSONL for local `claude --resume`
 - **Cloudflare Tunnel** — `octopus serve --tunnel` for instant public HTTPS
 - HTTPS/WSS support (works behind tunnels and reverse proxies)
-- Mobile-responsive dark UI
+- Mobile-responsive light UI (vm0-styled — Tailwind v4 tokens, Noto Sans + JetBrains Mono, dark-blue brand accent)
 - Token-based auth
 
 ## CLI
@@ -88,7 +88,7 @@ octopus pull <session-id>      # Export an Octopus session as local JSONL
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 259 backend tests (incl. real-CLI integration tests when `claude` is on PATH)
+.venv/bin/pytest tests/ -v        # 268 backend tests (incl. real-CLI integration tests when `claude` is on PATH)
 cd web && bun run test            # 8 frontend unit tests
 cd web && bun run typecheck       # tsc --noEmit
 cd web && bun run test:e2e        # 31 Playwright e2e tests (app + handoff/pull + telegram bridge + new features + real-CLI e2e)

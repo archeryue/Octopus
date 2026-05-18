@@ -4,7 +4,7 @@
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (179 tests)
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (268 tests)
 2. **Frontend unit tests**: `cd web && bun run test` (8 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
 4. **E2E tests**: `cd web && bun run test:e2e` (24 tests, Playwright auto-starts servers)
@@ -15,9 +15,9 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Count | What it covers |
 |-------|------|-------|----------------|
-| Backend unit | pytest | 179 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence, JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner, bridge base/manager/telegram, tunnel config |
+| Backend unit | pytest | 268 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence (incl. credential storage split + refresh-error codes), JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner, bridge base/manager/telegram, tunnel config, OAuth provider registry, real-CLI integration (when `claude` is on PATH) |
 | Frontend unit | vitest | 8 | Zustand store (token, sessions, messages, status) |
-| E2E | Playwright | 24 | Login, session CRUD, real Claude responses, Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), scheduled-tasks UI, waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling |
+| E2E | Playwright | 31 | Login, session CRUD, real Claude responses (incl. AskUserQuestion + resume), Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), scheduled-tasks UI, waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling, OAuth dialog flow, credential override |
 
 ## Project Structure
 
