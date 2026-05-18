@@ -205,7 +205,7 @@ export function ChatView({
   };
 
   const header = (
-    <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-card">
+    <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-sidebar">
       <button
         className="btn btn-menu inline-flex items-center justify-center size-9 rounded-lg text-foreground hover:bg-accent md:hidden"
         onClick={onToggleSidebar}
