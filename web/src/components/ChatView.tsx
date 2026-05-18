@@ -188,7 +188,7 @@ export function ChatView({
   };
 
   const header = (
-    <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-card">
+    <div className="chat-header flex items-center gap-4 px-6 h-14 shrink-0 border-b border-border bg-card">
       <button
         className="btn btn-menu inline-flex items-center justify-center size-8 rounded-md text-foreground hover:bg-accent md:hidden"
         onClick={onToggleSidebar}
@@ -225,9 +225,9 @@ export function ChatView({
     return (
       <div className="chat-view flex-1 flex flex-col min-h-0">
         {header}
-        <div className="chat-empty flex-1 flex flex-col items-center justify-center text-muted-foreground gap-1">
-          <h2 className="text-2xl font-semibold text-primary">Octopus</h2>
-          <p className="text-sm">Create or select a session to start.</p>
+        <div className="chat-empty flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
+          <h2 className="text-3xl font-bold text-primary tracking-tight">Octopus</h2>
+          <p className="text-sm leading-relaxed">Create or select a session to start.</p>
         </div>
       </div>
     );
@@ -249,22 +249,22 @@ export function ChatView({
       />
 
       {isWaitingForResponse && (
-        <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
+        <div className="waiting-hint shrink-0 px-6 py-2.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
           Claude is waiting for your response
         </div>
       )}
 
       {pendingQueue.length > 0 && (
         <div
-          className="queue-list shrink-0 border-t border-border bg-muted/30 px-4 py-2 text-xs"
+          className="queue-list shrink-0 border-t border-border bg-muted/30 px-6 py-3 text-xs space-y-1.5"
           aria-label="Queued messages"
         >
-          <div className="queue-list-label text-muted-foreground mb-1">
+          <div className="queue-list-label text-muted-foreground mb-2">
             Queued ({pendingQueue.length}) — will fire after the current turn
           </div>
           {pendingQueue.map((q, i) => (
             <div
-              className="queue-item flex items-start gap-1.5 text-foreground"
+              className="queue-item flex items-start gap-2 text-foreground"
               key={i}
             >
               <span className="queue-dot text-muted-foreground shrink-0">›</span>
@@ -274,7 +274,7 @@ export function ChatView({
         </div>
       )}
 
-      <div className="chat-input-bar flex items-end gap-2 px-4 py-3 border-t border-border bg-card shrink-0">
+      <div className="chat-input-bar flex items-end gap-3 px-6 py-4 border-t border-border bg-card shrink-0">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -285,7 +285,7 @@ export function ChatView({
               : "Send a message..."
           }
           rows={1}
-          className="flex-1 min-h-[40px] max-h-40 resize-y rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
+          className="flex-1 min-h-[48px] max-h-40 resize-y rounded-lg border-[0.7px] border-gray-400 bg-input px-4 py-3 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-[3px] focus:ring-primary/10"
         />
         <Button
           className="btn btn-send shrink-0"

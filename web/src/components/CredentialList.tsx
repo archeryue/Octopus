@@ -202,9 +202,9 @@ export function CredentialList() {
   // --------------------------------------------------------------- Render
 
   return (
-    <div className="credential-section shrink-0 pb-4 pt-2">
-      <div className="credential-header group flex h-9 items-center justify-between rounded-lg pl-2.5 pr-1.5 hover:bg-sidebar-accent transition-colors">
-        <span className="credential-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors">
+    <div className="credential-section shrink-0 pb-6 pt-3">
+      <div className="credential-header group flex h-10 items-center justify-between rounded-lg px-3 hover:bg-sidebar-accent transition-colors">
+        <span className="credential-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Harness
         </span>
         <button
@@ -213,14 +213,14 @@ export function CredentialList() {
           title="Sign in"
           aria-label="Sign in"
         >
-          <IconPlus size={14} />
+          <IconPlus size={16} />
         </button>
       </div>
 
-      <div className="credential-list flex flex-col gap-1 mt-1.5">
+      <div className="credential-list flex flex-col gap-1.5 mt-3">
         {credentials.map((c) => (
           <div
-            className="credential-item group flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+            className="credential-item group flex items-center gap-3 rounded-lg px-3 py-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
             key={c.id}
           >
             <span
