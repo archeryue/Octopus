@@ -17,6 +17,7 @@ const OWNED_NAMES = new Set([
   "Resume Session",
   "Bad Cred Session",
   "Webhook Fire Probe",
+  "Archive Probe",
 ]);
 
 test.afterAll(async ({ request }) => {
@@ -805,6 +806,68 @@ test.describe("Settings dialog", () => {
     const notif = page.locator('[role="tabpanel"]:visible');
     await expect(notif).toContainText("Webhook targets");
     await expect(notif.locator(".btn-notifier-add")).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /archive command — fresh empty session under the same sidebar entry
+// ---------------------------------------------------------------------------
+
+test.describe("/archive command", () => {
+  test("clears history client-side, keeps the same sidebar name", async ({
+    page,
+    request,
+  }) => {
+    // Seed a session that has some history already, so the swap is
+    // visible (chat goes from "has messages" → "empty").
+    const imp = await importSessionApi(request, "Archive Probe", [
+      { role: "user", type: "text", content: "old user message" },
+      { role: "assistant", type: "text", content: "old assistant reply" },
+    ]);
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Archive Probe" })
+      .click();
+
+    // The seeded history is visible.
+    await expect(page.locator(".msg-user .msg-content")).toContainText(
+      "old user message"
+    );
+    await expect(page.locator(".msg-assistant .msg-content")).toContainText(
+      "old assistant reply"
+    );
+
+    // Type /archive in the chat input and send. We intercept it
+    // client-side; nothing should appear as a user message.
+    await page.locator(".chat-input-bar textarea").fill("/archive");
+    await page.locator("button.btn-send").click();
+
+    // The chat becomes empty (new session, no messages).
+    await expect(page.locator(".msg-user .msg-content")).toHaveCount(0);
+    await expect(page.locator(".msg-assistant .msg-content")).toHaveCount(0);
+
+    // The sidebar still shows exactly one "Archive Probe" — same name.
+    await expect(
+      page.locator(".session-item .session-name", {
+        hasText: "Archive Probe",
+      })
+    ).toHaveCount(1);
+
+    // The old session id is hidden from the REST list; the new one is live.
+    const listRes = await request.get(`${API}/sessions`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const list: Array<{ id: string; name: string }> = await listRes.json();
+    const probeIds = list.filter((s) => s.name === "Archive Probe").map((s) => s.id);
+    expect(probeIds).toHaveLength(1);
+    expect(probeIds[0]).not.toBe(imp.id);
+
+    // The old session 404s now (hidden / archived).
+    const oldRes = await request.get(`${API}/sessions/${imp.id}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(oldRes.status()).toBe(404);
   });
 });
 

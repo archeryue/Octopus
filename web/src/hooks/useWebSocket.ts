@@ -161,6 +161,38 @@ function handleWsMessage(data: Record<string, unknown>) {
         content: data.message as string,
       });
       break;
+
+    case "session_archived": {
+      // Another client (or this tab's archive POST) hid the old
+      // session and replaced it with new_session_id. Update the
+      // sessions list + swap active if this tab was on the old one.
+      const oldId = data.old_session_id as string;
+      const newId = data.new_session_id as string;
+      const name = data.name as string;
+      const store = getState();
+      const next = store.sessions.filter((s) => s.id !== oldId);
+      if (!next.some((s) => s.id === newId)) {
+        next.push({
+          id: newId,
+          name,
+          working_dir: store.sessions.find((s) => s.id === oldId)?.working_dir ?? "",
+          status: "idle",
+          created_at: new Date().toISOString(),
+          message_count: 0,
+          claude_session_id: null,
+          credential_id:
+            store.sessions.find((s) => s.id === oldId)?.credential_id ?? null,
+        });
+      }
+      store.setSessions(next);
+      if (store.activeSessionId === oldId) {
+        store.setActiveSessionId(newId);
+        store.setMessages(newId, []);
+        store.setPendingQueue(newId, []);
+        store.setPendingQuestions(newId, []);
+      }
+      break;
+    }
   }
 }
 

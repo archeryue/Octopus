@@ -143,9 +143,49 @@ export function ChatView({
     [isRunning]
   );
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!input.trim() || !activeSessionId) return;
-    sendMessage(activeSessionId, input.trim());
+    const trimmed = input.trim();
+
+    // /archive command — intercept client-side. Hides the current
+    // session and seamlessly swaps the active id to a fresh session
+    // with the same name/working_dir/credential_id. The user sees an
+    // empty chat under the same sidebar entry.
+    if (trimmed.toLowerCase() === "/archive") {
+      setInput("");
+      try {
+        const token = useSessionStore.getState().token;
+        const res = await fetch(
+          `${window.location.origin}/api/sessions/${activeSessionId}/archive`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+        if (!res.ok) return;
+        const fresh = await res.json();
+        // The `session_archived` WS broadcast also updates the
+        // sessions list for any other clients — and may have already
+        // landed in this tab before the HTTP response. Dedupe by id
+        // on both removal AND insertion so the two paths converge to
+        // the same list regardless of arrival order.
+        const store = useSessionStore.getState();
+        const next = store.sessions.filter(
+          (s) => s.id !== activeSessionId && s.id !== fresh.id
+        );
+        next.push(fresh);
+        store.setSessions(next);
+        store.setActiveSessionId(fresh.id);
+        store.setMessages(fresh.id, []);
+        store.setPendingQueue(fresh.id, []);
+        store.setPendingQuestions(fresh.id, []);
+      } catch {
+        // best-effort — failure leaves the user in the original session
+      }
+      return;
+    }
+
+    sendMessage(activeSessionId, trimmed);
     setInput("");
   };
 

@@ -114,3 +114,23 @@ async def reset_session(session_id: str, _: str = Depends(verify_token)):
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return {"status": "ok"}
+
+
+@router.post(
+    "/{session_id}/archive",
+    response_model=SessionInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def archive_session(session_id: str, _: str = Depends(verify_token)):
+    """Archive the current session and return a fresh one.
+
+    Same name / working_dir / credential_id as the archived session,
+    but a brand-new id and no message history. Schedules + bridge
+    mappings repoint from old to new so user-facing automation
+    continues uninterrupted.
+    """
+    try:
+        new = await session_manager.archive_session(session_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    return _to_session_info(new)

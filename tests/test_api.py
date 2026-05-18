@@ -116,3 +116,44 @@ async def test_delete_session(client):
 async def test_delete_session_not_found(client):
     resp = await client.delete("/api/sessions/nonexistent", headers=HEADERS)
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_archive_session(client):
+    """POST /api/sessions/{id}/archive returns a fresh SessionInfo with the
+    same name/working_dir, the old session disappears from the list,
+    and the new id is different."""
+    create_resp = await client.post(
+        "/api/sessions",
+        headers=HEADERS,
+        json={"name": "Archive Me", "working_dir": "/tmp/archived"},
+    )
+    old_id = create_resp.json()["id"]
+
+    arc = await client.post(
+        f"/api/sessions/{old_id}/archive", headers=HEADERS
+    )
+    assert arc.status_code == 201
+    body = arc.json()
+    new_id = body["id"]
+    assert new_id != old_id
+    assert body["name"] == "Archive Me"
+    assert body["working_dir"] == "/tmp/archived"
+
+    # Old session is hidden from the list; new one appears.
+    list_resp = await client.get("/api/sessions", headers=HEADERS)
+    ids = [s["id"] for s in list_resp.json()]
+    assert old_id not in ids
+    assert new_id in ids
+
+    # GET on the old id is a 404 (it's no longer in the in-memory map).
+    gone = await client.get(f"/api/sessions/{old_id}", headers=HEADERS)
+    assert gone.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_archive_session_not_found(client):
+    resp = await client.post(
+        "/api/sessions/nonexistent/archive", headers=HEADERS
+    )
+    assert resp.status_code == 404

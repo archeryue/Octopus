@@ -614,3 +614,93 @@ async def test_delete_session_clears_queue(manager, monkeypatch):
     await manager.delete_session(session.id)
     assert session._pending_queue == []
     assert session._inner_task is None or session._inner_task.cancelled() or session._inner_task.done()
+
+
+# ---------------------------------------------------------------------------
+# /archive feature — hide old history, fresh session with same settings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_archive_creates_new_session_with_same_settings(manager):
+    old = await manager.create_session(
+        name="Work",
+        working_dir="/tmp/work",
+        credential_id="c-1",
+    )
+    # Simulate prior conversation: 3 persisted messages, a resume id.
+    old._message_count = 3
+    old.claude_session_id = "claude-abc"
+    await manager.db.update_session_field(
+        old.id, claude_session_id="claude-abc"
+    )
+
+    new = await manager.archive_session(old.id)
+
+    assert new.id != old.id
+    assert new.name == "Work"
+    assert new.working_dir == "/tmp/work"
+    assert new.credential_id == "c-1"
+    # Brand-new conversation — no resume id, no message history.
+    assert new.claude_session_id is None
+    assert new._message_count == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_hides_old_session_from_list_but_keeps_db_row(manager):
+    old = await manager.create_session(name="Hide Me", working_dir="/tmp")
+    new = await manager.archive_session(old.id)
+
+    listed = [s.id for s in manager.list_sessions()]
+    assert old.id not in listed
+    assert new.id in listed
+
+    # DB row still present (archived=1), available via include_archived.
+    all_rows = await manager.db.load_sessions(include_archived=True)
+    archived_ids = [r["id"] for r in all_rows if r["archived"]]
+    assert old.id in archived_ids
+
+
+@pytest.mark.asyncio
+async def test_archive_repoints_schedules_and_bridge_mappings(manager):
+    old = await manager.create_session(name="Auto", working_dir="/tmp")
+    await manager.db.save_schedule(
+        schedule_id="s-1",
+        session_id=old.id,
+        name="ping",
+        prompt="hi",
+        interval_seconds=300,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    await manager.db.save_bridge_mapping(
+        platform="telegram", chat_id="42", session_id=old.id
+    )
+
+    new = await manager.archive_session(old.id)
+
+    schedules = await manager.db.load_schedules()
+    assert schedules[0]["session_id"] == new.id
+
+    bridges = await manager.db.load_bridge_mappings()
+    assert bridges[0]["session_id"] == new.id
+
+
+@pytest.mark.asyncio
+async def test_archive_unknown_session_raises(manager):
+    with pytest.raises(ValueError):
+        await manager.archive_session("does-not-exist")
+
+
+@pytest.mark.asyncio
+async def test_archive_broadcasts_session_archived_event(manager):
+    received: list[dict] = []
+    manager.on_broadcast("test", lambda m: asyncio.sleep(0, result=received.append(m)))
+
+    old = await manager.create_session(name="X", working_dir="/tmp")
+    new = await manager.archive_session(old.id)
+
+    archived_evts = [m for m in received if m.get("type") == "session_archived"]
+    assert len(archived_evts) == 1
+    assert archived_evts[0]["old_session_id"] == old.id
+    assert archived_evts[0]["new_session_id"] == new.id
+    assert archived_evts[0]["name"] == "X"

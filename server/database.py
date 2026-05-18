@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     name TEXT NOT NULL,
     working_dir TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    claude_session_id TEXT
+    claude_session_id TEXT,
+    archived INTEGER NOT NULL DEFAULT 0  -- hidden from default list; row kept for history
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -124,6 +125,15 @@ class Database:
             # Column already exists — SQLite has no IF NOT EXISTS for ALTER COLUMN
             pass
 
+        # sessions.archived for /archive feature (hides old session row from
+        # the default list, keeps it in DB so it could be surfaced later).
+        try:
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+
         # backend_credentials gained status / refresh-tracking columns (B-4/B-5).
         # Each ALTER is wrapped because SQLite has no IF NOT EXISTS for them.
         for ddl in (
@@ -209,12 +219,17 @@ class Database:
         await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await self._conn.commit()
 
-    async def load_sessions(self) -> list[dict[str, Any]]:
+    async def load_sessions(
+        self, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
-            "SELECT id, name, working_dir, created_at, claude_session_id, credential_id "
-            "FROM sessions"
+        query = (
+            "SELECT id, name, working_dir, created_at, claude_session_id, "
+            "credential_id, archived FROM sessions"
         )
+        if not include_archived:
+            query += " WHERE archived = 0"
+        cursor = await self._conn.execute(query)
         rows = await cursor.fetchall()
         return [
             {
@@ -224,6 +239,7 @@ class Database:
                 "created_at": row[3],
                 "claude_session_id": row[4],
                 "credential_id": row[5],
+                "archived": bool(row[6]),
             }
             for row in rows
         ]
@@ -548,8 +564,18 @@ class Database:
 
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         await self._ensure_connected()
-        allowed = {"name", "working_dir", "claude_session_id", "credential_id"}
-        updates = {k: v for k, v in fields.items() if k in allowed}
+        allowed = {
+            "name",
+            "working_dir",
+            "claude_session_id",
+            "credential_id",
+            "archived",
+        }
+        updates: dict[str, Any] = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            updates[k] = int(bool(v)) if k == "archived" else v
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
@@ -559,6 +585,35 @@ class Database:
             values,
         )
         await self._conn.commit()
+
+    async def repoint_schedules(self, old_id: str, new_id: str) -> int:
+        """Move all schedules attached to old_id over to new_id.
+
+        Used by /archive: the user's automation is bound to the
+        logical "session", not to its historical message chain.
+        Returns rows updated.
+        """
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE schedules SET session_id = ? WHERE session_id = ?",
+            (new_id, old_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+
+    async def repoint_bridge_mappings(self, old_id: str, new_id: str) -> int:
+        """Same logic as repoint_schedules for the bridge-mapping table.
+
+        Telegram chats etc. continue routing into whichever session is
+        the live one after an /archive.
+        """
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE bridge_mappings SET session_id = ? WHERE session_id = ?",
+            (new_id, old_id),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
 
     # --- Notifiers ---
 

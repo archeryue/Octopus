@@ -173,6 +173,68 @@ class SessionManager:
                 await self.db.flush()
         return session
 
+    async def archive_session(self, session_id: str) -> Session:
+        """Hide the current session and return a fresh one with the same
+        user-visible settings (name / working_dir / credential_id).
+
+        The old session row stays in the DB (with `archived = 1`) so the
+        message history isn't lost — it just disappears from the default
+        sessions list. The new session starts with no `claude_session_id`
+        so the CLI begins a clean conversation.
+
+        Anything keyed off the *logical* session — schedules, bridge
+        mappings — is repointed from the old id to the new one, so the
+        user's automation keeps firing against the live session.
+
+        If the old session has a running turn, it's interrupted first.
+        """
+        old = self.sessions.get(session_id)
+        if old is None:
+            raise ValueError(f"Session {session_id} not found")
+
+        # Stop the live work, if any, before yanking the in-memory state.
+        if old._inner_task and not old._inner_task.done():
+            old._inner_task.cancel()
+        if old._active_task and not old._active_task.done():
+            old._active_task.cancel()
+        if old._backend:
+            try:
+                await asyncio.wait_for(old._backend.stop(), timeout=2.0)
+            except Exception:
+                pass
+            old._backend = None
+        old._pending_queue.clear()
+        old._pending_questions.clear()
+
+        # Mark the DB row archived; drop it from the in-memory dict so
+        # subsequent list/get calls don't surface it.
+        if self.db:
+            await self.db.update_session_field(session_id, archived=True)
+        self.sessions.pop(session_id, None)
+
+        # New session inherits name / working_dir / credential_id but
+        # starts with no claude_session_id (fresh conversation).
+        new = await self.create_session(
+            name=old.name,
+            working_dir=old.working_dir,
+            credential_id=old.credential_id,
+        )
+
+        # Repoint anything bound to the logical session id.
+        if self.db:
+            await self.db.repoint_schedules(old.id, new.id)
+            await self.db.repoint_bridge_mappings(old.id, new.id)
+
+        await self._broadcast(
+            {
+                "type": "session_archived",
+                "old_session_id": old.id,
+                "new_session_id": new.id,
+                "name": new.name,
+            }
+        )
+        return new
+
     async def delete_session(self, session_id: str) -> bool:
         session = self.sessions.pop(session_id, None)
         if session is None:
