@@ -378,19 +378,16 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
     ) -> None:
         """Return content as the tool's effective result.
 
-        The CLI's `can_use_tool` schema exposes only allow/deny. There's
-        no "block the tool but synthesize this result on its behalf"
-        option, so we use the deny channel: `behavior=deny, message=…`.
-        Claude reads the deny `message` as the tool's response and
-        continues normally. We use this for AskUserQuestion answers
-        (user provides the content the built-in tool would've gathered
-        interactively).
+        We own the CLI subprocess and drive its control protocol
+        directly, so the `behavior=deny, message=…` shape isn't a
+        workaround — it's just the API word for "host-provided content
+        replaces the tool's output". The deny `message` becomes what
+        Claude sees as the tool's response. Used for AskUserQuestion
+        answers: the user's selection is the content the tool would
+        otherwise have gathered interactively.
 
-        Cleaner alternative — register our own MCP tool, disable the
-        built-in via `--disallowed-tools`, return the answer as a real
-        tool_result — is tracked as future-features #4. It's a half-day
-        investment we'll do alongside the next reason to add MCP
-        plumbing.
+        There's no MCP server to add or built-in tool to displace; the
+        CLI hands us this channel for exactly this case.
         """
         await self._send_control_response_deny(request_id, content)
 
