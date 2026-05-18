@@ -3,6 +3,7 @@ import { IconMenu2, IconSettings } from "@tabler/icons-react";
 import { AccountDropdown } from "./components/AccountDropdown";
 import { ChatView } from "./components/ChatView";
 import { CredentialList } from "./components/CredentialList";
+import { FileViewerDialog } from "./components/FileViewerDialog";
 import { OctopusLogo } from "./components/OctopusLogo";
 import { ScheduleList } from "./components/ScheduleList";
 import { SessionList } from "./components/SessionList";
@@ -153,6 +154,7 @@ function AuthenticatedApp({
       )}
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <FileViewerDialog />
     </div>
   );
 }

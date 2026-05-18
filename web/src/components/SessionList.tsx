@@ -29,6 +29,7 @@ export function SessionList() {
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setMessages = useSessionStore((s) => s.setMessages);
   const setPendingQueue = useSessionStore((s) => s.setPendingQueue);
+  const setPendingQuestions = useSessionStore((s) => s.setPendingQuestions);
   const credentials = useSessionStore((s) => s.credentials);
   const claudeCreds = credentials.filter((c) => c.backend === "claude-code");
 
@@ -91,18 +92,30 @@ export function SessionList() {
 
   const selectSession = async (id: string) => {
     setActiveSessionId(id);
-    // Fetch message history
+    // Fetch message history + bg tasks in parallel — the BgTaskChip
+    // mounted inside chat history needs the task list to render
+    // anything but a placeholder, and we don't want a render flash.
     try {
-      const res = await fetch(`${API_URL}/api/sessions/${id}`, { headers });
-      if (res.ok) {
-        const data = await res.json();
+      const [detailRes, bgRes] = await Promise.all([
+        fetch(`${API_URL}/api/sessions/${id}`, { headers }),
+        fetch(`${API_URL}/api/sessions/${id}/bg-tasks`, { headers }),
+      ]);
+      if (detailRes.ok) {
+        const data = await detailRes.json();
         setMessages(id, data.messages || []);
         setPendingQueue(id, data.pending_queue || []);
+        setPendingQuestions(id, data.pending_questions || []);
         if (typeof data.next_message_seq === "number") {
           useSessionStore
             .getState()
             .setLastAppliedSeq(id, data.next_message_seq - 1);
         }
+      }
+      if (bgRes.ok) {
+        const tasks = await bgRes.json();
+        // API returns most-recent first; the store renderer doesn't
+        // care about order so we keep as-is.
+        useSessionStore.getState().setBgTasks(id, tasks);
       }
     } catch {
       // ignore

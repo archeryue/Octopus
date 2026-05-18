@@ -328,6 +328,34 @@ export function ChatView({
     // the user just added but the server hasn't finished receiving.
     if (hasUploadInFlight) return;
 
+    // /reset command — escape hatch for wedged sessions. Calls the
+    // server's force-reset endpoint, which cancels the active task,
+    // releases the lock, kills the backend subprocess, and clears any
+    // pending questions/approvals. Use when interrupt failed or the
+    // session is stuck in "Running" forever.
+    if (trimmed.toLowerCase() === "/reset") {
+      setInput("");
+      try {
+        const token = useSessionStore.getState().token;
+        await fetch(
+          `${window.location.origin}/api/sessions/${activeSessionId}/reset`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+        // The server broadcasts a status=idle event; the WS handler
+        // applies it. We also clear local pending state so the input
+        // bar drops out of any "waiting on answer" UI immediately.
+        const store = useSessionStore.getState();
+        store.setPendingQuestions(activeSessionId, []);
+        store.setPendingQueue(activeSessionId, []);
+      } catch {
+        // best-effort — if the request itself fails the session stays as-is
+      }
+      return;
+    }
+
     // /archive command — intercept client-side. Hides the current
     // session and seamlessly swaps the active id to a fresh session
     // with the same name/working_dir/credential_id. The user sees an

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { IconChevronDown, IconChevronRight, IconTool, IconFile } from "@tabler/icons-react";
+import { IconChevronDown, IconChevronRight, IconTool, IconFile, IconRobot } from "@tabler/icons-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -7,6 +7,13 @@ import {
   type AttachmentMetadata,
   type Message,
 } from "../stores/sessionStore";
+import { BgTaskChip } from "./BgTaskChip";
+
+// Marker the backend prepends to the synthesized user message it
+// injects when a bg task completes. Used to render those messages
+// with a distinct "auto" badge so the user knows they didn't type it.
+// Source of truth: server/bg_tasks.py render_delivery_prompt.
+const BG_TASK_RESULT_PREFIX = "[bg-task-result]";
 
 interface MessageBubbleProps {
   message: Message;
@@ -77,24 +84,38 @@ function AttachmentList({
 export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
   switch (message.type) {
     case "text":
-      return message.role === "user" ? (
-        <div className="msg msg-user flex justify-end">
-          <div className="max-w-[85%] space-y-1">
-            <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
-              You
+      if (message.role === "user") {
+        const isBgResult =
+          typeof message.content === "string" &&
+          message.content.startsWith(BG_TASK_RESULT_PREFIX);
+        if (isBgResult) {
+          return (
+            <BgTaskResultMessage
+              content={message.content as string}
+              sessionId={sessionId}
+            />
+          );
+        }
+        return (
+          <div className="msg msg-user flex justify-end">
+            <div className="max-w-[85%] space-y-1">
+              <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
+                You
+              </div>
+              <div className="msg-content inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground whitespace-pre-wrap break-words">
+                {message.content}
+              </div>
+              {message.attachments && message.attachments.length > 0 && (
+                <AttachmentList
+                  attachments={message.attachments}
+                  sessionId={sessionId}
+                />
+              )}
             </div>
-            <div className="msg-content inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground whitespace-pre-wrap break-words">
-              {message.content}
-            </div>
-            {message.attachments && message.attachments.length > 0 && (
-              <AttachmentList
-                attachments={message.attachments}
-                sessionId={sessionId}
-              />
-            )}
           </div>
-        </div>
-      ) : (
+        );
+      }
+      return (
         <div className="msg msg-assistant space-y-1">
           <div className="msg-label text-xs font-semibold text-muted-foreground">
             Claude
@@ -108,7 +129,7 @@ export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
       );
 
     case "tool_use":
-      return <ToolUseBlock message={message} />;
+      return <ToolUseBlock message={message} sessionId={sessionId} />;
 
     case "tool_result":
       return <ToolResultBlock message={message} />;
@@ -157,7 +178,13 @@ export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
   }
 }
 
-function ToolUseBlock({ message }: { message: Message }) {
+function ToolUseBlock({
+  message,
+  sessionId,
+}: {
+  message: Message;
+  sessionId: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const inputStr = message.tool_input
     ? JSON.stringify(message.tool_input, null, 2)
@@ -169,31 +196,135 @@ function ToolUseBlock({ message }: { message: Message }) {
     return null;
   })();
 
+  // The bg MCP tool returns a task_id in its tool_result, but the
+  // tool_use itself doesn't carry it (the model generated the
+  // tool_use_id before knowing the bg task_id). We find the matching
+  // bg task by `bg_started` events stamped with the SAME tool's
+  // command text + most-recent-first. Simpler approach: the next
+  // tool_result message that follows this tool_use carries the
+  // started-at-task_id text. For now: render the chip whenever the
+  // tool is bg_run, and the chip itself fetches by id once we have
+  // it (via the followup tool_result text). We grab the task id from
+  // tool_input.__task_id if the backend injected it OR fall back to
+  // matching by command — the bg MCP server returns text like
+  // "Started bg task `<id>`" which the tool_result will contain.
+  const isBgRun = message.tool_name === "mcp__bg__run";
+
   return (
-    <div className="msg msg-tool rounded-lg border border-border bg-card overflow-hidden">
-      <button
-        type="button"
-        className="tool-header w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <span className="tool-icon text-muted-foreground shrink-0">
-          {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
-        </span>
-        <IconTool size={14} className="text-primary shrink-0" />
-        <span className="tool-name font-medium text-primary shrink-0">
-          {message.tool_name}
-        </span>
-        {preview && (
-          <code className="tool-preview truncate text-xs text-muted-foreground font-mono">
-            {preview}
-          </code>
+    <div className="space-y-1.5">
+      <div className="msg msg-tool rounded-lg border border-border bg-card overflow-hidden">
+        <button
+          type="button"
+          className="tool-header w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
+          onClick={() => setExpanded(!expanded)}
+        >
+          <span className="tool-icon text-muted-foreground shrink-0">
+            {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+          </span>
+          <IconTool size={14} className="text-primary shrink-0" />
+          <span className="tool-name font-medium text-primary shrink-0">
+            {message.tool_name}
+          </span>
+          {preview && (
+            <code className="tool-preview truncate text-xs text-muted-foreground font-mono">
+              {preview}
+            </code>
+          )}
+        </button>
+        {expanded && (
+          <pre className="tool-detail border-t border-border bg-muted/40 px-4 py-2.5 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+            {inputStr}
+          </pre>
         )}
-      </button>
-      {expanded && (
-        <pre className="tool-detail border-t border-border bg-muted/40 px-4 py-2.5 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
-          {inputStr}
-        </pre>
-      )}
+      </div>
+      {isBgRun && <BgChipForToolUse sessionId={sessionId} message={message} />}
+    </div>
+  );
+}
+
+/**
+ * Bridges a `mcp__bg__run` tool_use → the live BgTaskChip.
+ *
+ * The model's tool_use doesn't carry the task_id (we mint it
+ * server-side). We pull the matching task out of the store by
+ * looking for the most recent task whose `command` matches the
+ * tool_use's input.command. The bg_started WS event populates the
+ * store before this component mounts in normal flow; on snapshot
+ * rehydration we still get a match because list_bg_tasks is fetched
+ * on session load.
+ */
+function BgChipForToolUse({
+  sessionId,
+  message,
+}: {
+  sessionId: string;
+  message: Message;
+}) {
+  const command =
+    message.tool_input && typeof message.tool_input.command === "string"
+      ? (message.tool_input.command as string)
+      : "";
+  const matchedId = useSessionStore((s) => {
+    const tasks = s.bgTasks[sessionId] || [];
+    const match = [...tasks]
+      .reverse()
+      .find((t) => t.command === command);
+    return match?.id ?? null;
+  });
+  if (!matchedId) {
+    return (
+      <div className="octo-bgtask-chip inline-flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+        <span>Waiting for bg task to register…</span>
+      </div>
+    );
+  }
+  return <BgTaskChip sessionId={sessionId} taskId={matchedId} />;
+}
+
+function BgTaskResultMessage({
+  content,
+  sessionId: _sessionId,
+}: {
+  content: string;
+  sessionId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  // Strip the marker for display — it's only a routing hint, not part
+  // of the human-facing text.
+  const stripped = content.startsWith(BG_TASK_RESULT_PREFIX)
+    ? content.slice(BG_TASK_RESULT_PREFIX.length).trimStart()
+    : content;
+  // Show only the first line collapsed; that line is the "finished
+  // with status …" summary which is the most-important info.
+  const firstLine = stripped.split("\n", 1)[0];
+  return (
+    <div className="msg msg-bg-result flex justify-end">
+      <div className="max-w-[85%] space-y-1">
+        <div className="msg-label text-xs font-semibold text-muted-foreground text-right flex items-center justify-end gap-1.5">
+          <IconRobot size={12} className="text-muted-foreground" />
+          <span>Auto · bg-task result</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((e) => !e)}
+          className="msg-content w-full text-left inline-block rounded-lg border border-dashed border-border bg-muted/30 px-4 py-3 text-sm text-foreground hover:bg-muted/50 transition-colors"
+          title={expanded ? "Collapse" : "Expand full result"}
+          aria-expanded={expanded}
+        >
+          <div className="flex items-start gap-2">
+            <span className="text-muted-foreground shrink-0 mt-0.5">
+              {expanded ? <IconChevronDown size={12} /> : <IconChevronRight size={12} />}
+            </span>
+            {expanded ? (
+              <pre className="m-0 flex-1 font-mono text-xs whitespace-pre-wrap break-words">
+                {stripped}
+              </pre>
+            ) : (
+              <span className="flex-1">{firstLine}</span>
+            )}
+          </div>
+        </button>
+      </div>
     </div>
   );
 }

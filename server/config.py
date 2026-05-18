@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     telegram_allowed_chat_ids: list[str] = []
     telegram_api_base_url: str = "https://api.telegram.org"
 
+    # If an AskUserQuestion goes unanswered for this long, the server
+    # synthesizes an "act autonomously" reply so the session doesn't
+    # wedge forever (matters most for bridge/scheduled-task sessions
+    # where no human will ever see the prompt). 0 disables auto-answer.
+    ask_user_question_timeout_seconds: int = 1800
+
     model_config = {"env_prefix": "OCTOPUS_", "env_file": ".env"}
 
 

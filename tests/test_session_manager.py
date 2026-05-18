@@ -396,6 +396,96 @@ async def test_answer_question_routes_through_backend(manager):
 
 
 @pytest.mark.asyncio
+async def test_unanswered_question_auto_answers_after_timeout(
+    manager, monkeypatch
+):
+    """If a question goes unanswered for the configured timeout, the
+    server synthesizes an autonomy-mode reply, delivers it to the backend,
+    broadcasts a question_answer event with auto=True, and clears the
+    pending question. Keeps async sessions (bridges, schedules) from
+    wedging forever when no human is watching."""
+    from server import session_manager as sm
+    from server.session_manager import PendingQuestion
+
+    # Make the timer fire essentially immediately so the test is fast.
+    monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.05)
+
+    session = await manager.create_session("AutoQ")
+    events: list[dict] = []
+
+    async def cb(msg: dict) -> None:
+        events.append(msg)
+
+    manager.on_broadcast("auto", cb)
+
+    delivered: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        async def answer_question(self, question_id: str, answer_text: str) -> bool:
+            delivered.append((question_id, answer_text))
+            return True
+
+    session._backend = FakeBackend()  # type: ignore[assignment]
+    session._pending_questions["q-auto"] = PendingQuestion(
+        question_id="q-auto",
+        questions=[{"question": "What now?", "options": []}],
+    )
+    manager._schedule_question_timeout(session, "q-auto")
+
+    # Wait for the timer to fire and the deliver coroutine to run
+    await asyncio.sleep(0.2)
+
+    # Backend received the auto-answer text
+    assert len(delivered) == 1
+    assert delivered[0][0] == "q-auto"
+    assert "No human is available" in delivered[0][1]
+    assert "risky or irreversible" in delivered[0][1]
+    # Pending question removed
+    assert "q-auto" not in session._pending_questions
+    # Broadcast carries the auto flag
+    auto_events = [
+        e for e in events
+        if e.get("type") == "question_answer" and e.get("auto") is True
+    ]
+    assert len(auto_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_answer_cancels_auto_answer_timer(manager, monkeypatch):
+    """If the user answers before the timeout, the auto-answer timer
+    should be cancelled and never fire — otherwise the backend would get
+    two responses for the same question."""
+    from server import session_manager as sm
+    from server.session_manager import PendingQuestion
+
+    monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.5)
+
+    session = await manager.create_session("ManualBeatsTimer")
+    delivered: list[tuple[str, str]] = []
+
+    class FakeBackend:
+        async def answer_question(self, question_id: str, answer_text: str) -> bool:
+            delivered.append((question_id, answer_text))
+            return True
+
+    session._backend = FakeBackend()  # type: ignore[assignment]
+    session._pending_questions["q-1"] = PendingQuestion(
+        question_id="q-1",
+        questions=[{"question": "Pick", "options": [{"label": "A"}]}],
+    )
+    manager._schedule_question_timeout(session, "q-1")
+
+    # Human answers right away
+    await manager.answer_question(session.id, "q-1", [{"selected": ["A"]}])
+
+    # Wait past the timeout — auto should NOT fire again
+    await asyncio.sleep(0.7)
+
+    assert len(delivered) == 1
+    assert "No human is available" not in delivered[0][1]
+
+
+@pytest.mark.asyncio
 async def test_answer_question_returns_false_if_backend_rejects(manager):
     """If the backend says no (e.g. question already answered), don't
     persist or broadcast an answer."""

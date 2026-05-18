@@ -65,34 +65,3 @@ Use cases: forward incoming mail to a session for triage, scheduled
 email digests (composes with the schedules feature), draft-and-review
 replies.
 
----
-
-## 3. In-app markdown / file reader
-
-**Priority**: Medium
-**Affected**: new `web/src/components/FileViewer.tsx`, new
-`GET /api/sessions/{id}/files?path=...` endpoint
-
-Claude often writes / edits markdown in the session's `working_dir`
-(READMEs, plans, notes). Today the user has to switch to a separate
-editor to read them. Add a side-panel viewer that opens files
-directly from the chat (`View` button next to `Write` / `Edit` /
-`MultiEdit` tool calls).
-
-### Security model
-- Resolve the requested path against the session's `working_dir`
-  using `realpath` + `commonpath`; reject anything outside.
-- Refuse symlinks that escape the dir.
-- Size cap (1 MiB-ish) returns 413 with a hint.
-- Refuse binaries (extension allowlist + null-byte sniff).
-- Standard `Authorization: Bearer <token>` auth.
-
-### Scope (MVP)
-- Open the file Claude just touched (no file browser).
-- Markdown rendered via the same `react-markdown` config the chat
-  uses; everything else in a `<pre>` block.
-- Reload button to re-fetch.
-
-### Scope cuts (deferred)
-- Directory tree, inline editing, diff view, image preview, live
-  watching via SSE, syntax highlighting.

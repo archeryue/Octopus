@@ -98,6 +98,37 @@ CREATE TABLE IF NOT EXISTS notifiers (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
 );
+
+-- Cross-turn background tasks. The model calls `bg_run(cmd)` via the
+-- bg MCP server; we persist a row here, spawn the subprocess, and on
+-- completion synthesize a follow-up user message in the session so the
+-- model is told "your bg task finished, here's the result" in its next
+-- turn. The whole point is that the bg subprocess lives in the
+-- long-running FastAPI process — independent of any one claude --print
+-- invocation — so it survives turn boundaries the way Bash's
+-- run_in_background does not.
+--
+-- stdout/stderr are capped (see server.bg_tasks.MAX_STREAM_BYTES);
+-- excess content is truncated from the head with a `…[truncated N bytes]`
+-- prefix so the model sees the most recent output.
+CREATE TABLE IF NOT EXISTS bg_tasks (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    command TEXT NOT NULL,
+    description TEXT,
+    working_dir TEXT NOT NULL,
+    status TEXT NOT NULL,                  -- 'pending'|'running'|'completed'|'failed'|'cancelled'|'interrupted'
+    exit_code INTEGER,
+    stdout TEXT NOT NULL DEFAULT '',
+    stderr TEXT NOT NULL DEFAULT '',
+    truncated INTEGER NOT NULL DEFAULT 0,  -- bool: at least one stream hit the cap
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bg_tasks_session
+  ON bg_tasks(session_id, started_at);
 """
 
 
@@ -704,3 +735,112 @@ class Database:
             f"UPDATE notifiers SET {set_clause} WHERE id = ?", values
         )
         await self._conn.commit()
+
+    # --- Background tasks (cross-turn) ---
+
+    @staticmethod
+    def _row_to_bg_task(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "session_id": row[1],
+            "command": row[2],
+            "description": row[3],
+            "working_dir": row[4],
+            "status": row[5],
+            "exit_code": row[6],
+            "stdout": row[7] or "",
+            "stderr": row[8] or "",
+            "truncated": bool(row[9]),
+            "started_at": row[10],
+            "completed_at": row[11],
+        }
+
+    _BG_TASK_COLS = (
+        "id, session_id, command, description, working_dir, status, "
+        "exit_code, stdout, stderr, truncated, started_at, completed_at"
+    )
+
+    async def create_bg_task(
+        self,
+        task_id: str,
+        session_id: str,
+        command: str,
+        description: str | None,
+        working_dir: str,
+        started_at: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO bg_tasks "
+            "(id, session_id, command, description, working_dir, status, "
+            " stdout, stderr, truncated, started_at) "
+            "VALUES (?, ?, ?, ?, ?, 'running', '', '', 0, ?)",
+            (task_id, session_id, command, description, working_dir, started_at),
+        )
+        await self._conn.commit()
+
+    async def update_bg_task(self, task_id: str, **fields: Any) -> None:
+        """Patch any of: status, exit_code, stdout, stderr, truncated, completed_at."""
+        await self._ensure_connected()
+        allowed = {
+            "status",
+            "exit_code",
+            "stdout",
+            "stderr",
+            "truncated",
+            "completed_at",
+        }
+        updates: dict[str, Any] = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k == "truncated":
+                updates[k] = int(bool(v))
+            else:
+                updates[k] = v
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [task_id]
+        await self._conn.execute(
+            f"UPDATE bg_tasks SET {set_clause} WHERE id = ?", values
+        )
+        await self._conn.commit()
+
+    async def get_bg_task(self, task_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._BG_TASK_COLS} FROM bg_tasks WHERE id = ?", (task_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_bg_task(row) if row else None
+
+    async def list_bg_tasks_for_session(
+        self, session_id: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._BG_TASK_COLS} FROM bg_tasks "
+            "WHERE session_id = ? ORDER BY started_at DESC LIMIT ?",
+            (session_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_bg_task(r) for r in rows]
+
+    async def mark_in_flight_bg_tasks_interrupted(
+        self, completed_at: str
+    ) -> int:
+        """Called once at startup: any row left in `running` belongs to a
+        prior FastAPI process that crashed or was restarted. The
+        subprocess is gone (child of the dead parent), so the row is
+        garbage — flip it to `interrupted` so the chat doesn't show a
+        spinner that will never resolve. Returns rows updated.
+        """
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE bg_tasks SET status = 'interrupted', completed_at = ? "
+            "WHERE status IN ('running', 'pending')",
+            (completed_at,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount

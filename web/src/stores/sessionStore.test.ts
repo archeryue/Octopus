@@ -89,6 +89,69 @@ describe("sessionStore", () => {
     expect(useSessionStore.getState().connected).toBe(true);
   });
 
+  it("upsertBgTask appends new tasks and patches existing by id", () => {
+    const { upsertBgTask } = useSessionStore.getState();
+    const base = {
+      session_id: "s1",
+      command: "true",
+      description: null,
+      working_dir: "/tmp",
+      exit_code: null,
+      stdout: "",
+      stderr: "",
+      truncated: false,
+      started_at: "t0",
+      completed_at: null,
+    };
+    upsertBgTask("s1", { id: "a", status: "running", ...base });
+    upsertBgTask("s1", { id: "b", status: "running", ...base });
+    expect(useSessionStore.getState().bgTasks["s1"]).toHaveLength(2);
+    // Patch the existing 'a' row in place; list length unchanged.
+    upsertBgTask("s1", { id: "a", status: "completed", ...base, exit_code: 0 });
+    const tasks = useSessionStore.getState().bgTasks["s1"];
+    expect(tasks).toHaveLength(2);
+    expect(tasks.find((t) => t.id === "a")?.status).toBe("completed");
+    expect(tasks.find((t) => t.id === "a")?.exit_code).toBe(0);
+  });
+
+  it("setBgTasks replaces the entire list for a session", () => {
+    const { upsertBgTask, setBgTasks } = useSessionStore.getState();
+    const base = {
+      session_id: "s1",
+      command: "true",
+      description: null,
+      working_dir: "/tmp",
+      exit_code: null,
+      stdout: "",
+      stderr: "",
+      truncated: false,
+      started_at: "t0",
+      completed_at: null,
+    };
+    upsertBgTask("s1", { id: "old", status: "running", ...base });
+    setBgTasks("s1", [{ id: "new", status: "completed", ...base, exit_code: 0 }]);
+    const tasks = useSessionStore.getState().bgTasks["s1"];
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe("new");
+  });
+
+  it("opens and closes the file viewer", () => {
+    const { openViewer, closeViewer } = useSessionStore.getState();
+    expect(useSessionStore.getState().viewer).toBeNull();
+    openViewer("s1", "docs/plan.md");
+    expect(useSessionStore.getState().viewer).toEqual({
+      sessionId: "s1",
+      path: "docs/plan.md",
+    });
+    openViewer("s2", "README.md");
+    expect(useSessionStore.getState().viewer).toEqual({
+      sessionId: "s2",
+      path: "README.md",
+    });
+    closeViewer();
+    expect(useSessionStore.getState().viewer).toBeNull();
+  });
+
   it("preserves attachments on user messages", () => {
     const { addMessage } = useSessionStore.getState();
     const att = {

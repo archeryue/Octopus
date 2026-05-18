@@ -12,12 +12,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .bg_tasks import bg_task_manager
 from .bridges.manager import BridgeManager
 from .config import settings
 from .tunnel import CloudflareTunnel
 from .database import Database
 from .notifiers import notifier_manager
-from .routers import attachments, credentials, notifiers, schedules, sessions, ws
+from .routers import attachments, bg_tasks as bg_tasks_router, credentials, files, notifiers, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -65,6 +66,17 @@ async def lifespan(app: FastAPI):
     session_manager.set_notifier_manager(notifier_manager)
     await notifier_manager.load()
 
+    # Bg task worker — lives in this FastAPI process so spawned
+    # subprocesses survive any per-turn `claude --print` lifetime. The
+    # deliver callback synthesizes a user message into the session; the
+    # broadcast callback pushes status events to all WS clients.
+    bg_task_manager.bind(
+        db=db,
+        deliver_cb=session_manager.deliver_bg_result,
+        broadcast_cb=session_manager._broadcast,
+    )
+    await bg_task_manager.start()
+
     # Start Cloudflare Tunnel if enabled
     tunnel: CloudflareTunnel | None = None
     if settings.enable_tunnel:
@@ -85,6 +97,7 @@ async def lifespan(app: FastAPI):
     from .oauth_login import oauth_login_manager
     await oauth_login_manager.shutdown()
 
+    await bg_task_manager.shutdown()
     await schedule_runner.shutdown()
     await bridge_manager.stop_all()
     await bridge_manager.unregister_broadcast()
@@ -103,6 +116,8 @@ app.add_middleware(
 
 app.include_router(sessions.router)
 app.include_router(attachments.router)
+app.include_router(files.router)
+app.include_router(bg_tasks_router.router)
 app.include_router(schedules.router)
 app.include_router(credentials.router)
 app.include_router(notifiers.router)

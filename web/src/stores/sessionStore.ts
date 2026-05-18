@@ -107,6 +107,43 @@ interface SessionStore {
 
   connected: boolean;
   setConnected: (c: boolean) => void;
+
+  // FileViewerDialog is mounted at the App level and reads this slot.
+  // null = closed; non-null = open and fetching the named file. Set
+  // by ChatView when it sees an `mcp__viewer__show_file` tool call
+  // (model-driven) or by /showme command handling.
+  viewer: { sessionId: string; path: string } | null;
+  openViewer: (sessionId: string, path: string) => void;
+  closeViewer: () => void;
+
+  // Cross-turn background tasks. Keyed by sessionId → list of tasks
+  // (most-recent last as they arrive over WS / from snapshot fetch).
+  // The BgTaskChip in chat looks each task up by id; it lives next
+  // to the `mcp__bg__run` tool_use block that started it.
+  bgTasks: Record<string, BgTask[]>;
+  upsertBgTask: (sessionId: string, task: BgTask) => void;
+  setBgTasks: (sessionId: string, tasks: BgTask[]) => void;
+}
+
+export interface BgTask {
+  id: string;
+  session_id: string;
+  command: string;
+  description: string | null;
+  working_dir: string;
+  status:
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "interrupted"
+    | "pending";
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  truncated: boolean;
+  started_at: string;
+  completed_at: string | null;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
@@ -215,4 +252,21 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   connected: false,
   setConnected: (c) => set({ connected: c }),
+
+  viewer: null,
+  openViewer: (sessionId, path) => set({ viewer: { sessionId, path } }),
+  closeViewer: () => set({ viewer: null }),
+
+  bgTasks: {},
+  upsertBgTask: (sessionId, task) =>
+    set((s) => {
+      const current = s.bgTasks[sessionId] || [];
+      const idx = current.findIndex((t) => t.id === task.id);
+      const next = idx >= 0
+        ? [...current.slice(0, idx), { ...current[idx], ...task }, ...current.slice(idx + 1)]
+        : [...current, task];
+      return { bgTasks: { ...s.bgTasks, [sessionId]: next } };
+    }),
+  setBgTasks: (sessionId, tasks) =>
+    set((s) => ({ bgTasks: { ...s.bgTasks, [sessionId]: tasks } })),
 }));

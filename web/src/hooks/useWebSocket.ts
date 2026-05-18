@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
   useSessionStore,
+  type BgTask,
   type Message,
   type PendingQuestion,
   type SessionStatus,
 } from "../stores/sessionStore";
+
+type BgTaskStatus = BgTask["status"];
 
 const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
 const WS_URL = `${WS_PROTOCOL}//${window.location.host}/ws`;
@@ -74,15 +77,32 @@ function handleWsMessage(data: Record<string, unknown>) {
       });
       break;
 
-    case "tool_use":
+    case "tool_use": {
+      const toolName = data.tool as string;
+      const toolInput = data.input as Record<string, unknown>;
       addMessage(sessionId, {
         role: "assistant",
         type: "tool_use",
-        tool_name: data.tool as string,
-        tool_input: data.input as Record<string, unknown>,
+        tool_name: toolName,
+        tool_input: toolInput,
         tool_use_id: data.tool_use_id as string,
       });
+      // The viewer MCP tool double-signals: the model's "I called
+      // show_file" is also the UI's cue to open the modal. We trigger
+      // off the live WS event (not snapshot rehydration), which is
+      // the right scope — a reconnect-refetch shouldn't pop the modal
+      // for files the model showed in a previous browser session.
+      if (toolName === "mcp__viewer__show_file" && sessionId) {
+        const path =
+          toolInput && typeof toolInput.path === "string"
+            ? (toolInput.path as string)
+            : null;
+        if (path) {
+          getState().openViewer(sessionId, path);
+        }
+      }
       break;
+    }
 
     case "tool_result":
       addMessage(sessionId, {
@@ -163,6 +183,46 @@ function handleWsMessage(data: Record<string, unknown>) {
         content: data.message as string,
       });
       break;
+
+    case "bg_started": {
+      const { upsertBgTask } = getState();
+      upsertBgTask(sessionId, {
+        id: data.task_id as string,
+        session_id: sessionId,
+        command: data.command as string,
+        description: (data.description as string) ?? null,
+        working_dir: "",
+        status: "running",
+        exit_code: null,
+        stdout: "",
+        stderr: "",
+        truncated: false,
+        started_at: data.started_at as string,
+        completed_at: null,
+      });
+      break;
+    }
+
+    case "bg_completed": {
+      // Patch the existing row in place. We don't have stdout/stderr
+      // here — those land via the synthesized user_message turn — but
+      // the chip needs the status + exit_code to flip from spinner
+      // to badge. Full bytes are fetched on demand via the REST GET.
+      const { bgTasks, upsertBgTask } = getState();
+      const current = (bgTasks[sessionId] || []).find(
+        (t) => t.id === data.task_id
+      );
+      if (current) {
+        upsertBgTask(sessionId, {
+          ...current,
+          status: data.status as BgTaskStatus,
+          exit_code: (data.exit_code as number | null) ?? null,
+          truncated: !!data.truncated,
+          completed_at: data.completed_at as string,
+        });
+      }
+      break;
+    }
 
     case "session_archived": {
       // Another client (or this tab's archive POST) hid the old
@@ -254,6 +314,18 @@ export function useWebSocket() {
                     data.next_message_seq - 1
                   );
                 }
+              })
+              .catch(() => {});
+            // Bg tasks: same reload, independent endpoint. Chat history
+            // contains bg_run tool_use blocks whose chips need the bg
+            // task records to render correctly after a reconnect.
+            fetch(
+              `${window.location.origin}/api/sessions/${activeSessionId}/bg-tasks`,
+              { headers: { Authorization: `Bearer ${t}` } }
+            )
+              .then((r) => (r.ok ? r.json() : null))
+              .then((tasks) => {
+                if (tasks) getState().setBgTasks(activeSessionId, tasks);
               })
               .catch(() => {});
           }

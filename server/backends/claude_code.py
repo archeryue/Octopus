@@ -14,14 +14,84 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from .base import BackendCredential, BackendEvent
 from .subprocess_jsonl import SubprocessJsonlBackend
 
 logger = logging.getLogger(__name__)
+
+
+# Repo root (the directory that contains the `server/` package). We
+# need it twice in build_args — once to launch the viewer MCP server
+# via `-m server.mcp_servers.viewer` and once to set PYTHONPATH so
+# that import works regardless of where claude is invoked from.
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+
+
+# System prompt addendum teaching the model about the in-process MCP
+# tools we inject (viewer + bg). Appended via --append-system-prompt
+# on every turn so the model has it even when resuming.
+_OCTOPUS_SYSTEM_PROMPT = """\
+== Octopus in-app tools ==
+
+You have access to extra tools injected by the Octopus controller. \
+They are first-class — call them whenever appropriate, not as a \
+fallback.
+
+[1] `mcp__viewer__show_file` — opens a file from the current working \
+directory in an in-app viewer modal so the user can see it directly.
+
+When to call it:
+  - When the user types `/showme <path>` in chat, call show_file \
+with that path. If the path doesn't exist exactly (typo, wrong \
+extension, partial name), use Glob or LS to find the closest match \
+first, then call show_file with the corrected path. Don't refuse — \
+make a best-effort guess.
+  - Proactively, when showing a file directly is clearer than \
+quoting its contents in your reply — for example, when the user asks \
+"what's in the README?", or right after you wrote/edited a file the \
+user should see.
+
+Supported types: Markdown (.md), code files (Python, JS/TS, Go, Rust, \
+etc.), images (PNG/JPG/GIF/SVG/WebP), PDFs, plain text/log/CSV. \
+Paths are sandboxed to the working directory.
+
+After calling show_file, briefly tell the user what you opened — \
+don't paste the file contents in your reply, since they're already \
+seeing them in the viewer.
+
+[2] `mcp__bg__run(command, description?)` — fire-and-forget a shell \
+command that runs in the BACKGROUND across turns. Returns a task_id \
+immediately. When the bg task finishes, Octopus injects a follow-up \
+turn into this session with the captured output, and you respond \
+then.
+
+When to use bg_run vs Bash:
+  - Use **bg_run** for anything that may take longer than ~30 seconds \
+(long builds, full test suites, npm install, large fetches, model \
+training, container builds, sleeps). The user shouldn't wait on those \
+inside your reply.
+  - Use the regular **Bash** tool for short commands (< 30s) where \
+the user expects an immediate answer in your reply.
+
+Pattern when you use bg_run:
+  1. Call `bg_run("the command", description="what it is")` — pass a \
+short human description so the user's UI chip is informative.
+  2. In your reply, tell the user briefly what you started ("Running \
+the test suite in the background — I'll report back when it \
+finishes.") — do NOT wait.
+  3. End your turn. A new turn will arrive automatically with the \
+result, prefixed `[bg-task-result]`. Treat that prefix as a signal it \
+was auto-injected, not user-typed.
+
+Related: `mcp__bg__cancel(task_id)` to abort a running task, and \
+`mcp__bg__list()` to see recent bg tasks for this session (useful if \
+the chat history is too long to scroll for the task_id)."""
 
 
 # Type for the can_use_tool permission callback. Returns the CLI's
@@ -61,10 +131,16 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         self,
         permission_callback: PermissionCallback | None = None,
         model: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         super().__init__()
         self._permission_cb = permission_callback
         self._model = model
+        # Octopus session id this backend instance is bound to. Threaded
+        # into the bg MCP env so the MCP tool knows which session to
+        # attribute its bg_run calls to. None is fine in tests that
+        # don't exercise bg.
+        self._session_id = session_id
         # request_id → Future awaiting the response from the CLI (for
         # OUTGOING control requests we send, like initialize / interrupt).
         self._pending_outgoing: dict[str, asyncio.Future[dict[str, Any]]] = {}
@@ -86,6 +162,51 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         resume_id: str | None,
         credential: BackendCredential | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
+        # Inline MCP config registering both our in-process servers
+        # (viewer + bg). The CLI accepts JSON strings directly (per
+        # `claude --help`: "Load MCP servers from JSON files or
+        # strings"), so no temp file bookkeeping. Tool names presented
+        # to the model are `mcp__<server-key>__<tool-fn>` —
+        # `mcp__viewer__show_file`, `mcp__bg__run`, etc.
+        #
+        # viewer: needs OCTOPUS_WORKING_DIR (the session's working dir)
+        #         so its sandbox helper resolves paths correctly.
+        # bg:     needs OCTOPUS_API_BASE + OCTOPUS_AUTH_TOKEN +
+        #         OCTOPUS_SESSION_ID so it can call back into the
+        #         FastAPI process (it's a child of `claude`, not of
+        #         FastAPI, so it has no direct handle to the manager).
+        #         Loopback 127.0.0.1 because we always spawn the
+        #         subprocess on the same host as the server.
+        from ..config import settings as _settings  # local import: avoid cycle at module load
+        api_base = f"http://127.0.0.1:{_settings.port}"
+        bg_env: dict[str, str] = {
+            "OCTOPUS_API_BASE": api_base,
+            "OCTOPUS_AUTH_TOKEN": _settings.auth_token,
+            "PYTHONPATH": _REPO_ROOT,
+        }
+        if self._session_id:
+            bg_env["OCTOPUS_SESSION_ID"] = self._session_id
+
+        mcp_config = json.dumps(
+            {
+                "mcpServers": {
+                    "viewer": {
+                        "command": sys.executable,
+                        "args": ["-m", "server.mcp_servers.viewer"],
+                        "env": {
+                            "OCTOPUS_WORKING_DIR": working_dir,
+                            "PYTHONPATH": _REPO_ROOT,
+                        },
+                    },
+                    "bg": {
+                        "command": sys.executable,
+                        "args": ["-m", "server.mcp_servers.bg"],
+                        "env": bg_env,
+                    },
+                }
+            }
+        )
+
         argv = [
             self.binary,
             "--print",
@@ -94,6 +215,10 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
             "--verbose",
             "--permission-mode=default",
             "--permission-prompt-tool=stdio",
+            "--mcp-config",
+            mcp_config,
+            "--append-system-prompt",
+            _OCTOPUS_SYSTEM_PROMPT,
         ]
         if self._model:
             argv += ["--model", self._model]

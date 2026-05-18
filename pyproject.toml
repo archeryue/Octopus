@@ -12,6 +12,7 @@ dependencies = [
     "aiosqlite>=0.20",
     "httpx>=0.27",
     "apscheduler>=3.10",
+    "mcp>=1.0",
 ]
 
 [project.optional-dependencies]

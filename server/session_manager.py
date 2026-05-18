@@ -93,6 +93,9 @@ class Session:
     _backend: BackendBase | None = field(default=None, repr=False)
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
     _pending_questions: dict[str, PendingQuestion] = field(default_factory=dict, repr=False)
+    # question_id -> background timer that auto-answers if the user
+    # never replies (see SessionManager._schedule_question_timeout).
+    _question_timers: dict[str, asyncio.Task] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _pending_queue: list[QueuedPrompt] = field(default_factory=list, repr=False)
 
@@ -236,6 +239,7 @@ class SessionManager:
             old._backend = None
         old._pending_queue.clear()
         old._pending_questions.clear()
+        self._cancel_all_question_timers(old)
 
         # Mark the DB row archived; drop it from the in-memory dict so
         # subsequent list/get calls don't surface it.
@@ -369,6 +373,7 @@ class SessionManager:
             return False
         session._pending_queue.clear()
         session._pending_questions.clear()
+        self._cancel_all_question_timers(session)
         if session._inner_task and not session._inner_task.done():
             session._inner_task.cancel()
         if session._active_task and not session._active_task.done():
@@ -526,6 +531,46 @@ class SessionManager:
                 "notifier_manager.fire raised for session %s", session.id
             )
 
+    async def deliver_bg_result(self, rec) -> bool:  # type: ignore[no-untyped-def]
+        """Inject a synthesized user message into a session when a bg
+        task completes. Threaded through the same start_message path
+        as a real user prompt, so it queues behind an in-flight turn
+        instead of racing it.
+
+        `rec` is a server.bg_tasks.BgTaskRecord — passed by name
+        rather than imported at module top to avoid a circular import
+        (bg_tasks depends on Database; the manager wires the delivery
+        callback into us in main.py's lifespan).
+
+        Returns True if the session exists and the prompt was accepted,
+        False if the session was already gone (e.g. deleted while the
+        bg task was running). Marker `[bg-task-result]` in the prompt
+        body is what the frontend keys off of for the "auto" badge —
+        keeping it textual means the model also sees the marker in
+        chat history on resume, which is the right cue.
+        """
+        from .bg_tasks import render_delivery_prompt
+
+        session = self.sessions.get(rec.session_id)
+        if session is None:
+            logger.info(
+                "bg task %s completed for missing session %s; dropping result",
+                rec.id,
+                rec.session_id,
+            )
+            return False
+        prompt = render_delivery_prompt(rec)
+        try:
+            await self.start_message(rec.session_id, prompt, attachment_ids=None)
+        except Exception:
+            logger.exception(
+                "Failed to inject bg result for task %s into session %s",
+                rec.id,
+                rec.session_id,
+            )
+            return False
+        return True
+
     async def _consume_message(
         self, session_id: str, queued: QueuedPrompt
     ) -> None:
@@ -604,8 +649,12 @@ class SessionManager:
                 {"type": "status", "session_id": session_id, "status": "running"}
             )
 
+            # Slash-command rewrite runs on the user's raw prompt; the
+            # attachment wrapper goes around the rewritten text so the
+            # `<attachments>` block stays at the top regardless.
+            backend_prompt = _rewrite_slash_commands(prompt)
             augmented_prompt = _augment_prompt_with_attachments(
-                prompt, attachment_paths
+                backend_prompt, attachment_paths
             )
 
             try:
@@ -640,29 +689,51 @@ class SessionManager:
             session._lock.release()
 
     async def interrupt(self, session_id: str) -> bool:
-        """Cancel the currently running prompt. Queued prompts continue."""
+        """Cancel the currently running prompt. Queued prompts continue.
+
+        Best-effort: if the backend subprocess is wedged (e.g. waiting on
+        a control_response we'll never send), interrupt still releases the
+        UI immediately by cancelling the inner task — the subprocess gets
+        torn down in the background. We never block the caller on
+        backend.interrupt(), which can take seconds for stdin-close →
+        SIGTERM → SIGKILL escalation.
+        """
         session = self.sessions.get(session_id)
         if session is None:
             return False
+
+        # Fire backend teardown in the background and return fast. The
+        # inner task cancellation below releases session._lock via
+        # send_message's finally clause, so new turns become possible
+        # even before the subprocess actually exits.
+        if session._backend:
+            backend = session._backend
+            asyncio.create_task(self._safe_backend_interrupt(backend))
+
         inner = session._inner_task
-        if inner is None or inner.done():
+        had_active = inner is not None and not inner.done()
+        if had_active:
+            inner.cancel()
+        elif session._lock.locked():
+            # Wedged state: no live task to cancel but the lock is still
+            # held (typically: previous turn's task got cancelled but its
+            # finally clause was bypassed somehow). Force-release so the
+            # UI isn't soft-locked. Distinguish this from a truly idle
+            # session, which should return False below.
+            try:
+                session._lock.release()
+            except RuntimeError:
+                pass
+            session.status = SessionStatus.idle
+            await self._broadcast(
+                {"type": "status", "session_id": session_id, "status": "idle"}
+            )
+        else:
+            # Truly idle — nothing to interrupt.
             return False
 
-        # Cancel the task FIRST — synchronous and immediate. The backend's
-        # stop() can take a moment (subprocess teardown), and if we awaited
-        # it before cancelling, the WS handler would stay stuck inside
-        # this coroutine and refuse subsequent interrupt requests.
-        inner.cancel()
-
-        # Then best-effort interrupt, with a tight timeout so a slow
-        # subprocess teardown can't wedge the WS receive loop.
-        if session._backend:
-            try:
-                await asyncio.wait_for(session._backend.interrupt(), timeout=2.0)
-            except Exception:
-                pass
-
         session._pending_questions.clear()
+        self._cancel_all_question_timers(session)
 
         marker = MessageContent(
             role=MessageRole.system,
@@ -679,6 +750,18 @@ class SessionManager:
             event["seq"] = marker_seq
         await self._broadcast(event)
         return True
+
+    async def _safe_backend_interrupt(self, backend: BackendBase) -> None:
+        """Best-effort background teardown of a wedged backend subprocess.
+
+        Used from interrupt() so the WS caller isn't held by SIGTERM/SIGKILL
+        escalation. Any failure is logged — the lock has already been
+        released by then via the cancelled inner task.
+        """
+        try:
+            await backend.interrupt()
+        except Exception:
+            logger.exception("Background backend.interrupt() failed")
 
     async def reset_session(self, session_id: str) -> None:
         """Force-reset a stuck session."""
@@ -701,6 +784,7 @@ class SessionManager:
         session.status = SessionStatus.idle
         session._pending_approvals.clear()
         session._pending_questions.clear()
+        self._cancel_all_question_timers(session)
         await self._broadcast(
             {"type": "status", "session_id": session_id, "status": "idle"}
         )
@@ -744,6 +828,7 @@ class SessionManager:
                         question_id=event.tool_use_id,
                         questions=questions,
                     )
+                    self._schedule_question_timeout(session, event.tool_use_id)
 
                 # Update resume id when result arrives
                 if event.type == "result":
@@ -772,7 +857,7 @@ class SessionManager:
 
         Future: dispatch on `session.backend` field ("claude-code" | "codex").
         """
-        return ClaudeCodeBackend()
+        return ClaudeCodeBackend(session_id=session.id)
 
     # Refresh the access_token if it expires within this many seconds. A
     # 5-minute pad covers a slow turn that crosses the boundary without
@@ -1091,10 +1176,29 @@ class SessionManager:
         if pending is None:
             return False
         answer_text = self._format_answers(pending.questions, answers)
+        return await self._deliver_question_answer(
+            session, question_id, answer_text, auto=False
+        )
+
+    async def _deliver_question_answer(
+        self,
+        session: Session,
+        question_id: str,
+        answer_text: str,
+        *,
+        auto: bool,
+    ) -> bool:
+        """Common path for both human and timeout-driven answers."""
+        # Cancel any pending auto-answer timer for this question (no-op
+        # when the timer is the one calling us, since it's already
+        # popped its own entry by then).
+        self._cancel_question_timer(session, question_id)
+
+        if session._backend is None:
+            return False
         ok = await session._backend.answer_question(question_id, answer_text)
         if not ok:
             return False
-        # Record the answer in history and notify the UI
         ans_msg = MessageContent(
             role=MessageRole.user,
             type="question_answer",
@@ -1104,15 +1208,81 @@ class SessionManager:
         ans_seq = await self._persist_message(session, ans_msg)
         event: dict[str, Any] = {
             "type": "question_answer",
-            "session_id": session_id,
+            "session_id": session.id,
             "question_id": question_id,
             "content": answer_text,
         }
+        if auto:
+            event["auto"] = True
         if ans_seq is not None:
             event["seq"] = ans_seq
         await self._broadcast(event)
         session._pending_questions.pop(question_id, None)
         return True
+
+    # ---- AskUserQuestion auto-answer on timeout ------------------------------
+
+    AUTO_ANSWER_TEXT = (
+        "No human is available to answer this question right now. "
+        "Proceed with the task autonomously and try hard to finish it without "
+        "asking again. Make the most reasonable choice and continue.\n\n"
+        "Only stop and leave a clear note describing what you would have done "
+        "if the next action is genuinely risky or irreversible — for example: "
+        "destroying data, force-pushing or rewriting shared git history, "
+        "deploying to production, modifying billing/payments, sending "
+        "messages or emails to external recipients, or running commands that "
+        "affect shared infrastructure. For everything else (ambiguous design "
+        "choices, formatting, library picks, small refactors), pick the most "
+        "reasonable option and keep going."
+    )
+
+    def _schedule_question_timeout(self, session: Session, question_id: str) -> None:
+        timeout = settings.ask_user_question_timeout_seconds
+        if timeout <= 0:
+            return  # auto-answer disabled
+        # Replace any existing timer for this question_id — defensive,
+        # we don't expect the same id to be emitted twice.
+        self._cancel_question_timer(session, question_id)
+        task = asyncio.create_task(
+            self._auto_answer_after(session, question_id, timeout),
+            name=f"auto-answer-{session.id}-{question_id}",
+        )
+        session._question_timers[question_id] = task
+
+    def _cancel_question_timer(self, session: Session, question_id: str) -> None:
+        task = session._question_timers.pop(question_id, None)
+        if task and not task.done():
+            task.cancel()
+
+    def _cancel_all_question_timers(self, session: Session) -> None:
+        for task in list(session._question_timers.values()):
+            if not task.done():
+                task.cancel()
+        session._question_timers.clear()
+
+    async def _auto_answer_after(
+        self, session: Session, question_id: str, timeout: float
+    ) -> None:
+        try:
+            await asyncio.sleep(timeout)
+        except asyncio.CancelledError:
+            return  # the user (or a cleanup path) cancelled us first
+        # The user might have answered during the sleep — re-check.
+        if question_id not in session._pending_questions:
+            return
+        # Pop our own timer entry so _deliver_question_answer doesn't
+        # try to cancel a task that's currently running (self).
+        session._question_timers.pop(question_id, None)
+        try:
+            await self._deliver_question_answer(
+                session, question_id, self.AUTO_ANSWER_TEXT, auto=True
+            )
+        except Exception:
+            logger.exception(
+                "Auto-answer for session %s question %s failed",
+                session.id,
+                question_id,
+            )
 
     @staticmethod
     def _format_answers(
@@ -1178,6 +1348,48 @@ def _guess_mime(filename: str) -> str:
 
     guess, _ = mimetypes.guess_type(filename)
     return guess or "application/octet-stream"
+
+
+def _rewrite_slash_commands(prompt: str) -> str:
+    """Translate user-facing slash commands into natural instructions.
+
+    The `claude` CLI intercepts any message that begins with `/<word>`
+    as a built-in or user-defined slash command — it never reaches the
+    model and returns "Unknown command: /…". To make `/showme <path>`
+    actually route to our viewer MCP tool, we rewrite it server-side
+    *before* handing the prompt to the backend. The user's literal
+    text is still preserved in chat history (this only changes what
+    Claude sees, not what we persist or broadcast).
+
+    Keep this list explicit, not regex-magic — the model only needs
+    clear instructions, and an over-eager rewrite would silently
+    mangle prompts that happen to start with `/`.
+    """
+    stripped = prompt.lstrip()
+    # Match `/showme` (bare) OR `/showme <args>`. We accept any
+    # whitespace after the command and trim, so `/showme  file.md `
+    # works the same as `/showme file.md`.
+    if stripped == "/showme" or stripped.startswith("/showme "):
+        arg = stripped[len("/showme"):].strip()
+        if arg:
+            return (
+                f"The user typed `/showme {arg}` in the chat. "
+                f"Call the `show_file` tool (registered as "
+                f"`mcp__viewer__show_file`) with path={arg!r} to open "
+                "it in the in-app viewer. If that exact path doesn't "
+                "exist (typo, wrong extension, partial name), use Glob "
+                "or LS to find the closest match first, then call "
+                "show_file with the corrected path. Don't refuse — make "
+                "a best-effort guess. After the tool call succeeds, "
+                "briefly confirm in one sentence what you opened."
+            )
+        # Bare /showme with no arg — ask the user what file.
+        return (
+            "The user typed `/showme` with no argument. Ask them which "
+            "file in the working directory they'd like to open in the "
+            "viewer."
+        )
+    return prompt
 
 
 def _augment_prompt_with_attachments(prompt: str, paths: list[str]) -> str:

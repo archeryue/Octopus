@@ -30,8 +30,19 @@ export default defineConfig({
         // can find the binary without the user having to configure shell.
         PATH: `${process.env.HOME ?? ""}/.local/bin:${process.env.PATH ?? ""}`,
         OCTOPUS_AUTH_TOKEN: "changeme",
+        // Tell pydantic-settings the actual uvicorn port (matches the
+        // `port: 8765` above and `--port 8765` in the command). The bg
+        // MCP server reads settings.port to build OCTOPUS_API_BASE; the
+        // default 8000 would have its callback POSTs hit a dead socket
+        // and leave the BgTaskChip stuck in "Waiting for bg task…".
+        OCTOPUS_PORT: "8765",
         OCTOPUS_TELEGRAM_BOT_TOKEN: "",
         OCTOPUS_DB_PATH: ":memory:",
+        // Short auto-answer window so the AskUserQuestion-timeout e2e
+        // fires in seconds instead of minutes. Existing interactive
+        // real-CLI tests click within a second of the form appearing,
+        // well under this budget.
+        OCTOPUS_ASK_USER_QUESTION_TIMEOUT_SECONDS: "12",
       },
     },
     {

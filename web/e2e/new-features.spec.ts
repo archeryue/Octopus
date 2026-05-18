@@ -1,4 +1,7 @@
 import * as http from "node:http";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 
 const TOKEN = "changeme";
@@ -21,6 +24,13 @@ const OWNED_NAMES = new Set([
   "Archive Probe Two",
   "Attachment Picker Test",
   "Attachment History Test",
+  "Viewer Showme Test",
+  "Q Re-render A",
+  "Q Re-render B",
+  "Q Interrupt Recovery",
+  "Q Auto Answer",
+  "Reset Slash Cmd",
+  "Bg Run E2E",
 ]);
 
 test.afterAll(async ({ request }) => {
@@ -777,6 +787,245 @@ test.describe("Real CLI end-to-end", () => {
 });
 
 // ---------------------------------------------------------------------------
+// AskUserQuestion: session-switch re-render, interrupt recovery, auto-answer
+// ---------------------------------------------------------------------------
+//
+// Real CLI tests for three related behaviors:
+//   1. (regression) selecting a session that has a live AskUserQuestion
+//      must show the interactive form, not the greyed "already answered"
+//      summary. The earlier bug was that SessionList.selectSession
+//      fetched messages + pending_queue but skipped pending_questions, so
+//      the form never rendered after a session switch.
+//   2. (regression) interrupting a session that's blocked on
+//      AskUserQuestion must return the UI to idle quickly. The earlier
+//      bug was that interrupt() awaited backend.interrupt() with a tight
+//      timeout that silently swallowed the failure, leaving the lock
+//      held and the UI soft-locked.
+//   3. (new feature) if no human answers within
+//      OCTOPUS_ASK_USER_QUESTION_TIMEOUT_SECONDS, the server should
+//      synthesize an "act autonomously" reply so async-driven sessions
+//      (bridges, schedules) can't wedge forever.
+//
+// Each test sends a deterministic prompt that nudges the real model to
+// invoke AskUserQuestion immediately — same trick the older
+// "AskUserQuestion: real model → form → answer → reply" test uses, so
+// timing/cost characteristics are similar (~$0.01-0.05 per test, up to
+// ~60s for the form to appear).
+
+const ASK_QUESTION_PROMPT =
+  "Use the AskUserQuestion tool right now with this exact JSON for the questions argument: " +
+  '[{"question":"Pick a color","header":"Choice","multiSelect":false,' +
+  '"options":[' +
+  '{"label":"red","description":"the color red"},' +
+  '{"label":"blue","description":"the color blue"}' +
+  "]}]. " +
+  "Do not write any text before the tool call.";
+
+test.describe("AskUserQuestion edge cases (real CLI)", () => {
+  test.setTimeout(180_000);
+
+  test("pending question form re-renders after switching sessions and back", async ({
+    page,
+    request,
+  }) => {
+    // Two sessions: A is where we trigger the question, B is just a
+    // navigation target so we can leave A and come back to it.
+    await createSessionApi(request, "Q Re-render A");
+    await createSessionApi(request, "Q Re-render B");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Q Re-render A" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Q Re-render A");
+
+    await page.locator(".chat-input-bar textarea").fill(ASK_QUESTION_PROMPT);
+    await page.locator("button.btn-send").click();
+
+    // Live interactive form appears on session A
+    const formA = page.locator(".msg-question:not(.msg-question-done)");
+    await expect(formA).toBeVisible({ timeout: 90_000 });
+    await expect(formA).toContainText("Pick a color");
+
+    // Switch to a different session, then back. Before the fix,
+    // selectSession() never set pending_questions, so coming back showed
+    // the greyed summary (.msg-question-done) and the form was gone.
+    await page
+      .locator(".session-item .session-name", { hasText: "Q Re-render B" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Q Re-render B");
+    // Confirm we're really on B (no form here)
+    await expect(page.locator(".msg-question")).toHaveCount(0);
+
+    await page
+      .locator(".session-item .session-name", { hasText: "Q Re-render A" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Q Re-render A");
+
+    // The interactive form must come back — NOT the greyed "Claude asked"
+    // summary. Use :not(.msg-question-done) to assert the live variant.
+    const formAfterSwitch = page.locator(
+      ".msg-question:not(.msg-question-done)"
+    );
+    await expect(formAfterSwitch).toBeVisible({ timeout: 5_000 });
+    await expect(formAfterSwitch).toContainText("Pick a color");
+    await expect(formAfterSwitch.locator(".btn-approve")).toBeVisible();
+
+    // Clean up: answer the question so the session drains and the
+    // backend subprocess doesn't sit around until the autoanswer timer
+    // fires (which would race the afterAll cleanup).
+    await formAfterSwitch
+      .locator(".question-option", { hasText: "red" })
+      .locator("input")
+      .check();
+    await formAfterSwitch.locator(".btn-approve").click();
+  });
+
+  test("interrupt unsticks a session blocked on AskUserQuestion", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Q Interrupt Recovery");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", {
+        hasText: "Q Interrupt Recovery",
+      })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText(
+      "Q Interrupt Recovery"
+    );
+
+    await page.locator(".chat-input-bar textarea").fill(ASK_QUESTION_PROMPT);
+    await page.locator("button.btn-send").click();
+
+    // Wait for the live form (session is now wedged waiting for an answer)
+    const form = page.locator(".msg-question:not(.msg-question-done)");
+    await expect(form).toBeVisible({ timeout: 90_000 });
+    await expect(page.locator(".chat-header .status-running")).toBeVisible();
+
+    // Press Esc to interrupt. Before the fix, this would await
+    // backend.interrupt() with a 2s timeout, swallow the failure, and
+    // leave the lock held — the UI would stay in "Running" forever and
+    // subsequent send_message calls would fail with "Session is busy".
+    await page.keyboard.press("Escape");
+
+    // UI should return to idle fast and the marker should land. Cap at
+    // 5s — well under the old 8s backend-teardown budget that made
+    // interrupt feel broken.
+    await expect(page.locator(".chat-header .status-idle")).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(
+      page.locator(".msg-error", { hasText: "interrupted by user" })
+    ).toBeVisible({ timeout: 5_000 });
+
+    // Lock must be released — sending again should NOT raise
+    // "Session ... is busy". We don't need the model to actually respond;
+    // just that the request is accepted and the session goes back to
+    // running. That alone proves the lock was released.
+    await page.locator(".chat-input-bar textarea").fill("Reply with the word DONE.");
+    await page.locator("button.btn-send").click();
+    await expect(page.locator(".chat-header .status-running")).toBeVisible({
+      timeout: 5_000,
+    });
+    // No "is busy" error bubble appeared
+    const errors = await page
+      .locator(".msg-error")
+      .allInnerTexts();
+    expect(errors.join(" ")).not.toMatch(/is busy/i);
+  });
+
+  test("unanswered AskUserQuestion auto-answers after the configured timeout", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Q Auto Answer");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Q Auto Answer" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Q Auto Answer");
+
+    await page.locator(".chat-input-bar textarea").fill(ASK_QUESTION_PROMPT);
+    await page.locator("button.btn-send").click();
+
+    // Wait for the live form, then deliberately do nothing.
+    const form = page.locator(".msg-question:not(.msg-question-done)");
+    await expect(form).toBeVisible({ timeout: 90_000 });
+
+    // OCTOPUS_ASK_USER_QUESTION_TIMEOUT_SECONDS is 12s in the e2e env
+    // (see playwright.config.ts). After it elapses the server should
+    // synthesize the autonomy-mode answer and broadcast it as a
+    // question_answer event — which the UI renders as a
+    // .msg-question-answer bubble, same as a human reply.
+    //
+    // Generous wait budget (30s) to cover the broadcast + render
+    // round-trip after the 12s timer fires.
+    await expect(
+      page.locator(".msg-question-answer", {
+        hasText: "No human is available",
+      })
+    ).toBeVisible({ timeout: 30_000 });
+
+    // The risky-action language is what keeps the model from doing
+    // dangerous things autonomously; assert the key phrase is there so
+    // a regression in AUTO_ANSWER_TEXT can't silently weaken the prompt.
+    await expect(
+      page.locator(".msg-question-answer", {
+        hasText: "risky or irreversible",
+      })
+    ).toBeVisible();
+
+    // After the auto-answer is delivered, the form goes away and the
+    // session continues — eventually emitting a result event for this turn.
+    await expect(form).toHaveCount(0);
+    await expect(page.locator(".result-badge").first()).toBeVisible({
+      timeout: 60_000,
+    });
+  });
+});
+
+test.describe("/reset slash command", () => {
+  test("typing /reset hits the reset API and clears the input", async ({
+    page,
+    request,
+  }) => {
+    const { id } = await createSessionApi(request, "Reset Slash Cmd");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Reset Slash Cmd" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Reset Slash Cmd");
+
+    // Capture the POST so we can assert it actually fired (not just
+    // that the input cleared). The server's reset_session is idempotent
+    // and works on an idle session too — returns 200, broadcasts idle.
+    const resetRequest = page.waitForRequest(
+      (req) =>
+        req.method() === "POST" &&
+        req.url().endsWith(`/api/sessions/${id}/reset`),
+      { timeout: 5_000 }
+    );
+
+    await page.locator(".chat-input-bar textarea").fill("/reset");
+    await page.locator("button.btn-send").click();
+
+    await resetRequest;
+    // Input cleared after the command ran
+    await expect(page.locator(".chat-input-bar textarea")).toHaveValue("");
+    // /reset is not a chat message — no user bubble for it
+    const userBubbles = await page
+      .locator(".msg-user .msg-content")
+      .allInnerTexts();
+    expect(userBubbles.join(" ")).not.toContain("/reset");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Settings dialog (future-features #7)
 // ---------------------------------------------------------------------------
 
@@ -1290,6 +1539,182 @@ test.describe("File attachments", () => {
     // it's there for documentation: the chat history carries the SAME
     // attachment id assigned by the upload endpoint.
     expect(meta.id.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// In-app file viewer (/showme + show_file MCP tool)
+// ---------------------------------------------------------------------------
+//
+// Full-chain test: user types `/showme <path>` → the system prompt addendum
+// teaches the model to call the viewer MCP tool → ClaudeCodeBackend.build_args
+// registered that MCP server via --mcp-config → claude spawns the stdio
+// server → tool_use event flows back over WS → useWebSocket detects the
+// mcp__viewer__show_file tool name and opens FileViewerDialog → the dialog
+// fetches /api/sessions/{id}/files/meta then the bytes, dispatches to the
+// markdown renderer.
+//
+// Real Claude is required for this test (same as the other "Real CLI" tests
+// below). One scenario (markdown) is enough to validate the chain — the
+// per-renderer dispatch logic is covered by vitest in
+// src/components/FileViewerDialog.test.tsx, and per-extension classification
+// is covered by tests/test_file_viewer.py. We don't need to triple-cover.
+
+// ---------------------------------------------------------------------------
+// Cross-turn background tasks (mcp__bg__run)
+// ---------------------------------------------------------------------------
+//
+// Full chain: model calls mcp__bg__run → BgTaskChip renders in chat in the
+// running state → bg subprocess completes → chip flips to completed via WS
+// bg_completed event → session_manager.deliver_bg_result synthesizes a new
+// user_message with the [bg-task-result] marker → frontend renders it as
+// .msg-bg-result → claude --resume turn fires → model echoes the sentinel
+// proving it consumed the auto-injection.
+//
+// Validates the load-bearing claim of this feature: bg state survives a
+// per-turn `claude --print` death and the agent gets a follow-up turn.
+
+test.describe("Cross-turn bg tasks", () => {
+  test.setTimeout(180_000);
+
+  test("mcp__bg__run: chip + auto follow-up turn round-trips", async ({
+    page,
+    request,
+  }) => {
+    // Per-test tmpdir for the session's working_dir. The bg subprocess
+    // runs there; the chip should pick up its exit + output regardless.
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), "octopus-bg-e2e-"));
+    const SENTINEL = "BG-E2E-OK-58231";
+    try {
+      const sessRes = await request.post(`${API}/sessions`, {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        data: { name: "Bg Run E2E", working_dir: wd },
+      });
+      expect(sessRes.ok()).toBeTruthy();
+
+      await login(page);
+      await page
+        .locator(".session-item .session-name", { hasText: "Bg Run E2E" })
+        .click();
+      await expect(page.locator(".chat-header h3")).toHaveText("Bg Run E2E");
+
+      // Be explicit so the model actually calls bg_run rather than
+      // running the shell inline via the regular Bash tool. The system
+      // prompt addendum teaches it about bg_run for ≥30s tasks; with a
+      // 3s sleep we have to nudge it.
+      const prompt =
+        "Use the mcp__bg__run tool RIGHT NOW with command=" +
+        `'sleep 3 && echo ${SENTINEL}' and description='e2e probe'. ` +
+        "After calling it, say 'started' and end your turn. When the " +
+        "follow-up bg-task-result turn arrives, reply by echoing " +
+        `'${SENTINEL}' verbatim.`;
+      await page.locator(".chat-input-bar textarea").fill(prompt);
+      await page.locator("button.btn-send").click();
+
+      // 1. Chip renders in the running state. The chip lives inside
+      //    the tool_use block; .octo-bgtask-chip is on the wrapping div.
+      const chip = page.locator(".octo-bgtask-chip").first();
+      await expect(chip).toBeVisible({ timeout: 90_000 });
+      await expect(chip).toContainText(/bg · (running|completed)/i, {
+        timeout: 30_000,
+      });
+
+      // 2. Chip eventually flips to completed (after the 3s sleep +
+      //    plumbing roundtrip).
+      await expect(chip).toContainText(/bg · completed/i, { timeout: 30_000 });
+
+      // 3. Synthesized user message arrives with the [bg-task-result]
+      //    prefix — frontend renders that as .msg-bg-result.
+      const bgResult = page.locator(".msg-bg-result").first();
+      await expect(bgResult).toBeVisible({ timeout: 60_000 });
+      await expect(bgResult).toContainText(/bg-task result/i);
+
+      // 4. The follow-up assistant turn echoes the sentinel — proves
+      //    the auto-injected turn drove the model end-to-end.
+      await expect(
+        page.locator(".msg-assistant .msg-content").last()
+      ).toContainText(SENTINEL, { timeout: 60_000 });
+    } finally {
+      fs.rmSync(wd, { recursive: true, force: true });
+    }
+  });
+});
+
+test.describe("File viewer (/showme)", () => {
+  test.setTimeout(180_000);
+
+  test("/showme on a markdown file opens the viewer with rendered content", async ({
+    page,
+    request,
+  }) => {
+    // Stage a working_dir with a markdown file the model can resolve.
+    // Using a per-test tmpdir keeps us isolated from anything else
+    // running on the box. tmpdir is on the same filesystem as the
+    // server since both share this host, so path sandbox checks work
+    // as in production.
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), "octopus-viewer-e2e-"));
+    fs.writeFileSync(
+      path.join(wd, "intro.md"),
+      "# Octopus Viewer\n\nThis is the **intro** doc rendered live.\n"
+    );
+
+    try {
+      const sessRes = await request.post(`${API}/sessions`, {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        data: { name: "Viewer Showme Test", working_dir: wd },
+      });
+      expect(sessRes.ok()).toBeTruthy();
+
+      await login(page);
+      await page
+        .locator(".session-item .session-name", {
+          hasText: "Viewer Showme Test",
+        })
+        .click();
+      await expect(page.locator(".chat-header h3")).toHaveText(
+        "Viewer Showme Test"
+      );
+
+      // Send the slash command. The model is taught (via
+      // --append-system-prompt) to recognize this and call show_file.
+      await page
+        .locator(".chat-input-bar textarea")
+        .fill("/showme intro.md");
+      await page.locator("button.btn-send").click();
+
+      // Dialog opens once the model calls the viewer tool. Radix
+      // Dialog renders role=dialog on the content node; the data-state
+      // attribute flips to "open" when mounted.
+      const dialog = page.locator('[role="dialog"][data-state="open"]');
+      await expect(dialog).toBeVisible({ timeout: 90_000 });
+
+      // Header surfaces the filename.
+      await expect(dialog).toContainText("intro.md");
+
+      // Markdown renderer turns # into an <h1>, and the bold span lands
+      // as a <strong>. Asserting both proves we mounted the markdown
+      // body (not e.g. the plain-text fallback) and that the file
+      // bytes actually rendered.
+      await expect(
+        dialog.locator("h1", { hasText: "Octopus Viewer" })
+      ).toBeVisible({ timeout: 15_000 });
+      await expect(dialog.locator("strong", { hasText: "intro" })).toBeVisible();
+
+      // Close button (aria-label="Close") returns the dialog state to closed.
+      await dialog.locator('button[aria-label="Close"]').click();
+      await expect(page.locator('[role="dialog"][data-state="open"]')).toHaveCount(
+        0
+      );
+    } finally {
+      // Clean up the tmpdir whatever the test result.
+      fs.rmSync(wd, { recursive: true, force: true });
+    }
   });
 });
 
