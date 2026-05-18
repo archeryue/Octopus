@@ -71,6 +71,14 @@ class SessionManager:
         self.sessions: dict[str, Session] = {}
         self._broadcast_callbacks: dict[str, Callable] = {}
         self.db: Database | None = None
+        # Wired in by main.py once the manager is constructed. Kept as
+        # an opaque object — we only call `.fire(event)` on it — so the
+        # session manager doesn't take a hard dependency on the
+        # notifiers package's import surface.
+        self._notifier_manager: Any = None
+
+    def set_notifier_manager(self, mgr: Any) -> None:
+        self._notifier_manager = mgr
 
     async def initialize(self, db: Database) -> None:
         self.db = db
@@ -270,6 +278,37 @@ class SessionManager:
                 )
             else:
                 prompt = None
+
+        # Queue is drained — fire the session-idle notifier (future-
+        # features #5). Detached because notifier sends do network I/O.
+        await self._fire_session_idle_notification(session)
+
+    async def _fire_session_idle_notification(self, session: Session) -> None:
+        """Notify async targets that this session just went fully idle.
+
+        Best-effort: any failure inside a notifier is logged by the
+        manager. Skipped if no manager is wired (tests, etc.).
+        """
+        if self._notifier_manager is None:
+            return
+        try:
+            from .notifiers import NotifierEvent
+
+            await self._notifier_manager.fire(
+                NotifierEvent(
+                    type="session_idle",
+                    title=session.name or "Session idle",
+                    message=(
+                        f"Session '{session.name}' finished its work and is idle."
+                    ),
+                    session_id=session.id,
+                    session_name=session.name,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "notifier_manager.fire raised for session %s", session.id
+            )
 
     async def _consume_message(self, session_id: str, prompt: str) -> None:
         async for _event in self.send_message(session_id, prompt):

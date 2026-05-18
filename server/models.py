@@ -167,3 +167,37 @@ class CreateCredentialRequest(BaseModel):
 class UpdateCredentialRequest(BaseModel):
     label: str | None = None
     secret: str | None = Field(default=None, min_length=1)
+
+
+# Notifiers
+
+
+class NotifierType(str, Enum):
+    webhook = "webhook"
+
+
+class NotifierInfo(BaseModel):
+    """Notifier metadata returned to clients.
+
+    `config` is type-specific (e.g. webhook: `{"url": "..."}`). Clients
+    treat it as opaque except for the keys they know how to render.
+    """
+
+    id: str
+    type: NotifierType
+    label: str
+    config: dict[str, Any] = {}
+    enabled: bool = True
+    created_at: str
+
+
+class CreateNotifierRequest(BaseModel):
+    type: NotifierType
+    label: str = Field(min_length=1)
+    config: dict[str, Any] = {}
+
+
+class UpdateNotifierRequest(BaseModel):
+    label: str | None = None
+    config: dict[str, Any] | None = None
+    enabled: bool | None = None

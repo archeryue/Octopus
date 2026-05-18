@@ -82,6 +82,20 @@ CREATE TABLE IF NOT EXISTS credential_secrets (
     FOREIGN KEY (credential_id) REFERENCES backend_credentials(id)
         ON DELETE CASCADE
 );
+
+-- Async notification targets (future-features #5). Each row is one
+-- destination Octopus can poke when a session transitions to idle
+-- (and, later, when an AskUserQuestion is pending / a schedule fails).
+-- `config` is a JSON blob whose shape depends on `type` (e.g. for
+-- type='webhook': {"url": "https://…"}).
+CREATE TABLE IF NOT EXISTS notifiers (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,                    -- 'webhook' | future: 'email', 'browser_push'
+    label TEXT NOT NULL,
+    config TEXT NOT NULL,                  -- JSON
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -543,5 +557,73 @@ class Database:
         await self._conn.execute(
             f"UPDATE sessions SET {set_clause} WHERE id = ?",
             values,
+        )
+        await self._conn.commit()
+
+    # --- Notifiers ---
+
+    async def save_notifier(
+        self,
+        notifier_id: str,
+        type: str,
+        label: str,
+        config: dict[str, Any],
+        created_at: str,
+        enabled: bool = True,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO notifiers (id, type, label, config, enabled, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (notifier_id, type, label, json.dumps(config), int(enabled), created_at),
+        )
+        await self._conn.commit()
+
+    async def load_notifiers(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id, type, label, config, enabled, created_at "
+            "FROM notifiers ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "type": row[1],
+                "label": row[2],
+                "config": json.loads(row[3]) if row[3] else {},
+                "enabled": bool(row[4]),
+                "created_at": row[5],
+            }
+            for row in rows
+        ]
+
+    async def delete_notifier(self, notifier_id: str) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM notifiers WHERE id = ?", (notifier_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def update_notifier(self, notifier_id: str, **fields: Any) -> None:
+        await self._ensure_connected()
+        allowed = {"label", "enabled", "config"}
+        updates: dict[str, Any] = {}
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            if k == "enabled":
+                updates[k] = int(bool(v))
+            elif k == "config":
+                updates[k] = json.dumps(v)
+            else:
+                updates[k] = v
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [notifier_id]
+        await self._conn.execute(
+            f"UPDATE notifiers SET {set_clause} WHERE id = ?", values
         )
         await self._conn.commit()

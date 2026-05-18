@@ -205,6 +205,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifiers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Notifiers */
+        get: operations["list_notifiers_api_notifiers_get"];
+        put?: never;
+        /** Create Notifier */
+        post: operations["create_notifier_api_notifiers_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifiers/{notifier_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Notifier */
+        delete: operations["delete_notifier_api_notifiers__notifier_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Notifier */
+        patch: operations["update_notifier_api_notifiers__notifier_id__patch"];
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -245,6 +281,19 @@ export interface components {
             auth_type: components["schemas"]["AuthType"];
             /** Secret */
             secret: string;
+        };
+        /** CreateNotifierRequest */
+        CreateNotifierRequest: {
+            type: components["schemas"]["NotifierType"];
+            /** Label */
+            label: string;
+            /**
+             * Config
+             * @default {}
+             */
+            config: {
+                [key: string]: unknown;
+            };
         };
         /** CreateScheduleRequest */
         CreateScheduleRequest: {
@@ -358,6 +407,39 @@ export interface components {
          * @enum {string}
          */
         MessageRole: "user" | "assistant" | "system" | "tool";
+        /**
+         * NotifierInfo
+         * @description Notifier metadata returned to clients.
+         *
+         *     `config` is type-specific (e.g. webhook: `{"url": "..."}`). Clients
+         *     treat it as opaque except for the keys they know how to render.
+         */
+        NotifierInfo: {
+            /** Id */
+            id: string;
+            type: components["schemas"]["NotifierType"];
+            /** Label */
+            label: string;
+            /**
+             * Config
+             * @default {}
+             */
+            config: {
+                [key: string]: unknown;
+            };
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Created At */
+            created_at: string;
+        };
+        /**
+         * NotifierType
+         * @enum {string}
+         */
+        NotifierType: "webhook";
         /** OAuthCancelRequest */
         OAuthCancelRequest: {
             /** Login Id */
@@ -485,6 +567,17 @@ export interface components {
             label?: string | null;
             /** Secret */
             secret?: string | null;
+        };
+        /** UpdateNotifierRequest */
+        UpdateNotifierRequest: {
+            /** Label */
+            label?: string | null;
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            } | null;
+            /** Enabled */
+            enabled?: boolean | null;
         };
         /** UpdateScheduleRequest */
         UpdateScheduleRequest: {
@@ -1015,6 +1108,123 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_notifiers_api_notifiers_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotifierInfo"][];
+                };
+            };
+        };
+    };
+    create_notifier_api_notifiers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateNotifierRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotifierInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_notifier_api_notifiers__notifier_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notifier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_notifier_api_notifiers__notifier_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                notifier_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateNotifierRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotifierInfo"];
+                };
             };
             /** @description Validation Error */
             422: {
