@@ -100,26 +100,26 @@ export function SessionList() {
   }, [fetchSessions]);
 
   return (
-    <div className="session-list shrink-0 pb-6">
-      <div className="session-list-header group flex h-10 items-center justify-between rounded-lg px-5 hover:bg-sidebar-accent transition-colors">
+    <div className="session-list shrink-0 pb-3">
+      <div className="session-list-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
         <h2 className="text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Sessions
         </h2>
         <button
-          className="btn-session-add inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
+          className="btn-session-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
           onClick={() => setShowForm((v) => !v)}
           title={showForm ? "Cancel" : "New session"}
           aria-label={showForm ? "Cancel" : "New session"}
         >
-          {showForm ? <IconX size={16} /> : <IconPlus size={16} />}
+          {showForm ? <IconX size={14} /> : <IconPlus size={14} />}
         </button>
       </div>
 
-      <div className="session-list-items flex flex-col gap-1.5 mt-3">
+      <div className="session-list-items flex flex-col gap-0.5 mt-1">
         {sessions.map((s) => (
           <div
             key={s.id}
-            className={`session-item group flex items-center gap-3 rounded-lg px-5 py-3 cursor-pointer transition-colors ${
+            className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
               s.id === activeSessionId
                 ? "active bg-[hsl(var(--gray-200))] text-foreground"
                 : "text-sidebar-foreground hover:bg-sidebar-accent"
@@ -171,7 +171,7 @@ export function SessionList() {
       </div>
 
       {showForm && (
-        <div className="session-create mt-3 rounded-lg border-[0.7px] border-border bg-card p-5 space-y-4">
+        <div className="session-create mt-2 rounded-lg border-[0.7px] border-border bg-card p-3 space-y-2">
           <Input
             type="text"
             className="h-9 text-sm"

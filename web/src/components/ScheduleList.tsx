@@ -67,22 +67,22 @@ export function ScheduleList() {
   if (!activeSessionId) return null;
 
   return (
-    <div className="schedule-section shrink-0 pb-6 pt-3">
-      <div className="schedule-header group flex h-10 items-center justify-between rounded-lg px-5 hover:bg-sidebar-accent transition-colors">
+    <div className="schedule-section shrink-0 pb-3 pt-2">
+      <div className="schedule-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
         <span className="schedule-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Schedules
         </span>
         <button
-          className="btn-schedule-add inline-flex h-7 w-7 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
+          className="btn-schedule-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
           onClick={() => setShowForm(!showForm)}
           aria-label={showForm ? "Cancel" : "New schedule"}
         >
-          {showForm ? <IconX size={16} /> : <IconPlus size={16} />}
+          {showForm ? <IconX size={14} /> : <IconPlus size={14} />}
         </button>
       </div>
 
       {showForm && (
-        <div className="schedule-form mt-3 rounded-lg border-[0.7px] border-border bg-card p-5 space-y-4">
+        <div className="schedule-form mt-2 rounded-lg border-[0.7px] border-border bg-card p-3 space-y-2">
           <Input
             className="h-9 text-sm"
             placeholder="Name"
@@ -117,11 +117,11 @@ export function ScheduleList() {
         </div>
       )}
 
-      <div className="flex flex-col gap-1.5 mt-3">
+      <div className="flex flex-col gap-0.5 mt-1">
         {sessionSchedules.map((sched) => (
           <div
             key={sched.id}
-            className={`schedule-item group flex items-center gap-3 rounded-lg px-5 py-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors ${
+            className={`schedule-item group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors ${
               !sched.enabled ? "disabled opacity-50" : ""
             }`}
           >

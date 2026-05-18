@@ -110,11 +110,11 @@ export function ChatView({
           (msg.tool_input?.questions as PendingQuestion["questions"]) || [];
         return (
           <div className="msg msg-question msg-question-done rounded-lg border-[0.7px] border-dashed border-border bg-muted/30 overflow-hidden opacity-75">
-            <div className="question-header flex items-center gap-2.5 px-5 py-3.5 text-sm text-muted-foreground">
+            <div className="question-header flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
               <span aria-hidden className="text-xs">?</span>
               <strong>Claude asked</strong>
             </div>
-            <div className="question-body px-5 pb-4 space-y-2">
+            <div className="question-body px-3 pb-3 space-y-1">
               {questions.map((q, i) => (
                 <div className="question-item" key={i}>
                   <div className="question-text text-sm text-foreground leading-relaxed">
@@ -134,7 +134,7 @@ export function ChatView({
   const footer = useCallback(
     () =>
       isRunning ? (
-        <div className="msg msg-loading flex items-center gap-1.5 px-5 py-3">
+        <div className="msg msg-loading flex items-center gap-1.5 px-3 py-2">
           <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.32s]" />
           <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.16s]" />
           <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse" />
@@ -205,7 +205,7 @@ export function ChatView({
   };
 
   const header = (
-    <div className="chat-header flex items-center gap-4 px-6 h-14 shrink-0 border-b border-border bg-card">
+    <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-card">
       <button
         className="btn btn-menu inline-flex items-center justify-center size-9 rounded-lg text-foreground hover:bg-accent md:hidden"
         onClick={onToggleSidebar}
@@ -265,14 +265,14 @@ export function ChatView({
       />
 
       {isWaitingForResponse && (
-        <div className="waiting-hint shrink-0 px-6 py-2.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
+        <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
           Claude is waiting for your response
         </div>
       )}
 
       {pendingQueue.length > 0 && (
         <div
-          className="queue-list shrink-0 border-t border-border bg-muted/30 px-6 py-3 text-xs space-y-1.5"
+          className="queue-list shrink-0 border-t border-border bg-muted/30 px-4 py-2 text-xs space-y-1"
           aria-label="Queued messages"
         >
           <div className="queue-list-label text-muted-foreground mb-2">
@@ -290,7 +290,7 @@ export function ChatView({
         </div>
       )}
 
-      <div className="chat-input-bar flex items-end gap-3 px-6 pb-6 pt-4 bg-background shrink-0">
+      <div className="chat-input-bar flex items-end gap-2 px-4 py-3 bg-background shrink-0">
         <textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -301,7 +301,7 @@ export function ChatView({
               : "Send a message..."
           }
           rows={1}
-          className="flex-1 min-h-[48px] max-h-40 resize-y rounded-lg border-[0.7px] border-gray-400 bg-input px-4 py-3 text-sm leading-relaxed text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-[3px] focus:ring-primary/10"
+          className="flex-1 min-h-[40px] max-h-40 resize-y rounded-lg border-[0.7px] border-gray-400 bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-[3px] focus:ring-primary/10"
         />
         <Button
           className="btn btn-send shrink-0"

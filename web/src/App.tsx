@@ -25,8 +25,8 @@ function App() {
     };
     return (
       <div className="login-screen min-h-screen flex items-center justify-center bg-background p-6">
-        <div className="w-full max-w-sm rounded-2xl border-[0.7px] border-border bg-card p-10 shadow-[0_8px_40px_-12px_rgba(20,23,29,0.12)]">
-          <div className="space-y-2 mb-8">
+        <div className="w-full max-w-sm rounded-2xl border-[0.7px] border-border bg-card p-8 shadow-[0_8px_40px_-12px_rgba(20,23,29,0.12)]">
+          <div className="space-y-1.5 mb-6">
             <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Octopus
             </h1>
@@ -34,7 +34,7 @@ function App() {
               Enter your access token to continue.
             </p>
           </div>
-          <div className="space-y-5">
+          <div className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="token">Token</Label>
               <Input
@@ -87,9 +87,9 @@ function AuthenticatedApp({
         aria-label="Sidebar"
       >
         {/* Wordmark — vm0 has an org switcher here; we just brand it. */}
-        <div className="shrink-0 flex items-center justify-between gap-2 px-8 pt-6 pb-4">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
+        <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
               O
             </span>
             <span className="truncate text-base font-bold text-sidebar-foreground">
@@ -109,14 +109,14 @@ function AuthenticatedApp({
         {/* Scrollable middle: sessions / schedules / harness sections.
          * px-5 on the nav inset + px-3 on each item pill = 32px from
          * sidebar edge to item text. Hover pill itself insets 20px. */}
-        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-8 pt-3">
+        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 pt-2">
           <SessionList />
           <ScheduleList />
           <CredentialList />
         </nav>
 
         {/* Account footer. */}
-        <div className="shrink-0 border-t border-sidebar-border px-8 py-4">
+        <div className="shrink-0 border-t border-sidebar-border px-3 py-2">
           <AccountDropdown onSignOut={signOut} />
         </div>
       </aside>

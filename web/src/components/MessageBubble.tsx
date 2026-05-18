@@ -13,7 +13,7 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content inline-block rounded-lg bg-primary px-10 py-6 text-sm text-primary-foreground whitespace-pre-wrap break-words">
+            <div className="msg-content inline-block rounded-lg bg-primary px-4 py-3 text-sm text-primary-foreground whitespace-pre-wrap break-words">
               {message.content}
             </div>
           </div>
@@ -23,7 +23,7 @@ export function MessageBubble({ message }: { message: Message }) {
           <div className="msg-label text-xs font-semibold text-muted-foreground">
             Claude
           </div>
-          <div className="msg-content markdown rounded-lg border border-border bg-card px-10 py-6 text-sm leading-7">
+          <div className="msg-content markdown rounded-lg border border-border bg-card px-4 py-3 text-sm leading-relaxed">
             <Markdown remarkPlugins={[remarkGfm]}>
               {message.content || ""}
             </Markdown>
@@ -48,7 +48,7 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content msg-question-answer inline-block rounded-lg bg-primary/80 px-10 py-6 text-sm text-primary-foreground italic whitespace-pre-wrap break-words">
+            <div className="msg-content msg-question-answer inline-block rounded-lg bg-primary/80 px-4 py-3 text-sm text-primary-foreground italic whitespace-pre-wrap break-words">
               {message.content}
             </div>
           </div>
@@ -70,7 +70,7 @@ export function MessageBubble({ message }: { message: Message }) {
           <div className="msg-label text-xs font-semibold text-destructive">
             Error
           </div>
-          <div className="msg-content rounded-lg border border-destructive/40 bg-destructive/10 px-10 py-6 text-sm text-destructive whitespace-pre-wrap break-words">
+          <div className="msg-content rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive whitespace-pre-wrap break-words">
             {message.content}
           </div>
         </div>
@@ -114,7 +114,7 @@ function ToolUseBlock({ message }: { message: Message }) {
         )}
       </button>
       {expanded && (
-        <pre className="tool-detail border-t border-border bg-muted/40 px-6 py-4 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+        <pre className="tool-detail border-t border-border bg-muted/40 px-4 py-2.5 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
           {inputStr}
         </pre>
       )}
@@ -160,7 +160,7 @@ function ToolResultBlock({ message }: { message: Message }) {
       </button>
       {expanded && (
         <pre
-          className={`tool-detail border-t px-6 py-4 text-xs font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto ${
+          className={`tool-detail border-t px-4 py-2.5 text-xs font-mono whitespace-pre-wrap break-words max-h-80 overflow-y-auto ${
             errored
               ? "border-destructive/30 bg-destructive/5 text-destructive"
               : "border-border bg-muted/40 text-foreground"
