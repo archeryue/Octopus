@@ -272,6 +272,12 @@ export interface components {
         /**
          * CredentialInfo
          * @description Credential metadata returned to clients — never includes the secret.
+         *
+         *     Refresh-state fields (Steal Plan B-4 / B-5) are populated for OAuth
+         *     providers that issue short-lived access tokens. Claude Code's
+         *     long-lived `sk-ant-` key leaves them null today; they're here so the
+         *     UI can render "needs reconnect" once a refresh-token provider lands
+         *     without another schema/contract pump.
          */
         CredentialInfo: {
             /** Id */
@@ -282,7 +288,23 @@ export interface components {
             auth_type: components["schemas"]["AuthType"];
             /** Created At */
             created_at: string;
+            /** @default active */
+            status: components["schemas"]["CredentialStatus"];
+            /** Token Expires At */
+            token_expires_at?: string | null;
+            /**
+             * Needs Reconnect
+             * @default false
+             */
+            needs_reconnect: boolean;
+            /** Last Refresh Error Code */
+            last_refresh_error_code?: string | null;
         };
+        /**
+         * CredentialStatus
+         * @enum {string}
+         */
+        CredentialStatus: "active" | "needs_reconnect";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */

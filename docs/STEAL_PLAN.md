@@ -163,33 +163,24 @@ single Settings dialog with internal tab nav. Pattern:
 `vm0/turbo/apps/platform/.../settings-dialog` (Radix Dialog +
 internal Sidebar). Reduces sidebar clutter, mobile-friendly.
 
----
+### B-4 Credential storage split — DONE
+`credential_secrets` table holds the encrypted blob; `backend_credentials`
+holds metadata + new refresh-state columns (`status`,
+`token_expires_at`, `needs_reconnect`, `last_refresh_error_code`).
+`save_credential` writes to both, `load_credential` reads via a
+`COALESCE(s.secret_encrypted, c.secret_encrypted)` JOIN, `ON DELETE
+CASCADE` removes the secret row with the credential. Legacy column
+kept populated for back-compat readers. Surfacing of the new metadata
+fields in `CredentialInfo` ships in the same change.
 
-## Deferred until needed
-
-### B-4 Credential storage split
-Two tables: `credentials` (metadata: type, status, `token_expires_at`,
-`needs_reconnect`, `last_refresh_error_code`) + `credential_secrets`
-(AES-encrypted ciphertext). Add `serverOnly` flag on secret-field
-configs so refresh tokens never reach the spawned subprocess env.
-
-**Why deferred:** the split's payoff is hiding refresh tokens from the
-subprocess and tracking per-credential refresh state. Claude Code's
-flow mints a long-lived `sk-ant-` key that *is* the credential — no
-refresh token to hide, no expiry to track. Adds schema migration risk
-+ encryption-at-rest complexity for zero current user-visible benefit.
-Pull this when adding a second provider (GitHub / Lark / Codex) that
-issues short-lived access tokens + refresh tokens.
-
-### B-5 Typed refresh-error codes
-`"refresh_token_expired" | "refresh_token_reused" |
-"refresh_token_invalidated" | "refresh_token_other"`. UI shows
-"re-sign-in" vs "we'll retry" based on this.
-
-**Why deferred:** prerequisite for refresh-token-based providers.
-Claude Code's `sk-ant-` key doesn't expire short-term, so there's no
-refresh path to surface errors from. Pull alongside B-4 when adding
-the second provider.
+### B-5 Typed refresh-error codes — DONE
+`server/oauth_errors.py` defines `RefreshErrorCode`
+(`refresh_token_expired | refresh_token_reused |
+refresh_token_invalidated | refresh_token_other | network_error |
+unknown`). `last_refresh_error_code` on the credential row stores it.
+Claude Code's `sk-ant-` flow doesn't refresh today, so the column stays
+null in practice — the plumbing is in place for whichever provider
+(GitHub / Lark / Codex) brings the first refresh-token path.
 
 ---
 

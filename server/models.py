@@ -122,14 +122,30 @@ class AuthType(str, Enum):
     oauth = "oauth"
 
 
+class CredentialStatus(str, Enum):
+    active = "active"
+    needs_reconnect = "needs_reconnect"
+
+
 class CredentialInfo(BaseModel):
-    """Credential metadata returned to clients — never includes the secret."""
+    """Credential metadata returned to clients — never includes the secret.
+
+    Refresh-state fields (Steal Plan B-4 / B-5) are populated for OAuth
+    providers that issue short-lived access tokens. Claude Code's
+    long-lived `sk-ant-` key leaves them null today; they're here so the
+    UI can render "needs reconnect" once a refresh-token provider lands
+    without another schema/contract pump.
+    """
 
     id: str
     backend: BackendKind
     label: str
     auth_type: AuthType
     created_at: str
+    status: CredentialStatus = CredentialStatus.active
+    token_expires_at: str | None = None
+    needs_reconnect: bool = False
+    last_refresh_error_code: str | None = None
 
 
 class CreateCredentialRequest(BaseModel):
