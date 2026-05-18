@@ -184,9 +184,17 @@ class SessionManager:
             await self.db.delete_session(session_id)
         return True
 
-    async def _persist_message(self, session: Session, msg: MessageContent) -> None:
+    async def _persist_message(
+        self, session: Session, msg: MessageContent
+    ) -> int | None:
+        """Persist and return the assigned seq (or None if no DB).
+
+        Callers tag broadcast/yield events with this seq so clients can
+        dedupe against the snapshot returned by GET /api/sessions/{id}
+        after a reconnect.
+        """
         if not self.db:
-            return
+            return None
         seq = session._message_count
         session._message_count += 1
         await self.db.append_message(
@@ -202,6 +210,7 @@ class SessionManager:
             session_id_ref=msg.session_id,
             cost=msg.cost,
         )
+        return seq
 
     async def start_message(self, session_id: str, prompt: str) -> None:
         """Kick off a message, or queue it if the session is already running."""
@@ -283,8 +292,14 @@ class SessionManager:
             user_msg = MessageContent(
                 role=MessageRole.user, type="text", content=prompt
             )
-            await self._persist_message(session, user_msg)
-            event = {"type": "user_message", "session_id": session_id, "content": prompt}
+            seq = await self._persist_message(session, user_msg)
+            event: dict[str, Any] = {
+                "type": "user_message",
+                "session_id": session_id,
+                "content": prompt,
+            }
+            if seq is not None:
+                event["seq"] = seq
             await self._broadcast(event)
             yield event
 
@@ -304,12 +319,14 @@ class SessionManager:
                     type="error",
                     content=str(e),
                 )
-                await self._persist_message(session, error_msg)
+                err_seq = await self._persist_message(session, error_msg)
                 event = {
                     "type": "error",
                     "session_id": session_id,
                     "message": str(e),
                 }
+                if err_seq is not None:
+                    event["seq"] = err_seq
                 await self._broadcast(event)
                 yield event
             finally:
@@ -352,14 +369,15 @@ class SessionManager:
             type="error",
             content="(interrupted by user)",
         )
-        await self._persist_message(session, marker)
-        await self._broadcast(
-            {
-                "type": "error",
-                "session_id": session_id,
-                "message": "(interrupted by user)",
-            }
-        )
+        marker_seq = await self._persist_message(session, marker)
+        event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session_id,
+            "message": "(interrupted by user)",
+        }
+        if marker_seq is not None:
+            event["seq"] = marker_seq
+        await self._broadcast(event)
         return True
 
     async def reset_session(self, session_id: str) -> None:
@@ -409,10 +427,13 @@ class SessionManager:
             )
 
             async for event in backend.stream():
-                # Persist whichever message shape this event maps to
+                # Persist whichever message shape this event maps to. The
+                # returned seq goes onto the WS event so reconnecting
+                # clients can dedupe against their snapshot.
                 msg_content = self._event_to_message_content(event)
+                msg_seq: int | None = None
                 if msg_content is not None:
-                    await self._persist_message(session, msg_content)
+                    msg_seq = await self._persist_message(session, msg_content)
 
                 # Track pending question state for reconnect re-render
                 if event.type == "question_request" and event.tool_use_id:
@@ -436,6 +457,8 @@ class SessionManager:
                 # Translate into the WS message shape the front-end expects
                 ws_event = self._event_to_ws_message(session.id, event)
                 if ws_event is not None:
+                    if msg_seq is not None:
+                        ws_event["seq"] = msg_seq
                     yield ws_event
         finally:
             try:
@@ -606,15 +629,16 @@ class SessionManager:
             tool_use_id=question_id,
             content=answer_text,
         )
-        await self._persist_message(session, ans_msg)
-        await self._broadcast(
-            {
-                "type": "question_answer",
-                "session_id": session_id,
-                "question_id": question_id,
-                "content": answer_text,
-            }
-        )
+        ans_seq = await self._persist_message(session, ans_msg)
+        event: dict[str, Any] = {
+            "type": "question_answer",
+            "session_id": session_id,
+            "question_id": question_id,
+            "content": answer_text,
+        }
+        if ans_seq is not None:
+            event["seq"] = ans_seq
+        await self._broadcast(event)
         session._pending_questions.pop(question_id, None)
         return True
 

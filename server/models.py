@@ -54,6 +54,10 @@ class MessageContent(BaseModel):
     is_error: bool | None = None
     session_id: str | None = None
     cost: float | None = None
+    # Per-session monotonic sequence. Set when the message is loaded from
+    # DB or persisted; clients use it to dedupe WebSocket events against
+    # the snapshot returned by `GET /api/sessions/{id}` after a reconnect.
+    seq: int | None = None
 
 
 class PendingQuestionInfo(BaseModel):
@@ -65,6 +69,11 @@ class SessionDetail(SessionInfo):
     messages: list[MessageContent] = []
     pending_queue: list[str] = []
     pending_questions: list[PendingQuestionInfo] = []
+    # High-water mark of the messages above: the seq of the next message
+    # the server will assign. Frontends use this to set their dedup
+    # baseline so any subsequently-broadcast event with seq <=
+    # next_message_seq-1 is treated as already applied.
+    next_message_seq: int = 0
 
 
 # WebSocket protocol messages (client -> server)

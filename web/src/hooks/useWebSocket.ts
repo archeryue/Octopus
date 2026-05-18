@@ -19,9 +19,26 @@ function handleWsMessage(data: Record<string, unknown>) {
     dequeuePending,
     addPendingQuestion,
     removePendingQuestion,
+    setLastAppliedSeq,
+    lastAppliedSeq,
   } = getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
+
+  // Seq-based dedup. Events that correspond to a DB message row carry
+  // `seq` (server-assigned); we drop any event whose seq is already
+  // covered by the snapshot's `next_message_seq` (set on
+  // `setMessages` via lastAppliedSeq). Events without seq
+  // (status / queued / dequeued / tool_approval_request) are ephemeral
+  // and always applied.
+  const seq = typeof data.seq === "number" ? (data.seq as number) : null;
+  if (seq !== null && sessionId) {
+    const baseline = lastAppliedSeq[sessionId] ?? -1;
+    if (seq <= baseline) {
+      return; // already in snapshot; ignore to avoid duplicate
+    }
+    setLastAppliedSeq(sessionId, seq);
+  }
 
   switch (type) {
     case "queued":
@@ -177,6 +194,15 @@ export function useWebSocket() {
                   activeSessionId,
                   data.pending_questions || []
                 );
+                // Bump the WS-event dedup baseline so any event with
+                // seq < next_message_seq is treated as already applied
+                // (it's in the snapshot we just set).
+                if (typeof data.next_message_seq === "number") {
+                  getState().setLastAppliedSeq(
+                    activeSessionId,
+                    data.next_message_seq - 1
+                  );
+                }
               })
               .catch(() => {});
           }

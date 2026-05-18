@@ -268,7 +268,7 @@ class Database:
         await self._ensure_connected()
         await self.flush()  # ensure pending writes are visible
         query = (
-            "SELECT role, type, content, tool_name, tool_input, tool_use_id, "
+            "SELECT seq, role, type, content, tool_name, tool_input, tool_use_id, "
             "is_error, session_id_ref, cost "
             "FROM messages WHERE session_id = ? ORDER BY seq"
         )
@@ -280,20 +280,21 @@ class Database:
         rows = await cursor.fetchall()
         results = []
         for row in rows:
-            content = json.loads(row[2]) if row[2] is not None else None
-            tool_input = json.loads(row[4]) if row[4] is not None else None
-            is_error = bool(row[6]) if row[6] is not None else None
+            content = json.loads(row[3]) if row[3] is not None else None
+            tool_input = json.loads(row[5]) if row[5] is not None else None
+            is_error = bool(row[7]) if row[7] is not None else None
             results.append(
                 {
-                    "role": row[0],
-                    "type": row[1],
+                    "seq": row[0],
+                    "role": row[1],
+                    "type": row[2],
                     "content": content,
-                    "tool_name": row[3],
+                    "tool_name": row[4],
                     "tool_input": tool_input,
-                    "tool_use_id": row[5],
+                    "tool_use_id": row[6],
                     "is_error": is_error,
-                    "session_id": row[7],
-                    "cost": row[8],
+                    "session_id": row[8],
+                    "cost": row[9],
                 }
             )
         return results

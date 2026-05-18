@@ -64,6 +64,14 @@ interface SessionStore {
   addMessage: (sessionId: string, msg: Message) => void;
   setMessages: (sessionId: string, msgs: Message[]) => void;
 
+  // Per-session WS-event dedup baseline. Set when a snapshot is loaded
+  // (`/api/sessions/{id}` returns `next_message_seq`); the WS handler
+  // drops any event whose `seq <= lastAppliedSeq[sessionId]` so a
+  // reconnect-refetch can't stomp an event that arrived between the
+  // snapshot's SQL and `setMessages` (the original race).
+  lastAppliedSeq: Record<string, number>;
+  setLastAppliedSeq: (sessionId: string, seq: number) => void;
+
   schedules: Schedule[];
   setSchedules: (s: Schedule[]) => void;
 
@@ -106,6 +114,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   activeSessionId: null,
   setActiveSessionId: (id) => set({ activeSessionId: id }),
+
+  lastAppliedSeq: {},
+  setLastAppliedSeq: (sessionId, seq) =>
+    set((s) => {
+      const current = s.lastAppliedSeq[sessionId] ?? -1;
+      if (seq <= current) return s;
+      return { lastAppliedSeq: { ...s.lastAppliedSeq, [sessionId]: seq } };
+    }),
 
   messages: {},
   addMessage: (sessionId, msg) =>

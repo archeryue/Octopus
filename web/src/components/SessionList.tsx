@@ -88,6 +88,11 @@ export function SessionList() {
         const data = await res.json();
         setMessages(id, data.messages || []);
         setPendingQueue(id, data.pending_queue || []);
+        if (typeof data.next_message_seq === "number") {
+          useSessionStore
+            .getState()
+            .setLastAppliedSeq(id, data.next_message_seq - 1);
+        }
       }
     } catch {
       // ignore

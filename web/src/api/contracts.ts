@@ -350,6 +350,8 @@ export interface components {
             session_id?: string | null;
             /** Cost */
             cost?: number | null;
+            /** Seq */
+            seq?: number | null;
         };
         /**
          * MessageRole
@@ -445,6 +447,11 @@ export interface components {
              * @default []
              */
             pending_questions: components["schemas"]["PendingQuestionInfo"][];
+            /**
+             * Next Message Seq
+             * @default 0
+             */
+            next_message_seq: number;
         };
         /** SessionInfo */
         SessionInfo: {

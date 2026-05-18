@@ -64,6 +64,10 @@ async def import_session(
             PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
             for q in s._pending_questions.values()
         ],
+        # High-water mark: clients use this as the dedup baseline so any
+        # WS event with seq < next_message_seq is treated as already
+        # applied (it's in the messages list above).
+        next_message_seq=s._message_count,
     )
 
 
@@ -89,6 +93,10 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
             PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
             for q in s._pending_questions.values()
         ],
+        # High-water mark: clients use this as the dedup baseline so any
+        # WS event with seq < next_message_seq is treated as already
+        # applied (it's in the messages list above).
+        next_message_seq=s._message_count,
     )
 
 
