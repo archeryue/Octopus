@@ -63,19 +63,23 @@
 
 @layer base {
   :root {
-    /* Gray scale — dark, cool neutral. Tuned to match Octopus's existing
-     * #0d1117-ish backdrop while giving us discrete steps for surfaces. */
-    --gray-50:  240 4% 10%;  /* deepest page bg */
-    --gray-100: 240 4% 14%;  /* sidebar, card */
-    --gray-200: 240 4% 18%;  /* borders, inputs */
-    --gray-300: 240 4% 22%;  /* hover, accent */
-    --gray-400: 240 4% 28%;
-    --gray-500: 240 5% 38%;
-    --gray-600: 240 5% 50%;
-    --gray-700: 240 6% 62%;  /* muted text */
-    --gray-800: 240 6% 74%;
-    --gray-900: 240 8% 88%;
-    --gray-950: 230 8% 95%;  /* primary text */
+    /* Gray scale — cool neutral, tuned to match Octopus's softened
+     * #2a2f38 backdrop (the body bg in index.css). The HSL values
+     * below are direct conversions of the legacy `--bg*` / `--border`
+     * / `--text*` palette so Tailwind utilities (`bg-background`,
+     * `bg-card`, `border-border`, …) read identically to the surfaces
+     * they sit on top of. */
+    --gray-50:  220 15% 19%;  /* page bg (#2a2f38) */
+    --gray-100: 220 11% 24%;  /* sidebar, card (#353a44) */
+    --gray-200: 220 13% 29%;  /* borders, inputs (#404652) */
+    --gray-300: 220 10% 36%;  /* hover, accent (#525864) */
+    --gray-400: 220  9% 45%;
+    --gray-500: 220  9% 55%;
+    --gray-600: 215 10% 60%;
+    --gray-700: 215 11% 65%;  /* muted text (#9da5b0) */
+    --gray-800: 215 13% 80%;
+    --gray-900: 213 20% 88%;
+    --gray-950: 213 27% 93%;  /* primary text (#e6edf3) */
 
     /* Semantic mappings */
     --background:           var(--gray-50);

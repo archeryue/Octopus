@@ -1,10 +1,11 @@
 :root {
-  --bg: #2a2f38;
-  --bg-secondary: #353a44;
+  /* Legacy palette kept for the few selectors below that still
+   * reference --bg-tertiary / --border (markdown code blocks +
+   * scrollbar). Page bg / surfaces / text colors are driven by
+   * tokens.css now. Values stay in lockstep with the gray scale
+   * there so the two systems render identically. */
   --bg-tertiary: #404652;
   --border: #525864;
-  --text: #e6edf3;
-  --text-muted: #9da5b0;
   --accent: #58a6ff;
   --accent-dim: #1f6feb;
   --green: #3fb950;
@@ -48,14 +49,12 @@
 }
 
 html {
-  background: var(--bg);
   height: 100%;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
+  /* font-family + bg + text color come from tokens.css. Keep the
+   * layout-only bits here. */
   height: 100%;
   overflow: hidden;
   overscroll-behavior: none;
@@ -83,8 +82,8 @@ body {
 .sidebar {
   width: 280px;
   min-width: 280px;
-  background: var(--bg-secondary);
-  border-right: 1px solid var(--border);
+  background-color: hsl(var(--card));
+  border-right: 1px solid hsl(var(--border));
   display: flex;
   flex-direction: column;
   overflow: hidden;
