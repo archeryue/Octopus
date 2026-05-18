@@ -109,15 +109,15 @@ export function ChatView({
         const questions =
           (msg.tool_input?.questions as PendingQuestion["questions"]) || [];
         return (
-          <div className="msg msg-question msg-question-done rounded-lg border border-dashed border-border bg-muted/30 overflow-hidden opacity-75">
-            <div className="question-header flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
+          <div className="msg msg-question msg-question-done rounded-lg border-[0.7px] border-dashed border-border bg-muted/30 overflow-hidden opacity-75">
+            <div className="question-header flex items-center gap-2.5 px-5 py-3.5 text-sm text-muted-foreground">
               <span aria-hidden className="text-xs">?</span>
               <strong>Claude asked</strong>
             </div>
-            <div className="question-body px-3 pb-3 space-y-1">
+            <div className="question-body px-5 pb-4 space-y-2">
               {questions.map((q, i) => (
                 <div className="question-item" key={i}>
-                  <div className="question-text text-sm text-foreground">
+                  <div className="question-text text-sm text-foreground leading-relaxed">
                     {q.question}
                   </div>
                 </div>
@@ -134,7 +134,7 @@ export function ChatView({
   const footer = useCallback(
     () =>
       isRunning ? (
-        <div className="msg msg-loading flex gap-1.5 px-3 py-2">
+        <div className="msg msg-loading flex items-center gap-1.5 px-5 py-3">
           <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.32s]" />
           <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.16s]" />
           <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse" />
@@ -177,20 +177,37 @@ export function ChatView({
     return () => window.removeEventListener("keydown", onEsc);
   }, [activeSessionId, isRunning, interrupt]);
 
-  const statusBadgeClasses = (status: string | undefined) => {
+  const renderStatusBadge = (status: string | undefined) => {
     const base =
-      "status-badge text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full";
-    if (status === "running")
-      return `${base} status-running bg-primary/15 text-primary`;
-    if (status === "waiting_approval")
-      return `${base} status-waiting_approval bg-yellow-400/15 text-yellow-400`;
-    return `${base} status-idle bg-muted text-muted-foreground`;
+      "status-badge inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full";
+    if (status === "running") {
+      return (
+        <span className={`${base} status-running bg-primary-50 text-primary-700`}>
+          <span className="inline-block size-1.5 rounded-full bg-primary animate-pulse" />
+          Running
+        </span>
+      );
+    }
+    if (status === "waiting_approval") {
+      return (
+        <span className={`${base} status-waiting_approval bg-yellow-50 text-yellow-700`}>
+          <span className="inline-block size-1.5 rounded-full bg-yellow-500" />
+          Waiting
+        </span>
+      );
+    }
+    // Idle: subtle text-only label — kept in DOM as a test hook + low-key cue.
+    return (
+      <span className={`${base} status-idle text-muted-foreground/70`}>
+        Idle
+      </span>
+    );
   };
 
   const header = (
     <div className="chat-header flex items-center gap-4 px-6 h-14 shrink-0 border-b border-border bg-card">
       <button
-        className="btn btn-menu inline-flex items-center justify-center size-8 rounded-md text-foreground hover:bg-accent md:hidden"
+        className="btn btn-menu inline-flex items-center justify-center size-9 rounded-lg text-foreground hover:bg-accent md:hidden"
         onClick={onToggleSidebar}
         aria-label="Toggle sidebar"
       >
@@ -198,22 +215,21 @@ export function ChatView({
       </button>
       {activeSession && (
         <>
-          <h3 className="text-sm font-semibold text-foreground truncate">
+          <h3 className="text-[15px] font-semibold text-foreground truncate">
             {activeSession.name || "Session"}
           </h3>
-          <span className={statusBadgeClasses(activeSession.status)}>
-            {activeSession.status}
-          </span>
+          {renderStatusBadge(activeSession.status)}
         </>
       )}
       <span
         className={`conn-status ${
           connected ? "on" : "off"
-        } ml-auto inline-flex items-center gap-1.5 text-xs text-muted-foreground`}
+        } ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground`}
+        title={connected ? "Connected" : "Disconnected"}
       >
         <span
           className={`inline-block size-2 rounded-full ${
-            connected ? "bg-emerald-500" : "bg-destructive"
+            connected ? "bg-green-500" : "bg-destructive animate-pulse"
           }`}
         />
         {connected ? "Connected" : "Disconnected"}

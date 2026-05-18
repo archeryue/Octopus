@@ -13,27 +13,28 @@ export function ToolApproval({ message, onApprove, onDeny }: Props) {
   if (!toolUseId) return null;
 
   return (
-    <div className="msg msg-approval rounded-lg border-2 border-yellow-400/60 bg-yellow-400/5 overflow-hidden">
-      <div className="approval-header flex items-center gap-2 px-3 py-2 bg-yellow-400/10 text-sm">
-        <IconAlertTriangle size={16} className="text-yellow-400 shrink-0" />
+    <div className="msg msg-approval rounded-lg border-[0.7px] border-yellow-200 bg-yellow-50 overflow-hidden">
+      <div className="approval-header flex items-center gap-2.5 px-5 py-4 text-sm">
+        <IconAlertTriangle size={18} className="text-yellow-700 shrink-0" />
         <span>
           <strong className="text-foreground">{message.tool_name}</strong>{" "}
           <span className="text-muted-foreground">wants to execute:</span>
         </span>
       </div>
-      <pre className="approval-detail border-t border-yellow-400/20 bg-muted/30 px-3 py-2 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
+      <pre className="approval-detail border-t border-yellow-200 bg-card/60 px-5 py-3.5 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
         {JSON.stringify(message.tool_input, null, 2)}
       </pre>
-      <div className="approval-actions flex gap-2 px-3 py-2 border-t border-yellow-400/20">
+      <div className="approval-actions flex gap-2 px-5 py-3 border-t border-yellow-200">
         <Button
-          className="btn btn-approve bg-emerald-600 hover:bg-emerald-700 text-white"
+          className="btn btn-approve"
           size="sm"
           onClick={() => onApprove(toolUseId)}
         >
           Allow
         </Button>
         <Button
-          className="btn btn-deny bg-destructive hover:bg-destructive/90 text-destructive-foreground"
+          className="btn btn-deny"
+          variant="outline"
           size="sm"
           onClick={() => onDeny(toolUseId)}
         >

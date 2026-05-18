@@ -55,34 +55,34 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
   };
 
   return (
-    <div className="msg msg-question rounded-lg border-2 border-primary/40 bg-card overflow-hidden">
-      <div className="question-header flex items-center gap-2 px-3 py-2 bg-primary/10 text-sm text-foreground">
-        <IconHelpCircle size={16} className="text-primary shrink-0" />
+    <div className="msg msg-question rounded-lg border-[0.7px] border-primary/30 bg-card overflow-hidden">
+      <div className="question-header flex items-center gap-2.5 px-5 py-4 bg-primary-50 text-sm text-foreground">
+        <IconHelpCircle size={18} className="text-primary shrink-0" />
         <strong>Claude is asking</strong>
       </div>
-      <div className="question-body px-3 py-3 space-y-4">
+      <div className="question-body px-5 py-5 space-y-5">
         {question.questions.map((q, i) => {
           const multi = !!q.multiSelect;
           const selected = answers[i]?.selected || [];
           const inputName = `q-${question.question_id}-${i}`;
           return (
-            <div className="question-item space-y-2" key={i}>
+            <div className="question-item space-y-3" key={i}>
               {q.header && (
-                <div className="question-tag text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="question-tag text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   {q.header}
                 </div>
               )}
-              <div className="question-text text-sm font-medium text-foreground">
+              <div className="question-text text-sm font-medium text-foreground leading-relaxed">
                 {q.question}
               </div>
-              <div className="question-options flex flex-col gap-1.5">
+              <div className="question-options flex flex-col gap-2">
                 {q.options.map((opt, j) => {
                   const isSelected = selected.includes(opt.label);
                   return (
                     <label
-                      className={`question-option flex items-start gap-2 px-3 py-2 rounded-md border cursor-pointer transition-colors ${
+                      className={`question-option flex items-start gap-3 px-4 py-3 rounded-lg border-[0.7px] cursor-pointer transition-colors ${
                         isSelected
-                          ? "selected border-primary bg-primary/10"
+                          ? "selected border-primary bg-primary-50"
                           : "border-border hover:bg-accent"
                       }`}
                       key={j}
@@ -103,7 +103,7 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
                           {opt.label}
                         </div>
                         {opt.description && (
-                          <div className="question-option-desc text-xs text-muted-foreground mt-0.5">
+                          <div className="question-option-desc text-xs text-muted-foreground mt-1 leading-relaxed">
                             {opt.description}
                           </div>
                         )}
@@ -114,7 +114,7 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
               </div>
               <Input
                 type="text"
-                className="question-other h-9 text-sm"
+                className="question-other text-sm"
                 placeholder="Or type your own answer…"
                 value={answers[i]?.text || ""}
                 onChange={(e) => setText(i, e.target.value)}
@@ -123,7 +123,7 @@ export function QuestionPrompt({ question, onSubmit }: Props) {
           );
         })}
       </div>
-      <div className="question-actions flex justify-end gap-2 px-3 py-2 border-t border-border">
+      <div className="question-actions flex justify-end gap-2 px-5 py-3 border-t border-border">
         <Button
           className="btn btn-approve"
           onClick={handleSubmit}
