@@ -129,7 +129,7 @@ tool-only trailing turn"** — which is exactly Octopus's loop.
 
 ---
 
-## 7. What VM0 does (and why it doesn't hit the bug)
+## 7. What VM0 does, and why we initially thought it avoided the bug — but doesn't
 
 VM0 (`/home/start-up/vm0`, a sibling AI-agent platform) also wraps the
 `claude` CLI for its sandboxed runs. We checked because the user had
@@ -179,11 +179,54 @@ Three structural differences:
 | Prompt delivery | JSON object on stdin | Positional argv after `--` | Tied to the above. |
 | `--permission-prompt-tool` | `stdio` | not set | VM0 doesn't need the bidirectional control protocol; it uses `--dangerously-skip-permissions`. |
 
-VM0 does **not** post-process or filter `~/.claude/projects/…jsonl`. It
-just doesn't trigger the injection in the first place.
+VM0 does **not** post-process or filter `~/.claude/projects/…jsonl`.
 
-`--output-format=stream-json` is shared by both and is fine. The
-synthetic-pair behavior is keyed on the **input** format.
+### Update: the probe in §11 actually ran, and the conclusion above is wrong
+
+We ran the §11 probe and **both shapes inject the synthetic pair on
+`--resume` after a tool-only trailing turn.** Concrete result:
+
+| Shape | Turn 1 transcript | Turn 2 (after --resume) | Synthetic pair introduced by resume? |
+|---|---|---|---|
+| A (stream-json input, prompt on stdin) | no markers, trailing turn was tool-only | both markers | **yes** |
+| B (positional argv prompt, no --input-format) | no markers, trailing turn was tool-only | both markers | **yes** |
+
+The CLI's synthetic-pair logic is keyed on **"the trailing assistant
+turn on the resumed session had no text block,"** not on the input
+format. `--input-format=stream-json` was a red herring.
+
+That means our user's perception that VM0 "doesn't have this problem"
+is most likely because the artifact is **invisible** (CLI-private
+jsonl only, never broadcast on stdout). Both Octopus and VM0 emit it
+in identical conditions; only Octopus noticed because we started
+introspecting our own context.
+
+### Implications for the fix
+
+- **Option (B) "drop `--input-format=stream-json`, use positional
+  argv" is no longer on the table.** It would have been a one-line
+  fix if true, but the probe shows it changes nothing.
+- The synthetic pair is intrinsic to `--print --resume` after a
+  tool-only turn. To eliminate it we either avoid `--resume`, avoid
+  tool-only trailing turns, or strip the pair from the transcript
+  before each spawn.
+- The cost analysis from §9 stands — it's still bug-but-invisible.
+  Recommendation defaults to (A) "live with it; don't misattribute it
+  when reading own context."
+
+### One unresolved sub-question from the probe
+
+Even with `--permission-prompt-tool=stdio` set, neither shape fired a
+`can_use_tool` control_request for `echo PROBE-TURN-ONE` (Bash, not
+on the user's allowlist). Both shapes ran the tool successfully and
+returned. Either the CLI is silently auto-allowing under some default
+heuristic we don't see, or `--permission-prompt-tool=stdio` only
+engages under specific conditions we haven't isolated. Octopus's
+production `--permission-prompt-tool=stdio` works for AskUserQuestion
+interception, so this isn't broken at the system level — but it means
+our probe couldn't verify that shape B's stdio control protocol works,
+which is moot now that shape B doesn't fix the bug anyway. Worth
+investigating separately if we ever revisit the permission flow.
 
 ---
 
@@ -241,14 +284,9 @@ production-pager.
 - **Recommendation:** the default unless we have another reason to
   touch this code path.
 
-### (B) Drop `--input-format=stream-json`, pass prompt as positional argv (VM0 shape) — *contingent on the probe in §11*
-- **Cost:** ~20 lines in `claude_code.py::build_args` + small
-  refactor of `send_initial_prompt` (no stdin write).
-- **Catch:** only viable if the control protocol over stdin still
-  works with `--input-format=text`. We don't know yet. Run the probe
-  in §11 first.
-- **Recommendation:** if the probe is green, this is the right fix —
-  eliminates the bug entirely with no functionality loss.
+### (B) ~~Drop `--input-format=stream-json`, pass prompt as positional argv (VM0 shape)~~ — **disproved by the probe**
+- The probe in §11 showed both shapes inject the synthetic pair under
+  the same conditions. This option is dead.
 
 ### (C) Pre-strip the synthetic pair from `~/.claude/projects/…jsonl`
 before each spawn
@@ -267,22 +305,38 @@ too much surgery to justify for this issue alone.
 
 ---
 
-## 11. Proposed probe before committing to (B)
+## 11. Probe results (executed)
 
-Before we change `claude_code.py`, verify experimentally:
+Probe script: `/tmp/probe_resume_synthetic.py` (kept locally for
+reproducibility, not committed). For each of {A, B}, we ran two
+turns with `--print` on the same session-id, the second using
+`--resume`, with the first turn ending on a tool-only assistant
+output (Bash echo, no follow-up text), then inspected the CLI's
+private jsonl transcript for `Continue from where you left off.`
+and `"model":"<synthetic>"` markers.
 
-1. Spawn `claude --print --output-format stream-json --verbose --permission-mode=default --permission-prompt-tool=stdio --resume <id> -- "test prompt"` (i.e. our current flags minus `--input-format=stream-json`, prompt as positional).
-2. Check that the initialize control_request handshake still completes.
-3. Trigger a tool call that requires permission (e.g. `Bash`). Check
-   that a `can_use_tool` control_request arrives on stdout.
-4. Write a `control_response` with `{"behavior":"allow","updatedInput":{…}}` to stdin. Check the tool actually runs.
-5. Trigger `AskUserQuestion`. Check we can intercept and answer it via
-   the same path.
-6. Verify the CLI's jsonl transcript for this run contains **no**
-   synthetic `Continue / No response requested.` pair.
+Outcome (also reproduced in §7's update table):
 
-If all six pass → we ship (B). If the control protocol degrades, we
-fall back to (A) and add the memory note.
+| Shape | Turn 1 left tool-only trailing? | Synthetic markers after turn 1 | Synthetic markers after turn 2 (--resume) |
+|---|---|---|---|
+| A | yes | no | **yes** |
+| B | yes | no | **yes** |
 
-Owner / target: TBD. Tracked for now as "future cleanup, no user-visible
-impact"; revisit when we have a second reason to touch this layer.
+**Conclusion:** the synthetic-pair injection is triggered by
+`--print --resume` over a session whose trailing assistant turn was
+tool-only, **regardless of input format or prompt-delivery shape**.
+The VM0 command shape doesn't fix it. The doc's prior framing
+(input-format is load-bearing) was wrong.
+
+What this changes:
+- The proposed quick fix (B) is off the table.
+- Option (A) "live with it" is now the explicit recommendation.
+- Option (C) "strip the pair from the transcript before each spawn"
+  is the only viable code-side fix short of dropping
+  `--print --resume` entirely. Still not recommended unless the
+  attribution-confusion cost becomes real (e.g. it actively
+  corrupts model behavior in long sessions, not just my own
+  introspection mistakes).
+
+Owner / target: closed for now. Tracked as "known invisible artifact,
+documented." Revisit only if a downstream symptom shows up.
