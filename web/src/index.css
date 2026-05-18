@@ -1,16 +1,16 @@
 :root {
-  /* Legacy palette kept for the few selectors below that still
+  /* Legacy palette kept for the two selectors below that still
    * reference --bg-tertiary / --border (markdown code blocks +
-   * scrollbar). Page bg / surfaces / text colors are driven by
-   * tokens.css now. Values stay in lockstep with the gray scale
-   * there so the two systems render identically. */
-  --bg-tertiary: #404652;
-  --border: #525864;
-  --accent: #58a6ff;
-  --accent-dim: #1f6feb;
-  --green: #3fb950;
-  --red: #f85149;
-  --yellow: #d29922;
+   * scrollbar). All other surfaces are driven by tokens.css. After
+   * the vm0 steal these resolve to cool-gray values from the new
+   * light palette so they read consistently against `bg-card`. */
+  --bg-tertiary: hsl(216 26% 96%);   /* matches --gray-50 */
+  --border: hsl(215 21% 89%);        /* matches --gray-200 */
+  --accent: hsl(20 99% 47%);         /* matches --primary-700 */
+  --accent-dim: hsl(14 92% 74%);     /* matches --primary-500 */
+  --green: #2da44e;
+  --red: #cf222e;
+  --yellow: #bf8700;
   --radius: 8px;
 }
 
@@ -19,7 +19,7 @@
   padding: 0;
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: var(--bg-tertiary) transparent;
+  scrollbar-color: hsl(var(--gray-300)) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -32,14 +32,14 @@
 }
 
 *::-webkit-scrollbar-thumb {
-  background: var(--bg-tertiary);
+  background: hsl(var(--gray-300));
   border-radius: 5px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--border);
+  background: hsl(var(--gray-500));
   background-clip: padding-box;
   border: 2px solid transparent;
 }
@@ -64,10 +64,6 @@ body {
   height: 100%;
 }
 
-/* Login */
-/* Login styles moved to Tailwind utilities on the JSX. Class names
-   .login-screen and .btn-login are kept as test hooks only. */
-
 /* Layout */
 .app-layout {
   display: flex;
@@ -80,10 +76,10 @@ body {
 }
 
 .sidebar {
-  width: 280px;
-  min-width: 280px;
-  background-color: hsl(var(--card));
-  border-right: 1px solid hsl(var(--border));
+  width: 300px;
+  min-width: 300px;
+  background-color: hsl(var(--sidebar));
+  border-right: 0.7px solid hsl(var(--sidebar-border));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -100,25 +96,7 @@ body {
   min-width: 0;
 }
 
-/* .btn-menu / .conn-status visuals: now in ChatView.tsx via Tailwind. */
-
-/* Session list / items / form: layout + visuals now in SessionList.tsx
- * via Tailwind utilities. Class names .session-list, .session-list-header,
- * .session-item etc. are kept on the DOM as Playwright test hooks. */
-
-/* Buttons (.btn, .btn-send, .btn-approve, .btn-deny, .btn-logout) are
- * either rendered through the shadcn Button primitive (which owns its
- * own styling) or styled inline with Tailwind utilities. The class
- * names remain on the DOM as Playwright test hooks only. */
-
-/* Schedules */
-/* ScheduleList / CredentialList layout + visuals now in the .tsx files
- * via Tailwind utilities. The class names .schedule-*, .credential-*,
- * .btn-toggle etc. live on the DOM purely as Playwright test hooks. */
-
-/* Chat shell (chat-view, chat-header, chat-empty, status-badge, conn-status,
- * chat-messages layout) is in ChatView.tsx via Tailwind. Only the Virtuoso
- * spacing hooks remain here — they target data attributes Virtuoso renders. */
+/* Virtuoso spacing hooks — target data attributes the lib renders. */
 .chat-messages [data-virtuoso-scroller] {
   padding: 1rem 0;
 }
@@ -127,17 +105,16 @@ body {
   padding: 0 0.5rem 0.75rem;
 }
 
-/* Top-level message wrappers (.msg, .msg-user/.msg-assistant/.msg-system/
- * .msg-error and result-badge) are now styled by MessageBubble.tsx via
- * Tailwind. The .msg-assistant .markdown selectors below remain because
- * they target react-markdown's nested output, not our own components. */
-
+/* Markdown nested output — react-markdown wraps assistant text in
+ * .markdown; these selectors style its <pre>/<code>/<table> output. */
 .msg-assistant .markdown pre {
   background: var(--bg-tertiary);
   padding: 0.6rem;
   border-radius: var(--radius);
   overflow-x: auto;
   margin: 0.5rem 0;
+  font-family: var(--font-family-mono);
+  font-size: 0.85rem;
 }
 
 .msg-assistant .markdown code {
@@ -145,6 +122,7 @@ body {
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
   font-size: 0.9em;
+  font-family: var(--font-family-mono);
 }
 
 .msg-assistant .markdown pre code {
@@ -187,20 +165,11 @@ body {
   background: var(--bg-tertiary);
 }
 
-/* Tool block visuals (.msg-tool, .msg-tool-result, .tool-header,
- * .tool-icon, .tool-name, .tool-result-label, .tool-preview, .tool-detail)
- * are now in MessageBubble.tsx via Tailwind. */
-
-/* ToolApproval (.msg-approval, .approval-*) and QuestionPrompt (.msg-question,
- * .question-*) visuals: now in their .tsx files via Tailwind. Class names
- * remain on the DOM for test hooks. .msg-system / .result-badge / .msg-error
- * are styled inline in MessageBubble.tsx. */
-
 /* Mobile responsive */
 @media (max-width: 768px) {
   .sidebar {
     position: absolute;
-    left: -280px;
+    left: -300px;
     top: 0;
     height: 100%;
     z-index: 100;
@@ -215,7 +184,7 @@ body {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: rgba(0, 0, 0, 0.4);
     z-index: 99;
   }
 
