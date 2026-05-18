@@ -104,7 +104,7 @@ function ToolUseBlock({ message }: { message: Message }) {
           {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
         </span>
         <IconTool size={14} className="text-primary shrink-0" />
-        <span className="tool-name font-medium text-foreground shrink-0">
+        <span className="tool-name font-medium text-primary shrink-0">
           {message.tool_name}
         </span>
         {preview && (
@@ -147,7 +147,7 @@ function ToolResultBlock({ message }: { message: Message }) {
         </span>
         <span
           className={`tool-result-label text-xs font-semibold uppercase tracking-wider shrink-0 ${
-            errored ? "text-destructive" : "text-muted-foreground"
+            errored ? "text-destructive" : "text-green-700"
           }`}
         >
           {errored ? "Error" : "Result"}
