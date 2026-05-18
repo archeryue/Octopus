@@ -90,9 +90,7 @@ function AuthenticatedApp({
         {/* Wordmark — vm0 has an org switcher here; we just brand it. */}
         <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-3 pb-2">
           <div className="flex items-center gap-2 min-w-0">
-            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <OctopusLogo size={18} />
-            </span>
+            <OctopusLogo size={22} className="text-primary shrink-0" />
             <span className="truncate text-base font-bold text-sidebar-foreground">
               Octopus
             </span>
