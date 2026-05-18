@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { IconMenu2 } from "@tabler/icons-react";
+import { IconMenu2, IconSettings } from "@tabler/icons-react";
 import { AccountDropdown } from "./components/AccountDropdown";
 import { ChatView } from "./components/ChatView";
 import { CredentialList } from "./components/CredentialList";
 import { OctopusLogo } from "./components/OctopusLogo";
 import { ScheduleList } from "./components/ScheduleList";
 import { SessionList } from "./components/SessionList";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
@@ -75,6 +76,7 @@ function AuthenticatedApp({
     useWebSocket();
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const signOut = () => {
     setToken("");
@@ -95,14 +97,25 @@ function AuthenticatedApp({
               Octopus
             </span>
           </div>
-          <button
-            type="button"
-            className="md:hidden inline-flex h-8 w-8 items-center justify-center rounded-lg text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-          >
-            <IconMenu2 size={18} />
-          </button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <button
+              type="button"
+              className="btn-settings inline-flex h-8 w-8 items-center justify-center rounded-lg text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Settings"
+              title="Settings"
+            >
+              <IconSettings size={18} />
+            </button>
+            <button
+              type="button"
+              className="md:hidden inline-flex h-8 w-8 items-center justify-center rounded-lg text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close sidebar"
+            >
+              <IconMenu2 size={18} />
+            </button>
+          </div>
         </div>
 
         {/* Scrollable middle: sessions / schedules / harness sections.
@@ -138,6 +151,8 @@ function AuthenticatedApp({
           onClick={() => setSidebarOpen(false)}
         />
       )}
+
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }
