@@ -1,5 +1,35 @@
 # Octopus Development Rules
 
+## Do It Right The First Time (no MVPs, no future-polish)
+
+**If we choose to do something, we do it perfectly — right now, in
+this session.** No "minimal fix", no "MVP for now", no "we'll polish
+this later". No deferral of cleanup to a "follow-up" item.
+
+This rule is non-negotiable. Specifically that means:
+
+- Never ship a half-done implementation and document the rest as
+  "future work". If the full thing isn't worth doing right now, then
+  don't start it at all.
+- Never write the cleaner version into `docs/future-features.md`
+  *instead* of doing it. The doc is for things we genuinely choose
+  not to do now (because they need a real second use case, an
+  external dep, a user decision); it is not a parking lot for
+  "felt too long".
+- Never add a comment like `# TODO: handle X properly later` or `#
+  HACK: works for now`. If `X` matters, handle it in this change.
+  If it doesn't matter, delete the comment.
+- When the user asks "fix this", interpret it as "fix it the way a
+  careful engineer with infinite time would" — not "ship the
+  smallest patch that no longer crashes".
+- "MVP" is not a status the user has to accept. There is no future
+  in which a later session will go back and polish; in the AI era
+  we have the bandwidth to do it right *now*, here, in one go.
+
+This rule exists because past sessions repeatedly took the shortcut
+and then had to be told to go back and do the real thing. Skip the
+shortcut. Do the real thing the first time.
+
 ## After Every Code Change
 
 You MUST verify your changes before considering them done:
