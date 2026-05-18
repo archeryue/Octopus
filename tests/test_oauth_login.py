@@ -1,8 +1,14 @@
-"""Tests for the pure-Python PKCE OAuth login orchestrator.
+"""Tests for the PKCE OAuth login orchestrator + provider abstraction.
 
-No subprocesses, no PTY — the orchestrator now talks directly to the
-Anthropic OAuth endpoints over HTTP. Tests mock httpx so they run
-offline.
+The orchestrator (`OAuthLoginManager`) is provider-agnostic; the
+Claude-specific HTTP calls live in `server.oauth_providers.ClaudeCodeProvider`.
+Tests are split:
+
+  - PKCE/state helpers (pure)
+  - start() against the registry
+  - submit_code() with provider methods monkeypatched
+  - ClaudeCodeProvider HTTP helpers with httpx stubbed
+  - Provider registry + module-level back-compat shims
 """
 
 from __future__ import annotations
@@ -10,6 +16,7 @@ from __future__ import annotations
 import pytest
 
 from server import oauth_login as ol
+from server import oauth_providers as op
 from server.oauth_login import (
     AUTHORIZE_URL,
     CLIENT_ID,
@@ -34,12 +41,10 @@ def test_verifier_is_b64url_no_padding():
     assert "=" not in v
     assert "+" not in v
     assert "/" not in v
-    # 32 random bytes → 43-char base64url (no padding)
-    assert len(v) == 43
+    assert len(v) == 43  # 32 random bytes → 43-char base64url (no padding)
 
 
 def test_challenge_is_b64url_sha256_of_verifier():
-    # Known-vector check against the RFC 7636 method.
     import hashlib
     verifier = "test-verifier-known"
     expected = _b64url(hashlib.sha256(verifier.encode()).digest())
@@ -51,8 +56,6 @@ def test_state_is_random_per_call():
 
 
 def test_split_code_handles_both_formats():
-    # The Anthropic callback page formats it as `<code>#<state>`. We accept
-    # the bare code too in case the user trimmed it.
     assert _split_code("ABC#STATE_X") == ("ABC", "STATE_X")
     assert _split_code("  ABC#STATE_X  ") == ("ABC", "STATE_X")
     assert _split_code("ABC") == ("ABC", None)
@@ -60,7 +63,7 @@ def test_split_code_handles_both_formats():
 
 
 # ---------------------------------------------------------------------------
-# start() builds a correct authorize URL
+# start() — uses provider registry
 # ---------------------------------------------------------------------------
 
 
@@ -69,19 +72,19 @@ async def test_start_returns_authorize_url_with_pkce_params():
     mgr = OAuthLoginManager()
     session = await mgr.start()
     assert session.state == LoginState.awaiting_code
+    assert session.provider_name == "claude-code"
 
     assert session.url.startswith(AUTHORIZE_URL)
     assert f"client_id={CLIENT_ID}" in session.url
     assert "code_challenge=" in session.url
     assert "code_challenge_method=S256" in session.url
     assert "response_type=code" in session.url
-    # Scopes are URL-encoded with `+` (urlencode default), so check decoded
+
     from urllib.parse import urlparse, parse_qs
     parts = parse_qs(urlparse(session.url).query)
     assert parts["scope"][0].split() == SCOPES
     assert parts["redirect_uri"][0].endswith("/oauth/code/callback")
 
-    # Verifier+state were stored
     assert session._verifier
     assert session._state
 
@@ -96,9 +99,27 @@ async def test_two_starts_get_independent_verifiers():
     assert s1._state != s2._state
 
 
+@pytest.mark.asyncio
+async def test_start_unknown_provider_raises():
+    mgr = OAuthLoginManager()
+    with pytest.raises(KeyError, match="unknown OAuth provider"):
+        await mgr.start("not-a-provider")
+
+
 # ---------------------------------------------------------------------------
 # submit_code: happy path
 # ---------------------------------------------------------------------------
+
+
+def _patch_claude_provider(monkeypatch, *, exchange=None, mint=None):
+    """Replace the Claude provider's HTTP-calling methods with stubs.
+
+    Restores the originals on teardown via monkeypatch."""
+    provider = op.get_provider("claude-code")
+    if exchange is not None:
+        monkeypatch.setattr(provider, "exchange_code", exchange)
+    if mint is not None:
+        monkeypatch.setattr(provider, "mint_api_key", mint)
 
 
 @pytest.mark.asyncio
@@ -116,20 +137,19 @@ async def test_submit_code_happy_path(monkeypatch):
         assert state == session._state
         return "oauth-access-token-xyz"
 
-    async def fake_api_key(access_token):
-        calls.append(("api_key", {"access_token": access_token}))
+    async def fake_mint(access_token):
+        calls.append(("mint", {"access_token": access_token}))
         assert access_token == "oauth-access-token-xyz"
         return "sk-ant-real-1234567890"
 
-    monkeypatch.setattr(ol, "_exchange_code_for_access_token", fake_exchange)
-    monkeypatch.setattr(ol, "_create_long_lived_api_key", fake_api_key)
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange, mint=fake_mint)
 
     pasted = f"the-code#{session._state}"
     finished = await mgr.submit_code(session.id, pasted)
 
     assert finished.state == LoginState.success
     assert finished.token == "sk-ant-real-1234567890"
-    assert [c[0] for c in calls] == ["exchange", "api_key"]
+    assert [c[0] for c in calls] == ["exchange", "mint"]
 
 
 @pytest.mark.asyncio
@@ -142,11 +162,10 @@ async def test_submit_code_accepts_bare_code_without_state(monkeypatch):
     async def fake_exchange(*, code, code_verifier, state):
         return "tok"
 
-    async def fake_api_key(access_token):
+    async def fake_mint(access_token):
         return "sk-ant-fine-abc"
 
-    monkeypatch.setattr(ol, "_exchange_code_for_access_token", fake_exchange)
-    monkeypatch.setattr(ol, "_create_long_lived_api_key", fake_api_key)
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange, mint=fake_mint)
 
     s = await mgr.submit_code(session.id, "just-the-code")
     assert s.state == LoginState.success
@@ -170,7 +189,7 @@ async def test_submit_code_wrong_state_rejected(monkeypatch):
         called = True
         return "tok"
 
-    monkeypatch.setattr(ol, "_exchange_code_for_access_token", fake_exchange)
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange)
 
     with pytest.raises(RuntimeError, match="state mismatch"):
         await mgr.submit_code(session.id, "the-code#WRONG-STATE")
@@ -186,7 +205,7 @@ async def test_submit_code_token_endpoint_failure(monkeypatch):
     async def fake_exchange(*, code, code_verifier, state):
         raise RuntimeError("token endpoint returned 400: invalid_grant")
 
-    monkeypatch.setattr(ol, "_exchange_code_for_access_token", fake_exchange)
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange)
 
     with pytest.raises(RuntimeError, match="token exchange failed"):
         await mgr.submit_code(session.id, f"x#{session._state}")
@@ -201,11 +220,10 @@ async def test_submit_code_api_key_endpoint_failure(monkeypatch):
     async def fake_exchange(*, code, code_verifier, state):
         return "good-access-token"
 
-    async def fake_api_key(access_token):
+    async def fake_mint(access_token):
         raise RuntimeError("api-key endpoint returned 500: oops")
 
-    monkeypatch.setattr(ol, "_exchange_code_for_access_token", fake_exchange)
-    monkeypatch.setattr(ol, "_create_long_lived_api_key", fake_api_key)
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange, mint=fake_mint)
 
     with pytest.raises(RuntimeError, match="API key creation failed"):
         await mgr.submit_code(session.id, f"x#{session._state}")
@@ -227,11 +245,10 @@ async def test_submit_code_wrong_state_raises_on_completed_session(monkeypatch):
     async def fake_exchange(*, code, code_verifier, state):
         return "tok"
 
-    async def fake_api_key(access_token):
+    async def fake_mint(access_token):
         return "sk-ant-zzz-abc"
 
-    monkeypatch.setattr(ol, "_exchange_code_for_access_token", fake_exchange)
-    monkeypatch.setattr(ol, "_create_long_lived_api_key", fake_api_key)
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange, mint=fake_mint)
 
     await mgr.submit_code(session.id, f"c#{session._state}")
     with pytest.raises(RuntimeError, match="cannot accept code"):
@@ -249,7 +266,7 @@ async def test_cancel_is_idempotent():
     s = await mgr.start()
     await mgr.cancel(s.id)
     assert mgr.get(s.id).state == LoginState.cancelled
-    await mgr.cancel(s.id)  # idempotent
+    await mgr.cancel(s.id)
 
 
 @pytest.mark.asyncio
@@ -263,7 +280,7 @@ async def test_shutdown_clears_state():
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers (mock httpx)
+# ClaudeCodeProvider HTTP helpers (mock httpx)
 # ---------------------------------------------------------------------------
 
 
@@ -294,9 +311,10 @@ class _StubAsyncClient:
 
 
 def _install_stub_client(monkeypatch, post_handler):
-    """Replace httpx.AsyncClient with one whose .post() runs post_handler."""
+    """Replace httpx.AsyncClient in oauth_providers with one whose
+    .post() runs post_handler."""
     monkeypatch.setattr(
-        ol.httpx,
+        op.httpx,
         "AsyncClient",
         lambda *a, **kw: _StubAsyncClient(post_handler=post_handler),
     )
@@ -304,8 +322,10 @@ def _install_stub_client(monkeypatch, post_handler):
 
 @pytest.mark.asyncio
 async def test_exchange_returns_access_token(monkeypatch):
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
-        assert url == ol.TOKEN_URL
+        assert url == provider.TOKEN_URL  # type: ignore[attr-defined]
         payload = kwargs["json"]
         assert payload["grant_type"] == "authorization_code"
         assert payload["code"] == "c"
@@ -313,40 +333,46 @@ async def test_exchange_returns_access_token(monkeypatch):
         return _StubResponse(200, json_body={"access_token": "the-token", "scope": "x"})
 
     _install_stub_client(monkeypatch, handler)
-    tok = await ol._exchange_code_for_access_token(code="c", code_verifier="v", state="s")
+    tok = await provider.exchange_code(code="c", code_verifier="v", state="s")
     assert tok == "the-token"
 
 
 @pytest.mark.asyncio
 async def test_exchange_non_200_raises(monkeypatch):
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
         return _StubResponse(400, text_body="invalid_grant")
 
     _install_stub_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="token endpoint returned 400"):
-        await ol._exchange_code_for_access_token(code="c", code_verifier="v", state="s")
+        await provider.exchange_code(code="c", code_verifier="v", state="s")
 
 
 @pytest.mark.asyncio
 async def test_exchange_missing_access_token_raises(monkeypatch):
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
         return _StubResponse(200, json_body={"other": "field"})
 
     _install_stub_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="missing access_token"):
-        await ol._exchange_code_for_access_token(code="c", code_verifier="v", state="s")
+        await provider.exchange_code(code="c", code_verifier="v", state="s")
 
 
 @pytest.mark.asyncio
 async def test_create_api_key_returns_raw_key(monkeypatch):
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
-        assert url == ol.API_KEY_URL
+        assert url == provider.API_KEY_URL  # type: ignore[attr-defined]
         headers = kwargs["headers"]
         assert headers["Authorization"] == "Bearer T"
         return _StubResponse(200, json_body={"raw_key": "sk-ant-real-zzz", "label": "x"})
 
     _install_stub_client(monkeypatch, handler)
-    key = await ol._create_long_lived_api_key("T")
+    key = await provider.mint_api_key("T")
     assert key == "sk-ant-real-zzz"
 
 
@@ -354,29 +380,59 @@ async def test_create_api_key_returns_raw_key(monkeypatch):
 async def test_create_api_key_accepts_alternate_field_names(monkeypatch):
     """If Anthropic renames the field, we still pick it up as long as
     the value starts with sk-ant-."""
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
         return _StubResponse(200, json_body={"api_key": "sk-ant-via-api_key"})
 
     _install_stub_client(monkeypatch, handler)
-    key = await ol._create_long_lived_api_key("T")
+    key = await provider.mint_api_key("T")
     assert key == "sk-ant-via-api_key"
 
 
 @pytest.mark.asyncio
 async def test_create_api_key_no_sk_ant_raises(monkeypatch):
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
         return _StubResponse(200, json_body={"raw_key": "not-an-ant-key"})
 
     _install_stub_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="didn't include a sk-ant"):
-        await ol._create_long_lived_api_key("T")
+        await provider.mint_api_key("T")
 
 
 @pytest.mark.asyncio
 async def test_create_api_key_non_200_raises(monkeypatch):
+    provider = op.get_provider("claude-code")
+
     async def handler(url, **kwargs):
         return _StubResponse(403, text_body="forbidden")
 
     _install_stub_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="api-key endpoint returned 403"):
-        await ol._create_long_lived_api_key("T")
+        await provider.mint_api_key("T")
+
+
+# ---------------------------------------------------------------------------
+# Provider registry
+# ---------------------------------------------------------------------------
+
+
+def test_registry_has_claude_code():
+    provider = op.get_provider("claude-code")
+    assert provider.name == "claude-code"
+
+
+def test_registry_unknown_raises():
+    with pytest.raises(KeyError, match="unknown OAuth provider"):
+        op.get_provider("nope")
+
+
+def test_module_level_back_compat_constants_match_provider():
+    """The pre-refactor module-level constants are re-exported from the
+    Claude provider — make sure they stay in sync."""
+    provider = op.get_provider("claude-code")
+    assert ol.CLIENT_ID == provider.CLIENT_ID  # type: ignore[attr-defined]
+    assert ol.AUTHORIZE_URL == provider.AUTHORIZE_URL  # type: ignore[attr-defined]
+    assert ol.SCOPES == list(provider.SCOPES)  # type: ignore[attr-defined]
