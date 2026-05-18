@@ -214,7 +214,7 @@ test.describe("Message Queue & Interrupt", () => {
     page,
     request,
   }) => {
-    await createSessionApi(request, "Queue Test");
+    const { id: sessionId } = await createSessionApi(request, "Queue Test");
 
     await login(page);
     await page
@@ -260,11 +260,25 @@ test.describe("Message Queue & Interrupt", () => {
     // Queue is drained
     await expect(page.locator(".queue-item")).toHaveCount(0);
 
-    // Both user messages should be in the chat
-    await expect(page.locator(".msg-user .msg-content")).toContainText([
-      "100 * 200",
-      "50 * 50",
-    ]);
+    // Both user messages should be persisted in the session. The chat
+    // is virtualized (react-virtuoso unmounts items beyond a few hundred
+    // pixels of overscan) and `followOutput="smooth"` parks us at the
+    // bottom — so the first user message is reliably unmounted by the
+    // time both turns finish. Verify the truth (DB) instead of the
+    // rendered window.
+    const detailRes = await request.get(`${API}/sessions/${sessionId}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    expect(detailRes.ok()).toBeTruthy();
+    const detail = await detailRes.json();
+    const userMessages = (
+      detail.messages as { role: string; content: unknown }[]
+    )
+      .filter((m) => m.role === "user")
+      .map((m) => (typeof m.content === "string" ? m.content : ""));
+    expect(userMessages.length).toBe(2);
+    expect(userMessages[0]).toContain("100 * 200");
+    expect(userMessages[1]).toContain("50 * 50");
   });
 
   test("Esc key interrupts the current turn", async ({ page, request }) => {
