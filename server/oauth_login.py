@@ -25,7 +25,8 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .oauth_providers import OAuthProvider, get_provider
+from .oauth_errors import ScopeMissingError
+from .oauth_providers import OAuthProvider, OAuthTokenSet, get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,14 @@ class LoginSession:
     url: str
     provider_name: str = DEFAULT_PROVIDER
     state: LoginState = LoginState.awaiting_code
+    # Populated when the user's account can mint a long-lived API key
+    # (Console org with `org:create_api_key` scope). Mutually exclusive
+    # with `oauth_tokens`.
     token: str | None = None
+    # Populated when the user's account can't mint an API key (Pro/Max
+    # subscriber without an org). The OAuthTokenSet is what gets persisted
+    # as the credential's secret in that case.
+    oauth_tokens: OAuthTokenSet | None = None
     message: str | None = None
     _verifier: str = field(default="", repr=False)
     _state: str = field(default="", repr=False)
@@ -118,7 +126,7 @@ class OAuthLoginManager:
         session.state = LoginState.finalizing
         logger.info("OAuth login %s: exchanging code for access token", login_id)
         try:
-            access_token = await provider.exchange_code(
+            token_set = await provider.exchange_code(
                 code=code, code_verifier=session._verifier, state=session._state
             )
         except Exception as e:
@@ -131,7 +139,28 @@ class OAuthLoginManager:
             "OAuth login %s: minting long-lived API key", login_id
         )
         try:
-            api_key = await provider.mint_api_key(access_token)
+            api_key = await provider.mint_api_key(token_set.access_token)
+        except ScopeMissingError as e:
+            # Personal-account / Pro / Max user — no org, so the OAuth
+            # token wasn't granted org:create_api_key. Keep the token set
+            # itself; the credential will use CLAUDE_CODE_OAUTH_TOKEN with
+            # periodic refresh instead of a long-lived sk-ant- key.
+            if token_set.refresh_token is None:
+                session.state = LoginState.error
+                session.message = (
+                    "API key creation failed and the OAuth response didn't "
+                    "include a refresh token — can't fall back to OAuth auth"
+                )
+                logger.warning("OAuth login %s: %s", login_id, session.message)
+                raise RuntimeError(session.message) from e
+            session.oauth_tokens = token_set
+            session.state = LoginState.success
+            logger.info(
+                "OAuth login %s: missing %s scope — storing OAuth token set instead",
+                login_id,
+                e.missing_scope,
+            )
+            return session
         except Exception as e:
             session.state = LoginState.error
             session.message = f"API key creation failed: {e}"

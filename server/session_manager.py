@@ -235,6 +235,103 @@ class SessionManager:
         )
         return new
 
+    async def list_archived_sessions(self) -> list[dict[str, Any]]:
+        """Return SessionInfo-shaped dicts for every archived DB row.
+
+        Pulled lazily from the DB (archived sessions aren't kept in the
+        in-memory `self.sessions` map). Caller turns them into Pydantic
+        models for the response.
+        """
+        if self.db is None:
+            return []
+        rows = await self.db.load_sessions(include_archived=True)
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not row["archived"]:
+                continue
+            count = await self.db.count_messages(row["id"])
+            out.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "working_dir": row["working_dir"],
+                    "status": SessionStatus.idle.value,
+                    "created_at": row["created_at"],
+                    "message_count": count,
+                    "claude_session_id": row["claude_session_id"],
+                    "credential_id": row.get("credential_id"),
+                    "archived": True,
+                }
+            )
+        return out
+
+    async def load_archived_session_detail(
+        self, session_id: str
+    ) -> SessionDetail | None:
+        """Read full message history for an archived session straight
+        from the DB. Returns None if the id isn't an archived row.
+        """
+        if self.db is None:
+            return None
+        rows = await self.db.load_sessions(include_archived=True)
+        match = next(
+            (r for r in rows if r["id"] == session_id and r["archived"]), None
+        )
+        if match is None:
+            return None
+        messages_raw = await self.db.load_messages(session_id)
+        messages = [MessageContent(**m) for m in messages_raw]
+        return SessionDetail(
+            id=match["id"],
+            name=match["name"],
+            working_dir=match["working_dir"],
+            status=SessionStatus.idle,
+            created_at=match["created_at"],
+            message_count=len(messages),
+            claude_session_id=match["claude_session_id"],
+            credential_id=match.get("credential_id"),
+            archived=True,
+            messages=messages,
+            pending_queue=[],
+            pending_questions=[],
+            next_message_seq=len(messages),
+        )
+
+    async def unarchive_session(self, session_id: str) -> Session:
+        """Flip archived=0 in the DB and reload the row into memory.
+
+        Refuses unknown / non-archived ids with ValueError.
+        """
+        if self.db is None:
+            raise ValueError("DB not initialized")
+        rows = await self.db.load_sessions(include_archived=True)
+        match = next(
+            (r for r in rows if r["id"] == session_id and r["archived"]), None
+        )
+        if match is None:
+            raise ValueError(f"Archived session {session_id} not found")
+        await self.db.update_session_field(session_id, archived=False)
+        # Reload into the in-memory map so writes (sendMessage etc.)
+        # immediately route to this session.
+        session = Session(
+            id=match["id"],
+            name=match["name"],
+            working_dir=match["working_dir"],
+            created_at=match["created_at"],
+            claude_session_id=match["claude_session_id"],
+            credential_id=match.get("credential_id"),
+        )
+        session._message_count = await self.db.count_messages(session.id)
+        self.sessions[session.id] = session
+        await self._broadcast(
+            {
+                "type": "session_unarchived",
+                "session_id": session.id,
+                "name": session.name,
+            }
+        )
+        return session
+
     async def delete_session(self, session_id: str) -> bool:
         session = self.sessions.pop(session_id, None)
         if session is None:
@@ -330,7 +427,7 @@ class SessionManager:
                 session._inner_task = None
 
             if session._pending_queue:
-                prompt = session._pending_queue.pop(0)
+                current = session._pending_queue.pop(0)
                 await self._broadcast(
                     {
                         "type": "dequeued",
@@ -339,7 +436,7 @@ class SessionManager:
                     }
                 )
             else:
-                prompt = None
+                current = None
 
         # Queue is drained — fire the session-idle notifier (future-
         # features #5). Detached because notifier sends do network I/O.
@@ -575,11 +672,24 @@ class SessionManager:
         """
         return ClaudeCodeBackend()
 
+    # Refresh the access_token if it expires within this many seconds. A
+    # 5-minute pad covers a slow turn that crosses the boundary without
+    # forcing a refresh on every spawn.
+    _OAUTH_REFRESH_LEEWAY_SEC = 300
+
     async def _resolve_credential(self, session: Session) -> BackendCredential | None:
         """Look up the session's credential and decrypt the secret.
 
-        Returns None when no credential is attached — the backend then falls
-        back to whatever auth the CLI finds in its own config.
+        For OAuth-token credentials (stored as a JSON bundle with a
+        refresh_token), this refreshes the access_token if it's near or
+        past expiry, persists the new bundle, and returns the resolved
+        access_token. For long-lived sk-ant- keys (either auth_type=api_key
+        or the legacy auth_type=oauth shape where mint_api_key succeeded),
+        returns the key as-is.
+
+        Returns None when no credential is attached, the row is missing,
+        decryption fails, or the credential was marked needs_reconnect by a
+        previous failed refresh.
         """
         if not session.credential_id or self.db is None:
             return None
@@ -591,6 +701,13 @@ class SessionManager:
                 session.credential_id,
             )
             return None
+        if row.get("needs_reconnect"):
+            logger.warning(
+                "Credential %s is in needs_reconnect state (%s); running without auth override",
+                session.credential_id,
+                row.get("last_refresh_error_code"),
+            )
+            return None
         try:
             plaintext = decrypt(row["secret_encrypted"], settings.auth_token)
         except ValueError:
@@ -599,11 +716,163 @@ class SessionManager:
                 session.credential_id,
             )
             return None
+
+        # OAuth-token bundle (Pro/Max subscriber path): the secret is a
+        # JSON blob, not a bare key. Refresh if close to expiry, then use
+        # the access_token as the runtime secret.
+        if row["auth_type"] == "oauth" and plaintext.startswith("{"):
+            access_token = await self._refresh_oauth_if_needed(
+                credential_id=session.credential_id,
+                backend=row["backend"],
+                bundle_json=plaintext,
+            )
+            if access_token is None:
+                return None
+            return BackendCredential(
+                backend=row["backend"],
+                auth_type="oauth",
+                secret=access_token,
+            )
+
+        # Either auth_type=api_key OR legacy auth_type=oauth where the
+        # stored secret is the long-lived sk-ant- key from mint_api_key.
+        # Both flow through ANTHROPIC_API_KEY at the backend.
         return BackendCredential(
             backend=row["backend"],
-            auth_type=row["auth_type"],
+            auth_type="api_key",
             secret=plaintext,
         )
+
+    async def _refresh_oauth_if_needed(
+        self,
+        *,
+        credential_id: str,
+        backend: str,
+        bundle_json: str,
+    ) -> str | None:
+        """Return a usable access_token for an OAuth-bundle credential.
+
+        Parses the stored bundle. If the access_token is still fresh,
+        returns it as-is. Otherwise hits the provider's refresh endpoint,
+        persists the new bundle (DB write), and returns the new
+        access_token.
+
+        On unrecoverable refresh failure (refresh_token expired/reused/etc),
+        marks the credential needs_reconnect with the right error code so
+        the frontend can prompt re-login, and returns None.
+        """
+        try:
+            bundle = json.loads(bundle_json)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Credential %s: stored OAuth bundle isn't valid JSON",
+                credential_id,
+            )
+            return None
+
+        access_token = bundle.get("access_token")
+        refresh_token = bundle.get("refresh_token")
+        expires_at_epoch = bundle.get("expires_at_epoch", 0)
+        if not isinstance(access_token, str):
+            logger.warning(
+                "Credential %s: OAuth bundle missing access_token",
+                credential_id,
+            )
+            return None
+
+        if (
+            isinstance(expires_at_epoch, (int, float))
+            and expires_at_epoch - time.time() > self._OAUTH_REFRESH_LEEWAY_SEC
+        ):
+            return access_token
+
+        if not isinstance(refresh_token, str) or not refresh_token:
+            # Can't refresh — mark needs_reconnect so the user knows.
+            await self._mark_needs_reconnect(
+                credential_id, RefreshErrorCode.refresh_token_other
+            )
+            return None
+
+        try:
+            provider = get_provider(backend)
+        except KeyError:
+            logger.warning(
+                "Credential %s: unknown backend %r, can't refresh",
+                credential_id,
+                backend,
+            )
+            return None
+
+        try:
+            new_ts: OAuthTokenSet = await provider.refresh_access_token(refresh_token)
+        except RuntimeError as e:
+            code = self._classify_refresh_error(str(e))
+            logger.warning(
+                "Credential %s: refresh failed (%s): %s", credential_id, code.value, e
+            )
+            await self._mark_needs_reconnect(credential_id, code)
+            return None
+        except Exception:
+            logger.exception(
+                "Credential %s: unexpected refresh error", credential_id
+            )
+            await self._mark_needs_reconnect(
+                credential_id, RefreshErrorCode.unknown
+            )
+            return None
+
+        new_bundle = {
+            "access_token": new_ts.access_token,
+            "refresh_token": new_ts.refresh_token,
+            "expires_at_epoch": new_ts.expires_at_epoch,
+            "scopes": list(new_ts.scopes),
+            "token_type": new_ts.token_type,
+        }
+        secret_encrypted = encrypt(
+            json.dumps(new_bundle, separators=(",", ":")),
+            settings.auth_token,
+        )
+        token_expires_at = datetime.fromtimestamp(
+            new_ts.expires_at_epoch, tz=timezone.utc
+        ).isoformat()
+        await self.db.update_credential(
+            credential_id,
+            secret_encrypted=secret_encrypted,
+            token_expires_at=token_expires_at,
+            needs_reconnect=False,
+            last_refresh_error_code=None,
+        )
+        return new_ts.access_token
+
+    async def _mark_needs_reconnect(
+        self, credential_id: str, code: RefreshErrorCode
+    ) -> None:
+        if self.db is None:
+            return
+        await self.db.update_credential(
+            credential_id,
+            needs_reconnect=True,
+            last_refresh_error_code=code.value,
+        )
+
+    @staticmethod
+    def _classify_refresh_error(msg: str) -> RefreshErrorCode:
+        lower = msg.lower()
+        if "expired" in lower:
+            return RefreshErrorCode.refresh_token_expired
+        if "reused" in lower or "already used" in lower:
+            return RefreshErrorCode.refresh_token_reused
+        if "invalid_grant" in lower or "invalidated" in lower or "revoked" in lower:
+            return RefreshErrorCode.refresh_token_invalidated
+        if (
+            "network" in lower
+            or "timeout" in lower
+            or "connection" in lower
+        ):
+            return RefreshErrorCode.network_error
+        if "refresh endpoint returned" in lower:
+            return RefreshErrorCode.refresh_token_other
+        return RefreshErrorCode.unknown
 
     # ------------------------------------------------------------------ event translation
 

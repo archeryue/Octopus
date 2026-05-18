@@ -158,13 +158,21 @@ class _StubLoginSession:
     would have produced. Lets the REST tests run without spawning a real
     `claude` subprocess."""
 
-    def __init__(self, state, url=None, token=None, message=None):
+    def __init__(
+        self,
+        state,
+        url=None,
+        token=None,
+        oauth_tokens=None,
+        message=None,
+    ):
         from server.oauth_login import LoginState
 
         self.id = "login-xyz"
         self.state = state
         self.url = url
         self.token = token
+        self.oauth_tokens = oauth_tokens
         self.message = message
         # The real LoginSession has more fields the router doesn't read;
         # we deliberately omit them to keep the stub small.
@@ -261,6 +269,55 @@ async def test_oauth_complete_persists_credential(client, monkeypatch):
     rows = await db.load_credentials()
     assert len(rows) == 1
     assert decrypt(rows[0]["secret_encrypted"], TOKEN).startswith("sk-ant-fake-oauth")
+
+
+@pytest.mark.asyncio
+async def test_oauth_complete_persists_oauth_token_bundle(client, monkeypatch):
+    """Pro/Max path: orchestrator returns oauth_tokens (no API key).
+    Router should store the full bundle as JSON + populate token_expires_at."""
+    import json
+    import time
+    from server import oauth_login
+    from server.crypto import decrypt
+    from server.oauth_login import LoginState
+    from server.oauth_providers import OAuthTokenSet
+
+    expires_at_epoch = time.time() + 3600
+    ts = OAuthTokenSet(
+        access_token="oat-fresh",
+        refresh_token="ort-fresh",
+        expires_at_epoch=expires_at_epoch,
+        scopes=["user:inference", "user:profile"],
+    )
+
+    async def fake_submit(self, login_id, code):
+        return _StubLoginSession(LoginState.success, oauth_tokens=ts)
+
+    monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+
+    c, db = client
+    res = await c.post(
+        "/api/credentials/oauth/complete",
+        json={"login_id": "login-xyz", "code": "the-code", "label": "Pro/Max"},
+        headers=AUTH,
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["auth_type"] == "oauth"
+    assert body["label"] == "Pro/Max"
+    assert body["token_expires_at"] is not None
+
+    rows = await db.load_credentials()
+    assert len(rows) == 1
+    decrypted = decrypt(rows[0]["secret_encrypted"], TOKEN)
+    bundle = json.loads(decrypted)
+    assert bundle["access_token"] == "oat-fresh"
+    assert bundle["refresh_token"] == "ort-fresh"
+    assert bundle["scopes"] == ["user:inference", "user:profile"]
+    # expires_at_epoch round-trips
+    assert abs(bundle["expires_at_epoch"] - expires_at_epoch) < 1
+    # token_expires_at was set on the DB row
+    assert rows[0]["token_expires_at"] is not None
 
 
 @pytest.mark.asyncio

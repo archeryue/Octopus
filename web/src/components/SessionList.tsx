@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconCheck, IconCopy, IconPlus, IconX } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconChevronRight,
+  IconCopy,
+  IconPlus,
+  IconRestore,
+  IconX,
+} from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -12,9 +19,12 @@ export function SessionList() {
   const [credentialId, setCredentialId] = useState<string>("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [archivedExpanded, setArchivedExpanded] = useState(false);
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
   const setSessions = useSessionStore((s) => s.setSessions);
+  const archived = useSessionStore((s) => s.archivedSessions);
+  const setArchived = useSessionStore((s) => s.setArchivedSessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setMessages = useSessionStore((s) => s.setMessages);
@@ -99,10 +109,48 @@ export function SessionList() {
     }
   };
 
+  const fetchArchived = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `${API_URL}/api/sessions?include_archived=true`,
+        { headers }
+      );
+      if (res.ok) {
+        const all: SessionInfo[] = await res.json();
+        setArchived(all.filter((s) => s.archived));
+      }
+    } catch {
+      // ignore
+    }
+  }, [token]);
+
+  const unarchive = async (id: string) => {
+    try {
+      const res = await fetch(`${API_URL}/api/sessions/${id}/unarchive`, {
+        method: "POST",
+        headers,
+      });
+      if (res.ok) {
+        const revived: SessionInfo = await res.json();
+        setSessions([...sessions, revived]);
+        setArchived(archived.filter((s) => s.id !== id));
+        setActiveSessionId(revived.id);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   // Fetch sessions on mount
   useEffect(() => {
     fetchSessions();
   }, [fetchSessions]);
+
+  // Refresh archived list whenever the user opens it (so it reflects
+  // recent /archive calls from any tab).
+  useEffect(() => {
+    if (archivedExpanded) fetchArchived();
+  }, [archivedExpanded, fetchArchived]);
 
   return (
     <div className="session-list shrink-0 pb-3">
@@ -173,6 +221,63 @@ export function SessionList() {
             </div>
           </div>
         ))}
+      </div>
+
+      {/* Archived expander — shown below the live items, collapsed by
+       *  default. Clicking opens a list with per-item Unarchive +
+       *  read-only "view history" affordances. */}
+      <div className="archived-section mt-2">
+        <button
+          type="button"
+          className="btn-archived-toggle group flex w-full h-8 items-center gap-2 rounded-lg px-2 text-[12px] text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+          onClick={() => setArchivedExpanded((v) => !v)}
+          aria-expanded={archivedExpanded}
+        >
+          <IconChevronRight
+            size={12}
+            className={`shrink-0 transition-transform ${archivedExpanded ? "rotate-90" : ""}`}
+          />
+          <span className="uppercase tracking-wide">
+            Archived{archived.length > 0 ? ` (${archived.length})` : ""}
+          </span>
+        </button>
+        {archivedExpanded && (
+          <div className="archived-list flex flex-col gap-0.5 mt-1">
+            {archived.length === 0 && (
+              <div className="text-xs italic text-sidebar-foreground/50 px-2 py-1.5">
+                No archived sessions.
+              </div>
+            )}
+            {archived.map((s) => (
+              <div
+                key={s.id}
+                className={`archived-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
+                  s.id === activeSessionId
+                    ? "active bg-[hsl(var(--gray-200))] text-foreground"
+                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent"
+                }`}
+                onClick={() => selectSession(s.id)}
+                title="View archived session (read-only)"
+              >
+                <span className="archived-name truncate text-sm italic flex-1">
+                  {s.name}
+                </span>
+                <div className="archived-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button
+                    className="btn-unarchive inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      unarchive(s.id);
+                    }}
+                    title="Unarchive — bring this session back as a live session"
+                  >
+                    <IconRestore size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {showForm && (

@@ -6,17 +6,20 @@ Tests are split:
 
   - PKCE/state helpers (pure)
   - start() against the registry
-  - submit_code() with provider methods monkeypatched
+  - submit_code() with provider methods monkeypatched (api-key + oauth paths)
   - ClaudeCodeProvider HTTP helpers with httpx stubbed
   - Provider registry + module-level back-compat shims
 """
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from server import oauth_login as ol
 from server import oauth_providers as op
+from server.oauth_errors import ScopeMissingError
 from server.oauth_login import (
     AUTHORIZE_URL,
     CLIENT_ID,
@@ -29,6 +32,21 @@ from server.oauth_login import (
     _gen_verifier,
     _split_code,
 )
+from server.oauth_providers import OAuthTokenSet
+
+
+def _fresh_token_set(
+    access_token: str = "oauth-access-token-xyz",
+    refresh_token: str | None = "oauth-refresh-token-zzz",
+    scopes: list[str] | None = None,
+    expires_in: float = 3600,
+) -> OAuthTokenSet:
+    return OAuthTokenSet(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at_epoch=time.time() + expires_in,
+        scopes=scopes if scopes is not None else ["org:create_api_key", "user:profile"],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +129,7 @@ async def test_start_unknown_provider_raises():
 # ---------------------------------------------------------------------------
 
 
-def _patch_claude_provider(monkeypatch, *, exchange=None, mint=None):
+def _patch_claude_provider(monkeypatch, *, exchange=None, mint=None, refresh=None):
     """Replace the Claude provider's HTTP-calling methods with stubs.
 
     Restores the originals on teardown via monkeypatch."""
@@ -120,6 +138,8 @@ def _patch_claude_provider(monkeypatch, *, exchange=None, mint=None):
         monkeypatch.setattr(provider, "exchange_code", exchange)
     if mint is not None:
         monkeypatch.setattr(provider, "mint_api_key", mint)
+    if refresh is not None:
+        monkeypatch.setattr(provider, "refresh_access_token", refresh)
 
 
 @pytest.mark.asyncio
@@ -135,7 +155,7 @@ async def test_submit_code_happy_path(monkeypatch):
         assert code == "the-code"
         assert code_verifier == session._verifier
         assert state == session._state
-        return "oauth-access-token-xyz"
+        return _fresh_token_set(access_token="oauth-access-token-xyz")
 
     async def fake_mint(access_token):
         calls.append(("mint", {"access_token": access_token}))
@@ -149,6 +169,7 @@ async def test_submit_code_happy_path(monkeypatch):
 
     assert finished.state == LoginState.success
     assert finished.token == "sk-ant-real-1234567890"
+    assert finished.oauth_tokens is None
     assert [c[0] for c in calls] == ["exchange", "mint"]
 
 
@@ -160,7 +181,7 @@ async def test_submit_code_accepts_bare_code_without_state(monkeypatch):
     session = await mgr.start()
 
     async def fake_exchange(*, code, code_verifier, state):
-        return "tok"
+        return _fresh_token_set(access_token="tok")
 
     async def fake_mint(access_token):
         return "sk-ant-fine-abc"
@@ -169,6 +190,57 @@ async def test_submit_code_accepts_bare_code_without_state(monkeypatch):
 
     s = await mgr.submit_code(session.id, "just-the-code")
     assert s.state == LoginState.success
+
+
+@pytest.mark.asyncio
+async def test_submit_code_falls_back_to_oauth_when_scope_missing(monkeypatch):
+    """Pro/Max account: mint_api_key raises ScopeMissingError → store
+    the OAuthTokenSet instead of an API key."""
+    mgr = OAuthLoginManager()
+    session = await mgr.start()
+
+    ts = _fresh_token_set(
+        access_token="sk-ant-oat01-personal",
+        refresh_token="sk-ant-ort01-personal",
+        scopes=["user:inference", "user:profile"],
+    )
+
+    async def fake_exchange(*, code, code_verifier, state):
+        return ts
+
+    async def fake_mint(access_token):
+        raise ScopeMissingError(
+            "api-key endpoint returned 403: scope error",
+            missing_scope="org:create_api_key",
+        )
+
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange, mint=fake_mint)
+
+    finished = await mgr.submit_code(session.id, f"c#{session._state}")
+    assert finished.state == LoginState.success
+    assert finished.token is None
+    assert finished.oauth_tokens is ts
+    assert finished.oauth_tokens.refresh_token == "sk-ant-ort01-personal"
+
+
+@pytest.mark.asyncio
+async def test_submit_code_scope_missing_without_refresh_token_errors(monkeypatch):
+    """If we somehow get a scope error AND no refresh_token, we can't
+    sustain auth — surface this as a login error (not silent success)."""
+    mgr = OAuthLoginManager()
+    session = await mgr.start()
+
+    async def fake_exchange(*, code, code_verifier, state):
+        return _fresh_token_set(refresh_token=None)
+
+    async def fake_mint(access_token):
+        raise ScopeMissingError("403 scope error", missing_scope="org:create_api_key")
+
+    _patch_claude_provider(monkeypatch, exchange=fake_exchange, mint=fake_mint)
+
+    with pytest.raises(RuntimeError, match="didn't include a refresh token"):
+        await mgr.submit_code(session.id, f"c#{session._state}")
+    assert mgr.get(session.id).state == LoginState.error
 
 
 # ---------------------------------------------------------------------------
@@ -214,11 +286,13 @@ async def test_submit_code_token_endpoint_failure(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_submit_code_api_key_endpoint_failure(monkeypatch):
+    """Non-scope api-key failures still surface as login errors —
+    only ScopeMissingError triggers the fallback."""
     mgr = OAuthLoginManager()
     session = await mgr.start()
 
     async def fake_exchange(*, code, code_verifier, state):
-        return "good-access-token"
+        return _fresh_token_set(access_token="good-access-token")
 
     async def fake_mint(access_token):
         raise RuntimeError("api-key endpoint returned 500: oops")
@@ -243,7 +317,7 @@ async def test_submit_code_wrong_state_raises_on_completed_session(monkeypatch):
     session = await mgr.start()
 
     async def fake_exchange(*, code, code_verifier, state):
-        return "tok"
+        return _fresh_token_set(access_token="tok")
 
     async def fake_mint(access_token):
         return "sk-ant-zzz-abc"
@@ -321,7 +395,7 @@ def _install_stub_client(monkeypatch, post_handler):
 
 
 @pytest.mark.asyncio
-async def test_exchange_returns_access_token(monkeypatch):
+async def test_exchange_returns_token_set(monkeypatch):
     provider = op.get_provider("claude-code")
 
     async def handler(url, **kwargs):
@@ -330,11 +404,25 @@ async def test_exchange_returns_access_token(monkeypatch):
         assert payload["grant_type"] == "authorization_code"
         assert payload["code"] == "c"
         assert payload["code_verifier"] == "v"
-        return _StubResponse(200, json_body={"access_token": "the-token", "scope": "x"})
+        return _StubResponse(
+            200,
+            json_body={
+                "access_token": "the-token",
+                "refresh_token": "the-refresh",
+                "expires_in": 1800,
+                "scope": "org:create_api_key user:profile",
+                "token_type": "Bearer",
+            },
+        )
 
     _install_stub_client(monkeypatch, handler)
-    tok = await provider.exchange_code(code="c", code_verifier="v", state="s")
-    assert tok == "the-token"
+    ts = await provider.exchange_code(code="c", code_verifier="v", state="s")
+    assert isinstance(ts, OAuthTokenSet)
+    assert ts.access_token == "the-token"
+    assert ts.refresh_token == "the-refresh"
+    assert ts.scopes == ["org:create_api_key", "user:profile"]
+    # expires_at_epoch is wall-clock-based; check it lands in a sane window.
+    assert time.time() + 1500 < ts.expires_at_epoch < time.time() + 1900
 
 
 @pytest.mark.asyncio
@@ -359,6 +447,64 @@ async def test_exchange_missing_access_token_raises(monkeypatch):
     _install_stub_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="missing access_token"):
         await provider.exchange_code(code="c", code_verifier="v", state="s")
+
+
+@pytest.mark.asyncio
+async def test_refresh_access_token_happy_path(monkeypatch):
+    provider = op.get_provider("claude-code")
+
+    async def handler(url, **kwargs):
+        assert url == provider.TOKEN_URL  # type: ignore[attr-defined]
+        payload = kwargs["json"]
+        assert payload["grant_type"] == "refresh_token"
+        assert payload["refresh_token"] == "old-refresh"
+        return _StubResponse(
+            200,
+            json_body={
+                "access_token": "fresh-access",
+                "refresh_token": "fresh-refresh",
+                "expires_in": 3600,
+                "scope": "user:inference user:profile",
+            },
+        )
+
+    _install_stub_client(monkeypatch, handler)
+    ts = await provider.refresh_access_token("old-refresh")
+    assert ts.access_token == "fresh-access"
+    assert ts.refresh_token == "fresh-refresh"
+
+
+@pytest.mark.asyncio
+async def test_refresh_access_token_reuses_old_refresh_when_omitted(monkeypatch):
+    """Some OAuth servers don't reissue the refresh token on refresh —
+    we should keep the old one rather than dropping to None."""
+    provider = op.get_provider("claude-code")
+
+    async def handler(url, **kwargs):
+        return _StubResponse(
+            200,
+            json_body={
+                "access_token": "fresh-access",
+                # no refresh_token in the response
+                "expires_in": 3600,
+            },
+        )
+
+    _install_stub_client(monkeypatch, handler)
+    ts = await provider.refresh_access_token("keep-this-refresh")
+    assert ts.refresh_token == "keep-this-refresh"
+
+
+@pytest.mark.asyncio
+async def test_refresh_access_token_non_200_raises(monkeypatch):
+    provider = op.get_provider("claude-code")
+
+    async def handler(url, **kwargs):
+        return _StubResponse(400, text_body="invalid_grant")
+
+    _install_stub_client(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="refresh endpoint returned 400"):
+        await provider.refresh_access_token("doesnt-matter")
 
 
 @pytest.mark.asyncio
@@ -404,6 +550,8 @@ async def test_create_api_key_no_sk_ant_raises(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_create_api_key_non_200_raises(monkeypatch):
+    """Non-403 errors and 403 errors without the scope marker stay as
+    generic RuntimeError — only the scope-specific 403 escalates."""
     provider = op.get_provider("claude-code")
 
     async def handler(url, **kwargs):
@@ -412,6 +560,27 @@ async def test_create_api_key_non_200_raises(monkeypatch):
     _install_stub_client(monkeypatch, handler)
     with pytest.raises(RuntimeError, match="api-key endpoint returned 403"):
         await provider.mint_api_key("T")
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_403_with_scope_text_raises_scope_missing(monkeypatch):
+    """403 body that names the missing scope → ScopeMissingError so the
+    orchestrator routes the user into the OAuth-token storage path."""
+    provider = op.get_provider("claude-code")
+
+    body = (
+        '{"type":"error","error":{"type":"permission_error",'
+        '"message":"OAuth token does not meet scope requirement '
+        'org:create_api_key"}}'
+    )
+
+    async def handler(url, **kwargs):
+        return _StubResponse(403, text_body=body)
+
+    _install_stub_client(monkeypatch, handler)
+    with pytest.raises(ScopeMissingError) as exc_info:
+        await provider.mint_api_key("T")
+    assert exc_info.value.missing_scope == "org:create_api_key"
 
 
 # ---------------------------------------------------------------------------

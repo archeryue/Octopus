@@ -1,18 +1,20 @@
-"""Typed refresh-error codes — Steal Plan B-5.
+"""Typed errors + refresh-error codes for the OAuth credential flow.
 
-These are the categories of failure that can come back from an OAuth
-token refresh, used by:
-
+`RefreshErrorCode` categorizes failures from an OAuth access-token refresh
+and is written to:
   - `backend_credentials.last_refresh_error_code` on the DB row
   - the REST `CredentialInfo.last_refresh_error_code` field surfaced to
     the frontend
 
 The frontend uses the code to decide whether to nudge the user toward
 "sign in again" (`refresh_token_*` cases) or "we'll retry"
-(transient / unknown). Claude Code's current `sk-ant-` flow doesn't
-refresh, so the column stays null in practice today — the schema is in
-place so the next OAuth provider (Codex / GitHub / Lark) with refresh
-tokens has somewhere to write its diagnoses.
+(transient / unknown).
+
+`ScopeMissingError` is raised by `mint_api_key()` when the OAuth token
+wasn't granted the scope required to create a long-lived API key. The
+login orchestrator catches it and falls back to storing the OAuth
+access+refresh tokens themselves (the "subscription auth" path the
+Claude CLI uses for Pro/Max users without an org).
 """
 
 from __future__ import annotations
@@ -31,3 +33,17 @@ class RefreshErrorCode(str, Enum):
 
 # Allowed string values for Pydantic / TypeScript boundary use.
 REFRESH_ERROR_CODES: tuple[str, ...] = tuple(c.value for c in RefreshErrorCode)
+
+
+class ScopeMissingError(RuntimeError):
+    """OAuth token lacks the scope needed for the requested action.
+
+    Surfaces specifically when the api-key endpoint returns 403 with the
+    `org:create_api_key` scope error — typical for Pro/Max subscribers
+    without an Anthropic org. The login manager catches this and stores
+    the OAuth access/refresh tokens directly instead of an API key.
+    """
+
+    def __init__(self, message: str, missing_scope: str) -> None:
+        super().__init__(message)
+        self.missing_scope = missing_scope

@@ -35,6 +35,11 @@ class SessionInfo(BaseModel):
     message_count: int = 0
     claude_session_id: str | None = None
     credential_id: str | None = None
+    # Hidden from the default `GET /api/sessions` list; surfaced only
+    # when the caller passes `?include_archived=true` (or for individual
+    # GETs by id, which always work). The `/archive` flow sets this;
+    # `/unarchive` clears it.
+    archived: bool = False
 
 
 class MessageRole(str, Enum):

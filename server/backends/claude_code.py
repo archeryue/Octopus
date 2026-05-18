@@ -100,12 +100,18 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         if resume_id:
             argv += ["--resume", resume_id]
         env = os.environ.copy()
-        if credential is not None and credential.auth_type == "api_key":
-            # ANTHROPIC_API_KEY takes precedence over any cached `claude login`
-            # OAuth session. When None, the CLI falls back to its own auth
-            # (keychain / ~/.claude). OAuth-typed credentials would need a
-            # different application path — TBD when we implement OAuth.
-            env["ANTHROPIC_API_KEY"] = credential.secret
+        if credential is not None:
+            if credential.auth_type == "api_key":
+                # Long-lived sk-ant- key: works as ANTHROPIC_API_KEY and
+                # takes precedence over any cached `claude login` session.
+                env["ANTHROPIC_API_KEY"] = credential.secret
+            elif credential.auth_type == "oauth":
+                # OAuth access token from a Pro/Max subscription. The
+                # session_manager resolver refreshed it if needed before
+                # handing it to us. CLAUDE_CODE_OAUTH_TOKEN is the env var
+                # the CLI documents for headless subscription auth, and it
+                # also takes precedence over the on-disk credentials file.
+                env["CLAUDE_CODE_OAUTH_TOKEN"] = credential.secret
         return argv, {"cwd": working_dir, "env": env}
 
     async def send_initial_prompt(self, prompt: str) -> None:

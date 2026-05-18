@@ -517,10 +517,16 @@ class Database:
             "needs_reconnect",
             "last_refresh_error_code",
         }
+        # Nullable columns need to be writable to NULL (e.g. clearing a
+        # stale `last_refresh_error_code` after a successful refresh).
+        # Callers that want to leave a column alone should just not pass it.
+        nullable_meta = {"token_expires_at", "last_refresh_error_code"}
         meta_updates = {
-            k: v for k, v in fields.items() if k in meta_allowed and v is not None
+            k: v
+            for k, v in fields.items()
+            if k in meta_allowed and (v is not None or k in nullable_meta)
         }
-        if "needs_reconnect" in meta_updates:
+        if "needs_reconnect" in meta_updates and meta_updates["needs_reconnect"] is not None:
             meta_updates["needs_reconnect"] = int(bool(meta_updates["needs_reconnect"]))
 
         secret_value = fields.get("secret_encrypted")

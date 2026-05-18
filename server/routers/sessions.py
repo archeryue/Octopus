@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
 from ..models import CreateSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
@@ -7,7 +7,9 @@ from ..session_manager import session_manager
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
-def _to_session_info(s, message_count: int | None = None) -> SessionInfo:
+def _to_session_info(
+    s, message_count: int | None = None, archived: bool = False
+) -> SessionInfo:
     return SessionInfo(
         id=s.id,
         name=s.name,
@@ -17,13 +19,20 @@ def _to_session_info(s, message_count: int | None = None) -> SessionInfo:
         message_count=s._message_count if message_count is None else message_count,
         claude_session_id=s.claude_session_id,
         credential_id=s.credential_id,
+        archived=archived,
     )
 
 
 @router.get("", response_model=list[SessionInfo])
-async def list_sessions(_: str = Depends(verify_token)):
-    sessions = session_manager.list_sessions()
-    return [_to_session_info(s) for s in sessions]
+async def list_sessions(
+    include_archived: bool = Query(False),
+    _: str = Depends(verify_token),
+):
+    live = [_to_session_info(s) for s in session_manager.list_sessions()]
+    if not include_archived:
+        return live
+    archived = await session_manager.list_archived_sessions()
+    return live + archived
 
 
 @router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)
@@ -134,3 +143,17 @@ async def archive_session(session_id: str, _: str = Depends(verify_token)):
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return _to_session_info(new)
+
+
+@router.post("/{session_id}/unarchive", response_model=SessionInfo)
+async def unarchive_session(session_id: str, _: str = Depends(verify_token)):
+    """Bring an archived session back as a live session.
+
+    Flips the DB row's `archived=0` and reloads it into the in-memory
+    session map so writes (sendMessage, schedules, etc.) work again.
+    """
+    try:
+        s = await session_manager.unarchive_session(session_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    return _to_session_info(s)

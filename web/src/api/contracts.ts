@@ -202,6 +202,13 @@ export interface paths {
          * @description Submit the code copied from the OAuth callback, exchange it for a
          *     long-lived API key via Anthropic's OAuth + api-key endpoints, and
          *     persist the credential.
+         *
+         *     Two completion shapes from the orchestrator:
+         *       - `session.token` set → Console org user with a fresh sk-ant- key.
+         *         Stored as auth_type=oauth, no expiry tracking needed.
+         *       - `session.oauth_tokens` set → Pro/Max subscriber whose token can't
+         *         mint an API key. We store the full OAuthTokenSet as JSON, with
+         *         token_expires_at populated so the resolver knows when to refresh.
          */
         post: operations["oauth_complete_api_credentials_oauth_complete_post"];
         delete?: never;
@@ -540,6 +547,11 @@ export interface components {
             /** Credential Id */
             credential_id?: string | null;
             /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
+            /**
              * Messages
              * @default []
              */
@@ -580,6 +592,11 @@ export interface components {
             claude_session_id?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
         };
         /**
          * SessionStatus
@@ -639,7 +656,9 @@ export type $defs = Record<string, never>;
 export interface operations {
     list_sessions_api_sessions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                include_archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -653,6 +672,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

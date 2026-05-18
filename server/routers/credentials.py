@@ -17,6 +17,7 @@ same way as a manually-pasted API key.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +36,7 @@ from ..models import (
     UpdateCredentialRequest,
 )
 from ..oauth_login import LoginState, oauth_login_manager
+from ..oauth_providers import OAuthTokenSet
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +182,25 @@ async def oauth_start(req: OAuthStartRequest, _: str = Depends(verify_token)):
     return OAuthStartResponse(login_id=session.id, device_url=session.url)
 
 
+def _serialize_oauth_tokens(ts: OAuthTokenSet) -> str:
+    """Encode an OAuthTokenSet as the on-disk secret blob.
+
+    Stored as JSON so the resolver can refresh the access_token in place
+    without re-running the entire login flow. The shape is intentionally
+    flat — no nested objects — to keep refresh writes cheap.
+    """
+    return json.dumps(
+        {
+            "access_token": ts.access_token,
+            "refresh_token": ts.refresh_token,
+            "expires_at_epoch": ts.expires_at_epoch,
+            "scopes": list(ts.scopes),
+            "token_type": ts.token_type,
+        },
+        separators=(",", ":"),
+    )
+
+
 @router.post(
     "/oauth/complete",
     response_model=CredentialInfo,
@@ -190,7 +211,15 @@ async def oauth_complete(
 ):
     """Submit the code copied from the OAuth callback, exchange it for a
     long-lived API key via Anthropic's OAuth + api-key endpoints, and
-    persist the credential."""
+    persist the credential.
+
+    Two completion shapes from the orchestrator:
+      - `session.token` set → Console org user with a fresh sk-ant- key.
+        Stored as auth_type=oauth, no expiry tracking needed.
+      - `session.oauth_tokens` set → Pro/Max subscriber whose token can't
+        mint an API key. We store the full OAuthTokenSet as JSON, with
+        token_expires_at populated so the resolver knows when to refresh.
+    """
     db = _require_db()
     try:
         session = await oauth_login_manager.submit_code(req.login_id, req.code)
@@ -199,15 +228,37 @@ async def oauth_complete(
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if session.state != LoginState.success or not session.token:
+    if session.state != LoginState.success:
         raise HTTPException(
             status_code=500,
-            detail=session.message or "login completed without a token",
+            detail=session.message or "login completed without a usable result",
         )
 
     cid = uuid.uuid4().hex[:12]
     created_at = datetime.now(timezone.utc).isoformat()
-    secret_encrypted = encrypt(session.token, settings.auth_token)
+
+    if session.token:
+        # API-key path: long-lived sk-ant- key from create_api_key endpoint.
+        secret_encrypted = encrypt(session.token, settings.auth_token)
+        token_expires_at: str | None = None
+    elif session.oauth_tokens:
+        # OAuth-token path: store the full token set; resolver refreshes.
+        ts = session.oauth_tokens
+        secret_encrypted = encrypt(
+            _serialize_oauth_tokens(ts), settings.auth_token
+        )
+        token_expires_at = datetime.fromtimestamp(
+            ts.expires_at_epoch, tz=timezone.utc
+        ).isoformat()
+    else:
+        # State machine guarantees one of the two is set on success, but
+        # be defensive — a third shape sneaking in would otherwise corrupt
+        # the credential row silently.
+        raise HTTPException(
+            status_code=500,
+            detail="login completed with no token or oauth_tokens",
+        )
+
     await db.save_credential(
         credential_id=cid,
         backend=BackendKind.claude_code.value,
@@ -216,12 +267,15 @@ async def oauth_complete(
         secret_encrypted=secret_encrypted,
         created_at=created_at,
     )
+    if token_expires_at is not None:
+        await db.update_credential(cid, token_expires_at=token_expires_at)
     return CredentialInfo(
         id=cid,
         backend=BackendKind.claude_code,
         label=req.label,
         auth_type=AuthType.oauth,
         created_at=created_at,
+        token_expires_at=token_expires_at,
     )
 
 

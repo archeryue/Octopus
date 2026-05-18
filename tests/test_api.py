@@ -146,9 +146,29 @@ async def test_archive_session(client):
     assert old_id not in ids
     assert new_id in ids
 
-    # GET on the old id is a 404 (it's no longer in the in-memory map).
-    gone = await client.get(f"/api/sessions/{old_id}", headers=HEADERS)
-    assert gone.status_code == 404
+    # GET on the old id still works — it returns the archived row's
+    # detail (so the UI's "view archived" can read history).
+    archived = await client.get(f"/api/sessions/{old_id}", headers=HEADERS)
+    assert archived.status_code == 200
+    assert archived.json()["archived"] is True
+
+    # GET on the list with ?include_archived=true surfaces both.
+    inc = await client.get(
+        "/api/sessions?include_archived=true", headers=HEADERS
+    )
+    ids = [s["id"] for s in inc.json()]
+    assert old_id in ids
+    assert new_id in ids
+
+    # Unarchive brings the old id back; it returns to the default list.
+    un = await client.post(
+        f"/api/sessions/{old_id}/unarchive", headers=HEADERS
+    )
+    assert un.status_code == 200
+    assert un.json()["id"] == old_id
+    assert un.json()["archived"] is False
+    list_after = await client.get("/api/sessions", headers=HEADERS)
+    assert old_id in [s["id"] for s in list_after.json()]
 
 
 @pytest.mark.asyncio

@@ -129,8 +129,8 @@ async def test_start_message_queues_when_busy(manager, monkeypatch):
     consumed: list[str] = []
     blocker = asyncio.Event()
 
-    async def stub_consume(session_id: str, prompt: str) -> None:
-        consumed.append(prompt)
+    async def stub_consume(session_id: str, queued) -> None:
+        consumed.append(queued.prompt)
         if len(consumed) == 1:
             await blocker.wait()
 
@@ -172,13 +172,13 @@ async def test_interrupt_cancels_current_and_advances_queue(manager, monkeypatch
     started: list[str] = []
     cancelled: list[str] = []
 
-    async def stub_consume(session_id: str, prompt: str) -> None:
-        started.append(prompt)
+    async def stub_consume(session_id: str, queued) -> None:
+        started.append(queued.prompt)
         try:
             # Block forever so interrupt() must cancel us
             await asyncio.sleep(60)
         except asyncio.CancelledError:
-            cancelled.append(prompt)
+            cancelled.append(queued.prompt)
             raise
 
     monkeypatch.setattr(manager, "_consume_message", stub_consume)
@@ -223,12 +223,12 @@ async def test_interrupt_twice_in_a_row_each_works(manager, monkeypatch):
     started: list[str] = []
     cancelled: list[str] = []
 
-    async def stub_consume(session_id: str, prompt: str) -> None:
-        started.append(prompt)
+    async def stub_consume(session_id: str, queued) -> None:
+        started.append(queued.prompt)
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
-            cancelled.append(prompt)
+            cancelled.append(queued.prompt)
             raise
 
     monkeypatch.setattr(manager, "_consume_message", stub_consume)
@@ -279,7 +279,7 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
 
     session = await manager.create_session("SlowStop")
 
-    async def stub_consume(session_id: str, prompt: str) -> None:
+    async def stub_consume(session_id: str, queued) -> None:
         try:
             await asyncio.sleep(60)
         except asyncio.CancelledError:
@@ -479,6 +479,215 @@ async def test_resolve_credential_returns_none_when_missing(manager):
 
 
 @pytest.mark.asyncio
+async def test_resolve_credential_oauth_bundle_returns_oauth_credential(manager):
+    """OAuth-bundle credentials (stored as a JSON blob with refresh_token)
+    return BackendCredential(auth_type='oauth', secret=access_token)."""
+    import json
+    import time
+    from datetime import datetime, timezone
+    from server.config import settings
+    from server.crypto import encrypt
+
+    bundle = json.dumps(
+        {
+            "access_token": "oat-fresh-access",
+            "refresh_token": "ort-refresh",
+            # Comfortably in the future so no refresh is triggered.
+            "expires_at_epoch": time.time() + 3600,
+            "scopes": ["user:inference"],
+            "token_type": "Bearer",
+        }
+    )
+    enc = encrypt(bundle, settings.auth_token)
+    await manager.db.save_credential(
+        credential_id="c-oauth",
+        backend="claude-code",
+        label="Pro/Max",
+        auth_type="oauth",
+        secret_encrypted=enc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    session = await manager.create_session("S-oauth", credential_id="c-oauth")
+    cred = await manager._resolve_credential(session)
+    assert cred is not None
+    assert cred.auth_type == "oauth"
+    assert cred.secret == "oat-fresh-access"
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_refreshes_expired_oauth_token(manager, monkeypatch):
+    """When the stored access_token is past expiry, the resolver should
+    call the provider's refresh endpoint, persist the new bundle, and
+    hand back the fresh access_token."""
+    import json
+    import time
+    from datetime import datetime, timezone
+    from server import oauth_providers as op
+    from server.config import settings
+    from server.crypto import decrypt, encrypt
+    from server.oauth_providers import OAuthTokenSet
+
+    expired_bundle = json.dumps(
+        {
+            "access_token": "oat-expired",
+            "refresh_token": "ort-still-valid",
+            # 1 minute ago — well past leeway
+            "expires_at_epoch": time.time() - 60,
+            "scopes": ["user:inference"],
+            "token_type": "Bearer",
+        }
+    )
+    enc = encrypt(expired_bundle, settings.auth_token)
+    await manager.db.save_credential(
+        credential_id="c-stale",
+        backend="claude-code",
+        label="Stale",
+        auth_type="oauth",
+        secret_encrypted=enc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    captured_refresh: list[str] = []
+
+    async def fake_refresh(refresh_token):
+        captured_refresh.append(refresh_token)
+        return OAuthTokenSet(
+            access_token="oat-brand-new",
+            refresh_token="ort-still-valid",
+            expires_at_epoch=time.time() + 3600,
+            scopes=["user:inference"],
+        )
+
+    provider = op.get_provider("claude-code")
+    monkeypatch.setattr(provider, "refresh_access_token", fake_refresh)
+
+    session = await manager.create_session("S-stale", credential_id="c-stale")
+    cred = await manager._resolve_credential(session)
+
+    assert captured_refresh == ["ort-still-valid"]
+    assert cred is not None
+    assert cred.auth_type == "oauth"
+    assert cred.secret == "oat-brand-new"
+
+    # The new bundle was persisted: a second resolve should find a fresh
+    # row (and NOT refresh again, since the new bundle is not expired).
+    captured_refresh.clear()
+    cred2 = await manager._resolve_credential(session)
+    assert cred2 is not None
+    assert cred2.secret == "oat-brand-new"
+    assert captured_refresh == []  # no second refresh
+
+    # And the stored bundle decrypts to the new access_token.
+    row = await manager.db.get_credential("c-stale")
+    new_bundle = json.loads(decrypt(row["secret_encrypted"], settings.auth_token))
+    assert new_bundle["access_token"] == "oat-brand-new"
+    assert row.get("needs_reconnect") is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_marks_needs_reconnect_on_refresh_failure(
+    manager, monkeypatch
+):
+    """Refresh failure → credential is marked needs_reconnect with a
+    typed error code, and the resolver returns None (so the backend
+    falls back to no credential rather than firing a broken request)."""
+    import json
+    import time
+    from datetime import datetime, timezone
+    from server import oauth_providers as op
+    from server.config import settings
+    from server.crypto import encrypt
+
+    expired_bundle = json.dumps(
+        {
+            "access_token": "oat-expired",
+            "refresh_token": "ort-dead",
+            "expires_at_epoch": time.time() - 60,
+            "scopes": [],
+            "token_type": "Bearer",
+        }
+    )
+    enc = encrypt(expired_bundle, settings.auth_token)
+    await manager.db.save_credential(
+        credential_id="c-dead",
+        backend="claude-code",
+        label="Dead",
+        auth_type="oauth",
+        secret_encrypted=enc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+    async def fake_refresh(refresh_token):
+        # The provider raises RuntimeError(...) on a 400 from the token endpoint
+        raise RuntimeError(
+            "refresh endpoint returned 400: invalid_grant — refresh token expired"
+        )
+
+    provider = op.get_provider("claude-code")
+    monkeypatch.setattr(provider, "refresh_access_token", fake_refresh)
+
+    session = await manager.create_session("S-dead", credential_id="c-dead")
+    cred = await manager._resolve_credential(session)
+    assert cred is None
+
+    row = await manager.db.get_credential("c-dead")
+    assert row.get("needs_reconnect") is True
+    assert row.get("last_refresh_error_code") == "refresh_token_expired"
+
+    # A subsequent resolve sees needs_reconnect and returns None without
+    # retrying the refresh.
+    cred2 = await manager._resolve_credential(session)
+    assert cred2 is None
+
+
+@pytest.mark.asyncio
+async def test_oauth_credential_env_var_reaches_subprocess(manager, monkeypatch):
+    """End-to-end: OAuth-bundle credential → resolver decrypts/refreshes →
+    backend build_args lands the access_token in CLAUDE_CODE_OAUTH_TOKEN
+    on the subprocess env. Mirrors the existing ANTHROPIC_API_KEY test."""
+    import json
+    import time
+    from datetime import datetime, timezone
+    from server.config import settings
+    from server.crypto import encrypt
+
+    bundle = json.dumps(
+        {
+            "access_token": "oat-runtime-token",
+            "refresh_token": "ort-x",
+            "expires_at_epoch": time.time() + 3600,
+            "scopes": ["user:inference"],
+            "token_type": "Bearer",
+        }
+    )
+    enc = encrypt(bundle, settings.auth_token)
+    await manager.db.save_credential(
+        credential_id="c-env-oauth",
+        backend="claude-code",
+        label="EnvOAuth",
+        auth_type="oauth",
+        secret_encrypted=enc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    session = await manager.create_session(
+        "EnvSessionOAuth", credential_id="c-env-oauth"
+    )
+
+    cred = await manager._resolve_credential(session)
+    assert cred is not None
+    backend = manager._make_backend(session)
+    _, kwargs = backend.build_args(
+        "prompt", session.working_dir, None, credential=cred
+    )
+    env = kwargs.get("env") or {}
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "oat-runtime-token"
+    # And we don't accidentally set both — that would confuse the CLI.
+    assert "ANTHROPIC_API_KEY" not in {
+        k for k in env.keys() if env[k] == "oat-runtime-token"
+    }
+
+
+@pytest.mark.asyncio
 async def test_credential_env_var_reaches_spawned_subprocess(manager):
     """End-to-end-ish: when a session has a credential, the *decrypted*
     secret really lands in the env dict that would be passed to
@@ -598,7 +807,7 @@ async def test_delete_session_clears_queue(manager, monkeypatch):
     session = await manager.create_session("Del")
     blocker = asyncio.Event()
 
-    async def stub_consume(session_id: str, prompt: str) -> None:
+    async def stub_consume(session_id: str, queued) -> None:
         try:
             await blocker.wait()
         except asyncio.CancelledError:
