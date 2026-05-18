@@ -2,8 +2,10 @@
 
 vm0 (`/home/start-up/vm0`) is a polished, multi-tenant Claude sandbox
 platform we own. This document tracks what we've lifted from it. All
-the phases below are landed; the residual work is a single deferred
-item and a list of things we deliberately did not copy.
+the phases below are landed. Anything still open from the original
+plan has been folded into [`future-features.md`](future-features.md)
+so there's a single backlog source of truth — see item #7 there for
+the additive Settings dialog (former B-7).
 
 ## Done
 
@@ -73,20 +75,6 @@ against every Tailwind `@layer`-scoped utility — every `px-*` /
 `py-*` / `m-*` / `gap-*` was silently dropped to 0. Wrapping the
 reset in `@layer base` lets utilities apply. Documented in
 `verify-first` memory.
-
----
-
-## Deferred
-
-### B-7 Settings dialog with tab nav
-Originally: move the per-section sidebar UI (Sessions / Schedules /
-Harness) into a single Settings dialog with internal tab nav.
-
-**Why deferred:** the current three-section sidebar was an explicit
-design choice; B-7 as originally written reverses it. If we want a
-Settings dialog later it should be *additive* — hold things that
-don't fit the sidebar (theme toggle, server URL, etc.) — not
-relocate what's already there.
 
 ---
 
