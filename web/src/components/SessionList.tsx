@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconCheck, IconCopy, IconX } from "@tabler/icons-react";
+import { IconCheck, IconCopy, IconPlus, IconX } from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -100,43 +100,51 @@ export function SessionList() {
   }, [fetchSessions]);
 
   return (
-    <div className="session-list flex flex-col flex-1 overflow-hidden">
-      <div className="session-list-header flex items-center justify-between px-4 h-12 shrink-0 border-b border-border">
-        <h2 className="text-sm font-semibold text-muted-foreground">Sessions</h2>
+    <div className="session-list shrink-0 pb-3">
+      <div className="session-list-header group flex h-8 items-center justify-between rounded-lg pl-2 pr-1 hover:bg-sidebar-accent transition-colors">
+        <h2 className="text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors">
+          Sessions
+        </h2>
         <button
-          className="btn-session-add inline-flex h-6 w-6 items-center justify-center rounded-md text-base text-primary hover:bg-accent"
+          className="btn-session-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
           onClick={() => setShowForm((v) => !v)}
           title={showForm ? "Cancel" : "New session"}
           aria-label={showForm ? "Cancel" : "New session"}
         >
-          {showForm ? "×" : "+"}
+          {showForm ? <IconX size={14} /> : <IconPlus size={14} />}
         </button>
       </div>
 
-      <div className="session-list-items flex-1 overflow-y-auto">
+      <div className="session-list-items flex flex-col gap-0.5 mt-1">
         {sessions.map((s) => (
           <div
             key={s.id}
-            className={`session-item group flex items-center justify-between px-4 py-2 border-b border-border cursor-pointer transition-colors ${
-              s.id === activeSessionId ? "active bg-accent" : "hover:bg-accent/50"
+            className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
+              s.id === activeSessionId
+                ? "active bg-[hsl(var(--gray-200))] text-foreground"
+                : "text-sidebar-foreground hover:bg-sidebar-accent"
             }`}
             onClick={() => selectSession(s.id)}
           >
-            <div className="session-item-info flex items-center gap-2 min-w-0">
-              <span className="session-name truncate text-sm text-foreground">{s.name}</span>
-              <span
-                className={`status-dot status-${s.status} inline-block size-2 rounded-full shrink-0 ${
-                  s.status === "running"
-                    ? "bg-primary animate-pulse"
-                    : s.status === "waiting_approval"
-                    ? "bg-yellow-400"
-                    : "bg-muted-foreground/40"
-                }`}
-              />
-            </div>
-            <div className="session-item-actions flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <span
+              className={`status-dot status-${s.status} inline-block size-2 rounded-full shrink-0 ${
+                s.status === "running"
+                  ? "bg-primary animate-pulse"
+                  : s.status === "waiting_approval"
+                  ? "bg-yellow-500"
+                  : "bg-muted-foreground/40"
+              }`}
+            />
+            <span
+              className={`session-name truncate text-sm flex-1 ${
+                s.id === activeSessionId ? "font-medium" : ""
+              }`}
+            >
+              {s.name}
+            </span>
+            <div className="session-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
-                className="btn-copy-id inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground"
+                className="btn-copy-id inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"
                 onClick={(e) => {
                   e.stopPropagation();
                   navigator.clipboard.writeText(s.id);
@@ -148,7 +156,7 @@ export function SessionList() {
                 {copiedId === s.id ? <IconCheck size={14} /> : <IconCopy size={14} />}
               </button>
               <button
-                className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
                 onClick={(e) => {
                   e.stopPropagation();
                   deleteSession(s.id);
@@ -163,7 +171,7 @@ export function SessionList() {
       </div>
 
       {showForm && (
-        <div className="session-create px-3 py-3 border-b border-border space-y-2">
+        <div className="session-create mt-2 rounded-lg border-[0.7px] border-border bg-card p-3 space-y-2">
           <Input
             type="text"
             className="h-9 text-sm"

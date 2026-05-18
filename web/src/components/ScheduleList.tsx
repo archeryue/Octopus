@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconCircle, IconCircleFilled, IconX } from "@tabler/icons-react";
+import { IconCircle, IconCircleFilled, IconPlus, IconX } from "@tabler/icons-react";
 import { useSessionStore, type Schedule } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -67,22 +67,22 @@ export function ScheduleList() {
   if (!activeSessionId) return null;
 
   return (
-    <div className="schedule-section border-t border-border">
-      <div className="schedule-header flex items-center justify-between px-4 py-2">
-        <span className="schedule-title text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+    <div className="schedule-section shrink-0 pb-3 pt-2">
+      <div className="schedule-header group flex h-8 items-center justify-between rounded-lg pl-2 pr-1 hover:bg-sidebar-accent transition-colors">
+        <span className="schedule-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors">
           Schedules
         </span>
         <button
-          className="btn-schedule-add inline-flex h-6 w-6 items-center justify-center rounded-md text-base text-primary hover:bg-accent"
+          className="btn-schedule-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
           onClick={() => setShowForm(!showForm)}
           aria-label={showForm ? "Cancel" : "New schedule"}
         >
-          {showForm ? "−" : "+"}
+          {showForm ? <IconX size={14} /> : <IconPlus size={14} />}
         </button>
       </div>
 
       {showForm && (
-        <div className="schedule-form px-3 pb-3 space-y-2">
+        <div className="schedule-form mt-2 rounded-lg border-[0.7px] border-border bg-card p-3 space-y-2">
           <Input
             className="h-9 text-sm"
             placeholder="Name"
@@ -94,7 +94,7 @@ export function ScheduleList() {
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             rows={2}
-            className="flex w-full rounded-md border border-border bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-ring focus:ring-2 focus:ring-ring/30 resize-none"
+            className="flex w-full rounded-lg border-[0.7px] border-gray-400 bg-input px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary focus:ring-[3px] focus:ring-primary/10 resize-none"
           />
           <div className="schedule-form-row flex items-center gap-2 text-xs text-muted-foreground">
             <label>Every</label>
@@ -117,24 +117,22 @@ export function ScheduleList() {
         </div>
       )}
 
-      <div>
+      <div className="flex flex-col gap-0.5 mt-1">
         {sessionSchedules.map((sched) => (
           <div
             key={sched.id}
-            className={`schedule-item flex items-center justify-between px-4 py-2 border-b border-border text-sm ${
+            className={`schedule-item group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors ${
               !sched.enabled ? "disabled opacity-50" : ""
             }`}
           >
-            <div className="schedule-item-info flex items-center gap-2 min-w-0">
-              <span className="schedule-name truncate text-foreground">{sched.name}</span>
-              <span className="schedule-interval text-xs text-muted-foreground whitespace-nowrap">
-                every {sched.interval_seconds / 60}m
-              </span>
-            </div>
-            <div className="schedule-item-actions flex items-center gap-1">
+            <span className="schedule-name truncate flex-1">{sched.name}</span>
+            <span className="schedule-interval text-xs text-sidebar-foreground/60 whitespace-nowrap font-mono">
+              {sched.interval_seconds / 60}m
+            </span>
+            <div className="schedule-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
-                className={`btn-toggle ${sched.enabled ? "on" : "off"} inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-accent ${
-                  sched.enabled ? "text-primary" : "text-muted-foreground"
+                className={`btn-toggle ${sched.enabled ? "on" : "off"} inline-flex h-6 w-6 items-center justify-center rounded-md hover:bg-card ${
+                  sched.enabled ? "text-primary" : "text-sidebar-foreground/50"
                 }`}
                 onClick={() => handleToggle(sched)}
                 title={sched.enabled ? "Disable" : "Enable"}
@@ -146,7 +144,7 @@ export function ScheduleList() {
                 )}
               </button>
               <button
-                className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
                 onClick={() => handleDelete(sched.id)}
                 title="Delete"
               >

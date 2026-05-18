@@ -126,7 +126,7 @@ test.describe("Scheduled Tasks UI", () => {
       "Hourly Check"
     );
     await expect(page.locator(".schedule-item .schedule-interval")).toHaveText(
-      "every 60m"
+      "60m"
     );
     await expect(page.locator(".schedule-item .btn-toggle")).toHaveClass(/on/);
 

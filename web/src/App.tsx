@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { IconMenu2 } from "@tabler/icons-react";
+import { AccountDropdown } from "./components/AccountDropdown";
 import { ChatView } from "./components/ChatView";
 import { CredentialList } from "./components/CredentialList";
 import { ScheduleList } from "./components/ScheduleList";
@@ -23,9 +25,9 @@ function App() {
     };
     return (
       <div className="login-screen min-h-screen flex items-center justify-center bg-background p-6">
-        <div className="w-full max-w-sm rounded-lg border border-border bg-card p-8 shadow-2xl">
+        <div className="w-full max-w-sm rounded-2xl border-[0.7px] border-border bg-card p-8 shadow-[0_8px_40px_-12px_rgba(20,23,29,0.12)]">
           <div className="space-y-1.5 mb-6">
-            <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            <h1 className="text-2xl font-bold tracking-tight text-foreground">
               Octopus
             </h1>
             <p className="text-sm text-muted-foreground">
@@ -56,7 +58,9 @@ function App() {
     );
   }
 
-  return <AuthenticatedApp sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />;
+  return (
+    <AuthenticatedApp sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+  );
 }
 
 function AuthenticatedApp({
@@ -71,22 +75,49 @@ function AuthenticatedApp({
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
 
+  const signOut = () => {
+    setToken("");
+    window.location.reload();
+  };
+
   return (
     <div className="app-layout">
-      <div className={`sidebar ${sidebarOpen ? "open" : ""}`}>
-        <SessionList />
-        <ScheduleList />
-        <CredentialList />
-        <button
-          className="btn-logout mt-auto w-full border-t border-border px-4 py-3 text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          onClick={() => {
-            setToken("");
-            window.location.reload();
-          }}
-        >
-          Logout
-        </button>
-      </div>
+      <aside
+        className={`sidebar ${sidebarOpen ? "open" : ""}`}
+        aria-label="Sidebar"
+      >
+        {/* Wordmark — vm0 has an org switcher here; we just brand it. */}
+        <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground text-sm font-bold">
+              O
+            </span>
+            <span className="truncate text-base font-bold text-sidebar-foreground">
+              Octopus
+            </span>
+          </div>
+          <button
+            type="button"
+            className="md:hidden inline-flex h-8 w-8 items-center justify-center rounded-lg text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+          >
+            <IconMenu2 size={18} />
+          </button>
+        </div>
+
+        {/* Scrollable middle: sessions / schedules / harness sections. */}
+        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-2 pt-1">
+          <SessionList />
+          <ScheduleList />
+          <CredentialList />
+        </nav>
+
+        {/* Account footer. */}
+        <div className="shrink-0 border-t border-sidebar-border p-2">
+          <AccountDropdown onSignOut={signOut} />
+        </div>
+      </aside>
 
       <div className="main-area">
         <ChatView
@@ -101,7 +132,10 @@ function AuthenticatedApp({
       </div>
 
       {sidebarOpen && (
-        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+        <div
+          className="sidebar-overlay"
+          onClick={() => setSidebarOpen(false)}
+        />
       )}
     </div>
   );
