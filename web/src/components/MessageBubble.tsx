@@ -13,7 +13,7 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content inline-block rounded-lg bg-primary px-4 py-3 text-sm text-primary-foreground whitespace-pre-wrap break-words">
+            <div className="msg-content inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground whitespace-pre-wrap break-words">
               {message.content}
             </div>
           </div>
@@ -48,7 +48,7 @@ export function MessageBubble({ message }: { message: Message }) {
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content msg-question-answer inline-block rounded-lg bg-primary/80 px-4 py-3 text-sm text-primary-foreground italic whitespace-pre-wrap break-words">
+            <div className="msg-content msg-question-answer inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground italic whitespace-pre-wrap break-words">
               {message.content}
             </div>
           </div>
