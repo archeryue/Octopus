@@ -82,8 +82,8 @@ body {
 }
 
 .sidebar {
-  width: 300px;
-  min-width: 300px;
+  width: 260px;
+  min-width: 260px;
   background-color: hsl(var(--sidebar));
   border-right: 0.7px solid hsl(var(--sidebar-border));
   display: flex;
@@ -175,7 +175,7 @@ body {
 @media (max-width: 768px) {
   .sidebar {
     position: absolute;
-    left: -300px;
+    left: -260px;
     top: 0;
     height: 100%;
     z-index: 100;

@@ -1,155 +1,56 @@
-# Steal Plan — vm0 → Octopus
-
-Concrete, ordered phases. Each phase is independently committable and
-verifiable. Stop after Phase 4 in this session; everything below it is
-queued and prioritized.
-
-## Why this exists
+# Steal Plan — vm0 → Octopus (status snapshot)
 
 vm0 (`/home/start-up/vm0`) is a polished, multi-tenant Claude sandbox
-platform we own. We've already pulled the OAuth-via-pure-Python pattern
-from it once (commit `37e4351`). The deeper UI / componentization /
-provider-abstraction patterns are still on the table, and the visual
-gap between the two products is doing the most damage to Octopus's
-"feels like shit" perception today.
+platform we own. This document tracks what we've lifted from it. All
+the phases below are landed; the residual work is a single deferred
+item and a list of things we deliberately did not copy.
 
-This plan picks what's worth stealing, in priority order, with file
-references back to vm0 for each one.
+## Done
 
----
+### Foundation (Phases 1 – 4)
+- Tailwind v4 with `@tailwindcss/vite`, `class-variance-authority`,
+  `clsx`, `tailwind-merge`, Radix Dialog/Slot/Label/DropdownMenu/
+  Tooltip, `@tabler/icons-react`. HSL semantic-token system in
+  `web/src/styles/tokens.css`; `cn()` helper in `web/src/lib/utils.ts`.
+- shadcn primitives: Button, Input, Label, Dialog, DropdownMenu
+  (copied verbatim from vm0).
+- Login screen + OAuth sign-in flow run on the new primitives
+  (Radix Dialog with `step 1: open URL` / `step 2: paste code`).
 
-## Phase 1 — UI foundation (Tailwind v4 + tokens + helpers)
-
-**Goal:** the styling system every later phase depends on, with zero UI
-change yet — old surfaces keep their `index.css` styles untouched.
-
-**Steal targets:**
-- `vm0/turbo/packages/ui/src/styles/globals.css` — the HSL semantic
-  token system (background, foreground, card, muted, border, primary,
-  accent, destructive, ring, radius) under `@theme`
-- `vm0/turbo/packages/ui/src/lib/utils.ts` — `cn()` helper
-
-**Deps to install:**
-- `tailwindcss@^4` + `@tailwindcss/vite`
-- `class-variance-authority`, `clsx`, `tailwind-merge`
-- `@radix-ui/react-dialog`, `@radix-ui/react-slot`, `@radix-ui/react-label`
-- `@tabler/icons-react`
-
-**Files touched:**
-- `web/package.json` — new deps
-- `web/vite.config.ts` — `@tailwindcss/vite` plugin
-- `web/src/styles/tokens.css` (new) — `@import "tailwindcss";` + `@theme` token block
-- `web/src/main.tsx` — import tokens.css alongside index.css
-- `web/src/lib/utils.ts` (new) — `cn()`
-
-**Verification:** tsc clean, vitest 8/8, Playwright 31/31 (no visible
-change — only foundation added).
-
-**Risk:** low. Additive only. If Tailwind's reset bites existing
-styles, we scope `@import` to `:not(.legacy)` selector or similar.
-
----
-
-## Phase 2 — shadcn primitives
-
-**Goal:** Button, Input, Label, Dialog, Card available as drop-in
-components.
-
-**Steal targets:**
-- `vm0/turbo/packages/ui/src/components/ui/button.tsx`
-- `vm0/turbo/packages/ui/src/components/ui/input.tsx`
-- `vm0/turbo/packages/ui/src/components/ui/label.tsx`
-- `vm0/turbo/packages/ui/src/components/ui/dialog.tsx`
-- `vm0/turbo/packages/ui/src/components/ui/card.tsx` (if present)
-
-Trim to what we use. Skip variants we don't need (e.g. `size="xl"`).
-
-**Files touched:** new files in `web/src/components/ui/`.
-
-**Verification:** components compile, tests still 31/31.
-
-**Risk:** low. Pure additions.
-
----
-
-## Phase 3 (pilot) — Login screen rewrite
-
-**Goal:** prove the new stack on the most isolated surface. If the
-login looks materially better, foundation is validated; we keep going.
-
-**File:** `web/src/App.tsx` (the `if (!token)` branch)
-
-Replace:
-- `.login-screen` (full-screen flex center, custom dark bg)
-- `.login-card` (custom padding/border)
-- `<input type="password" />` + `.btn-login`
-
-With:
-- Centered `<Card>` on `bg-background`
-- `<Label>Token</Label>` + `<Input type="password" />`
-- `<Button>Connect</Button>`
-
-Drop old CSS in same commit.
-
-**Verification:** Playwright login tests (3 in `app.spec.ts::Login`)
-still pass. tsc clean.
-
-**Risk:** medium — touches 1 user-facing surface. If selectors break
-in tests, fix in same commit.
-
----
-
-## Phase 4 — OAuth sign-in modal
-
-**Goal:** the OAuth flow is the worst-looking surface right now (cramped
-inline form in the sidebar). Move to a Radix Dialog with proper steps.
-
-**File:** `web/src/components/CredentialList.tsx`
-
-- "+" in Harness header opens `<Dialog>`
-- Step 1: device URL + copy button + "I've signed in →" CTA
-- Step 2: label + code paste field + "Finish" button
-- Status surfaces ("Exchanging code…", error states) live in dialog
-  footer
-
-Sidebar Harness section just shows the list of accounts + "+" trigger.
-
-**Verification:** new Playwright test for the dialog flow (mock
-`/oauth/start` + `/oauth/complete`). Existing OAuth start mock test
-adjusted to the new selectors.
-
-**Risk:** medium — touches the most-edited UI file.
-
----
-
-## Phase 5 — Verify + commit + push
-
-Run the full suite, commit each phase as its own commit, push.
-
----
-
-## Backlog (not in this session)
-
-Ordered by impact / effort ratio. Pull one at a time.
-
-### B-1 Sidebar polish migration
-Migrate `SessionList` / `ScheduleList` / `CredentialList` headers and
-items to shadcn primitives. Drop the per-section CSS in `index.css`.
+### B-1 Sidebar migration
+SessionList, ScheduleList, CredentialList all use vm0's section
+pattern (small uppercase header + chevron + hover, rounded-pill
+item rows with hover-revealed actions). All the per-section CSS in
+`index.css` is gone.
 
 ### B-2 ChatView + MessageBubble
-Tool blocks (collapsible JSON), result badges, error messages — all
-look technical-bare. Apply the new tokens + Card primitive.
+Header, input bar, empty state, queue, message bubbles, tool blocks,
+ToolApproval, QuestionPrompt all on Tailwind + shadcn. User bubble
+uses a white card with a primary-tinted border (not a dark fill).
+Tool name renders in primary blue; "Result" label renders in green,
+mirroring the destructive "Error" red.
 
-### B-3 Provider abstraction (backend) — DONE
-Done in `server/oauth_providers.py`. `OAuthProvider` Protocol +
-`ClaudeCodeProvider` concrete + `PROVIDERS` registry +
-`get_provider(name)` lookup. `OAuthLoginManager` is now
-provider-agnostic — it just calls `provider.build_authorize_url(...)`,
-`provider.exchange_code(...)`, `provider.mint_api_key(...)`. Adding a
-new provider (GitHub / Lark / Codex) is one new class + one registry
-entry.
+### B-3 OAuth provider abstraction
+`server/oauth_providers.py` — `OAuthProvider` Protocol + concrete
+`ClaudeCodeProvider` + `PROVIDERS` registry + `get_provider(name)`.
+`OAuthLoginManager` is now provider-agnostic. Adding GitHub / Lark /
+Codex is one new class + one registry entry.
 
-### B-6 Engineering hygiene — DONE
+### B-4 Credential storage split
+`credential_secrets(credential_id PK, secret_encrypted)` table holds
+the encrypted blob; `backend_credentials` holds metadata + new
+refresh-state columns (`status`, `token_expires_at`, `needs_reconnect`,
+`last_refresh_error_code`). `ON DELETE CASCADE` keeps secrets in sync.
+Legacy `secret_encrypted` column kept populated for back-compat reads.
+
+### B-5 Typed refresh-error codes
+`server/oauth_errors.py` defines `RefreshErrorCode`
+(`refresh_token_expired | refresh_token_reused |
+refresh_token_invalidated | refresh_token_other | network_error |
+unknown`). `CredentialInfo` surfaces the relevant fields so the UI
+can render "needs reconnect" once a refresh-token provider lands.
+
+### B-6 Engineering hygiene
 - `lefthook.yml` at repo root runs `tsc --noEmit` on staged
   `web/src/**/*.{ts,tsx}` and fast pytest on staged
   `{server,tests}/**/*.py`. Bootstrap via `scripts/setup-hooks.sh`.
@@ -157,30 +58,35 @@ entry.
   `web/src/api/contracts.ts` via `bun run generate:contracts`.
   Re-exported under stable names from `web/src/api/index.ts`.
 
+### Visual identity (vm0 wholesale steal)
+- Light theme with vm0's cool-gray scale + dark-blue primary
+  (`--primary-700 = #133E8B`).
+- Noto Sans (body) + JetBrains Mono (code), loaded from Google Fonts.
+- Sidebar 260px, hairline 0.7px borders, header bg matches sidebar
+  for a single chrome layer.
+- Octopus mark rendered inline as an SVG component (same path as
+  the favicon), brand blue on the sidebar.
+
+### Cascade-layer fix (the bug that hid the spacing for hours)
+The unlayered `* { padding: 0 }` in `index.css` won the cascade
+against every Tailwind `@layer`-scoped utility — every `px-*` /
+`py-*` / `m-*` / `gap-*` was silently dropped to 0. Wrapping the
+reset in `@layer base` lets utilities apply. Documented in
+`verify-first` memory.
+
+---
+
+## Deferred
+
 ### B-7 Settings dialog with tab nav
-Move per-section sidebar UI (Sessions / Schedules / Harness) into a
-single Settings dialog with internal tab nav. Pattern:
-`vm0/turbo/apps/platform/.../settings-dialog` (Radix Dialog +
-internal Sidebar). Reduces sidebar clutter, mobile-friendly.
+Originally: move the per-section sidebar UI (Sessions / Schedules /
+Harness) into a single Settings dialog with internal tab nav.
 
-### B-4 Credential storage split — DONE
-`credential_secrets` table holds the encrypted blob; `backend_credentials`
-holds metadata + new refresh-state columns (`status`,
-`token_expires_at`, `needs_reconnect`, `last_refresh_error_code`).
-`save_credential` writes to both, `load_credential` reads via a
-`COALESCE(s.secret_encrypted, c.secret_encrypted)` JOIN, `ON DELETE
-CASCADE` removes the secret row with the credential. Legacy column
-kept populated for back-compat readers. Surfacing of the new metadata
-fields in `CredentialInfo` ships in the same change.
-
-### B-5 Typed refresh-error codes — DONE
-`server/oauth_errors.py` defines `RefreshErrorCode`
-(`refresh_token_expired | refresh_token_reused |
-refresh_token_invalidated | refresh_token_other | network_error |
-unknown`). `last_refresh_error_code` on the credential row stores it.
-Claude Code's `sk-ant-` flow doesn't refresh today, so the column stays
-null in practice — the plumbing is in place for whichever provider
-(GitHub / Lark / Codex) brings the first refresh-token path.
+**Why deferred:** the current three-section sidebar was an explicit
+design choice; B-7 as originally written reverses it. If we want a
+Settings dialog later it should be *additive* — hold things that
+don't fit the sidebar (theme toggle, server URL, etc.) — not
+relocate what's already there.
 
 ---
 

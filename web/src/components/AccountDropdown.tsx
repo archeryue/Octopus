@@ -13,12 +13,14 @@ import {
  * token and a sign-out action. The dropdown gives it visual weight
  * without inventing concepts (orgs, profiles) we don't have. */
 export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
-  // Shorten the auth token for display — it's the only "identity" we have.
+  // The token IS the "username" for single-user mode. Show it whole so
+  // the user can scan it; CSS truncate only kicks in for tokens longer
+  // than the trigger row can fit.
   const token =
     typeof localStorage !== "undefined"
       ? localStorage.getItem("octopus_token") || ""
       : "";
-  const display = token ? `${token.slice(0, 4)}…${token.slice(-4)}` : "Octopus";
+  const display = token || "Octopus";
   const initial = (token[0] || "O").toUpperCase();
 
   return (
@@ -26,10 +28,10 @@ export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="btn-account flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-sidebar-accent transition-colors"
+          className="btn-account flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-sidebar-accent transition-colors"
           aria-label="Account menu"
         >
-          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary-200 text-primary-700 text-xs font-semibold">
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary-200 text-primary-700 text-xs font-semibold">
             {initial}
           </span>
           <span className="flex-1 min-w-0">
@@ -42,7 +44,7 @@ export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
           </span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent side="top" align="start" sideOffset={6} className="w-[240px] p-1">
+      <DropdownMenuContent side="top" align="start" sideOffset={6} className="w-[260px] p-1">
         <div className="px-2 py-2">
           <div className="flex items-center gap-2.5">
             <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary-200 text-primary-700 text-sm font-medium">
