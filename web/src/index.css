@@ -14,12 +14,18 @@
   --radius: 8px;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--gray-300)) transparent;
+/* Universal reset. Wrapped in `@layer base` so Tailwind v4's utility
+ * classes (which live in cascade layers) can still set padding/margin.
+ * Without the @layer wrapper, an unlayered universal rule beats every
+ * layered utility — Tailwind's px-* would silently no-op. */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--gray-300)) transparent;
+  }
 }
 
 *::-webkit-scrollbar {
