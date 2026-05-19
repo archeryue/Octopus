@@ -207,6 +207,23 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         resume_id: str | None,
         credential: BackendCredential | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
+        # Resolve the session's working_dir to an ABSOLUTE path before
+        # we hand it anywhere downstream. The MCP servers we spawn are
+        # grandchildren of the FastAPI process (FastAPI → claude →
+        # mcp_<name>), and each link inherits its parent's cwd. If we
+        # passed a relative path here, `Path(working_dir).resolve()` in
+        # the MCP server would resolve against the MCP subprocess's
+        # cwd — which is `claude`'s cwd, which is *itself* the
+        # already-resolved relative path. The viewer would then look up
+        # `/home/start-up/Octopus/Octopus`, which doesn't exist, and
+        # reject every path.
+        #
+        # Pinning to absolute here, against the FastAPI process's cwd
+        # (which is where session_manager originally constructed the
+        # relative path), gives us the path the user actually meant
+        # and immunizes us against any downstream cwd inheritance.
+        absolute_working_dir = str(Path(working_dir).resolve())
+
         # Inline MCP config registering our three in-process servers.
         # The CLI accepts JSON strings directly (per `claude --help`:
         # "Load MCP servers from JSON files or strings"). Tool names
@@ -238,7 +255,7 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
                         "command": sys.executable,
                         "args": ["-m", "server.mcp_servers.viewer"],
                         "env": {
-                            "OCTOPUS_WORKING_DIR": working_dir,
+                            "OCTOPUS_WORKING_DIR": absolute_working_dir,
                             "PYTHONPATH": _REPO_ROOT,
                         },
                     },
@@ -310,7 +327,11 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
                 # the CLI documents for headless subscription auth, and it
                 # also takes precedence over the on-disk credentials file.
                 env["CLAUDE_CODE_OAUTH_TOKEN"] = credential.secret
-        return argv, {"cwd": working_dir, "env": env}
+        # Pass the absolute working_dir as the subprocess cwd too —
+        # same reasoning as above. Avoids the CLI itself ever
+        # interpreting a relative path against an unexpected parent
+        # cwd.
+        return argv, {"cwd": absolute_working_dir, "env": env}
 
     async def send_initial_prompt(self, prompt: str) -> None:
         """No-op in VM0-shape: the prompt was passed as positional argv

@@ -190,6 +190,30 @@ def test_build_args_system_prompt_mentions_ask_user():
     assert "DISABLED" in sp or "disabled" in sp
 
 
+def test_build_args_resolves_relative_working_dir_to_absolute(tmp_path, monkeypatch):
+    """Relative working_dir must be resolved against FastAPI's cwd
+    BEFORE being handed to MCP env / subprocess cwd. Otherwise the
+    MCP server (a grandchild of FastAPI) resolves it against its own
+    inherited cwd, producing a doubled path like `/parent/Octopus/Octopus`
+    that doesn't exist. Production bug reproducer + regression test."""
+    import json
+
+    # Move the test's cwd to tmp_path so the relative `subdir` resolves
+    # to a known absolute. Use mkdir to make sure the directory exists.
+    real = tmp_path / "subdir"
+    real.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    backend = ClaudeCodeBackend(session_id="s")
+    argv, kwargs = backend.build_args("p", "subdir", None)
+
+    # Subprocess cwd should be absolute.
+    assert kwargs["cwd"] == str(real)
+    # Viewer MCP env should also carry the absolute path.
+    cfg = json.loads(argv[argv.index("--mcp-config") + 1])
+    assert cfg["mcpServers"]["viewer"]["env"]["OCTOPUS_WORKING_DIR"] == str(real)
+
+
 def test_build_args_passes_resume_id():
     backend = ClaudeCodeBackend()
     argv, _ = backend.build_args("p", "/tmp", "abc-123")
