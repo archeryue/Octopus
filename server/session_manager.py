@@ -15,6 +15,10 @@ from .attachments import (
     delete_session_attachments,
     get_path as get_attachment_path,
 )
+from .large_prompts import (
+    delete_session_large_prompts,
+    spill_if_large,
+)
 from .backends import BackendBase, BackendCredential, BackendEvent, ClaudeCodeBackend
 from .config import settings
 from .crypto import decrypt, encrypt
@@ -401,6 +405,7 @@ class SessionManager:
         # message rows pointing at them — if rmtree fails, the session
         # row is still gone, which is the user-visible expectation.
         delete_session_attachments(session_id)
+        delete_session_large_prompts(session_id)
         return True
 
     async def _persist_message(
@@ -668,8 +673,15 @@ class SessionManager:
                 backend_prompt, attachment_paths
             )
 
+            # Spill prompts that would blow Linux's MAX_ARG_STRLEN
+            # (~128 KB per argv element) to a per-session file and
+            # hand the backend a small pointer instead. Triggers most
+            # often on bg-task-result injection of large test-suite
+            # output. See server/large_prompts.py.
+            backend_dispatch_prompt = spill_if_large(session_id, augmented_prompt)
+
             try:
-                async for ws_event in self._run_backend(session, augmented_prompt):
+                async for ws_event in self._run_backend(session, backend_dispatch_prompt):
                     await self._broadcast(ws_event)
                     yield ws_event
             except Exception as e:
@@ -802,66 +814,155 @@ class SessionManager:
 
     # ------------------------------------------------------------------ backend run loop
 
+    # Max number of auto-respawn recoveries per logical turn. The CLI
+    # bug we're recovering from (docs/cli-resume-synthetic-pair.md) is
+    # bursty but not endlessly recurring on the same turn — one retry
+    # is the sweet spot between "rescue the common case" and "don't
+    # loop forever burning tokens on a genuinely broken state."
+    _MAX_RECOVERY_ATTEMPTS = 1
+
     async def _run_backend(
         self, session: Session, prompt: str
     ) -> AsyncIterator[dict[str, Any]]:
-        """Drive one turn through the configured backend, translating each
-        BackendEvent into a (persist, broadcast) pair."""
+        """Drive one logical turn through the backend, recovering from
+        CLI premature-exit-after-tool-roundtrip if it fires.
 
-        backend = self._make_backend(session)
-        session._backend = backend
+        Each iteration of the outer loop is one CLI invocation. The
+        loop normally runs exactly once and exits after a `result`
+        event. If the CLI exits silently after emitting a `tool_use`
+        without ever delivering `result` (the bug documented in
+        docs/cli-resume-synthetic-pair.md), we respawn it with the
+        same resume id and a `"continue"` prompt to let the model
+        produce the missing follow-up. Bounded by
+        _MAX_RECOVERY_ATTEMPTS so a genuinely broken state can't loop.
+        """
 
         credential = await self._resolve_credential(session)
+        current_prompt = prompt
+        recovery_attempts = 0
 
-        try:
-            await backend.start(
-                prompt,
-                session.working_dir,
-                session.claude_session_id,
-                credential=credential,
-            )
+        while True:
+            backend = self._make_backend(session)
+            session._backend = backend
+            saw_result = False
+            saw_tool_use = False
 
-            async for event in backend.stream():
-                # Persist whichever message shape this event maps to. The
-                # returned seq goes onto the WS event so reconnecting
-                # clients can dedupe against their snapshot.
-                msg_content = self._event_to_message_content(event)
-                msg_seq: int | None = None
-                if msg_content is not None:
-                    msg_seq = await self._persist_message(session, msg_content)
-
-                # Track pending question state for reconnect re-render
-                if event.type == "question_request" and event.tool_use_id:
-                    questions = (
-                        (event.tool_input or {}).get("questions") or []
-                    )
-                    session._pending_questions[event.tool_use_id] = PendingQuestion(
-                        question_id=event.tool_use_id,
-                        questions=questions,
-                    )
-                    self._schedule_question_timeout(session, event.tool_use_id)
-
-                # Update resume id when result arrives
-                if event.type == "result":
-                    if event.session_id:
-                        session.claude_session_id = event.session_id
-                        if self.db:
-                            await self.db.update_session_field(
-                                session.id, claude_session_id=event.session_id
-                            )
-
-                # Translate into the WS message shape the front-end expects
-                ws_event = self._event_to_ws_message(session.id, event)
-                if ws_event is not None:
-                    if msg_seq is not None:
-                        ws_event["seq"] = msg_seq
-                    yield ws_event
-        finally:
             try:
-                await backend.stop()
-            except Exception:
-                logger.exception("backend.stop() failed cleanly for session %s", session.id)
-            session._backend = None
+                await backend.start(
+                    current_prompt,
+                    session.working_dir,
+                    session.claude_session_id,
+                    credential=credential,
+                )
+
+                async for event in backend.stream():
+                    # session_started arrives on the CLI's init event,
+                    # before any tool work. Persist the resume id
+                    # immediately so the recovery path below can use
+                    # it even if the bug suppresses `result`.
+                    if event.type == "session_started" and event.session_id:
+                        if session.claude_session_id != event.session_id:
+                            session.claude_session_id = event.session_id
+                            if self.db:
+                                await self.db.update_session_field(
+                                    session.id, claude_session_id=event.session_id
+                                )
+                        # Internal event — don't persist or broadcast.
+                        continue
+
+                    if event.type == "tool_use":
+                        saw_tool_use = True
+
+                    # Persist whichever message shape this event maps to. The
+                    # returned seq goes onto the WS event so reconnecting
+                    # clients can dedupe against their snapshot.
+                    msg_content = self._event_to_message_content(event)
+                    msg_seq: int | None = None
+                    if msg_content is not None:
+                        msg_seq = await self._persist_message(session, msg_content)
+
+                    # Track pending question state for reconnect re-render
+                    if event.type == "question_request" and event.tool_use_id:
+                        questions = (
+                            (event.tool_input or {}).get("questions") or []
+                        )
+                        session._pending_questions[event.tool_use_id] = PendingQuestion(
+                            question_id=event.tool_use_id,
+                            questions=questions,
+                        )
+                        self._schedule_question_timeout(session, event.tool_use_id)
+
+                    # Update resume id when result arrives (in case the
+                    # CLI reissued a different one mid-stream).
+                    if event.type == "result":
+                        saw_result = True
+                        if event.session_id and session.claude_session_id != event.session_id:
+                            session.claude_session_id = event.session_id
+                            if self.db:
+                                await self.db.update_session_field(
+                                    session.id, claude_session_id=event.session_id
+                                )
+
+                    # Translate into the WS message shape the front-end expects
+                    ws_event = self._event_to_ws_message(session.id, event)
+                    if ws_event is not None:
+                        if msg_seq is not None:
+                            ws_event["seq"] = msg_seq
+                        yield ws_event
+            finally:
+                try:
+                    await backend.stop()
+                except Exception:
+                    logger.exception(
+                        "backend.stop() failed cleanly for session %s", session.id
+                    )
+                session._backend = None
+
+            # Decide whether to recover. The bug signature is:
+            # CLI exited without a `result` event AFTER emitting a
+            # `tool_use`. Anything else (a clean turn, an immediate
+            # crash with no tool use, a turn we've already retried
+            # once) — leave it alone.
+            if saw_result:
+                return
+            if recovery_attempts >= self._MAX_RECOVERY_ATTEMPTS:
+                logger.warning(
+                    "Session %s: CLI premature-exit retry budget exhausted; "
+                    "giving up on this turn", session.id
+                )
+                return
+            if not saw_tool_use:
+                return
+            if not session.claude_session_id:
+                # No resume id captured (init never arrived) — we can't
+                # respawn into the same conversation.
+                return
+
+            recovery_attempts += 1
+            logger.warning(
+                "Session %s: detected CLI premature-exit after tool_use; "
+                "auto-respawning with 'continue' (attempt %d/%d)",
+                session.id, recovery_attempts, self._MAX_RECOVERY_ATTEMPTS,
+            )
+            # Persist a discreet system marker so the UI / transcript
+            # records that a recovery happened. Uses the same shape as
+            # the (interrupted by user) marker in interrupt().
+            marker = MessageContent(
+                role=MessageRole.system,
+                type="error",
+                content="(auto-resumed after CLI exited mid-turn)",
+            )
+            marker_seq = await self._persist_message(session, marker)
+            marker_event: dict[str, Any] = {
+                "type": "error",
+                "session_id": session.id,
+                "message": "(auto-resumed after CLI exited mid-turn)",
+            }
+            if marker_seq is not None:
+                marker_event["seq"] = marker_seq
+            yield marker_event
+
+            current_prompt = "continue"
 
     def _make_backend(self, session: Session) -> BackendBase:
         """Instantiate the backend for a session. Currently only Claude Code.

@@ -70,10 +70,11 @@ async def test_simple_hello_emits_text_then_result(tmp_path):
     events = await asyncio.wait_for(_drain(backend.stream()), timeout=5.0)
     await backend.stop()
 
-    assert [e.type for e in events] == ["text", "result"]
-    assert events[0].content == "Hello back."
-    assert events[1].session_id == "11111111-1111-1111-1111-111111111111"
-    assert events[1].cost == 0.001
+    assert [e.type for e in events] == ["session_started", "text", "result"]
+    assert events[0].session_id == "11111111-1111-1111-1111-111111111111"
+    assert events[1].content == "Hello back."
+    assert events[2].session_id == "11111111-1111-1111-1111-111111111111"
+    assert events[2].cost == 0.001
 
 
 @pytest.mark.asyncio
@@ -85,15 +86,39 @@ async def test_tool_use_then_tool_result_then_text(tmp_path):
     await backend.stop()
 
     types = [e.type for e in events]
-    assert types == ["tool_use", "tool_result", "text", "result"]
-    tu = events[0]
+    # session_started is surfaced on init so the recovery path in
+    # session_manager has a resume id even when `result` never lands.
+    assert types == ["session_started", "tool_use", "tool_result", "text", "result"]
+    sess = events[0]
+    assert sess.session_id == "11111111-1111-1111-1111-111111111111"
+    tu = events[1]
     assert tu.tool_name == "Bash"
     assert tu.tool_input == {"command": "echo hi"}
     assert tu.tool_use_id == "toolu_xyz"
-    tr = events[1]
+    tr = events[2]
     assert tr.tool_use_id == "toolu_xyz"
     assert tr.content == "hi"
     assert tr.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_premature_exit_after_tool_emits_no_result(tmp_path):
+    """Reproduce the CLI bug from docs/cli-resume-synthetic-pair.md:
+    after a tool roundtrip the CLI exits without emitting `result`.
+    The backend should expose this as a session_started + tool_use +
+    tool_result sequence with NO `result` event — leaving recovery
+    to the session_manager layer."""
+    backend = _ScriptedClaudeCodeBackend("premature-exit-after-tool")
+    await backend.start("read a big file", str(tmp_path))
+
+    events = await asyncio.wait_for(_drain(backend.stream()), timeout=5.0)
+    await backend.stop()
+
+    types = [e.type for e in events]
+    assert types == ["session_started", "tool_use", "tool_result"]
+    assert events[0].session_id == "11111111-1111-1111-1111-111111111111"
+    assert events[1].tool_use_id == "toolu_premature"
+    assert events[2].tool_use_id == "toolu_premature"
 
 
 # ---------------------------------------------------------------------------

@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 # Sentinel pushed onto the event queue to signal EOF on the stdout reader.
 _STREAM_END = object()
 
+# Per-line buffer cap for the asyncio StreamReader wrapping the CLI's
+# stdout. Default in asyncio is 64 KiB, which is *very* easy for the
+# Claude CLI to exceed in a single stream-json event — e.g. a
+# `user` event carrying a tool_result for a Read of a 100 KB+ file
+# produces a single 100 KB+ line. When the line exceeds the limit
+# without a newline, asyncio raises LimitOverrunError → ValueError,
+# which crashes the stdout reader and tears down the turn. Set this
+# generously (4 MiB) so anything short of pathological emits cleanly;
+# real backpressure on the pipe still keeps memory bounded.
+_STDOUT_LINE_LIMIT_BYTES = 4 * 1024 * 1024
+
 
 def _which_with_fallback(binary: str) -> str | None:
     """shutil.which, then retry against PATH + common per-user install dirs.
@@ -130,6 +141,12 @@ class SubprocessJsonlBackend(BackendBase):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Raise the per-line buffer cap from asyncio's 64 KiB
+            # default; otherwise a single oversized stream-json event
+            # (typically a tool_result carrying a big Read output)
+            # crashes the reader with LimitOverrunError. See
+            # _STDOUT_LINE_LIMIT_BYTES above.
+            limit=_STDOUT_LINE_LIMIT_BYTES,
             **kwargs,
         )
         self._stdout_task = asyncio.create_task(

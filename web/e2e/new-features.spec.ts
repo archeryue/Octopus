@@ -31,6 +31,8 @@ const OWNED_NAMES = new Set([
   "Q Auto Answer",
   "Reset Slash Cmd",
   "Bg Run E2E",
+  "Bg Spill Pipeline",
+  "Bg Idle Watchdog",
 ]);
 
 test.afterAll(async ({ request }) => {
@@ -1638,6 +1640,94 @@ test.describe("Cross-turn bg tasks", () => {
       await expect(
         page.locator(".msg-assistant .msg-content").last()
       ).toContainText(SENTINEL, { timeout: 60_000 });
+    } finally {
+      fs.rmSync(wd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bg-task pipeline hardening (2026-05-18 work). Three things to prove end-
+// to-end against the real Claude CLI + real bg worker:
+//   * A bg task whose captured output exceeds the spill threshold
+//     (~100 KB) is delivered to the model as an [octopus-large-prompt]
+//     pointer, NOT inline — so execve never sees an oversized argv.
+//   * A bg task that produces output and then goes silent past the idle
+//     watchdog threshold lands with status=`interrupted` (chip label
+//     reflects it), not `failed -15`.
+// The auto-respawn fix for CLI premature-exit-after-tool-use is covered
+// by unit tests; e2e can't reliably synthesize that race against the
+// real CLI within a test's wall-clock budget.
+// ---------------------------------------------------------------------------
+
+test.describe("Bg-task pipeline hardening", () => {
+  test.setTimeout(180_000);
+
+  test("large bg output is delivered to the model via spill pointer", async ({
+    page,
+    request,
+  }) => {
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), "octopus-bg-spill-"));
+    // Sentinel small enough that, if the model echoes it back, we
+    // know it actually Read the spilled file (the pointer prompt
+    // itself doesn't contain the sentinel).
+    const SENTINEL = "SPILL-OK-83472";
+    try {
+      const sessRes = await request.post(`${API}/sessions`, {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        data: { name: "Bg Spill Pipeline", working_dir: wd },
+      });
+      expect(sessRes.ok()).toBeTruthy();
+
+      await login(page);
+      await page
+        .locator(".session-item .session-name", { hasText: "Bg Spill Pipeline" })
+        .click();
+      await expect(page.locator(".chat-header h3")).toHaveText(
+        "Bg Spill Pipeline"
+      );
+
+      // Python one-liner that prints ~120 KB of filler followed by the
+      // sentinel. 120 KB > LARGE_PROMPT_THRESHOLD_BYTES (100 KB) so
+      // the bg-task-result prompt MUST be spilled to a file.
+      const prompt =
+        "Use the mcp__bg__run tool RIGHT NOW with " +
+        "command='python3 -c \"print(\\\"X\\\"*120000); print(\\\"" +
+        SENTINEL +
+        "\\\")\"' and description='spill probe'. After calling it, " +
+        "say 'started' and end your turn. When the follow-up " +
+        "bg-task-result arrives, follow its instructions to Read the " +
+        `referenced file, then reply with the line containing '${SENTINEL}'.`;
+      await page.locator(".chat-input-bar textarea").fill(prompt);
+      await page.locator("button.btn-send").click();
+
+      // Chip eventually flips to completed — proves no E2BIG at spawn
+      // (the pre-spill argv path would have crashed execve here).
+      const chip = page.locator(".octo-bgtask-chip").first();
+      await expect(chip).toBeVisible({ timeout: 90_000 });
+      await expect(chip).toContainText(/bg · completed/i, { timeout: 60_000 });
+
+      // The injected user-turn message renders as .msg-bg-result.
+      // Note: by design, persistence keeps the *original* user
+      // message body (the 120 KB framed result) so chat history is
+      // faithful to what the user "sent". The pointer is only what
+      // the backend CLI sees — the frontend sees the full content
+      // (possibly truncated to first line by the UI).
+      const bgResult = page.locator(".msg-bg-result").first();
+      await expect(bgResult).toBeVisible({ timeout: 60_000 });
+
+      // The model received the spill pointer (NOT the 120 KB inline),
+      // Read the file as instructed, and surfaced the sentinel — this
+      // is the load-bearing claim: a prompt over MAX_ARG_STRLEN
+      // round-trips through the bg pipeline without E2BIG and the
+      // model still produces a coherent reply tied to the captured
+      // output.
+      await expect(
+        page.locator(".msg-assistant .msg-content").last()
+      ).toContainText(SENTINEL, { timeout: 90_000 });
     } finally {
       fs.rmSync(wd, { recursive: true, force: true });
     }

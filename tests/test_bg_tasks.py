@@ -131,6 +131,122 @@ async def test_failing_command_records_failure(manager, db, tmp_path):
     assert delivered.exit_code == 7
 
 
+async def test_idle_watchdog_terminates_proc_that_goes_silent(
+    manager, db, tmp_path, monkeypatch
+):
+    """A command that produces output and then goes silent while
+    still alive (the pytest-atexit hang we hit in the field) must
+    be force-terminated by the idle watchdog rather than camp on
+    the chip until the 30-min wall-clock timeout fires.
+
+    Tightens IDLE_AFTER_OUTPUT_TIMEOUT_SECS so the test takes
+    seconds instead of a minute.
+    """
+    import sys
+
+    from server import bg_tasks as bgm
+
+    monkeypatch.setattr(bgm, "IDLE_AFTER_OUTPUT_TIMEOUT_SECS", 2)
+    monkeypatch.setattr(bgm, "IDLE_CHECK_INTERVAL_SECS", 1)
+
+    await _make_session_row(db, "s1", str(tmp_path))
+    # Print one line, then sleep — simulates the atexit-hang shape
+    # (visible work done, process won't return).
+    cmd = (
+        f"{sys.executable} -c "
+        "\"import sys, time; print('hello', flush=True); time.sleep(30)\""
+    )
+    start = asyncio.get_running_loop().time()
+    rec = await manager.start_task(
+        session_id="s1",
+        command=cmd,
+        working_dir=str(tmp_path),
+    )
+    await _wait_for(
+        lambda: any(d.id == rec.id for d in manager._delivered_),
+        timeout=20.0,
+    )
+    elapsed = asyncio.get_running_loop().time() - start
+    delivered = next(d for d in manager._delivered_ if d.id == rec.id)
+    assert delivered.status == "interrupted", (
+        f"idle watchdog should label this 'interrupted', got {delivered.status!r} "
+        f"(exit_code={delivered.exit_code})"
+    )
+    assert delivered.exit_code is not None and delivered.exit_code < 0
+    # Should kill well before the 30s sleep completes.
+    assert elapsed < 10.0, f"watchdog took too long: {elapsed:.1f}s"
+    # The output we printed before going silent must be preserved.
+    assert "hello" in delivered.stdout
+
+
+async def test_idle_watchdog_does_not_fire_on_quiet_short_command(
+    manager, db, tmp_path, monkeypatch
+):
+    """A command that never produces output (e.g. `sleep N`) must
+    NOT be considered idle — the idle clock only starts after the
+    first byte. Otherwise the watchdog would kill legitimate quiet
+    tasks unfairly."""
+    from server import bg_tasks as bgm
+
+    monkeypatch.setattr(bgm, "IDLE_AFTER_OUTPUT_TIMEOUT_SECS", 1)
+    monkeypatch.setattr(bgm, "IDLE_CHECK_INTERVAL_SECS", 1)
+
+    await _make_session_row(db, "s1", str(tmp_path))
+    # 3-second silent sleep — would be killed at ~1s if the watchdog
+    # incorrectly treated "no output yet" as idle.
+    rec = await manager.start_task(
+        session_id="s1",
+        command="sleep 3",
+        working_dir=str(tmp_path),
+    )
+    await _wait_for(
+        lambda: any(d.id == rec.id for d in manager._delivered_),
+        timeout=10.0,
+    )
+    delivered = next(d for d in manager._delivered_ if d.id == rec.id)
+    assert delivered.status == "completed", (
+        f"quiet command should complete naturally, got {delivered.status!r} "
+        f"(exit_code={delivered.exit_code})"
+    )
+    assert delivered.exit_code == 0
+
+
+async def test_external_sigterm_yields_interrupted_status(manager, db, tmp_path):
+    """Externally SIGTERMing the bg process group (i.e. not via
+    cancel_task / shutdown / timeout — simulating uvicorn --reload,
+    systemd KillMode=control-group, or an outside `pkill`) must be
+    surfaced as `interrupted`, NOT `failed`. The latter mis-labels
+    "something killed us" as "the command itself failed", which is
+    what we hit on pytest runs that completed successfully and then
+    got SIGTERMed.
+    """
+    import os
+    import signal as _signal
+
+    await _make_session_row(db, "s1", str(tmp_path))
+    rec = await manager.start_task(
+        session_id="s1",
+        command="sleep 30",
+        working_dir=str(tmp_path),
+    )
+    # Wait until the manager actually has the proc tracked.
+    await _wait_for(lambda: rec.id in manager._running)
+    rt = manager._running[rec.id]
+    pgid = os.getpgid(rt.proc.pid)
+    # External signal — does NOT touch cancel_task / shutdown /
+    # timeout. _run_task's flags stay False, so the new branch is the
+    # only thing that can label this correctly.
+    os.killpg(pgid, _signal.SIGTERM)
+
+    await _wait_for(lambda: any(d.id == rec.id for d in manager._delivered_))
+    delivered = next(d for d in manager._delivered_ if d.id == rec.id)
+    assert delivered.status == "interrupted", (
+        f"externally-signaled task should be 'interrupted', got {delivered.status!r} "
+        f"(exit_code={delivered.exit_code})"
+    )
+    assert delivered.exit_code is not None and delivered.exit_code < 0
+
+
 async def test_cancel_running_task(manager, db, tmp_path):
     await _make_session_row(db, "s1", str(tmp_path))
     rec = await manager.start_task(

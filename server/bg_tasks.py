@@ -55,6 +55,18 @@ MAX_STREAM_BYTES = 200 * 1024
 # 5 s later if it doesn't respect TERM.
 DEFAULT_TIMEOUT_SECONDS = 30 * 60  # 30 min
 
+# Idle watchdog: how long a command may remain silent on stdio after
+# it has produced *some* output before we conclude it's wedged and
+# force-terminate. 60 s is loose enough that a slow test suite with
+# multi-second quiet phases (e.g. Playwright trace assembly, Cargo
+# linker) isn't cut short, but tight enough that the pytest-atexit
+# hang we hit doesn't camp the chip for 6+ minutes.
+IDLE_AFTER_OUTPUT_TIMEOUT_SECS = 60
+# How often the watchdog checks the idle clock. Small enough that
+# detection is prompt once the threshold is crossed, large enough to
+# avoid wakeup churn on a busy event loop.
+IDLE_CHECK_INTERVAL_SECS = 5
+
 
 # Callback type the manager invokes when a task reaches a terminal state.
 # Wired up by main.py lifespan; lets bg_tasks stay decoupled from
@@ -345,10 +357,21 @@ class BgTaskManager:
         assert self._db is not None
         proc = rt.proc
 
+        # Tracks the wall-clock time of the most recent byte we read
+        # on either stdio pipe. Read by the idle watchdog below to
+        # decide whether the command has gone quiet for too long. We
+        # set `first_byte_at` on the first byte so commands that
+        # legitimately produce no output (e.g. `sleep 300`) are not
+        # killed by the idle rule.
+        import time
+        last_byte_at = time.monotonic()
+        first_byte_seen = False
+
         # Track truncation on rt directly — the reader fires concurrently,
         # may be cancelled mid-flight, and we'd lose a local return value
         # in those paths. Setting on rt is the load-bearing channel.
         async def reader(stream, buf: bytearray, which: str) -> None:
+            nonlocal last_byte_at, first_byte_seen
             while True:
                 # Read in chunks so we can keep buf bounded without
                 # waiting for EOF. 8 KB is the typical pipe block size.
@@ -356,6 +379,8 @@ class BgTaskManager:
                 if not chunk:
                     return
                 buf.extend(chunk)
+                last_byte_at = time.monotonic()
+                first_byte_seen = True
                 if len(buf) > MAX_STREAM_BYTES:
                     # Drop the oldest bytes; keep the tail.
                     drop = len(buf) - MAX_STREAM_BYTES
@@ -370,13 +395,53 @@ class BgTaskManager:
             asyncio.create_task(reader(proc.stderr, rt.stderr_buf, "stderr")),
         ]
 
+        # Idle watchdog: if the proc has produced *any* output and
+        # then goes quiet for IDLE_AFTER_OUTPUT_SECS while still alive,
+        # SIGTERM the pgrp. Catches the wedge we hit on pytest runs
+        # where the command's visible work is done but the process
+        # won't actually return to the OS (e.g. atexit hangs on
+        # aiosqlite worker threads — see commit history). Mirrors VM0's
+        # pattern of arming a forced-termination grace on a protocol
+        # signal (vm0/crates/guest-agent/src/cli/termination.rs); here
+        # "stdout silence after first byte" is the protocol signal we
+        # have available, since the bg command isn't an LLM and won't
+        # emit a `type=result` event.
+        async def idle_watchdog() -> None:
+            while proc.returncode is None:
+                await asyncio.sleep(IDLE_CHECK_INTERVAL_SECS)
+                if not first_byte_seen:
+                    # The command may legitimately be quiet (e.g.
+                    # `sleep 60` with no output). Don't apply the
+                    # idle rule until we've seen at least one byte.
+                    continue
+                idle_for = time.monotonic() - last_byte_at
+                if idle_for > IDLE_AFTER_OUTPUT_TIMEOUT_SECS and proc.returncode is None:
+                    logger.warning(
+                        "bg task %s: idle watchdog tripped — proc silent "
+                        "for %.1fs after producing output (>%.0fs threshold), "
+                        "SIGTERMing pgid",
+                        rt.record.id, idle_for, IDLE_AFTER_OUTPUT_TIMEOUT_SECS,
+                    )
+                    # Don't set cancel_requested — this is a force-
+                    # cleanup, not a user cancel. The status mapping
+                    # in finally will land on "interrupted" because
+                    # the proc gets killed by signal.
+                    await self._terminate_proc(rt)
+                    return
+
+        idle_task = asyncio.create_task(
+            idle_watchdog(), name=f"bg-{rt.record.id}-idle-watchdog"
+        )
+
         timed_out = False
         try:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
             except asyncio.TimeoutError:
                 timed_out = True
-                logger.warning("bg task %s timed out after %ds", rt.record.id, timeout_seconds)
+                logger.warning(
+                    "bg task %s timed out after %ds", rt.record.id, timeout_seconds
+                )
                 rt.cancel_requested = False  # distinct from user-initiated cancel
                 await self._terminate_proc(rt)
                 try:
@@ -403,6 +468,16 @@ class BgTaskManager:
             raise
 
         finally:
+            # Stop the idle watchdog regardless of how we got here.
+            # If proc already exited it's a no-op; if we're cleaning up
+            # after the watchdog itself triggered, this cancels the
+            # already-returned task (no-op).
+            idle_task.cancel()
+            try:
+                await idle_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
             # The reader set {stdout,stderr}_truncated when it had to
             # drop head bytes — finalize stamps a visible marker on
             # those streams so the model knows it's seeing the tail.
@@ -410,14 +485,44 @@ class BgTaskManager:
             stderr_bytes = _finalize_stream(rt.stderr_buf, rt.stderr_truncated)
 
             exit_code = proc.returncode
+            # Negative returncode == process was killed by signal
+            # (|returncode| is the signal number). Tells us whether
+            # we should distinguish "interrupted by an outside force"
+            # from "the command itself ran and exited non-zero", since
+            # those are very different user-facing things.
+            killed_by_signal = exit_code is not None and exit_code < 0
             if rt.cancel_requested:
                 status = "cancelled"
             elif timed_out:
                 status = "failed"  # surface timeout as failure; output explains
             elif exit_code == 0:
                 status = "completed"
+            elif killed_by_signal:
+                # Process died from a SIGTERM/SIGKILL we did not
+                # initiate (none of our paths reach here without
+                # setting cancel_requested or timed_out first).
+                # That's most often the FastAPI server itself being
+                # restarted (uvicorn --reload, systemd KillMode=
+                # control-group, manual `pkill uvicorn`, etc.) — the
+                # bg shell inherits the SIGTERM via process-group
+                # propagation even though our own start_new_session=
+                # True normally isolates it. Label as "interrupted"
+                # so the chip doesn't claim the *command* failed;
+                # the user can read the captured stdout to see
+                # whatever the command printed before dying.
+                status = "interrupted"
             else:
                 status = "failed"
+            # Persistent breadcrumb — next time this fires, the log
+            # tells us exactly which branch we hit and why.
+            logger.info(
+                "bg task %s terminal state: status=%s exit_code=%s "
+                "cancel_requested=%s timed_out=%s killed_by_signal=%s "
+                "stdout_bytes=%d stderr_bytes=%d",
+                rt.record.id, status, exit_code,
+                rt.cancel_requested, timed_out, killed_by_signal,
+                len(stdout_bytes), len(stderr_bytes),
+            )
 
             stdout_str = stdout_bytes.decode("utf-8", errors="replace")
             stderr_str = stderr_bytes.decode("utf-8", errors="replace")
@@ -478,6 +583,13 @@ class BgTaskManager:
         try:
             import os
             pgid = os.getpgid(proc.pid)
+            # Audit trail: which path called the SIGTERM, and on what
+            # task. Pairs with the terminal-state log line so the
+            # forensics for an "exit -15" task are local to this file.
+            logger.info(
+                "bg task %s: SIGTERM pgid=%s cancel_requested=%s",
+                rt.record.id, pgid, rt.cancel_requested,
+            )
             os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             return

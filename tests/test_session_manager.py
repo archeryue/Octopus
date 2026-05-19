@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -890,6 +891,231 @@ async def test_run_backend_translates_events_end_to_end(manager):
 
     # Resume id was persisted
     assert session.claude_session_id == "claude-sid-1"
+
+
+# ---------------------------------------------------------------------------
+# Auto-respawn on CLI premature exit (docs/cli-resume-synthetic-pair.md)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
+    """If the CLI exits after a tool roundtrip without ever emitting a
+    `result` event, _run_backend should respawn the backend exactly
+    once with prompt='continue' and the captured resume id, then
+    surface the events from the recovery turn."""
+    from server.backends import BackendBase, BackendEvent
+
+    session = await manager.create_session("Recovery")
+
+    # Invocation 1: init → tool_use → tool_result, then CLI dies
+    # (no `result`). Invocation 2: text → result. The model "finishes"
+    # what it owed us after the continue nudge.
+    invocations: list[dict[str, Any]] = []
+
+    class FlakyBackend(BackendBase):
+        name = "flaky"
+
+        def __init__(self, events: list[BackendEvent]) -> None:
+            self._events = events
+            self.started_with: dict[str, Any] | None = None
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            self.started_with = {
+                "prompt": prompt,
+                "working_dir": working_dir,
+                "resume_id": resume_id,
+            }
+            invocations.append(self.started_with)
+
+        def stream(self):
+            async def _gen():
+                for e in self._events:
+                    yield e
+            return _gen()
+
+        async def stop(self):
+            pass
+
+    backends_iter = iter([
+        FlakyBackend([
+            BackendEvent(type="session_started", session_id="claude-sid-recover"),
+            BackendEvent(
+                type="tool_use",
+                tool_name="Read",
+                tool_input={"file_path": "/big.md"},
+                tool_use_id="tu1",
+            ),
+            BackendEvent(
+                type="tool_result", content="...", tool_use_id="tu1", is_error=False
+            ),
+            # No `result` — this is the bug.
+        ]),
+        FlakyBackend([
+            BackendEvent(type="session_started", session_id="claude-sid-recover"),
+            BackendEvent(type="text", content="continuing where I left off"),
+            BackendEvent(
+                type="result",
+                session_id="claude-sid-recover",
+                cost=0.02,
+                num_turns=2,
+            ),
+        ]),
+    ])
+
+    manager._make_backend = lambda s: next(backends_iter)  # type: ignore[method-assign,assignment]
+
+    ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
+    types = [m["type"] for m in ws_msgs]
+
+    # First invocation's events, then a recovery marker, then the
+    # second invocation's events. session_started is internal-only and
+    # does not appear in the broadcast stream.
+    assert types == ["tool_use", "tool_result", "error", "assistant_text", "result"]
+    assert ws_msgs[2]["message"] == "(auto-resumed after CLI exited mid-turn)"
+    assert ws_msgs[3]["content"] == "continuing where I left off"
+    assert ws_msgs[4]["claude_session_id"] == "claude-sid-recover"
+
+    # Exactly two CLI invocations, the second with prompt="continue"
+    # and the resume id captured from the first invocation's init.
+    assert len(invocations) == 2
+    assert invocations[0]["prompt"] == "go"
+    assert invocations[0]["resume_id"] is None
+    assert invocations[1]["prompt"] == "continue"
+    assert invocations[1]["resume_id"] == "claude-sid-recover"
+    assert session.claude_session_id == "claude-sid-recover"
+
+
+@pytest.mark.asyncio
+async def test_run_backend_bounds_recovery_to_single_retry(manager):
+    """If the second CLI invocation also exits prematurely after a
+    tool roundtrip, give up rather than loop forever. The retry
+    budget is one — after that the turn ends without a `result`."""
+    from server.backends import BackendBase, BackendEvent
+
+    session = await manager.create_session("BoundedRecovery")
+
+    invocations: list[dict[str, Any]] = []
+
+    def make_flaky_events() -> list[BackendEvent]:
+        return [
+            BackendEvent(type="session_started", session_id="claude-sid-stuck"),
+            BackendEvent(
+                type="tool_use",
+                tool_name="Read",
+                tool_input={"file_path": "/big.md"},
+                tool_use_id="tu",
+            ),
+            BackendEvent(
+                type="tool_result", content="...", tool_use_id="tu", is_error=False
+            ),
+            # No `result` — bug fires every time.
+        ]
+
+    class AlwaysFlakyBackend(BackendBase):
+        name = "always-flaky"
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            invocations.append({"prompt": prompt, "resume_id": resume_id})
+
+        def stream(self):
+            async def _gen():
+                for e in make_flaky_events():
+                    yield e
+            return _gen()
+
+        async def stop(self):
+            pass
+
+    manager._make_backend = lambda s: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
+
+    ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
+
+    # Exactly 2 invocations: original + 1 retry. No third attempt.
+    assert len(invocations) == 2
+    assert invocations[0]["prompt"] == "go"
+    assert invocations[1]["prompt"] == "continue"
+
+    # Events from both invocations are surfaced, with the recovery
+    # marker between them. No final `result` event since the recovery
+    # also failed — the turn just ends.
+    types = [m["type"] for m in ws_msgs]
+    assert types == ["tool_use", "tool_result", "error", "tool_use", "tool_result"]
+    assert ws_msgs[2]["message"] == "(auto-resumed after CLI exited mid-turn)"
+
+
+@pytest.mark.asyncio
+async def test_run_backend_does_not_respawn_on_clean_exit(manager):
+    """A turn that ends with a `result` event is healthy — no
+    recovery should fire even if it included tool calls."""
+    from server.backends import BackendBase, BackendEvent
+
+    session = await manager.create_session("CleanExit")
+
+    invocations: list[str] = []
+
+    class CleanBackend(BackendBase):
+        name = "clean"
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            invocations.append(prompt)
+
+        def stream(self):
+            async def _gen():
+                yield BackendEvent(type="session_started", session_id="sid-clean")
+                yield BackendEvent(
+                    type="tool_use",
+                    tool_name="Read",
+                    tool_input={"file_path": "/x"},
+                    tool_use_id="t",
+                )
+                yield BackendEvent(
+                    type="tool_result", content="ok", tool_use_id="t", is_error=False
+                )
+                yield BackendEvent(type="text", content="done")
+                yield BackendEvent(
+                    type="result", session_id="sid-clean", cost=0.01, num_turns=1
+                )
+            return _gen()
+
+        async def stop(self):
+            pass
+
+    manager._make_backend = lambda s: CleanBackend()  # type: ignore[method-assign,assignment]
+
+    _ = [m async for m in manager._run_backend(session, "go")]
+    assert invocations == ["go"]  # exactly one — no retry
+
+
+@pytest.mark.asyncio
+async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
+    """If the CLI dies without ever emitting a tool_use, that's not
+    the documented bug — could be auth failure, network drop, etc.
+    Don't retry; surface the incomplete turn as-is."""
+    from server.backends import BackendBase, BackendEvent
+
+    session = await manager.create_session("DiesEarly")
+    invocations: list[str] = []
+
+    class CrashEarlyBackend(BackendBase):
+        name = "crash-early"
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            invocations.append(prompt)
+
+        def stream(self):
+            async def _gen():
+                yield BackendEvent(type="session_started", session_id="sid-early")
+                # No tool_use. No result. CLI just died.
+            return _gen()
+
+        async def stop(self):
+            pass
+
+    manager._make_backend = lambda s: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
+
+    _ = [m async for m in manager._run_backend(session, "go")]
+    assert invocations == ["go"]  # no retry — not the bug we recover from
 
 
 @pytest.mark.asyncio

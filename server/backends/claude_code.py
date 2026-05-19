@@ -69,13 +69,26 @@ immediately. When the bg task finishes, Octopus injects a follow-up \
 turn into this session with the captured output, and you respond \
 then.
 
-When to use bg_run vs Bash:
-  - Use **bg_run** for anything that may take longer than ~30 seconds \
-(long builds, full test suites, npm install, large fetches, model \
-training, container builds, sleeps). The user shouldn't wait on those \
-inside your reply.
-  - Use the regular **Bash** tool for short commands (< 30s) where \
-the user expects an immediate answer in your reply.
+When to use bg_run vs Bash — bright lines, not heuristics:
+
+  **Use bg_run unconditionally for any of these, no matter how fast \
+you think it will be**: test suites (`pytest`, `bun run test`, \
+`bun run test:e2e`, `vitest`, `cargo test`, etc.), builds \
+(`bun run build`, `cargo build`, `npm run build`, `tsc`, …), \
+package installs (`pip install`, `bun install`, `npm install`, …), \
+sleeps, large fetches/curls, anything that hits the network with \
+unpredictable latency, anything you'd start with `&` in a shell. \
+For these, *never* reach for Bash — even synchronously. The \
+Claude Code harness will auto-background long Bash commands and \
+those often get killed silently with empty captured output, which \
+wastes minutes and confuses the user. bg_run is the only safe path.
+
+  **Use Bash only for**: definitely-sub-10s things — `ls`, \
+`git status`, `git log -n 5`, a single Edit's verification grep, \
+one quick file read, a config dump. If you find yourself piping \
+through `| tail -N` because you expect lots of output, that's \
+already the wrong call — switch to bg_run and let the chip render \
+the full output.
 
 Pattern when you use bg_run:
   1. Call `bg_run("the command", description="what it is")` — pass a \
@@ -351,7 +364,16 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         if kind == "system":
             # init/status/etc — capture session id on init, ignore otherwise.
             if obj.get("subtype") == "init":
-                self._captured_session_id = obj.get("session_id")
+                sid = obj.get("session_id")
+                self._captured_session_id = sid
+                # Surface the resume id as soon as it's known, not only
+                # when `result` lands. The premature-exit bug
+                # (docs/cli-resume-synthetic-pair.md) suppresses `result`
+                # entirely, and the auto-respawn recovery in
+                # session_manager needs a resume id to fire — so we have
+                # to give it one from `init` instead.
+                if sid:
+                    self._emit(BackendEvent(type="session_started", session_id=sid))
             return
 
         if kind == "rate_limit_event":

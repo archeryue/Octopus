@@ -14,11 +14,16 @@ Invocation:
     python fake_claude_cli.py <mode> [-- <prompt>]
 
 Modes:
-  hello              : simple text + result.
-  tool-success       : assistant tool_use + user tool_result + text + result.
-  interrupt-respond  : blocks on a long sleep so tests can verify
-                       interrupt() → stop() actually tears the process
-                       down via SIGTERM/SIGKILL.
+  hello                   : simple text + result.
+  tool-success            : assistant tool_use + user tool_result + text + result.
+  interrupt-respond       : blocks on a long sleep so tests can verify
+                            interrupt() → stop() actually tears the process
+                            down via SIGTERM/SIGKILL.
+  premature-exit-after-tool : reproduces the CLI bug documented in
+                            docs/cli-resume-synthetic-pair.md — emits
+                            init + tool_use + tool_result and then
+                            exits WITHOUT emitting `result`, simulating
+                            the model never being re-invoked.
 """
 
 import json
@@ -113,6 +118,39 @@ def run_tool_success():
     _emit_result()
 
 
+def run_premature_exit_after_tool():
+    """Reproduce the CLI premature-exit-after-tool bug: emit init,
+    then a tool_use, then the tool_result echo, then exit WITHOUT
+    emitting `result`. This is the exact event shape that left
+    session 561d86e2-… stuck — see docs/cli-resume-synthetic-pair.md."""
+    _emit_init()
+    _emit({
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_premature",
+                "name": "Read",
+                "input": {"file_path": "/some/large/file.md"},
+            }],
+        },
+    })
+    _emit({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": "toolu_premature",
+                "content": "...large file content...",
+                "is_error": False,
+            }],
+        },
+    })
+    # NO result event — process just exits.
+
+
 def run_interrupt_respond():
     """Emit the init banner, then sleep for a long time so the test
     can call interrupt() and verify the subprocess actually gets
@@ -130,6 +168,8 @@ def main():
         run_tool_success()
     elif mode == "interrupt-respond":
         run_interrupt_respond()
+    elif mode == "premature-exit-after-tool":
+        run_premature_exit_after_tool()
     else:
         sys.stderr.write(f"unknown mode: {mode}\n")
         sys.exit(2)

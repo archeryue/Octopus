@@ -30,7 +30,7 @@ class BackendEvent:
     so the front-end doesn't need to change when we swap backends.
     """
 
-    type: str  # text | thinking | tool_use | tool_result | result | error | question_request
+    type: str  # text | thinking | tool_use | tool_result | result | error | question_request | session_started
     content: str | None = None
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None

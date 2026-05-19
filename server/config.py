@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     # `~` is expanded at use time (not config load time) so tests that
     # override $HOME via monkeypatch see the override.
     attachments_dir: str = "~/.octopus/attachments"
+    # Per-session spill directory for prompts too large to deliver as
+    # positional argv (the kernel's MAX_ARG_STRLEN ceiling is ~128 KB).
+    # When a prompt exceeds the threshold, Octopus writes it to a file
+    # under this root and sends the backend a small pointer message
+    # instructing the model to Read the file. See server/large_prompts.py.
+    large_prompts_dir: str = "~/.octopus/large-prompts"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False
