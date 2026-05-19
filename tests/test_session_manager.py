@@ -357,10 +357,13 @@ async def test_answer_question_unknown_returns_false(manager):
 
 
 @pytest.mark.asyncio
-async def test_answer_question_routes_through_backend(manager):
-    """End-to-end Q&A wiring: when a backend reports a pending question,
-    answer_question() formats answers, calls backend.answer_question(),
-    persists the answer, and broadcasts a question_answer event."""
+async def test_answer_question_sets_event_and_broadcasts(manager):
+    """VM0-shape Q&A: answer_question formats the answers, stores the
+    text in `_pending_question_answers`, sets the asyncio.Event that
+    wakes the mcp__ask__user long-poll, persists the chat entry, and
+    broadcasts the question_answer WS event. The backend is no longer
+    involved — AUQ flows entirely through the question state in
+    session_manager."""
     from server.session_manager import PendingQuestion
 
     session = await manager.create_session("Q")
@@ -371,43 +374,83 @@ async def test_answer_question_routes_through_backend(manager):
 
     manager.on_broadcast("test", cb)
 
-    # Simulate a backend that already received a control_request from the
-    # CLI and is sitting on a pending question.
-    delivered_answers: list[tuple[str, str]] = []
-
-    class FakeBackend:
-        async def answer_question(self, question_id: str, answer_text: str) -> bool:
-            delivered_answers.append((question_id, answer_text))
-            return True
-
-    session._backend = FakeBackend()  # type: ignore[assignment]
+    # Simulate what the new flow does on `mcp__ask__user`:
+    #   the ask MCP server's POST → create_pending_question creates
+    #   the PendingQuestion + Event. Here we set them up manually so
+    #   we can exercise answer_question() in isolation.
     session._pending_questions["q-1"] = PendingQuestion(
         question_id="q-1",
         questions=[{"question": "Pick one", "options": [{"label": "A"}]}],
     )
+    session._pending_question_events["q-1"] = asyncio.Event()
 
     ok = await manager.answer_question(session.id, "q-1", [{"selected": ["A"]}])
     assert ok is True
-    # Backend got the formatted text
-    assert delivered_answers == [("q-1", "Q: Pick one\nA: A")]
-    # Pending question cleared, broadcast emitted
+
+    # Answer text stored where the long-poll will read it.
+    assert session._pending_question_answers["q-1"] == "Q: Pick one\nA: A"
+    # Event signalled so the long-poll wakes up.
+    assert session._pending_question_events["q-1"].is_set()
+    # Pending question cleared, broadcast emitted with the formatted text.
     assert "q-1" not in session._pending_questions
-    assert any(e["type"] == "question_answer" for e in events)
+    qa = [e for e in events if e["type"] == "question_answer"]
+    assert len(qa) == 1
+    assert qa[0]["content"] == "Q: Pick one\nA: A"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_question_answer_unblocks_on_submit(manager):
+    """The ask MCP server's HTTP long-poll calls wait_for_question_answer
+    which awaits the Event. When the user submits, the wait returns
+    the formatted answer text."""
+    from server.session_manager import PendingQuestion
+
+    session = await manager.create_session("Wait")
+    session._pending_questions["qid"] = PendingQuestion(
+        question_id="qid",
+        questions=[{"question": "OK?", "options": [{"label": "Y"}]}],
+    )
+    session._pending_question_events["qid"] = asyncio.Event()
+
+    async def submit_after_delay():
+        await asyncio.sleep(0.05)
+        await manager.answer_question(session.id, "qid", [{"selected": ["Y"]}])
+
+    asyncio.create_task(submit_after_delay())
+    answer = await manager.wait_for_question_answer(
+        session.id, "qid", timeout=2.0
+    )
+    assert answer == "Q: OK?\nA: Y"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_question_answer_returns_none_on_timeout(manager):
+    """When the user takes too long for a single poll window, the
+    waiter returns None so the MCP server can re-poll."""
+    from server.session_manager import PendingQuestion
+
+    session = await manager.create_session("Timeout")
+    session._pending_questions["qid"] = PendingQuestion(
+        question_id="qid", questions=[{"question": "?", "options": []}]
+    )
+    session._pending_question_events["qid"] = asyncio.Event()
+
+    answer = await manager.wait_for_question_answer(
+        session.id, "qid", timeout=0.1
+    )
+    assert answer is None
 
 
 @pytest.mark.asyncio
 async def test_unanswered_question_auto_answers_after_timeout(
     manager, monkeypatch
 ):
-    """If a question goes unanswered for the configured timeout, the
-    server synthesizes an autonomy-mode reply, delivers it to the backend,
-    broadcasts a question_answer event with auto=True, and clears the
-    pending question. Keeps async sessions (bridges, schedules) from
-    wedging forever when no human is watching."""
+    """Session-level auto-answer still works in VM0 shape: after the
+    configured timeout, deliver the autonomy-mode text via the same
+    Event mechanism, broadcast with auto=True."""
     from server import session_manager as sm
     from server.session_manager import PendingQuestion
 
-    # Make the timer fire essentially immediately so the test is fast.
     monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.05)
 
     session = await manager.create_session("AutoQ")
@@ -418,31 +461,23 @@ async def test_unanswered_question_auto_answers_after_timeout(
 
     manager.on_broadcast("auto", cb)
 
-    delivered: list[tuple[str, str]] = []
-
-    class FakeBackend:
-        async def answer_question(self, question_id: str, answer_text: str) -> bool:
-            delivered.append((question_id, answer_text))
-            return True
-
-    session._backend = FakeBackend()  # type: ignore[assignment]
     session._pending_questions["q-auto"] = PendingQuestion(
         question_id="q-auto",
         questions=[{"question": "What now?", "options": []}],
     )
+    session._pending_question_events["q-auto"] = asyncio.Event()
     manager._schedule_question_timeout(session, "q-auto")
 
-    # Wait for the timer to fire and the deliver coroutine to run
     await asyncio.sleep(0.2)
 
-    # Backend received the auto-answer text
-    assert len(delivered) == 1
-    assert delivered[0][0] == "q-auto"
-    assert "No human is available" in delivered[0][1]
-    assert "risky or irreversible" in delivered[0][1]
-    # Pending question removed
+    # Auto-answer text is what the long-poll will read.
+    answer = session._pending_question_answers.get("q-auto")
+    assert answer is not None
+    assert "No human is available" in answer
+    assert "risky or irreversible" in answer
+    # Event signalled, pending cleared, broadcast carries auto=True.
+    assert session._pending_question_events["q-auto"].is_set()
     assert "q-auto" not in session._pending_questions
-    # Broadcast carries the auto flag
     auto_events = [
         e for e in events
         if e.get("type") == "question_answer" and e.get("auto") is True
@@ -453,67 +488,27 @@ async def test_unanswered_question_auto_answers_after_timeout(
 @pytest.mark.asyncio
 async def test_manual_answer_cancels_auto_answer_timer(manager, monkeypatch):
     """If the user answers before the timeout, the auto-answer timer
-    should be cancelled and never fire — otherwise the backend would get
-    two responses for the same question."""
+    should be cancelled and never fire — otherwise the long-poll
+    would see the autonomy-mode text instead of the user's choice."""
     from server import session_manager as sm
     from server.session_manager import PendingQuestion
 
     monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.5)
 
     session = await manager.create_session("ManualBeatsTimer")
-    delivered: list[tuple[str, str]] = []
-
-    class FakeBackend:
-        async def answer_question(self, question_id: str, answer_text: str) -> bool:
-            delivered.append((question_id, answer_text))
-            return True
-
-    session._backend = FakeBackend()  # type: ignore[assignment]
     session._pending_questions["q-1"] = PendingQuestion(
         question_id="q-1",
         questions=[{"question": "Pick", "options": [{"label": "A"}]}],
     )
+    session._pending_question_events["q-1"] = asyncio.Event()
     manager._schedule_question_timeout(session, "q-1")
 
-    # Human answers right away
     await manager.answer_question(session.id, "q-1", [{"selected": ["A"]}])
 
-    # Wait past the timeout — auto should NOT fire again
+    # Wait past the timeout — the auto-answer text must NOT overwrite
+    # the user's choice.
     await asyncio.sleep(0.7)
-
-    assert len(delivered) == 1
-    assert "No human is available" not in delivered[0][1]
-
-
-@pytest.mark.asyncio
-async def test_answer_question_returns_false_if_backend_rejects(manager):
-    """If the backend says no (e.g. question already answered), don't
-    persist or broadcast an answer."""
-    from server.session_manager import PendingQuestion
-
-    session = await manager.create_session("Q-reject")
-    events: list[dict] = []
-
-    async def cb(msg: dict) -> None:
-        events.append(msg)
-
-    manager.on_broadcast("reject", cb)
-
-    class FakeBackend:
-        async def answer_question(self, question_id, answer_text):
-            return False
-
-    session._backend = FakeBackend()  # type: ignore[assignment]
-    session._pending_questions["q-2"] = PendingQuestion(
-        question_id="q-2",
-        questions=[{"question": "X?", "options": []}],
-    )
-
-    ok = await manager.answer_question(session.id, "q-2", [{"text": "anything"}])
-    assert ok is False
-    assert not any(e["type"] == "question_answer" for e in events)
-    # State unchanged
-    assert "q-2" in session._pending_questions
+    assert "No human is available" not in session._pending_question_answers["q-1"]
 
 
 @pytest.mark.asyncio
@@ -817,10 +812,15 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
         f"decrypted secret didn't make it to subprocess env: {env.get('ANTHROPIC_API_KEY')!r}"
     )
 
-    # argv should be the real claude CLI with stream-json flags
+    # argv should be the real claude CLI in VM0 shape — positional
+    # argv prompt, --dangerously-skip-permissions instead of the old
+    # --permission-prompt-tool=stdio path. The migration away from
+    # --input-format=stream-json was the whole point of the refactor
+    # (see docs/cli-resume-synthetic-pair.md).
     argv_str = " ".join(str(a) for a in argv)
     assert "claude" in argv_str
-    assert "--input-format=stream-json" in argv_str
+    assert "--dangerously-skip-permissions" in argv_str
+    assert "--input-format=stream-json" not in argv_str
 
     # And a sanity check on the *negative* path: a session with no
     # credential must NOT inject one (unless the parent shell already had).

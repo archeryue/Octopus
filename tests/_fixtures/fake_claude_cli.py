@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Fake `claude` CLI for ClaudeCodeBackend tests.
 
-Reads the SDK-style control protocol from stdin (initialize, interrupt,
-can_use_tool response) and emits scripted JSONL events on stdout based on
-the mode passed as the first argv item.
+Mirrors the VM0-shape `claude --print` flow that Octopus now uses:
+the prompt is passed as a positional argv (we ignore it; the mode
+arg drives the scripted output), and **no stdin protocol** is read
+or driven. We just emit scripted JSONL events on stdout and exit.
 
-Modes (each is one self-contained turn):
-  hello              : initialize-ack, then simple text + result
-  tool-success       : initialize-ack, then assistant tool_use + user tool_result + text + result
-  ask-user-question  : initialize-ack, then assistant tool_use(AskUserQuestion), then a
-                       can_use_tool control_request via stdin (wait for response),
-                       then continue with text + result reflecting the answer.
-  interrupt-respond  : initialize-ack, then wait forever; if it gets an interrupt control_request,
-                       respond, emit a "result" with subtype=error_during_execution, exit.
+The control-protocol modes from the pre-refactor era (initialize
+handshake, can_use_tool round-trip, interrupt control_request) are
+gone — those code paths no longer exist in ClaudeCodeBackend.
+
+Invocation:
+    python fake_claude_cli.py <mode> [-- <prompt>]
+
+Modes:
+  hello              : simple text + result.
+  tool-success       : assistant tool_use + user tool_result + text + result.
+  interrupt-respond  : blocks on a long sleep so tests can verify
+                       interrupt() → stop() actually tears the process
+                       down via SIGTERM/SIGKILL.
 """
 
 import json
@@ -21,87 +27,40 @@ import sys
 import time
 
 
+SESSION_ID = "11111111-1111-1111-1111-111111111111"
+
+
 def _emit(obj):
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
 
 
-def _read_line():
-    line = sys.stdin.readline()
-    if not line:
-        return None
-    return json.loads(line)
-
-
-def _await_control_response(request_id, timeout=5.0):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        line = _read_line()
-        if line is None:
-            return None
-        if line.get("type") == "control_response":
-            resp = line.get("response", {})
-            if resp.get("request_id") == request_id:
-                return resp
-    return None
-
-
-def _send_control_request(request_id, request):
-    _emit({"type": "control_request", "request_id": request_id, "request": request})
-
-
-def _wait_initialize_ack():
-    """The backend's first message is an initialize control_request.
-
-    Echo back a success response.
-    """
-    msg = _read_line()
-    assert msg and msg.get("type") == "control_request"
-    req = msg.get("request", {})
-    assert req.get("subtype") == "initialize", f"expected initialize, got {req}"
-    _emit({
-        "type": "control_response",
-        "response": {
-            "subtype": "success",
-            "request_id": msg["request_id"],
-            "response": {"commands": [], "output_style": "default"},
-        },
-    })
-
-
-def _emit_init(session_id="11111111-1111-1111-1111-111111111111"):
+def _emit_init():
     _emit({
         "type": "system",
         "subtype": "init",
         "cwd": os.getcwd(),
-        "session_id": session_id,
-        "tools": ["Bash", "AskUserQuestion", "Read"],
+        "session_id": SESSION_ID,
+        "tools": ["Bash", "Read"],
         "model": "claude-haiku-4-5-20251001",
-        "permissionMode": "default",
+        "permissionMode": "bypassPermissions",
     })
 
 
-def _emit_result(session_id="11111111-1111-1111-1111-111111111111", cost=0.001, subtype="success"):
+def _emit_result(*, subtype="success", cost=0.001):
     _emit({
         "type": "result",
         "subtype": subtype,
         "is_error": subtype != "success",
         "duration_ms": 100,
         "num_turns": 1,
-        "session_id": session_id,
+        "session_id": SESSION_ID,
         "total_cost_usd": cost,
     })
 
 
-def _read_user_turn():
-    msg = _read_line()
-    assert msg and msg.get("type") == "user", f"expected user turn, got {msg}"
-
-
 def run_hello():
-    _wait_initialize_ack()
     _emit_init()
-    _read_user_turn()
     _emit({
         "type": "assistant",
         "message": {
@@ -111,15 +70,13 @@ def run_hello():
             "role": "assistant",
             "content": [{"type": "text", "text": "Hello back."}],
         },
-        "session_id": "11111111-1111-1111-1111-111111111111",
+        "session_id": SESSION_ID,
     })
     _emit_result()
 
 
 def run_tool_success():
-    _wait_initialize_ack()
     _emit_init()
-    _read_user_turn()
     _emit({
         "type": "assistant",
         "message": {
@@ -156,87 +113,13 @@ def run_tool_success():
     _emit_result()
 
 
-def run_ask_user_question():
-    _wait_initialize_ack()
-    _emit_init()
-    _read_user_turn()
-    # Send a can_use_tool control_request for AskUserQuestion. The backend
-    # is supposed to emit a question_request event upstream and hold the
-    # request open until the host calls answer_question(); when it does,
-    # it sends back a control_response that we (the fake CLI) read here.
-    request_id = "req_ask_1"
-    _send_control_request(
-        request_id,
-        {
-            "subtype": "can_use_tool",
-            "tool_name": "AskUserQuestion",
-            "input": {
-                "questions": [
-                    {
-                        "question": "Pick a color",
-                        "options": [{"label": "red"}, {"label": "blue"}],
-                    }
-                ]
-            },
-            "permission_suggestions": [],
-            "blocked_path": None,
-        },
-    )
-    resp = _await_control_response(request_id, timeout=5.0)
-    if resp is None:
-        # Timeout — emit an error result
-        _emit_result(subtype="error_during_execution")
-        return
-    response_body = resp.get("response", {}) or {}
-    # New CLI shape: {"behavior": "deny", "message": "..."}
-    # (Old SDK shape was {"allow": False, "reason": "..."} — kept as
-    # a fallback for older traces, but the host now sends the new shape.)
-    answer = response_body.get("message") or response_body.get("reason", "")
-    # Now emit a synthetic tool_result reflecting the answer, then text + result.
-    _emit({
-        "type": "user",
-        "message": {
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": "tool_q",
-                "content": answer,
-                "is_error": False,
-            }],
-        },
-    })
-    _emit({
-        "type": "assistant",
-        "message": {
-            "role": "assistant",
-            "content": [{"type": "text", "text": f"User chose: {answer}"}],
-        },
-    })
-    _emit_result()
-
-
 def run_interrupt_respond():
-    _wait_initialize_ack()
+    """Emit the init banner, then sleep for a long time so the test
+    can call interrupt() and verify the subprocess actually gets
+    torn down. We sleep in 0.1 s chunks so SIGTERM lands promptly."""
     _emit_init()
-    _read_user_turn()
-    # Now block reading stdin, waiting for an interrupt control_request.
-    while True:
-        line = _read_line()
-        if line is None:
-            return
-        if line.get("type") == "control_request":
-            req = line.get("request", {})
-            if req.get("subtype") == "interrupt":
-                _emit({
-                    "type": "control_response",
-                    "response": {
-                        "subtype": "success",
-                        "request_id": line["request_id"],
-                        "response": {},
-                    },
-                })
-                _emit_result(subtype="error_during_execution")
-                return
+    for _ in range(600):  # up to 60 seconds of waiting
+        time.sleep(0.1)
 
 
 def main():
@@ -245,8 +128,6 @@ def main():
         run_hello()
     elif mode == "tool-success":
         run_tool_success()
-    elif mode == "ask-user-question":
-        run_ask_user_question()
     elif mode == "interrupt-respond":
         run_interrupt_respond()
     else:

@@ -155,66 +155,18 @@ async def test_real_tool_use_then_tool_result():
 
 
 # ---------------------------------------------------------------------------
-# AskUserQuestion via real control protocol
+# AskUserQuestion
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_real_ask_user_question_full_round_trip():
-    """Real model → control_request for AskUserQuestion → backend emits
-    question_request → answer_question() → CLI continues with the answer."""
-
-    backend = ClaudeCodeBackend(model="haiku")
-    prompt = (
-        "Use the AskUserQuestion tool right now with this exact JSON for the questions argument: "
-        '[{"question":"Pick a color","header":"Choice","multiSelect":false,'
-        '"options":['
-        '{"label":"red","description":"the color red"},'
-        '{"label":"blue","description":"the color blue"}'
-        "]}]. Do not write text before the tool call."
-    )
-
-    await backend.start(prompt, CWD)
-    events: list[BackendEvent] = []
-
-    async def consume() -> None:
-        async for ev in backend.stream():
-            events.append(ev)
-
-    consumer = asyncio.create_task(consume())
-
-    # Wait for question_request to arrive
-    question_id: str | None = None
-    for _ in range(600):  # up to ~60s
-        for ev in events:
-            if ev.type == "question_request":
-                question_id = ev.tool_use_id
-                break
-        if question_id:
-            break
-        await asyncio.sleep(0.1)
-
-    assert question_id is not None, (
-        f"never saw question_request from real CLI; events={[e.type for e in events]}"
-    )
-
-    # Answer "red" — backend should send a control_response, CLI resumes
-    ok = await backend.answer_question(question_id, "red")
-    assert ok is True
-
-    await asyncio.wait_for(consumer, timeout=60.0)
-    await backend.stop()
-
-    _assert_no_control_protocol_errors(backend, events)
-
-    types = [e.type for e in events]
-    assert "result" in types, f"no terminal result event after answering; saw {types}"
-    # After answering, the model usually produces text mentioning the choice.
-    final_text = "".join(e.content or "" for e in events if e.type == "text")
-    # Don't insist on exact phrasing — model can vary — just that "red" is
-    # referenced somewhere in its follow-up reasoning/text.
-    combined = (final_text + " ".join(e.content or "" for e in events if e.type == "thinking")).lower()
-    assert "red" in combined, f"answer wasn't reflected in model's continuation: {final_text!r}"
+#
+# Under the VM0-shape backend (--dangerously-skip-permissions + the
+# built-in AUQ disabled via --disallowedTools), AUQ no longer flows
+# through the CLI control protocol. The model uses the
+# `mcp__ask__user` MCP tool instead, which calls back into the
+# Octopus FastAPI process over HTTP. Verifying that round-trip needs
+# a live uvicorn + REST + frontend submission; it's covered by the
+# Playwright e2e (`web/e2e/new-features.spec.ts`), not by a backend
+# unit test. Keeping a unit test here would just mock the entire
+# host out and prove nothing.
 
 
 # ---------------------------------------------------------------------------

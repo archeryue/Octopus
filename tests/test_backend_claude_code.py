@@ -1,14 +1,29 @@
 """Unit tests for ClaudeCodeBackend against a scripted fake CLI.
 
 Doesn't require the real `claude` binary; uses tests/_fixtures/fake_claude_cli.py.
+
+Note (VM0-shape migration): ClaudeCodeBackend no longer drives the
+SDK control protocol over stdin. AskUserQuestion is handled by the
+new `mcp__ask__user` MCP tool + REST long-poll (see
+docs/cli-resume-synthetic-pair.md §17 for context). The tests in
+this file therefore exercise:
+
+  - the stdout JSONL parser (`_emit_assistant_blocks`,
+    `_emit_user_blocks`, `_emit_result`)
+  - `build_args` flag set + credential env handling
+  - lifecycle (start/stream/stop, interrupt → stop)
+
+The old control-protocol tests (AUQ deny channel, can_use_tool
+callback dispatch, initialize handshake) are gone because those
+code paths are gone.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -18,14 +33,17 @@ FAKE_CLI = Path(__file__).parent / "_fixtures" / "fake_claude_cli.py"
 
 
 class _ScriptedClaudeCodeBackend(ClaudeCodeBackend):
-    """ClaudeCodeBackend that runs our fake CLI in a chosen mode."""
+    """ClaudeCodeBackend that runs our fake CLI in a chosen mode.
+
+    Overrides build_args to launch the fake script directly instead
+    of the real `claude` binary; the stream-parsing path under test
+    doesn't care about which executable produced the JSONL."""
 
     def __init__(self, mode: str, **kwargs):
         super().__init__(**kwargs)
         self._mode = mode
 
     def build_args(self, prompt, working_dir, resume_id, credential=None):
-        # We deliberately do NOT use the real claude binary or its flags.
         return (
             [sys.executable, str(FAKE_CLI), self._mode],
             {"cwd": working_dir},
@@ -40,7 +58,7 @@ async def _drain(stream) -> list[BackendEvent]:
 
 
 # ---------------------------------------------------------------------------
-# Basic flow
+# Stream parsing
 # ---------------------------------------------------------------------------
 
 
@@ -79,116 +97,108 @@ async def test_tool_use_then_tool_result_then_text(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# AskUserQuestion control protocol
+# Lifecycle: interrupt → stop, answer_question becomes a no-op
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ask_user_question_round_trip(tmp_path):
-    """The fake CLI sends a can_use_tool for AskUserQuestion. The backend
-    should emit a question_request event, hold the control_request, and
-    relay the host's answer when answer_question() is called."""
-
-    backend = _ScriptedClaudeCodeBackend("ask-user-question")
-    await backend.start("ask me something", str(tmp_path))
-
-    events: list[BackendEvent] = []
-
-    async def consume() -> None:
-        async for ev in backend.stream():
-            events.append(ev)
-
-    consumer_task = asyncio.create_task(consume())
-
-    # Wait for the question_request event to land
-    question_id: str | None = None
-    for _ in range(100):
-        for ev in events:
-            if ev.type == "question_request":
-                question_id = ev.tool_use_id
-                break
-        if question_id:
-            break
-        await asyncio.sleep(0.02)
-
-    assert question_id is not None, f"never saw question_request; events={events}"
-
-    # Sanity: the question input got through
-    qreq = next(e for e in events if e.type == "question_request")
-    assert qreq.tool_input == {
-        "questions": [
-            {"question": "Pick a color", "options": [{"label": "red"}, {"label": "blue"}]}
-        ]
-    }
-
-    # Answer it — backend sends a control_response to the fake CLI, which
-    # then continues with text + result.
-    ok = await backend.answer_question(question_id, "red")
-    assert ok is True
-
-    await asyncio.wait_for(consumer_task, timeout=5.0)
-    await backend.stop()
-
-    types = [e.type for e in events]
-    # question_request → (host answer) → CLI continues → tool_result + text + result
-    assert types == ["question_request", "tool_result", "text", "result"]
-    assert events[1].content == "red"
-    assert events[2].content == "User chose: red"
-
-
-@pytest.mark.asyncio
-async def test_answer_question_unknown_returns_false(tmp_path):
-    backend = _ScriptedClaudeCodeBackend("hello")
-    await backend.start("hi", str(tmp_path))
-    # Drain to completion
-    async for _ in backend.stream():
-        pass
-    assert await backend.answer_question("nonexistent-q", "x") is False
-    await backend.stop()
-
-
-# ---------------------------------------------------------------------------
-# Interrupt control protocol
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_interrupt_sends_control_request(tmp_path):
+async def test_interrupt_terminates_the_subprocess(tmp_path):
+    """VM0 shape doesn't send a graceful interrupt control_request —
+    interrupt() just calls stop(), which SIGTERMs/SIGKILLs the
+    subprocess. We verify the call returns cleanly and the process
+    handle is torn down."""
     backend = _ScriptedClaudeCodeBackend("interrupt-respond")
     await backend.start("start work", str(tmp_path))
-
-    events: list[BackendEvent] = []
-
-    async def consume() -> None:
-        async for ev in backend.stream():
-            events.append(ev)
-
-    consumer_task = asyncio.create_task(consume())
-
-    # Give the CLI a moment to be sitting on stdin
+    # Give the fake CLI a moment to be sitting on stdin.
     await asyncio.sleep(0.1)
 
-    # interrupt() sends the control_request then stops; the fake CLI
-    # responds and emits an error-during-execution result.
     await asyncio.wait_for(backend.interrupt(), timeout=5.0)
-    await asyncio.wait_for(consumer_task, timeout=5.0)
+    # Stream is closed, process gone.
+    assert backend._process is None
 
-    types = [e.type for e in events]
-    # We may receive zero or one "result" depending on timing — but if
-    # we do, it should be flagged as an error.
-    if "result" in types:
-        result = next(e for e in events if e.type == "result")
-        assert result.is_error is True
+
+@pytest.mark.asyncio
+async def test_answer_question_returns_true_as_noop(tmp_path):
+    """answer_question is retained on the interface for back-compat
+    but is a no-op under the VM0 shape (AUQ flows through the
+    mcp__ask__user MCP server + asyncio.Event in session_manager,
+    not through the backend). Returns True regardless of input so
+    callers that haven't been updated still see success."""
+    backend = _ScriptedClaudeCodeBackend("hello")
+    await backend.start("hi", str(tmp_path))
+    async for _ in backend.stream():
+        pass
+    assert await backend.answer_question("nonexistent-q", "x") is True
+    await backend.stop()
 
 
 # ---------------------------------------------------------------------------
-# Permission callback for non-AskUserQuestion tools (Phase 1d note: not
-# exercised by the fake CLI; this is a unit test of the callback wiring.)
+# build_args (VM0 shape)
 # ---------------------------------------------------------------------------
+
+
+def test_build_args_uses_vm0_shape():
+    """The whole point of the refactor: positional argv prompt, no
+    `--input-format=stream-json`, `--dangerously-skip-permissions`
+    instead of `--permission-prompt-tool=stdio`, built-in
+    AskUserQuestion disabled."""
+    backend = ClaudeCodeBackend()
+    argv, _ = backend.build_args("hello prompt", "/tmp", None, credential=None)
+
+    # Positional prompt after `--`.
+    assert argv[-1] == "hello prompt"
+    assert argv[-2] == "--"
+
+    # Required flags present.
+    assert "--print" in argv
+    assert "--output-format=stream-json" in argv
+    assert "--verbose" in argv
+    assert "--dangerously-skip-permissions" in argv
+
+    # Built-in AUQ explicitly disabled.
+    i = argv.index("--disallowedTools")
+    assert argv[i + 1] == "AskUserQuestion"
+
+    # Old stream-json input + control-protocol flags MUST be gone —
+    # those were the bug-trigger surface.
+    assert "--input-format=stream-json" not in argv
+    assert not any(a.startswith("--permission-prompt-tool") for a in argv)
+    assert not any(a.startswith("--permission-mode") for a in argv)
+
+
+def test_build_args_registers_viewer_bg_ask_mcp_servers():
+    backend = ClaudeCodeBackend(session_id="sess-xyz")
+    argv, _ = backend.build_args("p", "/tmp", None)
+    cfg_idx = argv.index("--mcp-config") + 1
+    cfg = json.loads(argv[cfg_idx])
+    servers = cfg.get("mcpServers", {})
+    assert set(servers.keys()) == {"viewer", "bg", "ask"}
+    # bg + ask need the session id for HTTP callbacks.
+    assert servers["bg"]["env"]["OCTOPUS_SESSION_ID"] == "sess-xyz"
+    assert servers["ask"]["env"]["OCTOPUS_SESSION_ID"] == "sess-xyz"
+    # viewer just needs the working_dir for path sandboxing.
+    assert servers["viewer"]["env"]["OCTOPUS_WORKING_DIR"] == "/tmp"
+
+
+def test_build_args_system_prompt_mentions_ask_user():
+    backend = ClaudeCodeBackend(session_id="s")
+    argv, _ = backend.build_args("p", "/tmp", None)
+    sp = argv[argv.index("--append-system-prompt") + 1]
+    assert "mcp__ask__user" in sp
+    # And it tells the model the built-in is disabled, not silently
+    # swapped.
+    assert "DISABLED" in sp or "disabled" in sp
+
+
+def test_build_args_passes_resume_id():
+    backend = ClaudeCodeBackend()
+    argv, _ = backend.build_args("p", "/tmp", "abc-123")
+    i = argv.index("--resume")
+    assert argv[i + 1] == "abc-123"
 
 
 def test_build_args_injects_api_key_credential():
-    from server.backends import BackendCredential, ClaudeCodeBackend
+    from server.backends import BackendCredential
 
     backend = ClaudeCodeBackend()
     cred = BackendCredential(
@@ -199,9 +209,19 @@ def test_build_args_injects_api_key_credential():
     assert env.get("ANTHROPIC_API_KEY") == "sk-test-123"
 
 
-def test_build_args_no_credential_leaves_env_unchanged():
-    from server.backends import ClaudeCodeBackend
+def test_build_args_injects_oauth_credential():
+    from server.backends import BackendCredential
 
+    backend = ClaudeCodeBackend()
+    cred = BackendCredential(
+        backend="claude-code", auth_type="oauth", secret="oauth-token-456"
+    )
+    _argv, kwargs = backend.build_args("p", "/tmp", None, credential=cred)
+    env = kwargs.get("env", {})
+    assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "oauth-token-456"
+
+
+def test_build_args_no_credential_leaves_env_unchanged():
     backend = ClaudeCodeBackend()
     _argv, kwargs = backend.build_args("p", "/tmp", None)
     env = kwargs.get("env", {})
@@ -209,100 +229,3 @@ def test_build_args_no_credential_leaves_env_unchanged():
     # care that we didn't *override* it from a None credential.
     import os as _os
     assert env.get("ANTHROPIC_API_KEY") == _os.environ.get("ANTHROPIC_API_KEY")
-
-
-@pytest.mark.asyncio
-async def test_permission_callback_invoked_directly():
-    """Construct the backend with a callback; call the internal handler
-    directly to verify the wiring (no subprocess involved). Asserts the
-    on-wire payload uses the new behavior/updatedInput shape — sending the
-    legacy {"allow": true} would be rejected by the CLI with a ZodError.
-    """
-    seen: list[tuple[str, dict[str, Any]]] = []
-
-    async def cb(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
-        seen.append((tool_name, tool_input))
-        return {"behavior": "allow", "updatedInput": tool_input}
-
-    backend = ClaudeCodeBackend(permission_callback=cb)
-
-    # Wire a fake stdin so _write_stdin doesn't blow up. Easiest: monkeypatch.
-    sent: list[str] = []
-
-    async def fake_write(payload: str) -> None:
-        sent.append(payload)
-
-    backend._write_stdin = fake_write  # type: ignore[method-assign]
-
-    await backend._handle_control_request(
-        {
-            "type": "control_request",
-            "request_id": "req_x",
-            "request": {
-                "subtype": "can_use_tool",
-                "tool_name": "Bash",
-                "input": {"command": "ls"},
-            },
-        }
-    )
-
-    assert seen == [("Bash", {"command": "ls"})]
-    # New shape: {"behavior": "allow", "updatedInput": {"command": "ls"}}
-    assert any('"behavior": "allow"' in s for s in sent)
-    assert any('"updatedInput"' in s for s in sent)
-    # The legacy shape must NOT appear — that's what triggered ZodError.
-    assert not any('"allow": true' in s for s in sent)
-
-
-@pytest.mark.asyncio
-async def test_handler_default_allow_uses_new_shape():
-    """No callback set → default allow path. Verify it sends the new shape
-    with updatedInput (the original tool input passed through), not the
-    legacy {"allow": true}."""
-    backend = ClaudeCodeBackend()
-    sent: list[str] = []
-
-    async def fake_write(payload: str) -> None:
-        sent.append(payload)
-
-    backend._write_stdin = fake_write  # type: ignore[method-assign]
-
-    await backend._handle_control_request(
-        {
-            "type": "control_request",
-            "request_id": "req_y",
-            "request": {
-                "subtype": "can_use_tool",
-                "tool_name": "Bash",
-                "input": {"command": "pwd"},
-            },
-        }
-    )
-
-    assert any('"behavior": "allow"' in s for s in sent)
-    assert any('"updatedInput"' in s and "pwd" in s for s in sent)
-
-
-@pytest.mark.asyncio
-async def test_answer_question_sends_deny_shape():
-    """The user's AskUserQuestion answer must travel back as
-    {"behavior": "deny", "message": ...}, not the legacy
-    {"allow": false, "reason": ...} that triggered ZodError."""
-    backend = ClaudeCodeBackend()
-    sent: list[str] = []
-
-    async def fake_write(payload: str) -> None:
-        sent.append(payload)
-
-    backend._write_stdin = fake_write  # type: ignore[method-assign]
-
-    # Seed a pending question as if the CLI had already asked.
-    backend._pending_incoming["req_q1"] = {"subtype": "can_use_tool"}
-    backend._question_to_request["qid1"] = "req_q1"
-
-    ok = await backend.answer_question("qid1", "User said red")
-    assert ok is True
-
-    assert any('"behavior": "deny"' in s for s in sent)
-    assert any('"message": "User said red"' in s for s in sent)
-    assert not any('"reason"' in s for s in sent)

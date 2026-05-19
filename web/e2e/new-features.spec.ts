@@ -616,7 +616,7 @@ test.describe("AskUserQuestion rendering", () => {
 test.describe("Real CLI end-to-end", () => {
   test.setTimeout(120_000);
 
-  test("AskUserQuestion: real model → form → answer → reply", async ({
+  test("AskUserQuestion (via mcp__ask__user): real model → form → answer → reply", async ({
     page,
     request,
   }) => {
@@ -628,11 +628,13 @@ test.describe("Real CLI end-to-end", () => {
       .click();
     await expect(page.locator(".chat-header h3")).toHaveText("Real Q Session");
 
-    // Nudge the model to invoke AskUserQuestion directly with our chosen
-    // options, so the form is deterministic. The schema requires `description`
-    // on every option, so we spell them out fully.
+    // The built-in AskUserQuestion is disabled in Octopus (--disallowedTools
+    // in claude_code.py). Nudge the model toward the MCP replacement
+    // explicitly. The frontend / WS / question-state machinery on the
+    // host side is the same as the legacy flow — the change is purely
+    // about which tool fires.
     const prompt =
-      "Use the AskUserQuestion tool right now with this exact JSON for the questions argument: " +
+      "Use the mcp__ask__user tool right now with this exact JSON for the questions argument: " +
       '[{"question":"Pick a color","header":"Choice","multiSelect":false,' +
       '"options":[' +
       '{"label":"red","description":"the color red"},' +
@@ -659,11 +661,10 @@ test.describe("Real CLI end-to-end", () => {
     await form.locator(".btn-approve").click();
 
     // The user-side answer bubble lands first; then a follow-up assistant
-    // response should reference "red" in some way (the model usually
-    // acknowledges or restates the chosen option). We assert on the
-    // answer bubble — that proves the round-trip completed (UI → WS →
-    // session_manager.answer_question → backend.answer_question →
-    // control_response → CLI → next event from model).
+    // response should reference "red". This proves the new round-trip:
+    // UI → WS answer_question → session_manager.answer_question → sets
+    // asyncio.Event → mcp__ask__user's long-poll unblocks → returns text
+    // to the model → CLI continues → next event upstream.
     await expect(page.locator(".msg-question-answer")).toContainText("red", {
       timeout: 30_000,
     });

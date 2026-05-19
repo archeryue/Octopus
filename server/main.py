@@ -18,7 +18,7 @@ from .config import settings
 from .tunnel import CloudflareTunnel
 from .database import Database
 from .notifiers import notifier_manager
-from .routers import attachments, bg_tasks as bg_tasks_router, credentials, files, notifiers, schedules, sessions, ws
+from .routers import attachments, bg_tasks as bg_tasks_router, credentials, files, notifiers, questions, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -118,6 +118,7 @@ app.include_router(sessions.router)
 app.include_router(attachments.router)
 app.include_router(files.router)
 app.include_router(bg_tasks_router.router)
+app.include_router(questions.router)
 app.include_router(schedules.router)
 app.include_router(credentials.router)
 app.include_router(notifiers.router)

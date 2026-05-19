@@ -96,6 +96,17 @@ class Session:
     # question_id -> background timer that auto-answers if the user
     # never replies (see SessionManager._schedule_question_timeout).
     _question_timers: dict[str, asyncio.Task] = field(default_factory=dict, repr=False)
+    # AUQ delivery coordination for the new MCP-based flow. The
+    # `mcp__ask__user` tool (server/mcp_servers/ask.py) creates a
+    # pending question via REST, then HTTP-long-polls the answer
+    # endpoint, which awaits the Event below. The user's UI submit
+    # sets `_pending_question_answers[q_id]` and signals the Event;
+    # the long-poll unblocks and returns the answer to the MCP tool,
+    # which returns it as the tool result so the model can continue.
+    # Replaces the old --permission-prompt-tool=stdio deny-channel
+    # hack that exposed us to the CLI's premature-exit bug.
+    _pending_question_events: dict[str, asyncio.Event] = field(default_factory=dict, repr=False)
+    _pending_question_answers: dict[str, str] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _pending_queue: list[QueuedPrompt] = field(default_factory=list, repr=False)
 
@@ -1163,14 +1174,91 @@ class SessionManager:
 
     # ------------------------------------------------------------------ Q&A wiring
 
+    async def create_pending_question(
+        self,
+        session_id: str,
+        questions: list[dict[str, Any]],
+    ) -> str | None:
+        """Called by the ask MCP server (via REST) when the model invokes
+        `mcp__ask__user`. Generates a question_id, records the pending
+        question, broadcasts the `question_request` WS event so the
+        frontend renders the form, and schedules the auto-answer
+        timeout. Returns the question_id (which the MCP server then
+        passes to the long-poll endpoint).
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return None
+        question_id = uuid.uuid4().hex[:16]
+        session._pending_questions[question_id] = PendingQuestion(
+            question_id=question_id,
+            questions=questions,
+        )
+        session._pending_question_events[question_id] = asyncio.Event()
+
+        # Persist + broadcast a `question_request` matching the shape the
+        # frontend already expects. The persisted MessageContent makes
+        # the question visible in chat history on reconnect.
+        msg = MessageContent(
+            role=MessageRole.assistant,
+            type="question_request",
+            tool_name="AskUserQuestion",
+            tool_use_id=question_id,
+            tool_input={"questions": questions},
+        )
+        msg_seq = await self._persist_message(session, msg)
+        event: dict[str, Any] = {
+            "type": "question_request",
+            "session_id": session.id,
+            "question_id": question_id,
+            "questions": questions,
+        }
+        if msg_seq is not None:
+            event["seq"] = msg_seq
+        await self._broadcast(event)
+        self._schedule_question_timeout(session, question_id)
+        return question_id
+
+    async def wait_for_question_answer(
+        self,
+        session_id: str,
+        question_id: str,
+        timeout: float = 60.0,
+    ) -> str | None:
+        """Long-poll waiter used by the ask MCP server's HTTP loop.
+
+        Returns the answer text when the user (or auto-answer) submits,
+        None on timeout. The MCP server retries on None until it gets
+        an answer or hits its own outer limit.
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return None
+        ev = session._pending_question_events.get(question_id)
+        if ev is None:
+            # Already-delivered case: answer might be sitting in the
+            # answers dict from a fast delivery; return immediately.
+            ans = session._pending_question_answers.get(question_id)
+            return ans
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+        return session._pending_question_answers.get(question_id)
+
     async def answer_question(
         self,
         session_id: str,
         question_id: str,
         answers: list[dict[str, Any]],
     ) -> bool:
+        """Called by the frontend (REST or legacy WS) when the user
+        submits answers to the form. Formats them, stores the text,
+        wakes any waiting MCP-server long-poll via the asyncio.Event,
+        persists the chat history entry, and broadcasts the WS event.
+        """
         session = self.sessions.get(session_id)
-        if not session or session._backend is None:
+        if not session:
             return False
         pending = session._pending_questions.get(question_id)
         if pending is None:
@@ -1188,17 +1276,23 @@ class SessionManager:
         *,
         auto: bool,
     ) -> bool:
-        """Common path for both human and timeout-driven answers."""
-        # Cancel any pending auto-answer timer for this question (no-op
-        # when the timer is the one calling us, since it's already
-        # popped its own entry by then).
+        """Common path for both human and timeout-driven answers.
+
+        Sets the per-question Event so the ask MCP server's long-poll
+        unblocks and returns the answer to the model. Persists the
+        user-visible question_answer chat entry, broadcasts the WS
+        event with the `auto` flag set when the timeout fired.
+        """
         self._cancel_question_timer(session, question_id)
 
-        if session._backend is None:
-            return False
-        ok = await session._backend.answer_question(question_id, answer_text)
-        if not ok:
-            return False
+        # Stash the text + signal the waiter. Even if no MCP long-poll
+        # is currently waiting (e.g. the MCP request retried just now),
+        # the answer sits in the answers dict for the next poll.
+        session._pending_question_answers[question_id] = answer_text
+        ev = session._pending_question_events.get(question_id)
+        if ev is not None:
+            ev.set()
+
         ans_msg = MessageContent(
             role=MessageRole.user,
             type="question_answer",
@@ -1217,6 +1311,12 @@ class SessionManager:
         if ans_seq is not None:
             event["seq"] = ans_seq
         await self._broadcast(event)
+
+        # Keep the answer text around briefly for any in-flight MCP
+        # long-poll that arrives just AFTER set() — it'll fetch from
+        # the answers dict directly. We clean up at session reset /
+        # delete / archive instead of immediately, since a stale
+        # answer dict entry is cheap.
         session._pending_questions.pop(question_id, None)
         return True
 

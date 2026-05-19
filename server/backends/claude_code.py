@@ -10,13 +10,11 @@ This backend replaces the previous reliance on `claude-code-sdk`.
 
 from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: F401  — kept for future async helpers + back-compat type hints
 import json
 import logging
 import os
 import sys
-import uuid
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +25,9 @@ logger = logging.getLogger(__name__)
 
 
 # Repo root (the directory that contains the `server/` package). We
-# need it twice in build_args — once to launch the viewer MCP server
-# via `-m server.mcp_servers.viewer` and once to set PYTHONPATH so
-# that import works regardless of where claude is invoked from.
+# need it twice in build_args — once to launch each MCP server via
+# `-m server.mcp_servers.<name>` and once to set PYTHONPATH so the
+# import works regardless of where claude was invoked from.
 _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 
 
@@ -91,35 +89,87 @@ was auto-injected, not user-typed.
 
 Related: `mcp__bg__cancel(task_id)` to abort a running task, and \
 `mcp__bg__list()` to see recent bg tasks for this session (useful if \
-the chat history is too long to scroll for the task_id)."""
+the chat history is too long to scroll for the task_id).
+
+[3] `mcp__ask__user(questions: list[QuestionSpec])` — ask the user \
+one or more clarification questions and BLOCK until they answer. Use \
+this whenever you'd otherwise have called the built-in \
+`AskUserQuestion` tool — that built-in is DISABLED in this \
+environment; this is its drop-in replacement.
+
+Each question is `{question, header?, multiSelect?, options: \
+[{label, description}]}` — same schema as the legacy tool. Pass 1-4 \
+questions per call. 2-4 options per question (the UI auto-adds an \
+"Other" free-text option). Returns the user's answers as a single \
+formatted text string you can read like a tool result.
+
+When to use it: when a real choice depends on the user (auth method, \
+library pick, naming, scope decisions) AND there isn't an obviously \
+right answer. Don't use it for things you can decide yourself or \
+verify from the codebase. Don't use it as a substitute for \
+ExitPlanMode."""
 
 
-# Type for the can_use_tool permission callback. Returns the CLI's
-# expected permission-result shape (Claude Code 2.x):
-#   {"behavior": "allow", "updatedInput": dict}
-#   {"behavior": "deny",  "message": str}
-# `updatedInput` is required even when not modifying input — pass the
-# original tool input through to honor the model's request as-is.
+# Vestigial type alias kept so external tests that constructed the
+# backend with `permission_callback=` keep type-checking. The VM0
+# shape never invokes the callback (no `can_use_tool` requests under
+# `--dangerously-skip-permissions`), but accepting it keeps the
+# constructor signature stable.
 PermissionDecision = dict[str, Any]
-PermissionCallback = Callable[[str, dict[str, Any]], Awaitable[PermissionDecision]]
+PermissionCallback = Any
 
 
 class ClaudeCodeBackend(SubprocessJsonlBackend):
     """Spawn `claude` and translate its JSONL stream into BackendEvents.
 
     Lifecycle: one CLI invocation per turn (mirrors the existing SDK
-    behavior). `start(prompt, working_dir, resume_id)` spawns, performs
-    the `initialize` control handshake, then streams the prompt over
-    stdin. `stream()` yields events until `result`. `stop()` shuts the
-    subprocess down.
+    behavior). `start(prompt, working_dir, resume_id)` spawns the CLI
+    with the prompt as a positional argv; `stream()` yields events
+    until `result`; `stop()` shuts the subprocess down.
 
-    Tool permissions:
-        Provide a `permission_callback` when constructing. For every tool
-        the CLI asks about, the callback is awaited; its return decides
-        allow/deny. For AskUserQuestion specifically, the callback is
-        expected to defer (await a Future) so the host can render UI and
-        feed the answer back via `answer_question(question_id, text)` —
-        the backend turns that into a synthetic Allow / Deny response.
+    Command shape (since the VM0-shape migration to fix the CLI's
+    premature-exit bug at large context — see
+    `docs/cli-resume-synthetic-pair.md`):
+
+      - Prompt is passed as a **positional argv** after `--`, not
+        streamed as JSON on stdin. This avoids `--input-format=stream-json`,
+        which empirically correlates with the CLI dropping tool_result
+        events on stdout at large context scale.
+      - **`--dangerously-skip-permissions`** replaces the
+        `--permission-prompt-tool=stdio` control-protocol path. We
+        relied on that protocol for two real features — per-tool
+        permission decisions and AskUserQuestion interception — and
+        both have replacements that don't need stdin: permissions are
+        bypassed at the CLI level (the host is the only thing running
+        these subprocesses anyway), and AUQ goes through the new
+        `mcp__ask__user` tool (see server/mcp_servers/ask.py) that
+        long-polls Octopus over HTTP for the answer.
+      - The CLI's built-in `AskUserQuestion` is disabled via
+        `--disallowedTools` so the model uniformly uses our MCP
+        replacement.
+
+    What we no longer have (intentionally dropped):
+      - `initialize` control_request handshake — never needed once we
+        stop sending stream-json input.
+      - `interrupt` control_request — `stop()` already SIGTERMs the
+        subprocess; the graceful control_request was a nicety, not
+        load-bearing.
+      - `_handle_can_use_tool` — no `can_use_tool` requests arrive
+        when `--dangerously-skip-permissions` is set.
+
+    Constructor params:
+        model:      override the CLI's default model (rare; usually let
+                    settings decide).
+        session_id: the Octopus session id this backend is bound to.
+                    Threaded into the MCP-server env (`OCTOPUS_SESSION_ID`)
+                    so the bg/ask tools can call back to the right
+                    session. None is fine in tests that don't exercise
+                    those tools.
+
+    permission_callback is retained as a constructor parameter for
+    backward compatibility with tests, but with --dangerously-skip-permissions
+    no can_use_tool requests are emitted, so the callback is never
+    invoked in production. Kept so the signature doesn't change.
     """
 
     name = "claude-code"
@@ -134,23 +184,18 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         session_id: str | None = None,
     ) -> None:
         super().__init__()
+        # Accepted for back-compat (see PermissionCallback comment above);
+        # never invoked under the VM0 shape.
         self._permission_cb = permission_callback
         self._model = model
         # Octopus session id this backend instance is bound to. Threaded
-        # into the bg MCP env so the MCP tool knows which session to
-        # attribute its bg_run calls to. None is fine in tests that
-        # don't exercise bg.
+        # into the bg + ask MCP envs so those tools can call back to the
+        # right session. None is fine in tests that don't exercise them.
         self._session_id = session_id
-        # request_id → Future awaiting the response from the CLI (for
-        # OUTGOING control requests we send, like initialize / interrupt).
-        self._pending_outgoing: dict[str, asyncio.Future[dict[str, Any]]] = {}
-        # request_id → original incoming control_request (so we can answer
-        # asynchronously when answer_question() is called).
-        self._pending_incoming: dict[str, dict[str, Any]] = {}
-        # Map AskUserQuestion question_id (we generate) → CLI request_id (to respond).
-        self._question_to_request: dict[str, str] = {}
-        self._req_counter = 0
-        self._initialized = False
+        # Capture the CLI's `system/init` session_id so we can attach it
+        # to the `result` BackendEvent (the result event's own session_id
+        # is the same value, but `init` arrives first and the field gives
+        # us a fallback if `result` ever omits it).
         self._captured_session_id: str | None = None
 
     # ------------------------------------------------------------------ build / send prompt
@@ -162,30 +207,29 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         resume_id: str | None,
         credential: BackendCredential | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
-        # Inline MCP config registering both our in-process servers
-        # (viewer + bg). The CLI accepts JSON strings directly (per
-        # `claude --help`: "Load MCP servers from JSON files or
-        # strings"), so no temp file bookkeeping. Tool names presented
-        # to the model are `mcp__<server-key>__<tool-fn>` —
-        # `mcp__viewer__show_file`, `mcp__bg__run`, etc.
+        # Inline MCP config registering our three in-process servers.
+        # The CLI accepts JSON strings directly (per `claude --help`:
+        # "Load MCP servers from JSON files or strings"). Tool names
+        # presented to the model are `mcp__<server-key>__<tool-fn>`:
         #
-        # viewer: needs OCTOPUS_WORKING_DIR (the session's working dir)
-        #         so its sandbox helper resolves paths correctly.
-        # bg:     needs OCTOPUS_API_BASE + OCTOPUS_AUTH_TOKEN +
-        #         OCTOPUS_SESSION_ID so it can call back into the
-        #         FastAPI process (it's a child of `claude`, not of
-        #         FastAPI, so it has no direct handle to the manager).
-        #         Loopback 127.0.0.1 because we always spawn the
-        #         subprocess on the same host as the server.
+        #   viewer: mcp__viewer__show_file
+        #   bg:     mcp__bg__run / __cancel / __list
+        #   ask:    mcp__ask__user   (replaces the built-in AskUserQuestion)
+        #
+        # All three MCP servers run as subprocesses of `claude` and
+        # need to call back into the FastAPI process. They share the
+        # same callback-env shape (API base, auth token, session id);
+        # the viewer is the exception — it doesn't call back, it just
+        # validates paths against the working_dir passed via env.
         from ..config import settings as _settings  # local import: avoid cycle at module load
         api_base = f"http://127.0.0.1:{_settings.port}"
-        bg_env: dict[str, str] = {
+        callback_env: dict[str, str] = {
             "OCTOPUS_API_BASE": api_base,
             "OCTOPUS_AUTH_TOKEN": _settings.auth_token,
             "PYTHONPATH": _REPO_ROOT,
         }
         if self._session_id:
-            bg_env["OCTOPUS_SESSION_ID"] = self._session_id
+            callback_env["OCTOPUS_SESSION_ID"] = self._session_id
 
         mcp_config = json.dumps(
             {
@@ -201,29 +245,58 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
                     "bg": {
                         "command": sys.executable,
                         "args": ["-m", "server.mcp_servers.bg"],
-                        "env": bg_env,
+                        "env": callback_env,
+                    },
+                    "ask": {
+                        "command": sys.executable,
+                        "args": ["-m", "server.mcp_servers.ask"],
+                        "env": callback_env,
                     },
                 }
             }
         )
 
+        # VM0-style command shape. Notes on each flag:
+        #   --print                  one-shot mode (we drive turns ourselves).
+        #   --output-format=stream-json  parse events from stdout.
+        #   --verbose                required with --print + stream-json.
+        #   --dangerously-skip-permissions   no `can_use_tool` round-trips;
+        #                                    the user already trusts this
+        #                                    subprocess (Octopus is the only
+        #                                    thing spawning these claude
+        #                                    invocations on their behalf).
+        #   --disallowedTools AskUserQuestion   force the model to use
+        #                                       mcp__ask__user (the MCP
+        #                                       replacement) instead of the
+        #                                       built-in.
+        #   --mcp-config JSON        register the three in-process MCP
+        #                            servers above.
+        #   --append-system-prompt   teach the model about /showme,
+        #                            bg_run, and ask_user.
+        #   --resume <id>            continue the prior conversation when
+        #                            present.
+        #   --                       end of flag parsing; prompt follows.
         argv = [
             self.binary,
             "--print",
-            "--input-format=stream-json",
             "--output-format=stream-json",
             "--verbose",
-            "--permission-mode=default",
-            "--permission-prompt-tool=stdio",
-            "--mcp-config",
-            mcp_config,
-            "--append-system-prompt",
-            _OCTOPUS_SYSTEM_PROMPT,
+            "--dangerously-skip-permissions",
+            "--disallowedTools", "AskUserQuestion",
+            "--mcp-config", mcp_config,
+            "--append-system-prompt", _OCTOPUS_SYSTEM_PROMPT,
         ]
         if self._model:
             argv += ["--model", self._model]
         if resume_id:
             argv += ["--resume", resume_id]
+        # `--` terminates option parsing; the prompt is the final arg.
+        # Empty prompts are valid (used by the auto-respawn nudge path
+        # if we ever add it) — pass an empty string rather than
+        # omitting the arg, so the CLI sees an explicit empty turn
+        # rather than "no prompt at all" (which it errors on).
+        argv += ["--", prompt]
+
         env = os.environ.copy()
         if credential is not None:
             if credential.auth_type == "api_key":
@@ -240,14 +313,11 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         return argv, {"cwd": working_dir, "env": env}
 
     async def send_initial_prompt(self, prompt: str) -> None:
-        # First do the initialize handshake (mirrors what the SDK does).
-        await self._initialize()
-        # Then stream the user turn.
-        user_msg = {
-            "type": "user",
-            "message": {"role": "user", "content": prompt},
-        }
-        await self._write_stdin(json.dumps(user_msg) + "\n")
+        """No-op in VM0-shape: the prompt was passed as positional argv
+        in build_args, so nothing to write on stdin. Kept as a method so
+        SubprocessJsonlBackend's lifecycle calling convention is
+        unchanged."""
+        return
 
     # ------------------------------------------------------------------ event parsing
 
@@ -359,204 +429,37 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         # returns and the caller can stop() us.
         self._close_stream()
 
-    # ------------------------------------------------------------------ control protocol
-
-    async def _initialize(self) -> None:
-        """Send the initialize handshake the SDK normally does."""
-        await self._send_control_request(
-            {"subtype": "initialize", "hooks": None}, timeout=30.0
-        )
-        self._initialized = True
-
-    async def _send_control_request(
-        self, request_body: dict[str, Any], timeout: float = 60.0
-    ) -> dict[str, Any]:
-        self._req_counter += 1
-        request_id = f"oct_{self._req_counter}_{uuid.uuid4().hex[:6]}"
-        loop = asyncio.get_running_loop()
-        fut: asyncio.Future[dict[str, Any]] = loop.create_future()
-        self._pending_outgoing[request_id] = fut
-
-        payload = {
-            "type": "control_request",
-            "request_id": request_id,
-            "request": request_body,
-        }
-        await self._write_stdin(json.dumps(payload) + "\n")
-
-        try:
-            return await asyncio.wait_for(fut, timeout=timeout)
-        finally:
-            self._pending_outgoing.pop(request_id, None)
+    # ------------------------------------------------------------------ control protocol (vestigial)
 
     async def _handle_control_response(self, obj: dict[str, Any]) -> None:
-        resp = obj.get("response", {})
-        request_id = resp.get("request_id")
-        if not request_id:
-            return
-        fut = self._pending_outgoing.get(request_id)
-        if fut is None or fut.done():
-            return
-        if resp.get("subtype") == "error":
-            fut.set_exception(RuntimeError(resp.get("error", "unknown control error")))
-        else:
-            fut.set_result(resp.get("response", {}))
+        """No outgoing control_requests in the VM0 shape, so no
+        responses ever match a pending future. Drop silently."""
+        return
 
     async def _handle_control_request(self, obj: dict[str, Any]) -> None:
-        """CLI is asking us for a decision (permission, etc)."""
-        request_id = obj.get("request_id")
-        req = obj.get("request") or {}
-        subtype = req.get("subtype")
-
-        if not request_id or not subtype:
-            return
-
-        if subtype == "can_use_tool":
-            await self._handle_can_use_tool(request_id, req)
-            return
-
-        # Unknown control request → respond with error so the CLI moves on.
-        await self._send_control_response_error(
-            request_id, f"unsupported control subtype: {subtype}"
-        )
-
-    async def _handle_can_use_tool(
-        self, request_id: str, req: dict[str, Any]
-    ) -> None:
-        tool_name = req.get("tool_name", "")
-        tool_input = req.get("input", {}) or {}
-
-        # AskUserQuestion: emit a question_request event, hold the
-        # control_request, wait for answer_question() to resolve it.
-        if tool_name == "AskUserQuestion":
-            question_id = uuid.uuid4().hex[:16]
-            self._pending_incoming[request_id] = req
-            self._question_to_request[question_id] = request_id
-            self._emit(
-                BackendEvent(
-                    type="question_request",
-                    tool_use_id=question_id,
-                    tool_input=tool_input,
-                    raw=req,
-                )
-            )
-            return
-
-        # Without a callback: blanket-allow (matches the legacy bypass).
-        # The CLI's permission schema requires `updatedInput` even when we
-        # aren't modifying it; pass the original tool input through.
-        if self._permission_cb is None:
-            await self._send_control_response_allow(request_id, tool_input)
-            return
-
-        try:
-            decision = await self._permission_cb(tool_name, tool_input)
-        except Exception as e:
-            await self._send_control_response_deny(request_id, f"callback error: {e}")
-            return
-
-        # The callback returns the CLI-shaped decision directly. We don't
-        # translate — that lets callers pass back e.g. `updatedInput` if
-        # they want to rewrite the model's tool arguments.
-        await self._send_control_response_success(request_id, decision)
-
-    async def _send_control_response_success(
-        self, request_id: str, response: dict[str, Any]
-    ) -> None:
-        """Wrap a permission-result dict in the control_response envelope.
-
-        `response` must match the CLI's permission-result schema. Prefer
-        the typed `_send_control_response_allow` / `_send_control_response_deny`
-        helpers below; reach for this only when the caller already has a
-        fully-formed decision dict (e.g. straight from a user callback).
-        """
-        payload = {
-            "type": "control_response",
-            "response": {
-                "subtype": "success",
-                "request_id": request_id,
-                "response": response,
-            },
-        }
-        await self._write_stdin(json.dumps(payload) + "\n")
-
-    async def _send_control_response_allow(
-        self, request_id: str, updated_input: dict[str, Any] | None = None
-    ) -> None:
-        """Allow the tool to run, passing through (or rewriting) its input.
-
-        The CLI requires `updatedInput` even when we don't intend to change
-        anything — pass the original tool input through to honor the model's
-        request as-is. Sending `{"allow": True}` (the legacy SDK shape) is
-        rejected by the current CLI with a ZodError (see BUG_NEED_FIX #1).
-        """
-        await self._send_control_response_success(
-            request_id,
-            {"behavior": "allow", "updatedInput": updated_input or {}},
-        )
-
-    async def _send_control_response_deny(
-        self, request_id: str, message: str
-    ) -> None:
-        """Deny the tool. `message` is what Claude sees as the rejection text."""
-        await self._send_control_response_success(
-            request_id,
-            {"behavior": "deny", "message": message},
-        )
-
-    async def _send_control_response_with_content(
-        self, request_id: str, content: str
-    ) -> None:
-        """Return content as the tool's effective result.
-
-        We own the CLI subprocess and drive its control protocol
-        directly, so the `behavior=deny, message=…` shape isn't a
-        workaround — it's just the API word for "host-provided content
-        replaces the tool's output". The deny `message` becomes what
-        Claude sees as the tool's response. Used for AskUserQuestion
-        answers: the user's selection is the content the tool would
-        otherwise have gathered interactively.
-
-        There's no MCP server to add or built-in tool to displace; the
-        CLI hands us this channel for exactly this case.
-        """
-        await self._send_control_response_deny(request_id, content)
-
-    async def _send_control_response_error(
-        self, request_id: str, message: str
-    ) -> None:
-        payload = {
-            "type": "control_response",
-            "response": {
-                "subtype": "error",
-                "request_id": request_id,
-                "error": message,
-            },
-        }
-        await self._write_stdin(json.dumps(payload) + "\n")
+        """The CLI doesn't send `can_use_tool` under
+        `--dangerously-skip-permissions`, but we may still see other
+        control_request kinds (`mcp_message`, etc.) in unusual
+        situations. Drop them silently — there's no longer a host
+        callback to route them to."""
+        return
 
     # ------------------------------------------------------------------ interrupt / answer_question
 
     async def interrupt(self) -> None:
-        # Send the interrupt control request *before* tearing down — the
-        # CLI may want to flush a final result event.
-        if self._process and self._process.returncode is None:
-            try:
-                await asyncio.wait_for(
-                    self._send_control_request({"subtype": "interrupt"}),
-                    timeout=2.0,
-                )
-            except Exception:
-                logger.debug("interrupt control request failed; proceeding to stop")
+        """Stop the CLI subprocess. Without the control protocol over
+        stdin, there's no graceful `interrupt` request to send first —
+        SubprocessJsonlBackend.stop() does SIGTERM → 2 s grace → SIGTERM
+        again → 2 s → SIGKILL, which is sufficient. Any in-flight tool
+        work in MCP-server children dies with their parent process
+        group."""
         await self.stop()
 
     async def answer_question(self, question_id: str, answer_text: str) -> bool:
-        request_id = self._question_to_request.pop(question_id, None)
-        if request_id is None:
-            return False
-        self._pending_incoming.pop(request_id, None)
-        # Use the with_content path (not raw _send_control_response_deny)
-        # to make the intent at the call site clear — we're returning a
-        # tool result, not refusing the tool.
-        await self._send_control_response_with_content(request_id, answer_text)
+        """No-op in the VM0 shape: AskUserQuestion answers now flow
+        through session_manager.answer_question → asyncio.Event →
+        mcp__ask__user's HTTP long-poll. The backend doesn't need to
+        do anything here. Kept on the interface for compatibility
+        with callers that don't yet know about the new path."""
+        return True
         return True
