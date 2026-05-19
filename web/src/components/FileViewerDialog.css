@@ -102,7 +102,12 @@
   background: transparent;
   padding: 0;
   font-size: inherit;
-  /* highlight.js sets its own colors via .hljs-* classes; let those win */
+  /* Force a strong base color so language-less / unhighlighted code
+   * is always readable on the muted bg. Per-token `.hljs-*` classes
+   * still override this for syntax-highlighted blocks (they have
+   * higher specificity / inline applicability) — this is just the
+   * floor color. */
+  color: hsl(var(--foreground));
 }
 
 /* ── Tables (GitHub grid look) ───────────────────────────────────── */

@@ -524,7 +524,14 @@ function MarkdownBody({ text }: { text: string }) {
       <Markdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[
-          [rehypeHighlight, { ignoreMissing: true }],
+          // `detect: false` is load-bearing — without it, fenced code
+          // blocks that omit a language get auto-classified. The
+          // resulting `.hljs-comment` / `.hljs-meta` token classes
+          // paint big chunks of the text in muted gray, which on our
+          // muted-gray code-block background renders as nearly
+          // invisible. Skipping auto-detect means language-less blocks
+          // stay plain monospace at the full foreground color.
+          [rehypeHighlight, { ignoreMissing: true, detect: false }],
           rehypeKatex,
         ]}
         components={MARKDOWN_COMPONENTS}
