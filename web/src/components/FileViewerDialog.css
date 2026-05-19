@@ -1,0 +1,189 @@
+/* GitHub-flavored markdown styling for the FileViewerDialog body.
+ *
+ * Layered on top of @tailwindcss/typography (the .prose base class):
+ * the plugin gives reasonable line-height, list indents, spacing, etc.;
+ * we override the bits that matter for a GitHub-feel (heading scale +
+ * bottom borders, table grid lines, code block container, inline code
+ * background, blockquote styling).
+ *
+ * Selector strategy: scope everything under .md-github so it only
+ * targets the viewer body and not, e.g., the assistant message bubbles
+ * elsewhere in the chat that use `.markdown` for plain react-markdown.
+ *
+ * Colors come from the project's CSS variables (see tokens.css) so the
+ * styling tracks the rest of the app's theme.
+ */
+
+.md-github {
+  /* GitHub default body line height + font size feel. The prose-sm
+   * modifier already sets a 14px base; we just nudge line-height. */
+  line-height: 1.55;
+  color: hsl(var(--foreground));
+}
+
+/* ── Headings ─────────────────────────────────────────────────────── */
+
+.md-github h1,
+.md-github h2,
+.md-github h3,
+.md-github h4,
+.md-github h5,
+.md-github h6 {
+  font-weight: 600;
+  line-height: 1.25;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  color: hsl(var(--foreground));
+}
+
+.md-github h1 {
+  font-size: 1.9em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.md-github h2 {
+  font-size: 1.45em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.md-github h3 { font-size: 1.2em; }
+.md-github h4 { font-size: 1em; }
+.md-github h5 { font-size: 0.92em; color: hsl(var(--muted-foreground)); }
+.md-github h6 { font-size: 0.85em; color: hsl(var(--muted-foreground)); }
+
+/* First heading shouldn't get a giant top margin */
+.md-github > :first-child { margin-top: 0; }
+
+/* ── Paragraphs + inline ─────────────────────────────────────────── */
+
+.md-github p {
+  margin: 0 0 1em 0;
+}
+
+.md-github a {
+  color: hsl(var(--primary));
+  text-decoration: none;
+}
+.md-github a:hover { text-decoration: underline; }
+
+.md-github strong { font-weight: 600; }
+
+/* ── Inline code (GitHub pink-on-gray look, but neutral) ───────── */
+
+.md-github :not(pre) > code {
+  font-family: var(--font-family-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 0.88em;
+  padding: 0.16em 0.36em;
+  margin: 0;
+  background-color: hsl(var(--muted));
+  border-radius: 4px;
+  /* prose adds backticks around inline code via ::before/::after — kill */
+}
+.md-github :not(pre) > code::before,
+.md-github :not(pre) > code::after { content: none !important; }
+
+/* ── Block code (the container our custom MarkdownPreBlock wraps) ── */
+
+.md-github .md-codeblock { /* wrapper from MarkdownPreBlock */ }
+
+.md-github .md-codeblock pre {
+  background-color: hsl(var(--muted) / 0.6);
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  padding: 0.8rem 1rem;
+  overflow-x: auto;
+  font-size: 0.85em;
+  line-height: 1.5;
+  margin: 0;
+}
+.md-github .md-codeblock pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  /* highlight.js sets its own colors via .hljs-* classes; let those win */
+}
+
+/* ── Tables (GitHub grid look) ───────────────────────────────────── */
+
+.md-github table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border-spacing: 0;
+  border-collapse: collapse;
+  margin: 1em 0;
+}
+.md-github th,
+.md-github td {
+  padding: 6px 13px;
+  border: 1px solid hsl(var(--border));
+}
+.md-github th {
+  font-weight: 600;
+  background-color: hsl(var(--muted) / 0.4);
+}
+.md-github tr:nth-child(2n) td { background-color: hsl(var(--muted) / 0.25); }
+
+/* ── Blockquote ──────────────────────────────────────────────────── */
+
+.md-github blockquote {
+  margin: 1em 0;
+  padding: 0 1em;
+  color: hsl(var(--muted-foreground));
+  border-left: 0.25em solid hsl(var(--border));
+  font-style: normal; /* prose italicizes; GitHub doesn't */
+}
+.md-github blockquote > :first-child { margin-top: 0; }
+.md-github blockquote > :last-child { margin-bottom: 0; }
+
+/* ── Lists ───────────────────────────────────────────────────────── */
+
+.md-github ul,
+.md-github ol {
+  padding-left: 2em;
+  margin: 0 0 1em 0;
+}
+.md-github li + li { margin-top: 0.25em; }
+/* GFM task lists */
+.md-github .task-list-item { list-style-type: none; }
+.md-github .task-list-item input[type="checkbox"] {
+  margin: 0 0.4em 0.18em -1.4em;
+  vertical-align: middle;
+}
+
+/* ── Horizontal rule ─────────────────────────────────────────────── */
+
+.md-github hr {
+  height: 1px;
+  background: hsl(var(--border));
+  border: 0;
+  margin: 1.5em 0;
+}
+
+/* ── Images ──────────────────────────────────────────────────────── */
+
+.md-github img {
+  max-width: 100%;
+  border-radius: 6px;
+  background-color: hsl(var(--card));
+}
+
+/* ── KaTeX (math) ────────────────────────────────────────────────── */
+
+/* Display-mode math centers and gets a bit of breathing room. */
+.md-github .katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* ── Kill some prose defaults that fight GitHub feel ─────────────── */
+
+/* prose adds quote marks around <q> and around blockquotes; nuke those */
+.md-github blockquote::before,
+.md-github blockquote::after,
+.md-github blockquote p::before,
+.md-github blockquote p::after { content: none !important; }

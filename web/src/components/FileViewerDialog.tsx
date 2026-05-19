@@ -26,7 +26,10 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode, HTMLAttributes } from "react";
 import {
+  IconCheck,
+  IconCopy,
   IconDownload,
   IconExternalLink,
   IconFile,
@@ -35,12 +38,16 @@ import {
   IconZoomIn,
   IconZoomOut,
 } from "@tabler/icons-react";
-import Markdown from "react-markdown";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 
 import "highlight.js/styles/github.css";
+import "katex/dist/katex.min.css";
+import "./FileViewerDialog.css";
 
 import { useSessionStore } from "../stores/sessionStore";
 import { cn } from "../lib/utils";
@@ -420,12 +427,107 @@ function TextBody({ meta, bytesUrl, token, reloadKey }: TextBodyProps) {
   return <PlainTextBody text={text} />;
 }
 
+/**
+ * Custom renderer for fenced code blocks inside markdown bodies.
+ *
+ * react-markdown calls our `pre` renderer for ```fenced blocks. The
+ * standard inline `<code>` (without surrounding <pre>) is left alone —
+ * we only enhance block-level code. Inside the pre we expect a single
+ * <code class="language-xxx"> child (this is how rehype-highlight emits).
+ *
+ * We add two affordances GitHub gets right and we want here:
+ *   - A language badge in the top-right showing the parsed language.
+ *   - A copy-to-clipboard button next to it (icon-only, hover-revealed
+ *     on desktop, always visible on touch).
+ *
+ * We extract the language and the raw code text from the child <code>
+ * element so the copy button puts the *unhighlighted* source on the
+ * clipboard (not the syntax-highlighted span soup).
+ */
+function MarkdownPreBlock({ children, className, ...rest }: HTMLAttributes<HTMLPreElement>) {
+  const [copied, setCopied] = useState(false);
+
+  // Drill into the <code> child to extract language + raw text. children
+  // from react-markdown is normally a single React element; we defend
+  // against null/array shapes.
+  const code = Array.isArray(children) ? children[0] : children;
+  let language: string | null = null;
+  let rawText = "";
+  if (
+    code &&
+    typeof code === "object" &&
+    "props" in code &&
+    code.props
+  ) {
+    const codeProps = code.props as { className?: string; children?: ReactNode };
+    const m = (codeProps.className ?? "").match(/language-([\w-]+)/);
+    language = m ? m[1] : null;
+    rawText = extractText(codeProps.children);
+  }
+
+  const copy = async () => {
+    if (!rawText) return;
+    try {
+      await navigator.clipboard.writeText(rawText);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Old browsers w/o clipboard API: ignore silently.
+    }
+  };
+
+  return (
+    <div className="md-codeblock group relative my-4">
+      <div className="md-codeblock-toolbar absolute right-2 top-2 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        {language && (
+          <span className="md-codeblock-lang inline-flex items-center rounded border border-border bg-card/90 px-1.5 py-0.5 text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
+            {language}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={copy}
+          aria-label={copied ? "Copied" : "Copy code"}
+          title={copied ? "Copied" : "Copy"}
+          className="md-codeblock-copy inline-flex items-center justify-center size-6 rounded border border-border bg-card/90 text-muted-foreground hover:text-foreground hover:bg-card transition-colors"
+        >
+          {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
+        </button>
+      </div>
+      <pre className={className} {...rest}>
+        {children}
+      </pre>
+    </div>
+  );
+}
+
+/** Flatten react-markdown's `children` into a plain string suitable
+ *  for clipboard. Handles strings, arrays, and elements with their
+ *  own children (e.g. highlight.js spans). */
+function extractText(node: ReactNode): string {
+  if (node == null || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (typeof node === "object" && "props" in node && node.props) {
+    return extractText((node.props as { children?: ReactNode }).children);
+  }
+  return "";
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  pre: MarkdownPreBlock,
+};
+
 function MarkdownBody({ text }: { text: string }) {
   return (
-    <article className="markdown prose prose-sm max-w-none px-8 py-6">
+    <article className="markdown md-github prose prose-sm max-w-none px-8 py-6">
       <Markdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[[rehypeHighlight, { ignoreMissing: true }]]}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[
+          [rehypeHighlight, { ignoreMissing: true }],
+          rehypeKatex,
+        ]}
+        components={MARKDOWN_COMPONENTS}
       >
         {text}
       </Markdown>

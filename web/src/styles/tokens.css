@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* @tailwindcss/typography gives us the `prose` class for clean rich-text
+ * rendering inside the FileViewerDialog's markdown body. We customize
+ * heavily in the component itself (GitHub-flavored borders on h2,
+ * code-block treatment) — the plugin is the base layer. */
+@plugin "@tailwindcss/typography";
+
 /* Octopus design tokens — stolen wholesale from vm0's globals.css.
  *
  * Light theme, orange primary, cool-gray neutrals. Octopus used to be
