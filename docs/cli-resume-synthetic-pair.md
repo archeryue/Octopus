@@ -8,10 +8,15 @@ with the tool result**. The synthetic-pair artifact we chased for the
 first half of this doc is downstream of that — it's how the *next*
 `--resume` patches the prematurely-ended turn.
 
-**Status**: root cause identified at the API-loop layer; trigger
-conditions not yet pinned down (probes in isolation don't reproduce
-production behavior). No code change yet. See §13 for the corrected
-diagnosis and §14 for what to dig into next.
+**Status (current, supersedes §17/§18 framing):** VM0-shape refactor
+deployed and *reduces* the bug's frequency but does **not** eliminate
+it. Post-deployment reproduction at ~900K input tokens with an image
+tool_result confirms the same shape (tool ran, result in CLI's private
+jsonl, never emitted on stdout, Octopus saw EOF). See §19 for the
+specific reproducing event and the corrected next-steps. Open work:
+implement option (E) in §17 (auto-respawn on premature exit in
+Octopus) as the near-term mitigation; file upstream with Anthropic
+with the §16 + §19 evidence.
 
 **Captured against**: `claude` v2.1.143.
 
@@ -831,3 +836,99 @@ roundtrips at large context, fix is verified empirically.
   has a tool-only trailing turn. It remains *invisible to the UI*
   and now also doesn't matter for the loop correctness, since the
   loop is back to running cleanly. We just leave it alone.
+
+---
+
+## 19. Post-deployment finding: VM0 shape **mitigates but does not fix** the bug
+
+**Status of §18's "outcome" framing:** over-confident. After the
+VM0-shape refactor was deployed to production and tested over many
+turns, the premature-exit symptom reappeared. The user reported a
+stuck Read tool call; forensic analysis confirmed the same shape we
+diagnosed in §12-§16, with new specifics this time.
+
+### The specific reproducing event
+
+Captured live during normal use (not in a probe):
+
+- The model called `Read` on `/tmp/viewer-render.png` (a screenshot
+  written by an earlier Playwright probe; 42 KB PNG).
+- CLI's private transcript at
+  `~/.claude/projects/-home-start-up-Octopus/<session>.jsonl`:
+  - `[2404]` assistant `tool_use(Read, id=toolu_015XXf9AMA9GLdxeoRbnueMJ)`
+    **with `input_tokens=891,068`** (well past the 327K median from §16)
+  - `[2405]` user `tool_result` for that id, content is an `image` block
+    (42 KB base64) — **the result was generated**
+  - `[2406]` **`type=attachment`** — a CLI event we hadn't seen before;
+    likely an internal note that an attachment was added to the
+    conversation state
+  - `[2407]`-`[2409]` `last-prompt` / `ai-title` bookkeeping
+- Octopus DB (`/home/start-up/octopus.db`, session `160e8cc42ac0`):
+  - `seq=1931` assistant tool_use Read with the **same** `tool_use_id`
+  - **no seq=1932** — the tool_result never reached Octopus's stdout
+    reader
+
+Identical shape to the pre-refactor failures: CLI ran the tool, wrote
+the result to its private jsonl, never emitted on stdout. Octopus saw
+EOF and closed the stream.
+
+### What's new compared to §12-§16
+
+1. **Image-typed tool_results may be a worse trigger.** All the
+   pre-refactor cases I scanned had text tool_results (median
+   `tr_bytes < 1000` per §16). This was a single image content block.
+   The `attachment` transcript event suggests the CLI handles image
+   results via a side channel, and that side channel doesn't always
+   produce a stdout emit.
+2. **Token-context band stretched higher.** Pre-refactor max was
+   ~657K input tokens. This was **891K**. The bug appears more
+   reliable as context grows; we just didn't have anything that big
+   in the pre-refactor data.
+3. **The CLI's transcript has a new event type (`attachment`)** that
+   we don't yet handle in `claude_code.py:on_stdout_line`. (It's a
+   transcript-only marker, not a stdout event we receive, so handling
+   it on our end wouldn't directly help; noting for awareness.)
+
+### What this means for the §17 fix recommendations
+
+- **(D) File upstream with Anthropic** — *more strongly recommended,
+  not less.* Now we have:
+  - The 21% statistic on text tool_results pre-refactor.
+  - Reproducible failure on image tool_results post-refactor at ~900K
+    tokens.
+  - Evidence that switching to `--dangerously-skip-permissions` +
+    positional argv (the VM0 shape) reduces frequency but doesn't
+    eliminate. So the bug is **independent of the input-format /
+    permission-prompt path**; the trigger is in the loop's stdout
+    emit logic for large or image-shaped tool_results.
+- **(E) Auto-respawn on premature exit in Octopus** — now the
+  primary near-term mitigation we'd actually implement. Detect when
+  a tool_use was followed by no tool_result in our DB *and* the CLI
+  process has exited, then respawn with `--resume` and an empty
+  user-message nudge to coax the model back into the loop. Needs a
+  retry cap (3 attempts) and a "we gave up" surface in chat. Scope:
+  ~50-80 lines in `session_manager._run_backend` + tests.
+
+### What's still wrong with my prior framing
+
+- §13 ("Why VM0 doesn't see this (revised, again)") credited VM0's
+  command shape with using a "different CLI code path that doesn't
+  exhibit the bug." That's not supported by the data. VM0 *also*
+  uses `--print --resume`, also hits the same loop. We just don't
+  have evidence about whether VM0 sees the bug at large context —
+  we never inspected VM0's transcripts at comparable scale.
+- §18 ("Outcome — what we shipped") said "the loop is back to
+  running cleanly." It's running *more* cleanly. Not cleanly.
+
+### Next concrete steps (when revisited)
+
+1. **Build option E (auto-respawn)** as the immediate Octopus-side
+   mitigation. Detection criterion: `result` event arrived AND the
+   last assistant turn had `stop_reason: tool_use` AND there's a
+   tool_use without a matching tool_result in Octopus's DB for this
+   invocation.
+2. **File upstream** with both the 21% statistic AND this single
+   reproducing image case. The image-tool-result detail is a new
+   data point Anthropic doesn't have.
+3. **Stop claiming the bug is fixed.** Update the status banner at
+   the top of this doc accordingly.
