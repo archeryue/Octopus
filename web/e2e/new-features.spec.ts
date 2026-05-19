@@ -1644,6 +1644,97 @@ test.describe("Cross-turn bg tasks", () => {
       fs.rmSync(wd, { recursive: true, force: true });
     }
   });
+
+  test("Cancel button on chip stops a running bg task and drives a follow-up turn", async ({
+    page,
+    request,
+  }) => {
+    // What this test proves end-to-end (no unit test reaches the UI button):
+    //   1. While a bg task is running, the chip exposes a Cancel button.
+    //   2. Clicking it hits POST /bg-tasks/{id}/cancel, which SIGTERMs the
+    //      process and the manager marks the row status=`cancelled` (NOT
+    //      `interrupted` — the latter is reserved for kills we didn't
+    //      initiate, see server/bg_tasks.py:494-513).
+    //   3. The bg_completed WS event flips the chip label to `cancelled`.
+    //   4. deliver_bg_result still fires (cancel is a terminal state like
+    //      any other), so the synthesized [bg-task-result] turn lands and
+    //      the model gets a chance to react. Without this, a user-cancel
+    //      would leave the conversation hanging mid-thought.
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), "octopus-bg-cancel-"));
+    const REPLY_SENTINEL = "CANCEL-HANDLED-71920";
+    try {
+      const sessRes = await request.post(`${API}/sessions`, {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        data: { name: "Bg Idle Watchdog", working_dir: wd },
+      });
+      expect(sessRes.ok()).toBeTruthy();
+
+      await login(page);
+      await page
+        .locator(".session-item .session-name", {
+          hasText: "Bg Idle Watchdog",
+        })
+        .click();
+      await expect(page.locator(".chat-header h3")).toHaveText(
+        "Bg Idle Watchdog"
+      );
+
+      // sleep 60 is long enough that the cancel always wins the race —
+      // even on a slow Playwright worker the click lands well inside the
+      // first 5 s. The model's follow-up reply uses a sentinel so we can
+      // distinguish "the cancel path drove the model" from "the model
+      // already responded before cancel completed".
+      const prompt =
+        "Use the mcp__bg__run tool RIGHT NOW with " +
+        "command='sleep 60' and description='cancel probe'. " +
+        "After calling it, say 'started' and end your turn. When " +
+        "the follow-up bg-task-result arrives describing a cancelled " +
+        `task, reply with exactly '${REPLY_SENTINEL}' and nothing else.`;
+      await page.locator(".chat-input-bar textarea").fill(prompt);
+      await page.locator("button.btn-send").click();
+
+      // Chip lands in `running`. The Cancel button is visible only
+      // while running — title attribute is the most stable selector
+      // (text 'Cancel' is also used inside several dialogs).
+      const chip = page.locator(".octo-bgtask-chip").first();
+      await expect(chip).toBeVisible({ timeout: 90_000 });
+      await expect(chip).toContainText(/bg · running/i, { timeout: 30_000 });
+
+      const cancelBtn = chip.locator(
+        'button[title="Cancel this background task"]'
+      );
+      await expect(cancelBtn).toBeVisible();
+      await cancelBtn.click();
+
+      // bg_completed → store update → chip header flips. Label must be
+      // `cancelled` specifically — `interrupted` would mean we hit the
+      // SIGTERM-from-outside branch, not the user-initiated cancel path.
+      await expect(chip).toContainText(/bg · cancelled/i, { timeout: 30_000 });
+      // Cancel button gone once the task is no longer running (isRunning
+      // toggle in BgTaskChip).
+      await expect(cancelBtn).toHaveCount(0);
+
+      // Auto-injected follow-up turn lands with status=cancelled in its
+      // body. .msg-bg-result is what MessageBubble renders for the
+      // [bg-task-result] prefix; the collapsed view shows the first
+      // line, which is the "finished with status `cancelled`" summary.
+      const bgResult = page.locator(".msg-bg-result").first();
+      await expect(bgResult).toBeVisible({ timeout: 60_000 });
+      await expect(bgResult).toContainText(/cancelled/i);
+
+      // The model received the follow-up and produced a reply — proves
+      // the cancel path still drives a model turn end-to-end, not just
+      // a silent terminal state.
+      await expect(
+        page.locator(".msg-assistant .msg-content").last()
+      ).toContainText(REPLY_SENTINEL, { timeout: 60_000 });
+    } finally {
+      fs.rmSync(wd, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
