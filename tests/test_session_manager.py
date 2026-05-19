@@ -14,7 +14,14 @@ async def manager():
     db = Database(":memory:")
     await db.initialize()
     await mgr.initialize(db)
-    return mgr
+    try:
+        yield mgr
+    finally:
+        # Close the aiosqlite connection so its worker thread exits
+        # before the per-test event loop is torn down. A leaked
+        # connection's thread later crashes with "Event loop is
+        # closed" and pins the pytest process at atexit.
+        await db.close()
 
 
 @pytest.mark.asyncio
@@ -103,20 +110,22 @@ async def test_initialize_restores_sessions():
     """Create a session with one manager, then load into a fresh manager."""
     db = Database(":memory:")
     await db.initialize()
+    try:
+        mgr1 = SessionManager()
+        await mgr1.initialize(db)
+        session = await mgr1.create_session("Restored", "/tmp")
+        sid = session.id
 
-    mgr1 = SessionManager()
-    await mgr1.initialize(db)
-    session = await mgr1.create_session("Restored", "/tmp")
-    sid = session.id
-
-    # Create a fresh manager, initialize with the same DB
-    mgr2 = SessionManager()
-    await mgr2.initialize(db)
-    restored = mgr2.get_session(sid)
-    assert restored is not None
-    assert restored.name == "Restored"
-    assert restored.working_dir == "/tmp"
-    assert restored.status == SessionStatus.idle
+        # Create a fresh manager, initialize with the same DB
+        mgr2 = SessionManager()
+        await mgr2.initialize(db)
+        restored = mgr2.get_session(sid)
+        assert restored is not None
+        assert restored.name == "Restored"
+        assert restored.working_dir == "/tmp"
+        assert restored.status == SessionStatus.idle
+    finally:
+        await db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +826,7 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
     # argv prompt, --dangerously-skip-permissions instead of the old
     # --permission-prompt-tool=stdio path. The migration away from
     # --input-format=stream-json was the whole point of the refactor
-    # (see docs/cli-resume-synthetic-pair.md).
+    # (see docs/2026-05-18-bg-pipeline-hardening.md §2).
     argv_str = " ".join(str(a) for a in argv)
     assert "claude" in argv_str
     assert "--dangerously-skip-permissions" in argv_str
@@ -894,7 +903,8 @@ async def test_run_backend_translates_events_end_to_end(manager):
 
 
 # ---------------------------------------------------------------------------
-# Auto-respawn on CLI premature exit (docs/cli-resume-synthetic-pair.md)
+# Auto-respawn on CLI premature exit
+# (post-mortem in docs/2026-05-18-bg-pipeline-hardening.md §2)
 # ---------------------------------------------------------------------------
 
 

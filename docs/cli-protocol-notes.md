@@ -15,7 +15,8 @@ runs against `claude` if it's on `$PATH`.
 refactor (commit `5815560`). The old shape used
 `--input-format=stream-json` + `--permission-prompt-tool=stdio` and
 drove a bidirectional control protocol over stdin; that path is gone.
-See `docs/cli-resume-synthetic-pair.md` for the full why.
+The refactor and the recovery loop that sits on top of it are
+documented in `docs/2026-05-18-bg-pipeline-hardening.md` §2.
 
 ## Invocation
 
@@ -47,8 +48,9 @@ Notes per flag:
   spawning these subprocesses on the user's behalf, so the user
   already trusts the call. The previous shape
   (`--permission-prompt-tool=stdio` + host callback) gave us nothing
-  we needed and was on the failure surface for the premature-exit
-  CLI bug; see cli-resume-synthetic-pair.md.
+  we needed and was on the failure surface for the CLI
+  premature-exit bug; see `docs/2026-05-18-bg-pipeline-hardening.md`
+  §2.
 - `--disallowedTools AskUserQuestion`: prevents the model from
   calling the built-in AUQ. We provide `mcp__ask__user` (see below)
   as the replacement.
@@ -65,9 +67,9 @@ Notes per flag:
 What we **do not** set, and why:
 
 - `--input-format=stream-json` — was load-bearing on the failure
-  surface for the §16 bug in cli-resume-synthetic-pair.md. With the
-  default text input, we pass the prompt as argv and never write to
-  stdin.
+  surface for the CLI premature-exit bug
+  (`docs/2026-05-18-bg-pipeline-hardening.md` §2). With the default
+  text input, we pass the prompt as argv and never write to stdin.
 - `--permission-prompt-tool=stdio` — replaced by `--dangerously-skip-permissions`.
 - `--permission-mode default` — moot once skipped.
 - `--no-session-persistence` — we *want* persistence so `--resume`
@@ -188,18 +190,19 @@ corresponding `user` event on stdout**. Octopus's stdout reader hits
 EOF and treats the turn as ended; the user sees the chat go silent
 with the tool's result missing.
 
-Full forensic detail and the open mitigation work lives in
-`docs/cli-resume-synthetic-pair.md`. Short version:
+The post-mortem and the mitigation that shipped live in
+`docs/2026-05-18-bg-pipeline-hardening.md` §2. Short version:
 
 - Independent of the input-format / permission-prompt path (the
   VM0-shape refactor reduced frequency but did not eliminate).
 - Worth filing upstream with Anthropic.
-- Octopus-side mitigation (option E in §17 of that doc): detect the
-  case in `session_manager._run_backend` (last assistant turn had
-  `stop_reason: tool_use` AND there's a tool_use with no matching
-  tool_result in our DB) and auto-respawn with `--resume` + an empty
-  user-message nudge. Capped at 3 attempts before surfacing as an
-  error in chat. Not yet implemented.
+- Octopus-side mitigation: `session_manager._run_backend` is a loop
+  that tracks `saw_result` / `saw_tool_use` across the event
+  stream. If the stream ends without a `result` after a `tool_use`
+  AND we have a resume id, it respawns the CLI once with prompt
+  `"continue"`. Bounded by `_MAX_RECOVERY_ATTEMPTS = 1`; the
+  recovery turn surfaces as a system marker
+  `(auto-resumed after CLI exited mid-turn)`.
 
 ## What this means for `ClaudeCodeBackend`
 

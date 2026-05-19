@@ -796,4 +796,7 @@ def test_build_args_system_prompt_teaches_bg_usage(tmp_path):
     )
     sp = argv[argv.index("--append-system-prompt") + 1]
     assert "mcp__bg__run" in sp
-    assert "30 seconds" in sp or "30s" in sp
+    # Bright-line rule (replaced the older "≥30s" heuristic): the
+    # prompt now lists categories like test suites / builds /
+    # installs that must always use bg_run.
+    assert "Use bg_run unconditionally" in sp

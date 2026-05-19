@@ -4,9 +4,9 @@ Doesn't require the real `claude` binary; uses tests/_fixtures/fake_claude_cli.p
 
 Note (VM0-shape migration): ClaudeCodeBackend no longer drives the
 SDK control protocol over stdin. AskUserQuestion is handled by the
-new `mcp__ask__user` MCP tool + REST long-poll (see
-docs/cli-resume-synthetic-pair.md §17 for context). The tests in
-this file therefore exercise:
+new `mcp__ask__user` MCP tool + REST long-poll (post-mortem in
+docs/2026-05-18-bg-pipeline-hardening.md §2 for context). The tests
+in this file therefore exercise:
 
   - the stdout JSONL parser (`_emit_assistant_blocks`,
     `_emit_user_blocks`, `_emit_result`)
@@ -103,11 +103,11 @@ async def test_tool_use_then_tool_result_then_text(tmp_path):
 
 @pytest.mark.asyncio
 async def test_premature_exit_after_tool_emits_no_result(tmp_path):
-    """Reproduce the CLI bug from docs/cli-resume-synthetic-pair.md:
-    after a tool roundtrip the CLI exits without emitting `result`.
-    The backend should expose this as a session_started + tool_use +
-    tool_result sequence with NO `result` event — leaving recovery
-    to the session_manager layer."""
+    """Reproduce the CLI premature-exit-after-tool bug (post-mortem in
+    docs/2026-05-18-bg-pipeline-hardening.md §2): after a tool roundtrip
+    the CLI exits without emitting `result`. The backend should expose
+    this as a session_started + tool_use + tool_result sequence with NO
+    `result` event — leaving recovery to the session_manager layer."""
     backend = _ScriptedClaudeCodeBackend("premature-exit-after-tool")
     await backend.start("read a big file", str(tmp_path))
 

@@ -19,11 +19,11 @@ Modes:
   interrupt-respond       : blocks on a long sleep so tests can verify
                             interrupt() → stop() actually tears the process
                             down via SIGTERM/SIGKILL.
-  premature-exit-after-tool : reproduces the CLI bug documented in
-                            docs/cli-resume-synthetic-pair.md — emits
-                            init + tool_use + tool_result and then
-                            exits WITHOUT emitting `result`, simulating
-                            the model never being re-invoked.
+  premature-exit-after-tool : reproduces the CLI bug post-mortemed in
+                            docs/2026-05-18-bg-pipeline-hardening.md §2
+                            — emits init + tool_use + tool_result and
+                            then exits WITHOUT emitting `result`,
+                            simulating the model never being re-invoked.
 """
 
 import json
@@ -122,7 +122,8 @@ def run_premature_exit_after_tool():
     """Reproduce the CLI premature-exit-after-tool bug: emit init,
     then a tool_use, then the tool_result echo, then exit WITHOUT
     emitting `result`. This is the exact event shape that left
-    session 561d86e2-… stuck — see docs/cli-resume-synthetic-pair.md."""
+    session 561d86e2-… stuck — post-mortem in
+    docs/2026-05-18-bg-pipeline-hardening.md §2."""
     _emit_init()
     _emit({
         "type": "assistant",

@@ -5,9 +5,9 @@ Replaces the built-in `AskUserQuestion` tool, which Octopus formerly
 intercepted via the CLI control protocol over stdio
 (`--permission-prompt-tool=stdio` + a deny-channel hack to inject the
 user's answer). That path was load-bearing for AUQ but exposed us to
-a CLI premature-exit bug at large context scale (see
-`docs/cli-resume-synthetic-pair.md`). The fix is to switch the CLI to
-its VM0-style command shape (positional argv prompt, no
+a CLI premature-exit bug at large context scale (post-mortem in
+`docs/2026-05-18-bg-pipeline-hardening.md` §2). The fix is to switch
+the CLI to its VM0-style command shape (positional argv prompt, no
 `--permission-prompt-tool=stdio`) and rebuild AUQ on top of an MCP
 tool that uses regular HTTP to coordinate with the host.
 

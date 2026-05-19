@@ -116,18 +116,23 @@ class CloudflareTunnel:
             asyncio.create_task(_read_stream(self._process.stdout)),
         ]
         try:
-            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            for t in pending:
-                t.cancel()
+            done, _pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
             for t in done:
                 if t.exception() is None:
                     return t.result()
             # Both failed
             raise asyncio.CancelledError("cloudflared exited prematurely")
-        except Exception:
+        finally:
+            # try/finally (not except Exception) is load-bearing:
+            # CancelledError inherits from BaseException since 3.8, so
+            # an `except Exception` on the outer wait_for timeout would
+            # silently leak these readers and block atexit.
             for t in tasks:
-                t.cancel()
-            raise
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _monitor_stderr(self) -> None:
         """Continue reading stderr after URL is found, for logging."""

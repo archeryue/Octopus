@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -137,6 +138,7 @@ class Database:
         self._db_path = db_path
         self._conn: aiosqlite.Connection | None = None
         self._dirty: bool = False
+        self._closed: bool = False
 
     async def initialize(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
@@ -203,11 +205,19 @@ class Database:
             pass
 
     async def _ensure_connected(self) -> None:
-        if self._conn is None:
-            logger.warning("Database connection lost, reconnecting...")
-            self._conn = await aiosqlite.connect(self._db_path)
-            await self._conn.execute("PRAGMA journal_mode=WAL")
-            await self._conn.execute("PRAGMA foreign_keys=ON")
+        # A closed Database is dead — never silently re-open. The
+        # previous "reconnect" path was load-bearing for nothing in
+        # production and was the root cause of a pytest atexit hang:
+        # tests that closed the DB still had pending consumer tasks
+        # that would call flush() during loop teardown, the reconnect
+        # spawned a brand-new aiosqlite worker thread right before
+        # the loop died, and that orphaned non-daemon thread pinned
+        # the process. We raise CancelledError so in-flight callers
+        # (e.g. session_manager._consume_message) exit cleanly via
+        # their existing CancelledError handling.
+        if self._closed:
+            raise asyncio.CancelledError("Database is closed")
+        assert self._conn is not None, "Database not initialized"
 
     async def close(self) -> None:
         if self._conn:
@@ -216,6 +226,7 @@ class Database:
                 self._dirty = False
             await self._conn.close()
             self._conn = None
+        self._closed = True
 
     async def flush(self) -> None:
         """Commit pending writes."""

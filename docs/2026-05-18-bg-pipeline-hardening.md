@@ -32,11 +32,12 @@ Tests: `tests/test_large_prompts.py` (12 cases).
 
 ## 2. CLI premature-exit-after-tool-use
 
-**Symptom.** Periodically (the doc that used to be
-`docs/cli-resume-synthetic-pair.md` chronicled this in depth) the
-`claude --print` invocation would emit a `tool_use` event, run the
-tool, and then exit *without* re-invoking the model or emitting a
-`result` event. The chat just went silent.
+**Symptom.** Periodically the `claude --print` invocation would emit
+a `tool_use` event, run the tool, and then exit *without* re-invoking
+the model or emitting a `result` event. The chat just went silent.
+(Forensic notes from the original investigation were captured in
+`docs/cli-resume-synthetic-pair.md` and removed once this fix shipped;
+this section is now the authoritative reference.)
 
 **Fix.** `session_manager._run_backend` is now a loop. We track
 `saw_result` and `saw_tool_use` across the event stream. If the
@@ -107,13 +108,39 @@ outputs routinely exceed this.
 `create_subprocess_exec`. Backpressure on the pipe still bounds
 memory; we just stop crashing on legitimately big lines.
 
-## What's still on the to-do list
+## Follow-ups closed after this commit set
 
-- The pytest atexit hang itself is a real bug in pytest/aiosqlite
-  test cleanup. The idle watchdog contains the *symptom*; finding
-  what thread is keeping the process alive would let us close the
-  underlying issue. Filed mentally as a follow-up; not blocking.
-- `docs/cli-resume-synthetic-pair.md` is now superseded by fix #2
-  for everything except historical context. Read with Grep, not
-  full Read (it's 42 KB and still triggers the very bug it
-  documents on naïve full-reads).
+- **Pytest atexit hang.** True root cause was a latent bug in
+  `server/database.py:_ensure_connected`: it silently reconnected
+  (calling `aiosqlite.connect()`, spawning a fresh
+  `_connection_worker_thread`) whenever `self._conn` was None —
+  i.e., after `close()`. pytest-asyncio's per-function teardown
+  runs `loop.run_until_complete(tasks.gather(*to_cancel))`, which
+  gives pending `_consume_message` tasks one last chance to run;
+  those tasks hit `db.flush()` → `_ensure_connected()`, the
+  reconnect fired *after* the test's `db.close()`, and the new
+  worker thread was orphaned right before the loop died. With
+  enough such threads piling up, the process never exited at
+  atexit. Fixed by adding a `_closed` flag to `Database` (set in
+  `close()`), having `_ensure_connected` raise
+  `asyncio.CancelledError` once closed, and removing the silent
+  reconnect entirely. Net effect: `pytest tests/ -q` finishes in
+  ~68 s and exits 0.
+- **`tests/test_session_manager.py` and `tests/test_large_prompts.py`
+  cleaned up.** The `manager` fixture was `return`-style (no
+  teardown hook); two inline tests also allocated
+  `Database(":memory:")` without closing. Converted to `yield` and
+  added `try/finally: await db.close()`. Not the atexit-hang trigger
+  on their own (the reconnect was), but leaking in tests is wrong
+  regardless and these now exercise the closed-DB code path.
+- **`server/tunnel.py:_read_until_url` hardened en route.** Its
+  cleanup used `except Exception`, which doesn't catch the
+  `CancelledError` raised when the outer `asyncio.wait_for` times
+  out (CancelledError inherits from `BaseException` since Python
+  3.8), so the two stream-reader tasks could leak past the test.
+  Switched to `try/finally`. Not the atexit-hang cause, but a real
+  latent bug — kept the fix.
+- **`docs/cli-resume-synthetic-pair.md` removed.** This section is
+  now the authoritative reference for the premature-exit bug;
+  in-tree pointers (code comments + neighbouring docs) were
+  redirected here.

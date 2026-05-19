@@ -195,48 +195,59 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
     mgr = SessionManager()
     db = Database(":memory:")
     await db.initialize()
-    await mgr.initialize(db)
-    session = await mgr.create_session("Huge")
+    try:
+        await mgr.initialize(db)
+        session = await mgr.create_session("Huge")
 
-    received_prompts: list[str] = []
+        received_prompts: list[str] = []
 
-    class RecordingBackend(BackendBase):
-        name = "recording"
+        class RecordingBackend(BackendBase):
+            name = "recording"
 
-        async def start(self, prompt, working_dir, resume_id=None, credential=None):
-            received_prompts.append(prompt)
+            async def start(
+                self, prompt, working_dir, resume_id=None, credential=None
+            ):
+                received_prompts.append(prompt)
 
-        def stream(self):
-            async def _gen():
-                yield BackendEvent(type="session_started", session_id="sid-huge")
-                yield BackendEvent(type="text", content="ok")
-                yield BackendEvent(
-                    type="result", session_id="sid-huge", cost=0.0, num_turns=1
-                )
-            return _gen()
+            def stream(self):
+                async def _gen():
+                    yield BackendEvent(
+                        type="session_started", session_id="sid-huge"
+                    )
+                    yield BackendEvent(type="text", content="ok")
+                    yield BackendEvent(
+                        type="result",
+                        session_id="sid-huge",
+                        cost=0.0,
+                        num_turns=1,
+                    )
 
-        async def stop(self):
+                return _gen()
+
+            async def stop(self):
+                pass
+
+        mgr._make_backend = lambda s: RecordingBackend()  # type: ignore[method-assign,assignment]
+
+        huge = "Q" * (LARGE_PROMPT_THRESHOLD_BYTES + 50_000)
+        async for _ in mgr.send_message(session.id, huge):
             pass
 
-    mgr._make_backend = lambda s: RecordingBackend()  # type: ignore[method-assign,assignment]
+        # Backend got the pointer, NOT the 150 KB original. This is the
+        # property that makes the whole feature load-bearing for E2BIG.
+        assert len(received_prompts) == 1
+        backend_prompt = received_prompts[0]
+        assert "[octopus-large-prompt]" in backend_prompt
+        assert len(backend_prompt.encode("utf-8")) < LARGE_PROMPT_THRESHOLD_BYTES
 
-    huge = "Q" * (LARGE_PROMPT_THRESHOLD_BYTES + 50_000)
-    async for _ in mgr.send_message(session.id, huge):
-        pass
-
-    # Backend got the pointer, NOT the 150 KB original. This is the
-    # property that makes the whole feature load-bearing for E2BIG.
-    assert len(received_prompts) == 1
-    backend_prompt = received_prompts[0]
-    assert "[octopus-large-prompt]" in backend_prompt
-    assert len(backend_prompt.encode("utf-8")) < LARGE_PROMPT_THRESHOLD_BYTES
-
-    # The DB message row should hold the original prompt verbatim so
-    # the UI / transcript shows what the user actually typed, not the
-    # spill pointer.
-    rows = await db.load_messages(session.id)
-    user_rows = [r for r in rows if r["role"] == "user"]
-    assert any(r["content"] == huge for r in user_rows), (
-        "message persistence should keep the original prompt, "
-        "not the spill pointer"
-    )
+        # The DB message row should hold the original prompt verbatim so
+        # the UI / transcript shows what the user actually typed, not the
+        # spill pointer.
+        rows = await db.load_messages(session.id)
+        user_rows = [r for r in rows if r["role"] == "user"]
+        assert any(r["content"] == huge for r in user_rows), (
+            "message persistence should keep the original prompt, "
+            "not the spill pointer"
+        )
+    finally:
+        await db.close()

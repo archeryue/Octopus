@@ -224,11 +224,11 @@ Concretely:
   (`google-api-python-client` for Gmail, `notion-client` for Notion).
 - **Caps result size.** Returns are truncated to 32 KB of text by
   default (configurable per tool) — large unbounded results can
-  trip the §17 premature-exit bug documented in
-  `docs/cli-resume-synthetic-pair.md` (CLI drops tool_result on
-  stdout for results > ~50 KB). When truncated, append a
-  `…[truncated <N> bytes; use mcp__<kind>__fetch_page to paginate]`
-  marker.
+  trip the CLI premature-exit bug (CLI drops `tool_result` on
+  stdout for results > ~50 KB; see
+  `docs/2026-05-18-bg-pipeline-hardening.md` §2). When truncated,
+  append a `…[truncated <N> bytes; use mcp__<kind>__fetch_page to
+  paginate]` marker.
 - On 401, POSTs `/api/connectors/{id}/mark-needs-reconnect` and
   returns a one-line "Token expired — ask the user to reconnect
   <Kind> via Octopus's sidebar."
@@ -932,7 +932,9 @@ Found while researching. Calling these out so we don't break them.
   (`needs_reconnect`) should *also* fire a notifier event so the
   user finds out before next using the connector. Hook into
   `notifier_manager.notify_session_event(session_id, "connector_needs_reconnect", {kind, label})`.
-- **`docs/cli-resume-synthetic-pair.md` §17 premature-exit bug.**
+- **CLI premature-exit bug** (post-mortem in
+  `docs/2026-05-18-bg-pipeline-hardening.md` §2; auto-respawn
+  recovery lives in `server/session_manager._run_backend`).
   Large tool results (text > ~50 KB or any image > ~900K tokens
   context) trigger the CLI to drop the `tool_result` event on
   stdout, silently. Connector results are exactly the high-risk

@@ -141,8 +141,8 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
     until `result`; `stop()` shuts the subprocess down.
 
     Command shape (since the VM0-shape migration to fix the CLI's
-    premature-exit bug at large context — see
-    `docs/cli-resume-synthetic-pair.md`):
+    premature-exit bug at large context — post-mortem in
+    `docs/2026-05-18-bg-pipeline-hardening.md` §2):
 
       - Prompt is passed as a **positional argv** after `--`, not
         streamed as JSON on stdin. This avoids `--input-format=stream-json`,
@@ -368,10 +368,10 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
                 self._captured_session_id = sid
                 # Surface the resume id as soon as it's known, not only
                 # when `result` lands. The premature-exit bug
-                # (docs/cli-resume-synthetic-pair.md) suppresses `result`
-                # entirely, and the auto-respawn recovery in
-                # session_manager needs a resume id to fire — so we have
-                # to give it one from `init` instead.
+                # (docs/2026-05-18-bg-pipeline-hardening.md §2)
+                # suppresses `result` entirely, and the auto-respawn
+                # recovery in session_manager needs a resume id to fire
+                # — so we have to give it one from `init` instead.
                 if sid:
                     self._emit(BackendEvent(type="session_started", session_id=sid))
             return

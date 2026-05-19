@@ -815,10 +815,11 @@ class SessionManager:
     # ------------------------------------------------------------------ backend run loop
 
     # Max number of auto-respawn recoveries per logical turn. The CLI
-    # bug we're recovering from (docs/cli-resume-synthetic-pair.md) is
-    # bursty but not endlessly recurring on the same turn — one retry
-    # is the sweet spot between "rescue the common case" and "don't
-    # loop forever burning tokens on a genuinely broken state."
+    # bug we're recovering from (post-mortem in
+    # docs/2026-05-18-bg-pipeline-hardening.md §2) is bursty but not
+    # endlessly recurring on the same turn — one retry is the sweet
+    # spot between "rescue the common case" and "don't loop forever
+    # burning tokens on a genuinely broken state."
     _MAX_RECOVERY_ATTEMPTS = 1
 
     async def _run_backend(
@@ -830,10 +831,10 @@ class SessionManager:
         Each iteration of the outer loop is one CLI invocation. The
         loop normally runs exactly once and exits after a `result`
         event. If the CLI exits silently after emitting a `tool_use`
-        without ever delivering `result` (the bug documented in
-        docs/cli-resume-synthetic-pair.md), we respawn it with the
-        same resume id and a `"continue"` prompt to let the model
-        produce the missing follow-up. Bounded by
+        without ever delivering `result` (the bug post-mortemed in
+        docs/2026-05-18-bg-pipeline-hardening.md §2), we respawn it
+        with the same resume id and a `"continue"` prompt to let the
+        model produce the missing follow-up. Bounded by
         _MAX_RECOVERY_ATTEMPTS so a genuinely broken state can't loop.
         """
 
