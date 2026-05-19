@@ -89,7 +89,15 @@
 .md-github .md-codeblock { /* wrapper from MarkdownPreBlock */ }
 
 .md-github .md-codeblock pre {
-  background-color: hsl(var(--muted) / 0.6);
+  /* White (card) background, matching GitHub's actual code-block
+   * rendering. The hljs github theme we ship (highlight.js's
+   * github.css) is calibrated for this exact background — its
+   * comment color is #6a737d (medium gray), which is readable on
+   * white but vanished against the prior muted-gray background.
+   * Page bg in this project is already slightly off-white, so the
+   * white code block stands out distinctly without needing a heavy
+   * border. */
+  background-color: hsl(var(--card));
   border: 1px solid hsl(var(--border));
   border-radius: 6px;
   padding: 0.8rem 1rem;
@@ -102,11 +110,8 @@
   background: transparent;
   padding: 0;
   font-size: inherit;
-  /* Force a strong base color so language-less / unhighlighted code
-   * is always readable on the muted bg. Per-token `.hljs-*` classes
-   * still override this for syntax-highlighted blocks (they have
-   * higher specificity / inline applicability) — this is just the
-   * floor color. */
+  /* Let hljs's per-token colors win for highlighted blocks; for
+   * blocks with no hljs class, this gives a strong base color. */
   color: hsl(var(--foreground));
 }
 
