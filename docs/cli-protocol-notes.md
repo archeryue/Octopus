@@ -1,38 +1,90 @@
 # Claude Code CLI JSONL Protocol Notes
 
-Empirical capture of the `claude` CLI's stream-json protocol, used as the source of truth for `ClaudeCodeBackend` in `server/backends/claude_code.py` (feature 1 in `future-features.md`).
+Empirical capture of the `claude` CLI's stream-json protocol, used as
+the source of truth for `ClaudeCodeBackend` in
+`server/backends/claude_code.py`.
 
-**Captured against**: `claude` v2.1.143, model `claude-haiku-4-5-20251001`.
+**Captured against**: `claude` v2.1.143.
 
-**Reproduce**: `tests/_fixtures/cli-jsonl/` will hold the captured traces; the test suite replays them through the normalizer.
+**Reproduce**: `tests/_fixtures/fake_claude_cli.py` scripts the same
+shape; `tests/test_backend_claude_code.py` exercises the normalizer
+against it. For the real binary, `tests/test_backend_claude_code_real.py`
+runs against `claude` if it's on `$PATH`.
+
+**Note on revision**: this doc was rewritten after the VM0-shape
+refactor (commit `5815560`). The old shape used
+`--input-format=stream-json` + `--permission-prompt-tool=stdio` and
+drove a bidirectional control protocol over stdin; that path is gone.
+See `docs/cli-resume-synthetic-pair.md` for the full why.
 
 ## Invocation
 
 ```
 claude --print \
-       --input-format=stream-json \
        --output-format=stream-json \
        --verbose \
-       --permission-mode default \
-       --permission-prompt-tool stdio \
+       --dangerously-skip-permissions \
+       --disallowedTools AskUserQuestion \
+       --mcp-config '<inline JSON>' \
+       --append-system-prompt '<Octopus addendum>' \
        [--resume <session-id>] \
        [--include-partial-messages] \
-       [--include-hook-events] \
-       [--no-session-persistence]
+       -- \
+       <prompt as a single positional argument>
 ```
 
-Notes:
-- `--verbose` is **required** with `--output-format=stream-json` under `--print` (otherwise CLI errors).
-- `--permission-prompt-tool stdio` is a **hidden flag** (doesn't show in `--help` but is accepted). Tells the CLI to use the SDK control protocol over stdio for permission decisions.
-- `--no-session-persistence` skips the disk write to `~/.claude/sessions/`. Without it, session is resumable via `--resume <session-id>`.
+Notes per flag:
+
+- `--print`: one-shot, non-interactive turn. We drive multi-turn via
+  `--resume` + re-spawn.
+- `--output-format=stream-json`: parse events from stdout. **NOT** the
+  input format — we don't set `--input-format` at all (defaults to
+  `text`, which makes the CLI take the prompt as a positional argv).
+- `--verbose`: **required** alongside `--output-format=stream-json`
+  under `--print` (CLI errors otherwise).
+- `--dangerously-skip-permissions`: bypass per-tool permission checks.
+  This is intentionally permissive — Octopus is the only thing
+  spawning these subprocesses on the user's behalf, so the user
+  already trusts the call. The previous shape
+  (`--permission-prompt-tool=stdio` + host callback) gave us nothing
+  we needed and was on the failure surface for the premature-exit
+  CLI bug; see cli-resume-synthetic-pair.md.
+- `--disallowedTools AskUserQuestion`: prevents the model from
+  calling the built-in AUQ. We provide `mcp__ask__user` (see below)
+  as the replacement.
+- `--mcp-config <JSON>`: registers our three in-process MCP servers
+  (`viewer`, `bg`, `ask`). The CLI accepts either a file path or an
+  inline JSON string; we use inline.
+- `--append-system-prompt <text>`: short addendum teaching the model
+  about `/showme`, `bg_run`, and `ask_user`. The full text lives in
+  `claude_code.py:_OCTOPUS_SYSTEM_PROMPT`.
+- `--resume <session-id>`: continue an existing conversation.
+- `--`: terminator for option parsing. The single positional
+  argument that follows is the user prompt.
+
+What we **do not** set, and why:
+
+- `--input-format=stream-json` — was load-bearing on the failure
+  surface for the §16 bug in cli-resume-synthetic-pair.md. With the
+  default text input, we pass the prompt as argv and never write to
+  stdin.
+- `--permission-prompt-tool=stdio` — replaced by `--dangerously-skip-permissions`.
+- `--permission-mode default` — moot once skipped.
+- `--no-session-persistence` — we *want* persistence so `--resume`
+  works across turns.
 
 ## Wire format
 
 - One JSON object per line on **stdout**.
 - All events share a `type` field; many also carry `session_id` and `uuid`.
-- **stderr** is used for warnings and fatal errors (not used for events in normal operation).
+- **stderr** is used for warnings and fatal errors (not used for
+  events in normal operation).
+- **stdin** is **not used** by Octopus under the VM0 shape. The prompt
+  is on argv; control responses don't exist (no control protocol).
+  Octopus's `claude_code.py:send_initial_prompt` is a no-op for
+  exactly this reason.
 
-## Event types observed
+## Event types observed on stdout
 
 | Type | Subtype | Meaning |
 |---|---|---|
@@ -40,22 +92,28 @@ Notes:
 | `system` | `status` | Informational status pings (`requesting`, `responding`, …). Safe to ignore for chat UX. |
 | `rate_limit_event` | — | Rate-limit status snapshot. Informational. |
 | `assistant` | — | Model message. `message.content[]` carries content blocks — see below. |
-| `user` | — | Tool results echoed back by the CLI's built-in tool runner (Bash, Edit, etc.). `message.content[]` carries `tool_result` blocks. Also: any prompt the host streams in over stdin shows up here. |
+| `user` | — | Tool results echoed back by the CLI's built-in tool runner (Bash, Edit, etc.). `message.content[]` carries `tool_result` blocks. |
 | `result` | `success` or `error_during_execution` | Terminal event for one turn. Includes `total_cost_usd`, `duration_ms`, `num_turns`, `session_id`, `usage`, `permission_denials[]`, `terminal_reason`. |
-| `stream_event` | — | Only when `--include-partial-messages` is set. Wraps an Anthropic API stream chunk (`message_start`, `content_block_delta`, etc.). Useful for streaming partial text but optional. |
+| `stream_event` | — | Only when `--include-partial-messages` is set. Wraps an Anthropic API stream chunk. We don't enable this flag today. |
+| `control_response` | — | Used to exist for the SDK control protocol; under the VM0 shape it shouldn't appear in normal operation. `claude_code.py:_handle_control_response` is a vestigial no-op for safety. |
+| `control_request` | — | Same — vestigial. `_handle_control_request` is a no-op. |
 
 ## Content blocks (inside `assistant.message.content[]` and `user.message.content[]`)
 
 | Block `type` | Fields | Notes |
 |---|---|---|
 | `text` | `text` | Plain assistant text. |
-| `thinking` | `thinking`, `signature` | Hidden reasoning. Don't render to user; persist if we want to show "thinking" toggles. |
+| `thinking` | `thinking`, `signature` | Hidden reasoning. We persist for resume but don't render. |
 | `tool_use` | `id`, `name`, `input`, `caller` | Model invoking a tool. `caller.type` is `direct` for top-level calls. |
-| `tool_result` | `tool_use_id`, `content`, `is_error` | Result echoed by the CLI's tool runner. Sits inside a `user` event. |
+| `tool_result` | `tool_use_id`, `content`, `is_error` | Result echoed by the CLI. Sits inside a `user` event. `content` is usually a string but for image-returning tools (e.g. `Read` on a PNG) it's a list of content blocks like `[{type:"image", source:{...}}]`. |
 
-**Important quirk:** for multi-block assistant messages, the CLI emits **one `assistant` event per content block**, all sharing the same `message.id` and `request_id`. So a thinking + text + tool_use turn → 3 separate stdout lines. The normalizer should treat them as independent events, not try to assemble them.
+**Important quirk:** for multi-block assistant messages, the CLI emits
+**one `assistant` event per content block**, all sharing the same
+`message.id` and `request_id`. So a thinking + text + tool_use turn →
+3 separate stdout lines. The normalizer treats them as independent
+events and does not try to assemble them.
 
-## Tool flow
+## Tool flow (normal happy path)
 
 ```
 assistant {content: [{type: "tool_use", id: X, name: "Bash", input: {...}}]}
@@ -64,56 +122,108 @@ assistant {content: [{type: "text", text: "..."}]}
 result    ...
 ```
 
-The CLI runs built-in tools (Bash, Read, Edit, Write, Glob, Grep, …) itself — no host involvement. We only see the `tool_use` and `tool_result` events.
+The CLI runs built-in tools (Bash, Read, Edit, Write, Glob, Grep, …)
+itself — no host involvement. We only see the `tool_use` and
+`tool_result` events on stdout.
 
-## AskUserQuestion in headless mode — confirmed behavior
+## MCP tools we register
 
-When the model calls `AskUserQuestion`:
+`--mcp-config` registers three in-process MCP servers, each launched
+by the CLI as its own subprocess (children of `claude`, grandchildren
+of the FastAPI process). The model sees them as
+`mcp__<server-key>__<tool-fn>`:
 
-1. CLI emits `assistant.tool_use` with `name: "AskUserQuestion"` and `input.questions[]`.
-2. CLI internally needs an answer. With `--permission-prompt-tool stdio` and stdin already closed (`echo … | claude --print`), the CLI errors:
-   - `user.tool_result` with `is_error: true`, `content: "Tool permission request failed: Error: Stream closed"`
-3. Model sees the error, falls back gracefully (typically: emits text asking the question directly).
-4. `result` event closes the turn normally.
+| MCP tool | Purpose | How it talks to Octopus |
+|---|---|---|
+| `mcp__viewer__show_file(path)` | Opens a file from `working_dir` in the in-app viewer modal | Validates path against `OCTOPUS_WORKING_DIR` (env). Frontend fetches bytes via `GET /api/sessions/{id}/files`. |
+| `mcp__bg__run(command, description?)` / `cancel` / `list` | Fire-and-forget shell commands that outlive the per-turn `claude --print` | POSTs to `/api/sessions/{id}/bg-tasks`; FastAPI's `BgTaskManager` owns the subprocess and injects a follow-up turn on completion. |
+| `mcp__ask__user(questions)` | Replaces the built-in `AskUserQuestion` | POSTs to `/api/sessions/{id}/questions` and HTTP-long-polls the answer. Frontend renders the QuestionPrompt form; user's submit sets an `asyncio.Event` that unblocks the long-poll. |
 
-**No hang.** The CLI fails fast when there's no live host to answer.
+Each MCP subprocess gets these env vars from `build_args`:
 
-This answers the open question from the AskUserQuestion design: the CLI is in **case 2** from `future-features.md` #7 — it uses the control protocol over stdio to ask the host for an answer. If we keep stdin open and respond to the control_request, we can deliver a *real* tool_result. That's the clean fix for feature 7.
+```
+OCTOPUS_API_BASE     http://127.0.0.1:{settings.port}
+OCTOPUS_AUTH_TOKEN   the bearer the rest of the API uses
+OCTOPUS_SESSION_ID   so callbacks attribute to the right session
+PYTHONPATH           = repo root, so the MCP server's `from server.…` imports resolve
+```
 
-(We didn't capture the `control_request` event itself in these experiments because we pre-closed stdin. Capturing it requires keeping stdin open and responding interactively — to be done as part of Phase 1d.)
+The viewer also gets `OCTOPUS_WORKING_DIR=<absolute>`. The path is
+resolved to absolute in `build_args` (see commit `04630e8`) so the MCP
+server doesn't accidentally double-resolve against its inherited cwd.
 
 ## Resume
 
-`--resume <session-id>` works after the previous subprocess has fully exited (state persists in `~/.claude/sessions/`). The resumed run emits a new `system.init` event but keeps the same `session_id`. Confirmed: the new turn has full context from the prior conversation.
+`--resume <session-id>` works after the previous subprocess has fully
+exited (state persists in `~/.claude/sessions/`). The resumed run
+emits a new `system.init` event but keeps the same `session_id`.
+Confirmed: the new turn has full context from the prior conversation.
 
-`--continue` resumes the most recent conversation for the current directory. We won't use it — too cwd-coupled.
+We mint our own session id by capturing the first `system.init`'s
+`session_id` and storing it on the Octopus session row as
+`claude_session_id`.
 
-## Interrupts (not empirically captured in this round)
+`--continue` resumes the most recent conversation for the current
+directory. We don't use it — too cwd-coupled.
 
-The Python SDK's `interrupt()` sends a control_request over stdin. We need to capture this in Phase 1d when we stand up the bidirectional stdio handler. For now we assume the same control protocol works.
+## Interrupts
+
+`SubprocessJsonlBackend.stop()`: closes stdin → 2 s grace → SIGTERM →
+2 s grace → SIGKILL. That's the entire interrupt mechanism. There's
+no graceful interrupt control_request to send first — there's no
+stdin protocol to send it over.
+
+`ClaudeCodeBackend.interrupt()` is therefore just an alias for
+`stop()`. Any in-flight tool work in MCP-server children dies with
+their parent process group.
+
+## Known bug — premature exit on stdout
+
+The CLI's `--print --resume` loop has a bug where, at large input
+context and for some tool-result shapes (we have observed it on text
+results > 50 KB, and reliably on image results at ~900K input
+tokens), the CLI runs the tool, persists the result to its private
+jsonl at `~/.claude/projects/...`, but **never emits the
+corresponding `user` event on stdout**. Octopus's stdout reader hits
+EOF and treats the turn as ended; the user sees the chat go silent
+with the tool's result missing.
+
+Full forensic detail and the open mitigation work lives in
+`docs/cli-resume-synthetic-pair.md`. Short version:
+
+- Independent of the input-format / permission-prompt path (the
+  VM0-shape refactor reduced frequency but did not eliminate).
+- Worth filing upstream with Anthropic.
+- Octopus-side mitigation (option E in §17 of that doc): detect the
+  case in `session_manager._run_backend` (last assistant turn had
+  `stop_reason: tool_use` AND there's a tool_use with no matching
+  tool_result in our DB) and auto-respawn with `--resume` + an empty
+  user-message nudge. Capped at 3 attempts before surfacing as an
+  error in chat. Not yet implemented.
 
 ## What this means for `ClaudeCodeBackend`
 
-1. Spawn `claude` with the flags above.
-2. Keep stdin OPEN for the lifetime of the session — write user prompts and control_responses on demand.
+Under the VM0 shape, the implementation is small:
+
+1. Spawn `claude` with the flags above, prompt as argv.
+2. Don't touch stdin at all — `send_initial_prompt` is a no-op.
 3. Read stdout line-by-line, parse each as JSON, route by `type`.
-4. Per-block emission: forward each `assistant.content[i]` block as its own normalized `BackendEvent` (text / tool_use / thinking).
+4. Per-block emission: forward each `assistant.content[i]` block as
+   its own normalized `BackendEvent` (`text` / `tool_use` /
+   `thinking`).
 5. For `user.tool_result`, forward as `BackendEvent(type="tool_result")`.
-6. For `result`, capture `session_id` (for resume) + `total_cost_usd` + `duration_ms`; close the per-turn iterator.
-7. For control_request events (Phase 1d): handle `can_use_tool` (auto-allow most, intercept `AskUserQuestion` properly).
-8. Graceful shutdown: close stdin → wait for `result` → terminate; force-kill after timeout.
-
-## Open questions for Phase 1d
-
-- What does the `control_request` JSON shape look like on the wire? (SDK source suggests `{type: "control_request", request_id, request: {subtype: "can_use_tool", tool_name, input, ...}}`, but capture it live to be sure.)
-- How is interrupt sent? Format of `control_request` with `subtype: "interrupt"`?
-- Does `--resume` accept a session ID that doesn't yet exist on disk (e.g., when we want to specify our own)? `--session-id <uuid>` flag exists for this — confirm semantics.
+6. For `result`, capture `session_id` (for resume) + `total_cost_usd`
+   + `duration_ms`; close the per-turn iterator.
+7. Graceful shutdown: close stdin → wait for `result` → terminate;
+   force-kill after timeout. Same as before — the close-stdin step is
+   still there for cleanliness even though we never wrote to stdin.
 
 ---
 
 ## OAuth / login surface (CLI v2.1.143)
 
-Reverse-engineered from the bundled `cli.js`, not run against the live CLI (the host I'm researching from won't let me spawn `claude` for permission reasons).
+(Unchanged from the original notes — the OAuth path is independent of
+the loop refactor.)
 
 ### Endpoints + constants (hardcoded in CLI)
 
