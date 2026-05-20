@@ -31,6 +31,10 @@ export function AgentSettings({ open, onOpenChange, agent }: Props) {
   const upsertAgent = useSessionStore((s) => s.upsertAgent);
   const removeAgent = useSessionStore((s) => s.removeAgent);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
+  const sessions = useSessionStore((s) => s.sessions);
+  const setSessions = useSessionStore((s) => s.setSessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const claudeCreds = credentials.filter((c) => c.backend === "claude-code");
 
   const [name, setName] = useState("");
@@ -127,6 +131,19 @@ export function AgentSettings({ open, onOpenChange, agent }: Props) {
       headers,
     });
     if (res.ok) {
+      // The backend cascade-archives this agent's sessions; mirror that in the
+      // store so they vanish from the sidebar, and clear the active session if
+      // it was one of them. Re-selecting a fallback agent (Octo) is handled by
+      // AgentList's auto-select effect once activeAgentId is cleared.
+      const orphaned = new Set(
+        sessions.filter((s) => s.agent_id === agent.id).map((s) => s.id)
+      );
+      if (orphaned.size) {
+        setSessions(sessions.filter((s) => !orphaned.has(s.id)));
+      }
+      if (activeSessionId && orphaned.has(activeSessionId)) {
+        setActiveSessionId(null);
+      }
       removeAgent(agent.id);
       setActiveAgentId(null);
       onOpenChange(false);

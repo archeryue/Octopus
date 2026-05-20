@@ -16,6 +16,13 @@ async function login(page: Page) {
   await expect(page.locator(".agent-list-header h2")).toHaveText("Agents");
 }
 
+/** Open the active agent's settings via the account menu (no sidebar gear). */
+async function openAgentSettings(page: Page) {
+  await page.locator(".btn-account").click();
+  await page.locator(".menu-agent-settings").click();
+  await expect(page.locator(".agent-settings")).toBeVisible();
+}
+
 test.afterAll(async ({ request }) => {
   const headers = { Authorization: `Bearer ${TOKEN}` };
   // Delete owned sessions first.
@@ -88,16 +95,17 @@ test.describe("Agents", () => {
     const agentRow = page.locator(".agent-item", { hasText: "E2E Persisted" });
     await expect(agentRow).toBeVisible();
 
-    // Reopen settings, change the prompt, save.
-    await agentRow.hover();
-    await agentRow.locator(".btn-agent-settings").click();
+    // Make it the active agent, then edit via the account menu (no gear).
+    await agentRow.click();
+    await expect(agentRow).toHaveClass(/active/);
+
+    await openAgentSettings(page);
     await expect(page.locator("#agent-prompt")).toHaveValue("first prompt");
     await page.locator("#agent-prompt").fill("second prompt — edited");
     await page.locator(".btn-agent-save").click();
 
-    // Reopen again — the edit persisted (proves PATCH + refetch).
-    await agentRow.hover();
-    await agentRow.locator(".btn-agent-settings").click();
+    // Reopen again — the edit persisted (proves PATCH + store upsert).
+    await openAgentSettings(page);
     await expect(page.locator("#agent-prompt")).toHaveValue(
       "second prompt — edited"
     );
@@ -105,9 +113,11 @@ test.describe("Agents", () => {
 
   test("the Default Agent cannot be archived from settings", async ({ page }) => {
     const def = page.locator(".agent-item", { hasText: "Octo" });
-    await def.hover();
-    await def.locator(".btn-agent-settings").click();
-    await expect(page.locator(".agent-settings")).toBeVisible();
+    // Select Octo, then open its settings from the account menu.
+    await def.click();
+    await expect(def).toHaveClass(/active/);
+    await openAgentSettings(page);
+    await expect(page.locator(".agent-settings #agent-name")).toHaveValue("Octo");
     // is_system agents expose no "Archive agent" button.
     await expect(
       page.locator(".agent-settings button", { hasText: "Archive agent" })

@@ -1,4 +1,9 @@
-import { IconLogout, IconUser } from "@tabler/icons-react";
+import {
+  IconCopy,
+  IconLogout,
+  IconSettings,
+  IconUserCog,
+} from "@tabler/icons-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,10 +14,19 @@ import {
 
 /** vm0-style account block pinned to the bottom of the sidebar.
  *
- * Octopus is single-user, so the only "account" surface is the auth
- * token and a sign-out action. The dropdown gives it visual weight
- * without inventing concepts (orgs, profiles) we don't have. */
-export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
+ * This is the single home for settings: there are no gear icons in the
+ * sidebar itself. "Settings" opens the app/connection dialog; "Agent
+ * settings" opens the active agent's config. Both sit above the
+ * account actions (copy token / sign out). */
+export function AccountDropdown({
+  onSignOut,
+  onOpenSettings,
+  onOpenAgentSettings,
+}: {
+  onSignOut: () => void;
+  onOpenSettings: () => void;
+  onOpenAgentSettings: () => void;
+}) {
   // The token IS the "username" for single-user mode. Show it whole so
   // the user can scan it; CSS truncate only kicks in for tokens longer
   // than the trigger row can fit.
@@ -62,16 +76,30 @@ export function AccountDropdown({ onSignOut }: { onSignOut: () => void }) {
         </div>
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          className="gap-2 px-2 py-2 rounded-md"
+          className="menu-settings gap-2 px-2 py-2 rounded-md"
+          onSelect={onOpenSettings}
+        >
+          <IconSettings size={16} stroke={1.5} className="text-muted-foreground" />
+          <span>Settings</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="menu-agent-settings gap-2 px-2 py-2 rounded-md"
+          onSelect={onOpenAgentSettings}
+        >
+          <IconUserCog size={16} stroke={1.5} className="text-muted-foreground" />
+          <span>Agent settings</span>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          className="menu-copy-token gap-2 px-2 py-2 rounded-md"
           onSelect={(e) => {
             e.preventDefault();
             navigator.clipboard?.writeText(token).catch(() => {});
           }}
         >
-          <IconUser size={16} stroke={1.5} className="text-muted-foreground" />
+          <IconCopy size={16} stroke={1.5} className="text-muted-foreground" />
           <span>Copy token</span>
         </DropdownMenuItem>
-        <DropdownMenuSeparator />
         <DropdownMenuItem
           className="btn-logout gap-2 px-2 py-2 rounded-md"
           onSelect={onSignOut}

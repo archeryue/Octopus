@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconChevronRight, IconPlus, IconSettings } from "@tabler/icons-react";
+import { IconChevronRight, IconPlus } from "@tabler/icons-react";
 import { useSessionStore, type Agent, type SessionInfo } from "../stores/sessionStore";
-import { AgentSettings } from "./AgentSettings";
 import { SessionList } from "./SessionList";
 
 const API = window.location.origin;
 
-export function AgentList() {
+/** The agents section of the sidebar. Agent settings (create/edit) live in a
+ * dialog owned by App and reached from the account menu — there are no gear
+ * icons here; `onCreateAgent` opens that dialog in create mode, and the
+ * account menu's "Agent settings" edits whichever agent is active. */
+export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
   const token = useSessionStore((s) => s.token);
   const agents = useSessionStore((s) => s.agents);
   const setAgents = useSessionStore((s) => s.setAgents);
@@ -15,8 +18,6 @@ export function AgentList() {
   const setSessions = useSessionStore((s) => s.setSessions);
   const setAvailableBackends = useSessionStore((s) => s.setAvailableBackends);
 
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editing, setEditing] = useState<Agent | null>(null);
   // Which agents are unfolded (showing their sessions). Multiple may be open;
   // folding keeps the sidebar from filling with sessions when there are many
   // agents.
@@ -29,18 +30,9 @@ export function AgentList() {
   const fetchAgents = useCallback(async () => {
     const res = await fetch(`${API}/api/agents`, { headers });
     if (!res.ok) return;
-    const data: Agent[] = await res.json();
-    setAgents(data);
-    // Auto-select + auto-unfold an agent when none is active (default to the
-    // system agent) so the user sees its sessions on first load.
-    const cur = useSessionStore.getState().activeAgentId;
-    if ((!cur || !data.some((a) => a.id === cur)) && data.length) {
-      const def = data.find((a) => a.is_system) ?? data[0];
-      setActiveAgentId(def.id);
-      setExpanded((prev) => new Set(prev).add(def.id));
-    }
+    setAgents((await res.json()) as Agent[]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, setAgents, setActiveAgentId]);
+  }, [token, setAgents]);
 
   const fetchSessions = useCallback(async () => {
     try {
@@ -68,6 +60,17 @@ export function AgentList() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // Keep a valid agent selected: on first load, and again whenever the active
+  // agent disappears (e.g. it was archived from the account menu). Defaults to
+  // the system agent and unfolds it so its sessions are visible.
+  useEffect(() => {
+    if (!agents.length) return;
+    if (activeAgentId && agents.some((a) => a.id === activeAgentId)) return;
+    const def = agents.find((a) => a.is_system) ?? agents[0];
+    setActiveAgentId(def.id);
+    setExpanded((prev) => new Set(prev).add(def.id));
+  }, [agents, activeAgentId, setActiveAgentId]);
+
   const toggleExpand = (id: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -76,14 +79,6 @@ export function AgentList() {
       return next;
     });
 
-  const openCreate = () => {
-    setEditing(null);
-    setDialogOpen(true);
-  };
-  const openEdit = (a: Agent) => {
-    setEditing(a);
-    setDialogOpen(true);
-  };
   const openNewSession = (id: string) => {
     setActiveAgentId(id);
     setExpanded((prev) => new Set(prev).add(id));
@@ -98,7 +93,7 @@ export function AgentList() {
         </h2>
         <button
           className="btn-agent-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
-          onClick={openCreate}
+          onClick={onCreateAgent}
           title="New agent"
           aria-label="New agent"
         >
@@ -155,17 +150,6 @@ export function AgentList() {
                   >
                     <IconPlus size={14} />
                   </button>
-                  <button
-                    className="btn-agent-settings inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openEdit(a);
-                    }}
-                    title="Agent settings"
-                    aria-label={`Settings for ${a.name}`}
-                  >
-                    <IconSettings size={14} />
-                  </button>
                 </div>
               </div>
               {/* Sessions live inside their agent — foldable per agent. */}
@@ -182,18 +166,6 @@ export function AgentList() {
           );
         })}
       </div>
-
-      <AgentSettings
-        open={dialogOpen}
-        onOpenChange={(v) => {
-          setDialogOpen(v);
-          if (!v) {
-            fetchAgents();
-            fetchSessions();
-          }
-        }}
-        agent={editing}
-      />
     </div>
   );
 }

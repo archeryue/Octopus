@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { IconMenu2, IconSettings } from "@tabler/icons-react";
+import { IconMenu2 } from "@tabler/icons-react";
 import { AccountDropdown } from "./components/AccountDropdown";
 import { AgentList } from "./components/AgentList";
+import { AgentSettings } from "./components/AgentSettings";
 import { ChatView } from "./components/ChatView";
 import { CredentialList } from "./components/CredentialList";
 // SessionList is rendered inside AgentList (nested under the active agent),
@@ -15,7 +16,7 @@ import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { useViewportHeight } from "./hooks/useViewportHeight";
 import { useWebSocket } from "./hooks/useWebSocket";
-import { useSessionStore } from "./stores/sessionStore";
+import { useSessionStore, type Agent } from "./stores/sessionStore";
 
 function App() {
   useViewportHeight();
@@ -79,11 +80,32 @@ function AuthenticatedApp({
     useWebSocket();
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
+  const agents = useSessionStore((s) => s.agents);
+  const activeAgentId = useSessionStore((s) => s.activeAgentId);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Agent-settings dialog lives at the app level (not the sidebar) so it can
+  // be driven from the account menu. `null` target = create a new agent.
+  const [agentDialogOpen, setAgentDialogOpen] = useState(false);
+  const [agentEditing, setAgentEditing] = useState<Agent | null>(null);
 
   const signOut = () => {
     setToken("");
     window.location.reload();
+  };
+
+  const openCreateAgent = () => {
+    setAgentEditing(null);
+    setAgentDialogOpen(true);
+  };
+  // "Agent settings" in the account menu edits the active agent (fall back to
+  // the system agent, then create mode if there are somehow no agents).
+  const openActiveAgentSettings = () => {
+    const active =
+      agents.find((a) => a.id === activeAgentId) ??
+      agents.find((a) => a.is_system) ??
+      null;
+    setAgentEditing(active);
+    setAgentDialogOpen(true);
   };
 
   return (
@@ -103,15 +125,6 @@ function AuthenticatedApp({
           <div className="flex items-center gap-0.5 shrink-0">
             <button
               type="button"
-              className="btn-settings inline-flex h-8 w-8 items-center justify-center rounded-lg text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Settings"
-              title="Settings"
-            >
-              <IconSettings size={18} />
-            </button>
-            <button
-              type="button"
               className="md:hidden inline-flex h-8 w-8 items-center justify-center rounded-lg text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
               onClick={() => setSidebarOpen(false)}
               aria-label="Close sidebar"
@@ -125,14 +138,18 @@ function AuthenticatedApp({
          * px-5 on the nav inset + px-3 on each item pill = 32px from
          * sidebar edge to item text. Hover pill itself insets 20px. */}
         <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 pt-2">
-          <AgentList />
+          <AgentList onCreateAgent={openCreateAgent} />
           <ScheduleList />
           <CredentialList />
         </nav>
 
-        {/* Account footer. */}
+        {/* Account footer — the single home for settings (no sidebar gears). */}
         <div className="shrink-0 border-t border-sidebar-border px-3 py-2">
-          <AccountDropdown onSignOut={signOut} />
+          <AccountDropdown
+            onSignOut={signOut}
+            onOpenSettings={() => setSettingsOpen(true)}
+            onOpenAgentSettings={openActiveAgentSettings}
+          />
         </div>
       </aside>
 
@@ -156,6 +173,11 @@ function AuthenticatedApp({
       )}
 
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <AgentSettings
+        open={agentDialogOpen}
+        onOpenChange={setAgentDialogOpen}
+        agent={agentEditing}
+      />
       <FileViewerDialog />
     </div>
   );

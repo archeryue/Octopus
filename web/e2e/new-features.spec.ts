@@ -1040,13 +1040,14 @@ test.describe("/reset slash command", () => {
 // ---------------------------------------------------------------------------
 
 test.describe("Settings dialog", () => {
-  test("opens via gear, renders General / Account / Notifications tabs", async ({
+  test("opens via account menu, renders General / Account / Notifications tabs", async ({
     page,
   }) => {
     await login(page);
 
-    await expect(page.locator(".btn-settings")).toBeVisible();
-    await page.locator(".btn-settings").click();
+    // Settings now live in the account dropdown (no sidebar gear).
+    await page.locator(".btn-account").click();
+    await page.locator(".menu-settings").click();
     await expect(page.locator('[role="dialog"]')).toBeVisible();
     await expect(page.locator('[role="dialog"]')).toContainText("Settings");
 
@@ -1242,7 +1243,8 @@ test.describe("Notifier framework", () => {
     request,
   }) => {
     await login(page);
-    await page.locator(".btn-settings").click();
+    await page.locator(".btn-account").click();
+    await page.locator(".menu-settings").click();
     await page.locator('[role="tab"]', { hasText: "Notifications" }).click();
     await page.waitForTimeout(200);
 
