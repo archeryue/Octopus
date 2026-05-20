@@ -55,8 +55,11 @@ async def _drain(backend: ClaudeCodeBackend, timeout: float = 60.0) -> list[Back
 
 
 # Strings that, if seen in any tool_result or stderr, indicate our
-# control-protocol payload was rejected by the CLI. The bug that triggered
-# these (BUG_NEED_FIX #1) was fixed; this guard prevents a regression.
+# control-protocol payload was rejected by the CLI. The original bug: the
+# backend sent the legacy can_use_tool control_response shape
+# ({"allow": ...}) instead of the modern {"behavior": ...} one, which the
+# CLI's strict validator rejected on AskUserQuestion. Fixed; this guard
+# prevents a regression.
 _CONTROL_PROTOCOL_RED_FLAGS = (
     "ZodError",
     "Tool permission request failed",
@@ -77,14 +80,16 @@ def _assert_no_control_protocol_errors(
                 raise AssertionError(
                     f"CLI control protocol error in tool_result: {content[:300]!r}\n"
                     f"This means our backend is sending a payload the CLI's "
-                    f"validator rejects. See docs/BUG_NEED_FIX.md."
+                    f"validator rejects (expected the modern "
+                    f"{{'behavior': ...}} control_response shape)."
                 )
     stderr = backend.stderr_text
     for flag in _CONTROL_PROTOCOL_RED_FLAGS:
         if flag in stderr:
             raise AssertionError(
                 f"CLI control protocol error in stderr: {stderr[:300]!r}\n"
-                f"See docs/BUG_NEED_FIX.md."
+                f"Backend likely sent a control_response shape the CLI "
+                f"validator rejects."
             )
 
 

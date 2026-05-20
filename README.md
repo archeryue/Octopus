@@ -103,4 +103,4 @@ skip when no relevant files are staged, so doc-only commits are fast.
 
 ## Architecture
 
-See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed system design, data flow, and WebSocket protocol.
+See [architecture.md](docs/architecture.md) for detailed system design, data flow, and WebSocket protocol.
