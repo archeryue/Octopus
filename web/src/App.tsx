@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { IconMenu2, IconSettings } from "@tabler/icons-react";
 import { AccountDropdown } from "./components/AccountDropdown";
+import { AgentList } from "./components/AgentList";
 import { ChatView } from "./components/ChatView";
 import { CredentialList } from "./components/CredentialList";
+// SessionList is rendered inside AgentList (nested under the active agent),
+// not as its own sidebar section — sessions belong to an agent.
 import { FileViewerDialog } from "./components/FileViewerDialog";
 import { OctopusLogo } from "./components/OctopusLogo";
 import { ScheduleList } from "./components/ScheduleList";
-import { SessionList } from "./components/SessionList";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -123,7 +125,7 @@ function AuthenticatedApp({
          * px-5 on the nav inset + px-3 on each item pill = 32px from
          * sidebar edge to item text. Hover pill itself insets 20px. */}
         <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 pt-2">
-          <SessionList />
+          <AgentList />
           <ScheduleList />
           <CredentialList />
         </nav>

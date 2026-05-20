@@ -30,6 +30,8 @@ describe("sessionStore", () => {
         created_at: "2026-01-01",
         message_count: 0,
         archived: false,
+        origin: "user",
+        backend: "claude-code" as const,
       },
     ];
     setSessions(sessions);
@@ -75,6 +77,8 @@ describe("sessionStore", () => {
         created_at: "2026-01-01",
         message_count: 0,
         archived: false,
+        origin: "user",
+        backend: "claude-code" as const,
       },
     ]);
 
@@ -169,6 +173,47 @@ describe("sessionStore", () => {
     const msgs = useSessionStore.getState().messages["s1"];
     expect(msgs).toHaveLength(1);
     expect(msgs[0].attachments).toEqual([att]);
+  });
+
+  it("manages agents, active agent, and upsert/remove", () => {
+    const { setAgents, upsertAgent, removeAgent, setActiveAgentId } =
+      useSessionStore.getState();
+    const mk = (id: string, name: string, extra = {}) => ({
+      id,
+      name,
+      description: "",
+      avatar: null,
+      system_prompt: "",
+      model: null,
+      credential_id: null,
+      mcp_servers: ["ask", "bg", "viewer"],
+      tool_allow: "",
+      tool_deny: "",
+      is_system: false,
+      archived: false,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+      active_session_count: 0,
+      ...extra,
+    });
+
+    setAgents([mk("a1", "Default", { is_system: true })]);
+    expect(useSessionStore.getState().agents).toHaveLength(1);
+
+    // upsert appends a new agent, patches an existing one in place.
+    upsertAgent(mk("a2", "Researcher"));
+    expect(useSessionStore.getState().agents).toHaveLength(2);
+    upsertAgent(mk("a2", "Renamed"));
+    expect(useSessionStore.getState().agents).toHaveLength(2);
+    expect(
+      useSessionStore.getState().agents.find((a) => a.id === "a2")?.name
+    ).toBe("Renamed");
+
+    setActiveAgentId("a2");
+    expect(useSessionStore.getState().activeAgentId).toBe("a2");
+
+    removeAgent("a2");
+    expect(useSessionStore.getState().agents.map((a) => a.id)).toEqual(["a1"]);
   });
 
   it("keeps messages separate per session", () => {

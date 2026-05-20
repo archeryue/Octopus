@@ -67,7 +67,10 @@ async def test_create_schedule(client):
     assert data["prompt"] == "check status"
     assert data["interval_seconds"] == 60
     assert data["enabled"] is True
-    assert data["session_id"] == session_id
+    # Schedules are agent-scoped now: the legacy session_id resolved to the
+    # session's owning agent (agent-refactor.md §5.4).
+    sess = (await client.get(f"/api/sessions/{session_id}", headers=HEADERS)).json()
+    assert data["agent_id"] == sess["agent_id"]
 
 
 @pytest.mark.asyncio

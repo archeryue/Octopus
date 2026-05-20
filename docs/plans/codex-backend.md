@@ -402,15 +402,22 @@ injection (`codex_auth.rs`) — microVM multi-tenant only; `features.memories`;
 VM). **And the gap VM0 leaves us to fill:** MCP-tool injection into
 Codex — VM0 does none, so §5.3 is ours to design.
 
-## 12. What's still unverified (confirm on a live logged-in run, Phase C)
+## 12. Live-confirmation status (Phase C — done 2026-05-19)
 
-VM0's parser is strong evidence but reflects *their* normalization and a
-possibly different codex version, so a live pass still gates "done":
-1. **Event schema drift** — confirm §5.2 field names/shapes on codex
-   0.132.0 (esp. `thread.started.thread_id`, `item.type` values, the
-   `usage` shape on `turn.completed`).
-2. **MCP via `config.toml`** — does `codex exec` honor it, what's the
-   exposed tool name, is the server env passed through? (Blocks §5.3.)
-3. **`developer_instructions`** lands on every turn including `resume`.
-4. **Login flow** — `codex login --device-auth` stdout shape (URL+code
-   scrape) and that `auth.json` lands in the per-credential `CODEX_HOME`.
+Confirmed on a live, logged-in codex 0.132.0. Full record in
+`docs/codex-protocol-notes.md`.
+
+1. **Event schema drift** — ✅ confirmed, no drift. `thread.started.thread_id`,
+   the `item.type` values, and the `turn.completed.usage` shape all match
+   §5.2. One addition VM0's parser didn't cover: the **`mcp_tool_call`** item
+   type — now handled by the normalizer (`server`+`tool` → `mcp__<server>__<tool>`).
+2. **MCP injection** — ✅ confirmed, via **`-c mcp_servers.*` overrides** (not
+   `config.toml` — the §5.3 decision; `-c` keeps per-session callback env while
+   `CODEX_HOME` stays the stable auth dir). codex launched our viewer server,
+   the model called it, and the per-server env reached the subprocess. The
+   exposed tool maps to `mcp__<server>__<tool>`.
+3. **`developer_instructions`** — ✅ lands; the model used a tool described only
+   in the instructions.
+4. **Login flow** — ⏳ still a product decision (§10 #1). Host `codex login`
+   (option A) works today (`CODEX_HOME` unset → inherits `~/.codex`). In-app
+   `--device-auth` (option B) is unbuilt.

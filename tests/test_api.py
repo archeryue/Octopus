@@ -177,3 +177,53 @@ async def test_archive_session_not_found(client):
         "/api/sessions/nonexistent/archive", headers=HEADERS
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_session_defaults_backend_to_claude_code(client):
+    resp = await client.post(
+        "/api/sessions", headers=HEADERS, json={"name": "Default Backend"}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["backend"] == "claude-code"
+
+
+@pytest.mark.asyncio
+async def test_create_session_with_codex_backend(client):
+    resp = await client.post(
+        "/api/sessions", headers=HEADERS, json={"name": "Cx", "backend": "codex"}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["backend"] == "codex"
+
+
+@pytest.mark.asyncio
+async def test_create_session_rejects_credential_backend_mismatch(client):
+    """A Codex session must not run a claude-code credential (codex-backend.md
+    §4.2) — the route returns 400."""
+    from datetime import datetime, timezone
+    from server.config import settings
+    from server.crypto import encrypt
+
+    enc = encrypt("sk-x", settings.auth_token)
+    await session_manager.db.save_credential(
+        credential_id="c-cc",
+        backend="claude-code",
+        label="L",
+        auth_type="api_key",
+        secret_encrypted=enc,
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    resp = await client.post(
+        "/api/sessions",
+        headers=HEADERS,
+        json={"name": "Bad", "backend": "codex", "credential_id": "c-cc"},
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_list_backends_includes_claude_code(client):
+    resp = await client.get("/api/backends", headers=HEADERS)
+    assert resp.status_code == 200
+    assert "claude-code" in resp.json()["available"]

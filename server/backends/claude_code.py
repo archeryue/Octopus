@@ -187,6 +187,9 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
 
     name = "claude-code"
     binary = "claude"
+    # The premature-exit recovery loop targets a `claude` CLI bug; enable it
+    # only for this backend (codex-backend.md §5.6).
+    wants_premature_exit_recovery = True
 
     # Default flags. We use bypassPermissions when no callback is set so
     # behavior is identical to the legacy SDK path's bypass mode.
@@ -195,6 +198,10 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         permission_callback: PermissionCallback | None = None,
         model: str | None = None,
         session_id: str | None = None,
+        system_prompt: str | None = None,
+        mcp_servers: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
+        disallowed_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         # Accepted for back-compat (see PermissionCallback comment above);
@@ -205,6 +212,19 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         # into the bg + ask MCP envs so those tools can call back to the
         # right session. None is fine in tests that don't exercise them.
         self._session_id = session_id
+        # Agent-supplied configuration (agent-refactor.md §5.2). All None =
+        # the historical defaults (full MCP set, no extra prompt, no tool
+        # restriction beyond the always-on AskUserQuestion disable).
+        #   system_prompt:     the agent's persona, prepended to the Octopus
+        #                      in-app-tools section in --append-system-prompt.
+        #   mcp_servers:       subset of {"viewer","bg","ask"} to register;
+        #                      None registers all three.
+        #   allowed_tools:     --allowedTools list; empty/None = allow all.
+        #   disallowed_tools:  appended to the always-on AskUserQuestion deny.
+        self._agent_system_prompt = system_prompt
+        self._mcp_servers = mcp_servers
+        self._allowed_tools = allowed_tools
+        self._disallowed_tools = disallowed_tools
         # Capture the CLI's `system/init` session_id so we can attach it
         # to the `result` BackendEvent (the result event's own session_id
         # is the same value, but `init` arrives first and the field gives
@@ -261,30 +281,36 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         if self._session_id:
             callback_env["OCTOPUS_SESSION_ID"] = self._session_id
 
-        mcp_config = json.dumps(
-            {
-                "mcpServers": {
-                    "viewer": {
-                        "command": sys.executable,
-                        "args": ["-m", "server.mcp_servers.viewer"],
-                        "env": {
-                            "OCTOPUS_WORKING_DIR": absolute_working_dir,
-                            "PYTHONPATH": _REPO_ROOT,
-                        },
-                    },
-                    "bg": {
-                        "command": sys.executable,
-                        "args": ["-m", "server.mcp_servers.bg"],
-                        "env": callback_env,
-                    },
-                    "ask": {
-                        "command": sys.executable,
-                        "args": ["-m", "server.mcp_servers.ask"],
-                        "env": callback_env,
-                    },
-                }
+        all_servers = {
+            "viewer": {
+                "command": sys.executable,
+                "args": ["-m", "server.mcp_servers.viewer"],
+                "env": {
+                    "OCTOPUS_WORKING_DIR": absolute_working_dir,
+                    "PYTHONPATH": _REPO_ROOT,
+                },
+            },
+            "bg": {
+                "command": sys.executable,
+                "args": ["-m", "server.mcp_servers.bg"],
+                "env": callback_env,
+            },
+            "ask": {
+                "command": sys.executable,
+                "args": ["-m", "server.mcp_servers.ask"],
+                "env": callback_env,
+            },
+        }
+        # The agent chooses which built-in MCP servers to register
+        # (agent-refactor.md §5.2). None = register all three (the Default
+        # Agent's behavior, unchanged).
+        if self._mcp_servers is not None:
+            selected = {
+                k: v for k, v in all_servers.items() if k in self._mcp_servers
             }
-        )
+        else:
+            selected = all_servers
+        mcp_config = json.dumps({"mcpServers": selected})
 
         # VM0-style command shape. Notes on each flag:
         #   --print                  one-shot mode (we drive turns ourselves).
@@ -306,16 +332,29 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         #   --resume <id>            continue the prior conversation when
         #                            present.
         #   --                       end of flag parsing; prompt follows.
+        # Always disable the built-in AskUserQuestion (the model must use the
+        # mcp__ask__user replacement), plus any agent-denied tools. Deny wins
+        # over allow at the CLI level.
+        disallowed = ["AskUserQuestion", *(self._disallowed_tools or [])]
+        # Append the agent's persona (if any) ahead of the Octopus in-app
+        # tools section. Re-sent every turn — the CLI doesn't persist system
+        # prompts across --resume.
+        append_prompt = _OCTOPUS_SYSTEM_PROMPT
+        if self._agent_system_prompt:
+            append_prompt = f"{self._agent_system_prompt}\n\n{_OCTOPUS_SYSTEM_PROMPT}"
+
         argv = [
             self.binary,
             "--print",
             "--output-format=stream-json",
             "--verbose",
             "--dangerously-skip-permissions",
-            "--disallowedTools", "AskUserQuestion",
+            "--disallowedTools", ",".join(disallowed),
             "--mcp-config", mcp_config,
-            "--append-system-prompt", _OCTOPUS_SYSTEM_PROMPT,
+            "--append-system-prompt", append_prompt,
         ]
+        if self._allowed_tools:
+            argv += ["--allowedTools", ",".join(self._allowed_tools)]
         if self._model:
             argv += ["--model", self._model]
         if resume_id:

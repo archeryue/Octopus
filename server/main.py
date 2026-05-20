@@ -8,9 +8,11 @@ from pathlib import Path
 os.environ.pop("CLAUDECODE", None)
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+
+from .auth import verify_token
 
 from .bg_tasks import bg_task_manager
 from .bridges.manager import BridgeManager
@@ -18,7 +20,8 @@ from .config import settings
 from .tunnel import CloudflareTunnel
 from .database import Database
 from .notifiers import notifier_manager
-from .routers import attachments, bg_tasks as bg_tasks_router, credentials, files, notifiers, questions, schedules, sessions, ws
+from .agent_manager import AgentManager
+from .routers import agents, attachments, bg_tasks as bg_tasks_router, credentials, files, notifiers, questions, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -60,6 +63,7 @@ async def lifespan(app: FastAPI):
     app.state.schedule_runner = schedule_runner
     schedules._db = db
     schedules._runner = schedule_runner
+    agents.set_manager(AgentManager(db))
     credentials.set_db(db)
     notifiers.set_db(db)
     notifier_manager.set_db(db)
@@ -114,6 +118,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(agents.router)
 app.include_router(sessions.router)
 app.include_router(attachments.router)
 app.include_router(files.router)
@@ -123,6 +128,19 @@ app.include_router(schedules.router)
 app.include_router(credentials.router)
 app.include_router(notifiers.router)
 app.include_router(ws.router)
+
+
+@app.get("/api/backends")
+async def list_backends(_: str = Depends(verify_token)):
+    """Which AI backends are usable on this host (codex-backend.md §6.1).
+    `claude-code` is always listed; `codex` appears only when its binary
+    resolves on PATH."""
+    from .backends.subprocess_jsonl import _which_with_fallback
+
+    available = ["claude-code"]
+    if _which_with_fallback("codex") is not None:
+        available.append("codex")
+    return {"available": available}
 
 
 @app.get("/health")

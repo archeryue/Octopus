@@ -12,10 +12,22 @@ class SessionStatus(str, Enum):
     waiting_approval = "waiting_approval"
 
 
+class BackendKind(str, Enum):
+    claude_code = "claude-code"
+    codex = "codex"
+
+
 class CreateSessionRequest(BaseModel):
-    name: str = "New Session"
+    name: str | None = None
     working_dir: str | None = None
     credential_id: str | None = None
+    # Owning agent. Required by the API (a session is a conversation with an
+    # agent), but left optional on the wire for exactly one release: when
+    # omitted the route falls back to the Default Agent. See
+    # docs/plans/agent-refactor.md §5.4.
+    agent_id: str | None = None
+    # Which AI backend drives this session (codex-backend.md §4.1).
+    backend: BackendKind = BackendKind.claude_code
 
 
 class ImportSessionRequest(BaseModel):
@@ -23,6 +35,8 @@ class ImportSessionRequest(BaseModel):
     working_dir: str | None = None
     claude_session_id: str | None = None
     credential_id: str | None = None
+    agent_id: str | None = None  # owner; Default Agent when omitted
+    backend: BackendKind = BackendKind.claude_code
     messages: list[MessageContent] = []
 
 
@@ -35,6 +49,11 @@ class SessionInfo(BaseModel):
     message_count: int = 0
     claude_session_id: str | None = None
     credential_id: str | None = None
+    # Owning agent + who created the session ('user' | 'schedule' | 'bridge').
+    agent_id: str | None = None
+    origin: str = "user"
+    # Which AI backend drives this session.
+    backend: BackendKind = BackendKind.claude_code
     # Hidden from the default `GET /api/sessions` list; surfaced only
     # when the caller passes `?include_archived=true` (or for individual
     # GETs by id, which always work). The `/archive` flow sets this;
@@ -123,7 +142,7 @@ class WsToolDecision(BaseModel):
 
 class ScheduleInfo(BaseModel):
     id: str
-    session_id: str
+    agent_id: str
     name: str
     prompt: str
     interval_seconds: int
@@ -133,10 +152,15 @@ class ScheduleInfo(BaseModel):
 
 
 class CreateScheduleRequest(BaseModel):
-    session_id: str
     name: str
     prompt: str
     interval_seconds: int = Field(ge=60)
+    # Agent-scoped routes (`/api/agents/{id}/schedules`) take the agent from
+    # the path; these are for the standalone `/api/schedules` route. Provide
+    # exactly one — `agent_id` directly, or `session_id` (legacy compat,
+    # resolved to the session's agent for one release).
+    agent_id: str | None = None
+    session_id: str | None = None
 
 
 class UpdateScheduleRequest(BaseModel):
@@ -146,12 +170,57 @@ class UpdateScheduleRequest(BaseModel):
     enabled: bool | None = None
 
 
+# Agents — the durable definition of an assistant (agent-refactor.md §4).
+
+
+class AgentRead(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    avatar: str | None = None
+    system_prompt: str = ""
+    model: str | None = None
+    credential_id: str | None = None
+    mcp_servers: list[str] = []
+    # Newline-separated tool/MCP name lists. Empty `tool_allow` = allow all;
+    # `tool_deny` wins on conflict.
+    tool_allow: str = ""
+    tool_deny: str = ""
+    is_system: bool = False
+    archived: bool = False
+    created_at: str
+    updated_at: str
+    active_session_count: int = 0
+
+
+class AgentCreate(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = ""
+    avatar: str | None = None
+    system_prompt: str = ""
+    model: str | None = None
+    credential_id: str | None = None
+    mcp_servers: list[str] = ["ask", "bg", "viewer"]
+    tool_allow: str = ""
+    tool_deny: str = ""
+
+
+class AgentUpdate(BaseModel):
+    # All optional; the route applies only the fields explicitly provided
+    # (model_dump(exclude_unset=True)), so passing null clears a nullable
+    # field while omitting it leaves the field untouched.
+    name: str | None = None
+    description: str | None = None
+    avatar: str | None = None
+    system_prompt: str | None = None
+    model: str | None = None
+    credential_id: str | None = None
+    mcp_servers: list[str] | None = None
+    tool_allow: str | None = None
+    tool_deny: str | None = None
+
+
 # Backend credentials
-
-
-class BackendKind(str, Enum):
-    claude_code = "claude-code"
-    codex = "codex"
 
 
 class AuthType(str, Enum):

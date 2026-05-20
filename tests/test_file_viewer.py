@@ -202,8 +202,9 @@ async def session_with_files(client, tmp_path):
     (sub / "note.txt").write_text("nested")
     (root.parent / "outside.md").write_text("escape me")
 
+    agent = await session_manager.db.get_system_agent()
     sess = await session_manager.create_session(
-        "viewer-test", working_dir=str(root)
+        agent["id"], name="viewer-test", working_dir=str(root)
     )
     return sess.id, root
 

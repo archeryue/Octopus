@@ -1,8 +1,37 @@
 # Connectors — Tech Plan
 
-Status: draft, not started. Supersedes the rough proposal in this
-session's chat; will land in `docs/future-features.md` index when
-implementation kicks off.
+Status: draft, not started.
+
+> ## ⚠️ REVISION — connectors are AGENT-scoped (2026-05-19)
+>
+> This plan was written for **per-session** connector enablement. The
+> first-class Agents refactor (`agent-refactor.md`, now landed) supersedes
+> that: connectors are **agent-scoped**, exactly like the agent's built-in
+> MCP set (agent-refactor.md §5.5 / §5.7, decision #5). Apply these deltas
+> when implementing — the rest of the plan (OAuth flow, MCP-server modules,
+> truncation, Notion/Gmail specifics, testing) stands unchanged:
+>
+> 1. **`session_connectors` → `agent_connectors`** (PK `(agent_id,
+>    installation_id)`, FK `agent_id → agents(id) ON DELETE CASCADE`).
+>    Enablement is per-agent; there is **no per-session connector table**.
+> 2. **Effective MCP set for a turn = `agent.mcp_servers` (built-in) ∪ the
+>    agent's enabled connectors.** `SessionManager._make_backend` already
+>    loads the owning agent every turn (the live-reference point) — read the
+>    agent's connectors there and merge into the backend's MCP config.
+> 3. **UI moves from the new-session form / per-session sidebar dots (§4.1,
+>    §4.2) to the Agent settings dialog** (`AgentSettings.tsx`) — a connector
+>    toggle list per agent, beside the built-in-MCP checkboxes. The sidebar
+>    `CONNECTORS` section becomes the install/catalog manager (installations
+>    are global; enablement is per-agent).
+> 4. **Both backends are ready.** Claude MCP injection is the existing
+>    `--mcp-config` path (§5.6); Codex MCP injection is **settled** by
+>    `codex-backend.md` §5.3 (per-session `-c mcp_servers.<key>.*` overrides,
+>    `CodexBackend._mcp_config_args`) — this answers the §10.1 open question.
+>    `connector.mcp_entry()` should return a backend-neutral
+>    `{command,args,env}` that each backend renders into its own config shape.
+> 5. **External prerequisite for end-to-end verification:** real OAuth client
+>    registration (Notion/Google) per §7. The §8 fake-Notion/Gmail HTTP
+>    fixtures allow building + testing Phases A–B without live clients.
 
 ## 1. Goal
 

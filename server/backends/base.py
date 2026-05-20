@@ -54,6 +54,12 @@ class BackendBase(ABC):
 
     name: str = "unknown"
 
+    # Whether the session-manager run loop should apply the Claude-CLI
+    # premature-exit-after-tool recovery (respawn with "continue" — see
+    # docs/2026-05-18-bg-pipeline-hardening.md §2). It's a workaround for a
+    # specific `claude` CLI bug; other backends (Codex) must not inherit it.
+    wants_premature_exit_recovery: bool = False
+
     @abstractmethod
     async def start(
         self,

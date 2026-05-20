@@ -90,7 +90,7 @@ async function login(page: any) {
   await page.goto("/");
   await page.locator('input[type="password"]').fill(TOKEN);
   await page.locator("button.btn-login").click();
-  await expect(page.locator(".session-list-header")).toBeVisible();
+  await expect(page.locator(".agent-list-header")).toBeVisible();
 }
 
 async function getSessionByName(
@@ -412,7 +412,7 @@ test.describe("Handoff & Pull CLI", () => {
 
     // Verify in web UI
     await page.reload();
-    await expect(page.locator(".session-list-header")).toBeVisible();
+    await expect(page.locator(".agent-list-header")).toBeVisible();
 
     await expect(
       page.locator(".session-item .session-name", {

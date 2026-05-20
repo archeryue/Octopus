@@ -6,6 +6,7 @@ for the wire protocol this is built against.
 
 from .base import BackendBase, BackendCredential, BackendEvent
 from .claude_code import ClaudeCodeBackend
+from .codex import CodexBackend
 from .subprocess_jsonl import SubprocessJsonlBackend
 
 __all__ = [
@@ -13,5 +14,6 @@ __all__ = [
     "BackendCredential",
     "BackendEvent",
     "ClaudeCodeBackend",
+    "CodexBackend",
     "SubprocessJsonlBackend",
 ]

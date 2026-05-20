@@ -62,7 +62,7 @@ async function login(page: Page) {
   await page.goto("/");
   await page.locator('input[type="password"]').fill(TOKEN);
   await page.locator("button.btn-login").click();
-  await expect(page.locator(".session-list-header")).toBeVisible();
+  await expect(page.locator(".agent-list-header")).toBeVisible();
 }
 
 async function createSessionApi(
@@ -95,10 +95,11 @@ async function importSessionApi(
 // ---------------------------------------------------------------------------
 
 test.describe("Scheduled Tasks UI", () => {
-  test("schedule section is hidden when no session is active", async ({ page }) => {
+  test("schedule section is visible once an agent is active", async ({ page }) => {
     await login(page);
-    // ScheduleList component returns null when no activeSessionId
-    await expect(page.locator(".schedule-section")).toHaveCount(0);
+    // Schedules are agent-scoped now (agent-refactor.md §6); the Default
+    // Agent is auto-selected on login, so the section is present.
+    await expect(page.locator(".schedule-section")).toBeVisible();
   });
 
   test("create, toggle, and delete a schedule via the sidebar", async ({
@@ -299,7 +300,13 @@ test.describe("Message Queue & Interrupt", () => {
       detail.messages as { role: string; content: unknown }[]
     )
       .filter((m) => m.role === "user")
-      .map((m) => (typeof m.content === "string" ? m.content : ""));
+      .map((m) => (typeof m.content === "string" ? m.content : ""))
+      // The model may legitimately route the `sleep` commands through
+      // mcp__bg__run (the Octopus system prompt tells it to use bg_run for
+      // sleeps). When that bg task finishes it injects a *synthesized*
+      // `[bg-task-result]` user-role message — not user-typed input — so
+      // exclude it from the typed-prompt count to keep this deterministic.
+      .filter((c) => !c.includes("[bg-task-result]"));
     expect(userMessages.length).toBe(2);
     expect(userMessages[0]).toContain("100 * 200");
     expect(userMessages[1]).toContain("50 * 50");
@@ -1513,7 +1520,7 @@ test.describe("File attachments", () => {
     // Token is persisted in localStorage, so reload skips the login form
     // and lands straight on the session list.
     await page.reload();
-    await expect(page.locator(".session-list-header")).toBeVisible();
+    await expect(page.locator(".agent-list-header")).toBeVisible();
     await page
       .locator(".session-item .session-name", {
         hasText: "Attachment History Test",

@@ -3,20 +3,56 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import aiosqlite
 
 logger = logging.getLogger(__name__)
 
+# Built-in MCP servers attached to the Default Agent (and the default for
+# any newly-created agent). Kept here so the migration backfill and the
+# CREATE TABLE default stay in lock-step.
+_DEFAULT_MCP_SERVERS = ["ask", "bg", "viewer"]
+_DEFAULT_MCP_SERVERS_JSON = json.dumps(_DEFAULT_MCP_SERVERS)
+
 _SCHEMA = """
+-- Agents are the durable definition of an assistant (agent-refactor.md §4.1):
+-- identity + system prompt + model + credential + built-in MCP set + tool
+-- policy. They OWN sessions, schedules and bridge bindings. Memory (the
+-- north star) hangs off the agent_id later; not in this refactor.
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,                    -- 12-char hex, same scheme as sessions
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    avatar TEXT,                            -- emoji or URL, optional
+    system_prompt TEXT NOT NULL DEFAULT '',
+    model TEXT,                             -- e.g. "claude-opus-4-7"; null = backend default
+    credential_id TEXT REFERENCES backend_credentials(id) ON DELETE SET NULL,
+    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","viewer"]',
+                                            -- JSON array of built-in Octopus MCP server ids.
+    tool_allow TEXT NOT NULL DEFAULT '',    -- newline-separated tool/MCP names; empty = allow all
+    tool_deny  TEXT NOT NULL DEFAULT '',    -- newline-separated; deny takes precedence over allow
+    is_system INTEGER NOT NULL DEFAULT 0,   -- 1 = the protected Default Agent (cannot be deleted)
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS agents_name_unique ON agents(name) WHERE archived = 0;
+
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     working_dir TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    claude_session_id TEXT,
-    archived INTEGER NOT NULL DEFAULT 0  -- hidden from default list; row kept for history
+    claude_session_id TEXT,                -- backend resume id: a Claude session id
+                                           -- OR a Codex thread_id (backend-agnostic;
+                                           -- name kept for back-compat — codex-backend.md §4.3)
+    archived INTEGER NOT NULL DEFAULT 0,   -- hidden from default list; row kept for history
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,  -- owner; nullable in SQLite, required by API
+    origin TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'schedule' | 'bridge'
+    backend TEXT NOT NULL DEFAULT 'claude-code'  -- 'claude-code' | 'codex' (codex-backend.md §4.1)
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -38,24 +74,30 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 
+-- A schedule belongs to the Agent ("every morning, summarize my inbox"),
+-- not to a throwaway thread. Each fire materializes a fresh session under
+-- the agent (scheduler.py). No persistent session_id here anymore.
 CREATE TABLE IF NOT EXISTS schedules (
     id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
     interval_seconds INTEGER NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    last_run_at TEXT,
-    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    last_run_at TEXT
 );
 
+-- (platform, chat_id) binds durably to an AGENT. session_id is demoted to a
+-- sticky pointer at the currently-open thread (nullable; rolls as sessions
+-- come and go). A chat that has never opened a session has session_id NULL.
 CREATE TABLE IF NOT EXISTS bridge_mappings (
     platform TEXT NOT NULL,
     chat_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
+    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    session_id TEXT,
     PRIMARY KEY (platform, chat_id),
-    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS backend_credentials (
@@ -204,6 +246,165 @@ class Database:
         except Exception:
             pass
 
+        # sessions.backend ('claude-code' | 'codex') — codex-backend.md §4.1.
+        # DEFAULT backfills existing rows to claude-code → no behavior change.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL "
+                "DEFAULT 'claude-code'"
+            )
+        except Exception:
+            pass
+
+        await self._migrate_agents()
+
+    async def _column_info(self, table: str) -> list[tuple[Any, ...]]:
+        cursor = await self._conn.execute(f"PRAGMA table_info({table})")
+        return list(await cursor.fetchall())
+
+    async def _has_column(self, table: str, column: str) -> bool:
+        return any(row[1] == column for row in await self._column_info(table))
+
+    async def _column_is_not_null(self, table: str, column: str) -> bool:
+        # PRAGMA table_info row: (cid, name, type, notnull, dflt_value, pk)
+        for row in await self._column_info(table):
+            if row[1] == column:
+                return bool(row[3])
+        return False
+
+    async def _migrate_agents(self) -> None:
+        """First-class Agents refactor migration (agent-refactor.md §4.5).
+
+        Adds agent ownership to sessions / schedules / bridge_mappings,
+        creates the protected Default Agent, and backfills every
+        pre-existing row to it. Idempotent: safe on every boot, a second
+        run no-ops (system agent present, no null agent_id rows, the
+        column-shape rebuilds already applied). `schedules.session_id`
+        and `bridge_mappings`' NOT NULL `session_id` are removed by
+        table-rebuild rather than ALTER … DROP/MODIFY, because SQLite
+        forbids dropping a column that's part of a foreign key and can't
+        relax NOT NULL in place.
+        """
+        # 1. Additive columns (wrapped — SQLite has no IF NOT EXISTS for ALTER).
+        #    Adding a column with a REFERENCES clause is allowed because the
+        #    default value is NULL.
+        for ddl in (
+            "ALTER TABLE sessions ADD COLUMN agent_id TEXT "
+            "REFERENCES agents(id) ON DELETE CASCADE",
+            "ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'",
+            "ALTER TABLE schedules ADD COLUMN agent_id TEXT "
+            "REFERENCES agents(id) ON DELETE CASCADE",
+            "ALTER TABLE bridge_mappings ADD COLUMN agent_id TEXT "
+            "REFERENCES agents(id) ON DELETE CASCADE",
+        ):
+            try:
+                await self._conn.execute(ddl)
+            except Exception:
+                pass
+
+        # 2. The protected Default Agent — exactly one, created once.
+        cursor = await self._conn.execute(
+            "SELECT id FROM agents WHERE is_system = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            default_id = uuid.uuid4().hex[:12]
+            now = datetime.now(timezone.utc).isoformat()
+            await self._conn.execute(
+                "INSERT INTO agents "
+                "(id, name, description, system_prompt, mcp_servers, "
+                " is_system, created_at, updated_at) "
+                "VALUES (?, 'Octo', '', '', ?, 1, ?, ?)",
+                (default_id, _DEFAULT_MCP_SERVERS_JSON, now, now),
+            )
+        else:
+            default_id = row[0]
+            # One-time rename of the auto-created system agent from its old
+            # 'Default' name to 'Octo'. Guarded on the exact old name so a
+            # user-renamed system agent is left alone; try/except so it no-ops
+            # if an agent named 'Octo' already exists (unique-name index).
+            try:
+                await self._conn.execute(
+                    "UPDATE agents SET name = 'Octo' "
+                    "WHERE id = ? AND name = 'Default'",
+                    (default_id,),
+                )
+            except Exception:
+                pass
+
+        # 3. Backfill sessions → Default Agent. (origin defaults to 'user'.)
+        await self._conn.execute(
+            "UPDATE sessions SET agent_id = ? WHERE agent_id IS NULL",
+            (default_id,),
+        )
+
+        # 4. Schedules: derive agent_id through the (about-to-be-removed)
+        #    session_id, then rebuild the table without it. Guarded on the
+        #    presence of session_id so it runs exactly once.
+        if await self._has_column("schedules", "session_id"):
+            await self._conn.execute(
+                "UPDATE schedules SET agent_id = ("
+                "  SELECT s.agent_id FROM sessions s WHERE s.id = schedules.session_id"
+                ") WHERE agent_id IS NULL"
+            )
+            # Orphans whose session was deleted fall back to Default.
+            await self._conn.execute(
+                "UPDATE schedules SET agent_id = ? WHERE agent_id IS NULL",
+                (default_id,),
+            )
+            await self._conn.executescript(
+                """
+                CREATE TABLE schedules__new (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    interval_seconds INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    last_run_at TEXT
+                );
+                INSERT INTO schedules__new
+                    (id, agent_id, name, prompt, interval_seconds, enabled,
+                     created_at, last_run_at)
+                    SELECT id, agent_id, name, prompt, interval_seconds, enabled,
+                           created_at, last_run_at FROM schedules;
+                DROP TABLE schedules;
+                ALTER TABLE schedules__new RENAME TO schedules;
+                """
+            )
+
+        # 5. Bridge mappings: derive agent_id, then rebuild to relax
+        #    session_id's NOT NULL into a nullable sticky pointer. Guarded
+        #    on the old NOT NULL shape so it runs exactly once.
+        if await self._column_is_not_null("bridge_mappings", "session_id"):
+            await self._conn.execute(
+                "UPDATE bridge_mappings SET agent_id = ("
+                "  SELECT s.agent_id FROM sessions s "
+                "  WHERE s.id = bridge_mappings.session_id"
+                ") WHERE agent_id IS NULL"
+            )
+            await self._conn.execute(
+                "UPDATE bridge_mappings SET agent_id = ? WHERE agent_id IS NULL",
+                (default_id,),
+            )
+            await self._conn.executescript(
+                """
+                CREATE TABLE bridge_mappings__new (
+                    platform TEXT NOT NULL,
+                    chat_id TEXT NOT NULL,
+                    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+                    session_id TEXT,
+                    PRIMARY KEY (platform, chat_id),
+                    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
+                );
+                INSERT INTO bridge_mappings__new (platform, chat_id, agent_id, session_id)
+                    SELECT platform, chat_id, agent_id, session_id FROM bridge_mappings;
+                DROP TABLE bridge_mappings;
+                ALTER TABLE bridge_mappings__new RENAME TO bridge_mappings;
+                """
+            )
+
     async def _ensure_connected(self) -> None:
         # A closed Database is dead — never silently re-open. The
         # previous "reconnect" path was load-bearing for nothing in
@@ -248,12 +449,16 @@ class Database:
         created_at: str,
         claude_session_id: str | None = None,
         credential_id: str | None = None,
+        agent_id: str | None = None,
+        origin: str = "user",
+        backend: str = "claude-code",
     ) -> None:
         await self._ensure_connected()
         await self._conn.execute(
             "INSERT INTO sessions "
-            "(id, name, working_dir, created_at, claude_session_id, credential_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(id, name, working_dir, created_at, claude_session_id, "
+            " credential_id, agent_id, origin, backend) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 name,
@@ -261,6 +466,9 @@ class Database:
                 created_at,
                 claude_session_id,
                 credential_id,
+                agent_id,
+                origin,
+                backend,
             ),
         )
         await self._conn.commit()
@@ -276,7 +484,7 @@ class Database:
         await self._ensure_connected()
         query = (
             "SELECT id, name, working_dir, created_at, claude_session_id, "
-            "credential_id, archived FROM sessions"
+            "credential_id, archived, agent_id, origin, backend FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -291,6 +499,9 @@ class Database:
                 "claude_session_id": row[4],
                 "credential_id": row[5],
                 "archived": bool(row[6]),
+                "agent_id": row[7],
+                "origin": row[8] or "user",
+                "backend": row[9] or "claude-code",
             }
             for row in rows
         ]
@@ -390,15 +601,46 @@ class Database:
     # --- Bridge mappings ---
 
     async def save_bridge_mapping(
-        self, platform: str, chat_id: str, session_id: str
+        self,
+        platform: str,
+        chat_id: str,
+        agent_id: str,
+        session_id: str | None = None,
     ) -> None:
+        """Bind (platform, chat_id) to an agent, with an optional sticky
+        session pointer (the currently-open thread for this chat)."""
         await self._ensure_connected()
         await self._conn.execute(
-            "INSERT OR REPLACE INTO bridge_mappings (platform, chat_id, session_id) "
-            "VALUES (?, ?, ?)",
-            (platform, chat_id, session_id),
+            "INSERT OR REPLACE INTO bridge_mappings "
+            "(platform, chat_id, agent_id, session_id) VALUES (?, ?, ?, ?)",
+            (platform, chat_id, agent_id, session_id),
         )
         await self._conn.commit()
+
+    async def set_bridge_sticky_session(
+        self, platform: str, chat_id: str, session_id: str | None
+    ) -> None:
+        """Repoint a chat's sticky session (or clear it with None) without
+        touching its agent binding."""
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE bridge_mappings SET session_id = ? "
+            "WHERE platform = ? AND chat_id = ?",
+            (session_id, platform, chat_id),
+        )
+        await self._conn.commit()
+
+    async def clear_bridge_sticky_for_session(self, session_id: str) -> int:
+        """Null every sticky pointer aimed at a session that's going away
+        (archived). The chat keeps its agent binding; the next inbound
+        message opens a fresh thread. Returns rows updated."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE bridge_mappings SET session_id = NULL WHERE session_id = ?",
+            (session_id,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
 
     async def delete_bridge_mapping(self, platform: str, chat_id: str) -> None:
         await self._ensure_connected()
@@ -408,14 +650,19 @@ class Database:
         )
         await self._conn.commit()
 
-    async def load_bridge_mappings(self) -> list[dict[str, str]]:
+    async def load_bridge_mappings(self) -> list[dict[str, str | None]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT platform, chat_id, session_id FROM bridge_mappings"
+            "SELECT platform, chat_id, agent_id, session_id FROM bridge_mappings"
         )
         rows = await cursor.fetchall()
         return [
-            {"platform": row[0], "chat_id": row[1], "session_id": row[2]}
+            {
+                "platform": row[0],
+                "chat_id": row[1],
+                "agent_id": row[2],
+                "session_id": row[3],
+            }
             for row in rows
         ]
 
@@ -424,7 +671,7 @@ class Database:
     async def save_schedule(
         self,
         schedule_id: str,
-        session_id: str,
+        agent_id: str,
         name: str,
         prompt: str,
         interval_seconds: int,
@@ -433,23 +680,23 @@ class Database:
     ) -> None:
         await self._ensure_connected()
         await self._conn.execute(
-            "INSERT INTO schedules (id, session_id, name, prompt, interval_seconds, enabled, created_at) "
+            "INSERT INTO schedules (id, agent_id, name, prompt, interval_seconds, enabled, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (schedule_id, session_id, name, prompt, interval_seconds, int(enabled), created_at),
+            (schedule_id, agent_id, name, prompt, interval_seconds, int(enabled), created_at),
         )
         await self._conn.commit()
 
     async def load_schedules(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT id, session_id, name, prompt, interval_seconds, enabled, created_at, last_run_at "
+            "SELECT id, agent_id, name, prompt, interval_seconds, enabled, created_at, last_run_at "
             "FROM schedules"
         )
         rows = await cursor.fetchall()
         return [
             {
                 "id": row[0],
-                "session_id": row[1],
+                "agent_id": row[1],
                 "name": row[2],
                 "prompt": row[3],
                 "interval_seconds": row[4],
@@ -634,6 +881,9 @@ class Database:
             "claude_session_id",
             "credential_id",
             "archived",
+            "agent_id",
+            "origin",
+            "backend",
         }
         updates: dict[str, Any] = {}
         for k, v in fields.items():
@@ -650,34 +900,213 @@ class Database:
         )
         await self._conn.commit()
 
-    async def repoint_schedules(self, old_id: str, new_id: str) -> int:
-        """Move all schedules attached to old_id over to new_id.
+    # --- Agents ---
 
-        Used by /archive: the user's automation is bound to the
-        logical "session", not to its historical message chain.
-        Returns rows updated.
-        """
+    # Agents own sessions, schedules and bridge bindings (agent-refactor.md
+    # §4.1). Stateless rows — AgentManager wraps these for the routes;
+    # SessionManager reads them directly at spawn time so editing an agent
+    # affects its open sessions on their next turn.
+
+    _AGENT_COLS = (
+        "id, name, description, avatar, system_prompt, model, credential_id, "
+        "mcp_servers, tool_allow, tool_deny, is_system, archived, "
+        "created_at, updated_at"
+    )
+
+    @staticmethod
+    def _row_to_agent(row: tuple[Any, ...]) -> dict[str, Any]:
+        try:
+            mcp_servers = json.loads(row[7]) if row[7] else []
+        except (json.JSONDecodeError, TypeError):
+            mcp_servers = []
+        agent = {
+            "id": row[0],
+            "name": row[1],
+            "description": row[2] or "",
+            "avatar": row[3],
+            "system_prompt": row[4] or "",
+            "model": row[5],
+            "credential_id": row[6],
+            "mcp_servers": mcp_servers,
+            "tool_allow": row[8] or "",
+            "tool_deny": row[9] or "",
+            "is_system": bool(row[10]),
+            "archived": bool(row[11]),
+            "created_at": row[12],
+            "updated_at": row[13],
+        }
+        # Optional active-session count appended by load_agents / get_agent.
+        if len(row) > 14:
+            agent["active_session_count"] = row[14]
+        return agent
+
+    # Subquery counting live (non-archived) sessions for an agent — shared
+    # by load_agents and get_agent so the UI can show "3 sessions".
+    _ACTIVE_SESSION_COUNT = (
+        "(SELECT COUNT(*) FROM sessions s "
+        " WHERE s.agent_id = a.id AND s.archived = 0)"
+    )
+
+    async def save_agent(
+        self,
+        *,
+        agent_id: str,
+        name: str,
+        created_at: str,
+        updated_at: str,
+        description: str = "",
+        avatar: str | None = None,
+        system_prompt: str = "",
+        model: str | None = None,
+        credential_id: str | None = None,
+        mcp_servers: list[str] | None = None,
+        tool_allow: str = "",
+        tool_deny: str = "",
+        is_system: bool = False,
+    ) -> None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
-            "UPDATE schedules SET session_id = ? WHERE session_id = ?",
-            (new_id, old_id),
+        servers_json = json.dumps(
+            mcp_servers if mcp_servers is not None else _DEFAULT_MCP_SERVERS
+        )
+        await self._conn.execute(
+            "INSERT INTO agents "
+            "(id, name, description, avatar, system_prompt, model, "
+            " credential_id, mcp_servers, tool_allow, tool_deny, is_system, "
+            " archived, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            (
+                agent_id, name, description, avatar, system_prompt, model,
+                credential_id, servers_json, tool_allow, tool_deny,
+                int(bool(is_system)), created_at, updated_at,
+            ),
         )
         await self._conn.commit()
-        return cursor.rowcount
 
-    async def repoint_bridge_mappings(self, old_id: str, new_id: str) -> int:
-        """Same logic as repoint_schedules for the bridge-mapping table.
-
-        Telegram chats etc. continue routing into whichever session is
-        the live one after an /archive.
-        """
+    async def load_agents(
+        self, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         await self._ensure_connected()
+        cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
+        query = (
+            f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a"
+        )
+        if not include_archived:
+            query += " WHERE a.archived = 0"
+        query += " ORDER BY a.is_system DESC, a.created_at"
+        cursor = await self._conn.execute(query)
+        rows = await cursor.fetchall()
+        return [self._row_to_agent(row) for row in rows]
+
+    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
         cursor = await self._conn.execute(
-            "UPDATE bridge_mappings SET session_id = ? WHERE session_id = ?",
-            (new_id, old_id),
+            f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
+            "WHERE a.id = ?",
+            (agent_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_agent(row) if row else None
+
+    async def get_agent_by_name(
+        self, name: str, *, include_archived: bool = False
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
+        query = (
+            f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
+            "WHERE a.name = ?"
+        )
+        params: list[Any] = [name]
+        if not include_archived:
+            query += " AND a.archived = 0"
+        cursor = await self._conn.execute(query, params)
+        row = await cursor.fetchone()
+        return self._row_to_agent(row) if row else None
+
+    async def get_system_agent(self) -> dict[str, Any] | None:
+        """The protected Default Agent (is_system=1), created by migration."""
+        await self._ensure_connected()
+        cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
+        cursor = await self._conn.execute(
+            f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
+            "WHERE a.is_system = 1 LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        return self._row_to_agent(row) if row else None
+
+    async def update_agent(self, agent_id: str, **fields: Any) -> None:
+        await self._ensure_connected()
+        allowed = {
+            "name", "description", "avatar", "system_prompt", "model",
+            "credential_id", "mcp_servers", "tool_allow", "tool_deny",
+            "archived",
+        }
+        # credential_id / model / avatar are nullable and may be cleared.
+        nullable = {"credential_id", "model", "avatar"}
+        updates: dict[str, Any] = {}
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if v is None and k not in nullable:
+                continue
+            if k == "mcp_servers":
+                updates[k] = json.dumps(v if v is not None else [])
+            elif k == "archived":
+                updates[k] = int(bool(v))
+            else:
+                updates[k] = v
+        if not updates:
+            return
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [agent_id]
+        await self._conn.execute(
+            f"UPDATE agents SET {set_clause} WHERE id = ?", values
         )
         await self._conn.commit()
-        return cursor.rowcount
+
+    async def count_active_sessions_for_agent(self, agent_id: str) -> int:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND archived = 0",
+            (agent_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def count_sessions_for_agent(self, agent_id: str) -> int:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE agent_id = ?",
+            (agent_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def archive_agent(self, agent_id: str) -> None:
+        """Soft-delete an agent and cascade-archive its sessions."""
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE agents SET archived = 1, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), agent_id),
+        )
+        await self._conn.execute(
+            "UPDATE sessions SET archived = 1 WHERE agent_id = ?",
+            (agent_id,),
+        )
+        await self._conn.commit()
+
+    async def delete_agent(self, agent_id: str) -> bool:
+        """Hard-delete an agent. FK ON DELETE CASCADE removes its sessions,
+        schedules and bridge bindings — guarded by AgentManager so this is
+        only reached when the agent has no sessions."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM agents WHERE id = ?", (agent_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     # --- Notifiers ---
 

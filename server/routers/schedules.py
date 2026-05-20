@@ -25,6 +25,36 @@ def _get_runner():
     return _runner
 
 
+async def create_schedule_for_agent(
+    agent_id: str, name: str, prompt: str, interval_seconds: int
+) -> dict:
+    """Persist a schedule owned by `agent_id` and register its job. Shared by
+    the standalone `/api/schedules` route and the agent-scoped
+    `/api/agents/{id}/schedules` route."""
+    schedule_id = uuid.uuid4().hex[:12]
+    now = datetime.now(timezone.utc).isoformat()
+    row = {
+        "id": schedule_id,
+        "agent_id": agent_id,
+        "name": name,
+        "prompt": prompt,
+        "interval_seconds": interval_seconds,
+        "enabled": True,
+        "created_at": now,
+        "last_run_at": None,
+    }
+    await _get_db().save_schedule(
+        schedule_id=schedule_id,
+        agent_id=agent_id,
+        name=name,
+        prompt=prompt,
+        interval_seconds=interval_seconds,
+        created_at=now,
+    )
+    await _get_runner().add(row)
+    return row
+
+
 @router.get("", response_model=list[ScheduleInfo])
 async def list_schedules(_: str = Depends(verify_token)):
     rows = await _get_db().load_schedules()
@@ -33,32 +63,27 @@ async def list_schedules(_: str = Depends(verify_token)):
 
 @router.post("", response_model=ScheduleInfo, status_code=status.HTTP_201_CREATED)
 async def create_schedule(req: CreateScheduleRequest, _: str = Depends(verify_token)):
+    """Create a schedule. Prefer `agent_id`; `session_id` is accepted for one
+    release and resolved to the session's owning agent (agent-refactor.md
+    §5.4)."""
     from ..session_manager import session_manager
 
-    if not session_manager.sessions.get(req.session_id):
-        raise HTTPException(status_code=404, detail="Session not found")
+    agent_id = req.agent_id
+    if agent_id is None and req.session_id:
+        session = session_manager.get_session(req.session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        agent_id = session.agent_id
+    if not agent_id:
+        raise HTTPException(
+            status_code=400, detail="agent_id (or legacy session_id) is required"
+        )
+    if await session_manager.db.get_agent(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
 
-    schedule_id = uuid.uuid4().hex[:12]
-    now = datetime.now(timezone.utc).isoformat()
-    row = {
-        "id": schedule_id,
-        "session_id": req.session_id,
-        "name": req.name,
-        "prompt": req.prompt,
-        "interval_seconds": req.interval_seconds,
-        "enabled": True,
-        "created_at": now,
-        "last_run_at": None,
-    }
-    await _get_db().save_schedule(
-        schedule_id=schedule_id,
-        session_id=req.session_id,
-        name=req.name,
-        prompt=req.prompt,
-        interval_seconds=req.interval_seconds,
-        created_at=now,
+    row = await create_schedule_for_agent(
+        agent_id, req.name, req.prompt, req.interval_seconds
     )
-    await _get_runner().add(row)
     return ScheduleInfo(**row)
 
 

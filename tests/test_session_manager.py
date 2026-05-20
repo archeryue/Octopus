@@ -24,9 +24,18 @@ async def manager():
         await db.close()
 
 
+async def _new(manager, name="S", working_dir=None, credential_id=None, origin="user"):
+    """Create a session under the Default Agent (created by migration)."""
+    agent = await manager.db.get_system_agent()
+    _create = manager.create_session
+    return await _create(
+        agent["id"], name, working_dir, credential_id=credential_id, origin=origin
+    )
+
+
 @pytest.mark.asyncio
 async def test_create_session(manager):
-    session = await manager.create_session("Test Session", "/tmp")
+    session = await _new(manager,"Test Session", "/tmp")
     assert session.name == "Test Session"
     assert session.working_dir == "/tmp"
     assert session.status == SessionStatus.idle
@@ -36,15 +45,15 @@ async def test_create_session(manager):
 
 @pytest.mark.asyncio
 async def test_create_session_default_dir(manager):
-    session = await manager.create_session("Default Dir")
+    session = await _new(manager,"Default Dir")
     assert session.working_dir == "."
 
 
 @pytest.mark.asyncio
 async def test_list_sessions(manager):
     assert manager.list_sessions() == []
-    await manager.create_session("A")
-    await manager.create_session("B")
+    await _new(manager,"A")
+    await _new(manager,"B")
     sessions = manager.list_sessions()
     assert len(sessions) == 2
     names = {s.name for s in sessions}
@@ -53,7 +62,7 @@ async def test_list_sessions(manager):
 
 @pytest.mark.asyncio
 async def test_get_session(manager):
-    session = await manager.create_session("Find Me")
+    session = await _new(manager,"Find Me")
     found = manager.get_session(session.id)
     assert found is session
     assert manager.get_session("nonexistent") is None
@@ -61,7 +70,7 @@ async def test_get_session(manager):
 
 @pytest.mark.asyncio
 async def test_delete_session(manager):
-    session = await manager.create_session("Delete Me")
+    session = await _new(manager,"Delete Me")
     sid = session.id
     assert await manager.delete_session(sid) is True
     assert manager.get_session(sid) is None
@@ -91,14 +100,14 @@ async def test_broadcast_registration(manager):
 
 @pytest.mark.asyncio
 async def test_create_session_persists_to_db(manager):
-    session = await manager.create_session("Persisted", "/home")
+    session = await _new(manager,"Persisted", "/home")
     rows = await manager.db.load_sessions()
     assert any(r["id"] == session.id for r in rows)
 
 
 @pytest.mark.asyncio
 async def test_delete_session_removes_from_db(manager):
-    session = await manager.create_session("To Delete", "/tmp")
+    session = await _new(manager,"To Delete", "/tmp")
     sid = session.id
     await manager.delete_session(sid)
     rows = await manager.db.load_sessions()
@@ -113,7 +122,7 @@ async def test_initialize_restores_sessions():
     try:
         mgr1 = SessionManager()
         await mgr1.initialize(db)
-        session = await mgr1.create_session("Restored", "/tmp")
+        session = await _new(mgr1, "Restored", "/tmp")
         sid = session.id
 
         # Create a fresh manager, initialize with the same DB
@@ -135,7 +144,7 @@ async def test_initialize_restores_sessions():
 
 @pytest.mark.asyncio
 async def test_start_message_queues_when_busy(manager, monkeypatch):
-    session = await manager.create_session("Q")
+    session = await _new(manager,"Q")
     consumed: list[str] = []
     blocker = asyncio.Event()
 
@@ -178,7 +187,7 @@ async def test_start_message_queues_when_busy(manager, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_interrupt_cancels_current_and_advances_queue(manager, monkeypatch):
-    session = await manager.create_session("I")
+    session = await _new(manager,"I")
     started: list[str] = []
     cancelled: list[str] = []
 
@@ -229,7 +238,7 @@ async def test_interrupt_cancels_current_and_advances_queue(manager, monkeypatch
 async def test_interrupt_twice_in_a_row_each_works(manager, monkeypatch):
     """Reproduces the bug where pressing Esc to interrupt a queued message
     that just started running was a no-op."""
-    session = await manager.create_session("DoubleInterrupt")
+    session = await _new(manager,"DoubleInterrupt")
     started: list[str] = []
     cancelled: list[str] = []
 
@@ -287,7 +296,7 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
     isn't blocked from processing subsequent interrupts."""
     from server.backends import BackendBase
 
-    session = await manager.create_session("SlowStop")
+    session = await _new(manager,"SlowStop")
 
     async def stub_consume(session_id: str, queued) -> None:
         try:
@@ -339,7 +348,7 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
 
 @pytest.mark.asyncio
 async def test_interrupt_when_idle_returns_false(manager):
-    session = await manager.create_session("Idle")
+    session = await _new(manager,"Idle")
     assert await manager.interrupt(session.id) is False
 
 
@@ -362,7 +371,7 @@ async def test_format_answers_handles_select_and_text(manager):
 
 @pytest.mark.asyncio
 async def test_answer_question_unknown_returns_false(manager):
-    session = await manager.create_session("UnknownQ")
+    session = await _new(manager,"UnknownQ")
     assert await manager.answer_question(session.id, "nope", []) is False
 
 
@@ -376,7 +385,7 @@ async def test_answer_question_sets_event_and_broadcasts(manager):
     session_manager."""
     from server.session_manager import PendingQuestion
 
-    session = await manager.create_session("Q")
+    session = await _new(manager,"Q")
     events: list[dict] = []
 
     async def cb(msg: dict) -> None:
@@ -415,7 +424,7 @@ async def test_wait_for_question_answer_unblocks_on_submit(manager):
     the formatted answer text."""
     from server.session_manager import PendingQuestion
 
-    session = await manager.create_session("Wait")
+    session = await _new(manager,"Wait")
     session._pending_questions["qid"] = PendingQuestion(
         question_id="qid",
         questions=[{"question": "OK?", "options": [{"label": "Y"}]}],
@@ -439,7 +448,7 @@ async def test_wait_for_question_answer_returns_none_on_timeout(manager):
     waiter returns None so the MCP server can re-poll."""
     from server.session_manager import PendingQuestion
 
-    session = await manager.create_session("Timeout")
+    session = await _new(manager,"Timeout")
     session._pending_questions["qid"] = PendingQuestion(
         question_id="qid", questions=[{"question": "?", "options": []}]
     )
@@ -463,7 +472,7 @@ async def test_unanswered_question_auto_answers_after_timeout(
 
     monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.05)
 
-    session = await manager.create_session("AutoQ")
+    session = await _new(manager,"AutoQ")
     events: list[dict] = []
 
     async def cb(msg: dict) -> None:
@@ -505,7 +514,7 @@ async def test_manual_answer_cancels_auto_answer_timer(manager, monkeypatch):
 
     monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.5)
 
-    session = await manager.create_session("ManualBeatsTimer")
+    session = await _new(manager,"ManualBeatsTimer")
     session._pending_questions["q-1"] = PendingQuestion(
         question_id="q-1",
         questions=[{"question": "Pick", "options": [{"label": "A"}]}],
@@ -558,7 +567,7 @@ async def test_resolve_credential_returns_decrypted_secret(manager):
         secret_encrypted=enc,
         created_at=now,
     )
-    session = await manager.create_session("S", credential_id="c-1")
+    session = await _new(manager,"S", credential_id="c-1")
     cred = await manager._resolve_credential(session)
     assert cred is not None
     assert cred.backend == "claude-code"
@@ -568,7 +577,7 @@ async def test_resolve_credential_returns_decrypted_secret(manager):
 
 @pytest.mark.asyncio
 async def test_resolve_credential_returns_none_when_missing(manager):
-    session = await manager.create_session("S", credential_id="ghost")
+    session = await _new(manager,"S", credential_id="ghost")
     cred = await manager._resolve_credential(session)
     assert cred is None
 
@@ -602,7 +611,7 @@ async def test_resolve_credential_oauth_bundle_returns_oauth_credential(manager)
         secret_encrypted=enc,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    session = await manager.create_session("S-oauth", credential_id="c-oauth")
+    session = await _new(manager,"S-oauth", credential_id="c-oauth")
     cred = await manager._resolve_credential(session)
     assert cred is not None
     assert cred.auth_type == "oauth"
@@ -656,7 +665,7 @@ async def test_resolve_credential_refreshes_expired_oauth_token(manager, monkeyp
     provider = op.get_provider("claude-code")
     monkeypatch.setattr(provider, "refresh_access_token", fake_refresh)
 
-    session = await manager.create_session("S-stale", credential_id="c-stale")
+    session = await _new(manager,"S-stale", credential_id="c-stale")
     cred = await manager._resolve_credential(session)
 
     assert captured_refresh == ["ort-still-valid"]
@@ -721,7 +730,7 @@ async def test_resolve_credential_marks_needs_reconnect_on_refresh_failure(
     provider = op.get_provider("claude-code")
     monkeypatch.setattr(provider, "refresh_access_token", fake_refresh)
 
-    session = await manager.create_session("S-dead", credential_id="c-dead")
+    session = await _new(manager,"S-dead", credential_id="c-dead")
     cred = await manager._resolve_credential(session)
     assert cred is None
 
@@ -764,7 +773,7 @@ async def test_oauth_credential_env_var_reaches_subprocess(manager, monkeypatch)
         secret_encrypted=enc,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    session = await manager.create_session(
+    session = await _new(manager,
         "EnvSessionOAuth", credential_id="c-env-oauth"
     )
 
@@ -805,7 +814,7 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
         secret_encrypted=enc,
         created_at=datetime.now(timezone.utc).isoformat(),
     )
-    session = await manager.create_session("EnvSession", credential_id="c-env")
+    session = await _new(manager,"EnvSession", credential_id="c-env")
 
     # 1. Resolve through the session_manager pipeline
     cred = await manager._resolve_credential(session)
@@ -834,7 +843,7 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
 
     # And a sanity check on the *negative* path: a session with no
     # credential must NOT inject one (unless the parent shell already had).
-    bare_session = await manager.create_session("Bare")
+    bare_session = await _new(manager,"Bare")
     bare_backend = manager._make_backend(bare_session)
     _, bare_kwargs = bare_backend.build_args(
         "p", bare_session.working_dir, None, credential=None
@@ -846,12 +855,71 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
 
 
 @pytest.mark.asyncio
+async def test_make_backend_applies_agent_config(manager):
+    """_make_backend reads the agent's system prompt / model / MCP set /
+    tool allow-deny and translates them to CLI args (agent-refactor.md §5.2)."""
+    import json as _json
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    aid = _uuid.uuid4().hex[:12]
+    await manager.db.save_agent(
+        agent_id=aid,
+        name="Configured",
+        created_at=now,
+        updated_at=now,
+        system_prompt="You are a pirate.",
+        model="claude-opus-4-7",
+        mcp_servers=["ask"],
+        tool_allow="Read\nGrep",
+        tool_deny="Bash",
+    )
+    session = await manager.create_session(aid, name="S")
+    agent = await manager.db.get_agent(aid)
+    backend = manager._make_backend(session, agent)
+    argv, _ = backend.build_args("hi", session.working_dir, None)
+
+    # model
+    assert "--model" in argv and "claude-opus-4-7" in argv
+    # agent persona is appended ahead of the Octopus tools section
+    ap = argv[argv.index("--append-system-prompt") + 1]
+    assert "You are a pirate." in ap
+    assert "Octopus in-app tools" in ap
+    # deny = always-on AskUserQuestion + agent deny; allow = agent allow
+    dis = argv[argv.index("--disallowedTools") + 1]
+    assert "AskUserQuestion" in dis and "Bash" in dis
+    allow = argv[argv.index("--allowedTools") + 1]
+    assert "Read" in allow and "Grep" in allow
+    # only the selected MCP server is registered
+    cfg = _json.loads(argv[argv.index("--mcp-config") + 1])
+    assert set(cfg["mcpServers"].keys()) == {"ask"}
+
+
+@pytest.mark.asyncio
+async def test_make_backend_dispatches_on_backend(manager):
+    """_make_backend returns CodexBackend for backend='codex' and
+    ClaudeCodeBackend for 'claude-code' (codex-backend.md §5.5). Codex must
+    not inherit the Claude premature-exit recovery."""
+    from server.backends import ClaudeCodeBackend, CodexBackend
+
+    agent = await manager.db.get_system_agent()
+    claude_s = await manager.create_session(agent["id"], name="C", backend="claude-code")
+    codex_s = await manager.create_session(agent["id"], name="X", backend="codex")
+
+    assert isinstance(manager._make_backend(claude_s, agent), ClaudeCodeBackend)
+    cx = manager._make_backend(codex_s, agent)
+    assert isinstance(cx, CodexBackend)
+    assert cx.wants_premature_exit_recovery is False
+
+
+@pytest.mark.asyncio
 async def test_run_backend_translates_events_end_to_end(manager):
     """Stub the backend to produce a sequence of events and verify
     _run_backend translates each one to the expected WS message shape."""
     from server.backends import BackendBase, BackendEvent
 
-    session = await manager.create_session("E2E")
+    session = await _new(manager,"E2E")
 
     events_to_emit = [
         BackendEvent(type="text", content="hello"),
@@ -885,7 +953,7 @@ async def test_run_backend_translates_events_end_to_end(manager):
             pass
 
     # Patch the factory so _run_backend uses our scripted backend
-    def fake_factory(s):
+    def fake_factory(s, agent=None):
         return ScriptedBackend()
 
     manager._make_backend = fake_factory  # type: ignore[method-assign]
@@ -916,7 +984,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
     surface the events from the recovery turn."""
     from server.backends import BackendBase, BackendEvent
 
-    session = await manager.create_session("Recovery")
+    session = await _new(manager,"Recovery")
 
     # Invocation 1: init → tool_use → tool_result, then CLI dies
     # (no `result`). Invocation 2: text → result. The model "finishes"
@@ -925,6 +993,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
 
     class FlakyBackend(BackendBase):
         name = "flaky"
+        wants_premature_exit_recovery = True
 
         def __init__(self, events: list[BackendEvent]) -> None:
             self._events = events
@@ -973,7 +1042,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
         ]),
     ])
 
-    manager._make_backend = lambda s: next(backends_iter)  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None: next(backends_iter)  # type: ignore[method-assign,assignment]
 
     ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
     types = [m["type"] for m in ws_msgs]
@@ -1003,7 +1072,7 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
     budget is one — after that the turn ends without a `result`."""
     from server.backends import BackendBase, BackendEvent
 
-    session = await manager.create_session("BoundedRecovery")
+    session = await _new(manager,"BoundedRecovery")
 
     invocations: list[dict[str, Any]] = []
 
@@ -1024,6 +1093,7 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
 
     class AlwaysFlakyBackend(BackendBase):
         name = "always-flaky"
+        wants_premature_exit_recovery = True
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
             invocations.append({"prompt": prompt, "resume_id": resume_id})
@@ -1037,7 +1107,7 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
 
     ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
 
@@ -1060,7 +1130,7 @@ async def test_run_backend_does_not_respawn_on_clean_exit(manager):
     recovery should fire even if it included tool calls."""
     from server.backends import BackendBase, BackendEvent
 
-    session = await manager.create_session("CleanExit")
+    session = await _new(manager,"CleanExit")
 
     invocations: list[str] = []
 
@@ -1091,7 +1161,7 @@ async def test_run_backend_does_not_respawn_on_clean_exit(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s: CleanBackend()  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None: CleanBackend()  # type: ignore[method-assign,assignment]
 
     _ = [m async for m in manager._run_backend(session, "go")]
     assert invocations == ["go"]  # exactly one — no retry
@@ -1104,7 +1174,7 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
     Don't retry; surface the incomplete turn as-is."""
     from server.backends import BackendBase, BackendEvent
 
-    session = await manager.create_session("DiesEarly")
+    session = await _new(manager,"DiesEarly")
     invocations: list[str] = []
 
     class CrashEarlyBackend(BackendBase):
@@ -1122,7 +1192,7 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
 
     _ = [m async for m in manager._run_backend(session, "go")]
     assert invocations == ["go"]  # no retry — not the bug we recover from
@@ -1130,7 +1200,7 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
 
 @pytest.mark.asyncio
 async def test_delete_session_clears_queue(manager, monkeypatch):
-    session = await manager.create_session("Del")
+    session = await _new(manager,"Del")
     blocker = asyncio.Event()
 
     async def stub_consume(session_id: str, queued) -> None:
@@ -1158,7 +1228,7 @@ async def test_delete_session_clears_queue(manager, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_archive_creates_new_session_with_same_settings(manager):
-    old = await manager.create_session(
+    old = await _new(manager,
         name="Work",
         working_dir="/tmp/work",
         credential_id="c-1",
@@ -1183,7 +1253,7 @@ async def test_archive_creates_new_session_with_same_settings(manager):
 
 @pytest.mark.asyncio
 async def test_archive_hides_old_session_from_list_but_keeps_db_row(manager):
-    old = await manager.create_session(name="Hide Me", working_dir="/tmp")
+    old = await _new(manager,name="Hide Me", working_dir="/tmp")
     new = await manager.archive_session(old.id)
 
     listed = [s.id for s in manager.list_sessions()]
@@ -1197,27 +1267,36 @@ async def test_archive_hides_old_session_from_list_but_keeps_db_row(manager):
 
 
 @pytest.mark.asyncio
-async def test_archive_repoints_schedules_and_bridge_mappings(manager):
-    old = await manager.create_session(name="Auto", working_dir="/tmp")
+async def test_archive_leaves_agent_schedules_and_nulls_bridge_sticky(manager):
+    """Schedules/bridges are agent-owned now (agent-refactor.md §5.2), so
+    archiving a session doesn't repoint them. The only bridge-aware step:
+    a sticky pointer at the archived session is nulled."""
+    old = await _new(manager, name="Auto", working_dir="/tmp")
+    agent_id = old.agent_id
     await manager.db.save_schedule(
         schedule_id="s-1",
-        session_id=old.id,
+        agent_id=agent_id,
         name="ping",
         prompt="hi",
         interval_seconds=300,
         created_at="2026-01-01T00:00:00+00:00",
     )
     await manager.db.save_bridge_mapping(
-        platform="telegram", chat_id="42", session_id=old.id
+        platform="telegram", chat_id="42", agent_id=agent_id, session_id=old.id
     )
 
     new = await manager.archive_session(old.id)
 
+    # Schedule still owned by the same agent, untouched.
     schedules = await manager.db.load_schedules()
-    assert schedules[0]["session_id"] == new.id
+    assert schedules[0]["agent_id"] == agent_id
 
+    # Bridge keeps its agent binding; the sticky session pointer is nulled.
     bridges = await manager.db.load_bridge_mappings()
-    assert bridges[0]["session_id"] == new.id
+    assert bridges[0]["agent_id"] == agent_id
+    assert bridges[0]["session_id"] is None
+    # The replacement thread is under the same agent.
+    assert new.agent_id == agent_id
 
 
 @pytest.mark.asyncio
@@ -1231,7 +1310,7 @@ async def test_archive_broadcasts_session_archived_event(manager):
     received: list[dict] = []
     manager.on_broadcast("test", lambda m: asyncio.sleep(0, result=received.append(m)))
 
-    old = await manager.create_session(name="X", working_dir="/tmp")
+    old = await _new(manager,name="X", working_dir="/tmp")
     new = await manager.archive_session(old.id)
 
     archived_evts = [m for m in received if m.get("type") == "session_archived"]

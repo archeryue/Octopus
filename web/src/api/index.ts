@@ -13,6 +13,9 @@
 
 import type { components } from "./contracts";
 
+export type AgentRead = components["schemas"]["AgentRead"];
+export type AgentCreate = components["schemas"]["AgentCreate"];
+export type AgentUpdate = components["schemas"]["AgentUpdate"];
 export type AttachmentMetadata = components["schemas"]["AttachmentMetadata"];
 export type AuthType = components["schemas"]["AuthType"];
 export type BackendKind = components["schemas"]["BackendKind"];

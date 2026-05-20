@@ -3,7 +3,6 @@ import {
   IconCheck,
   IconChevronRight,
   IconCopy,
-  IconPlus,
   IconRestore,
   IconX,
 } from "@tabler/icons-react";
@@ -13,13 +12,25 @@ import { Input } from "./ui/input";
 
 const API_URL = window.location.origin;
 
-export function SessionList() {
+/** The session list for a single agent — rendered nested under its agent row
+ * in AgentList (sessions belong to an agent). No "Sessions" header; the
+ * new-session "+" lives on the agent row and drives `formOpen`. */
+export function SessionList({
+  agentId,
+  formOpen,
+  onCloseForm,
+}: {
+  agentId: string;
+  formOpen: boolean;
+  onCloseForm: () => void;
+}) {
   const [newName, setNewName] = useState("");
   const [workingDir, setWorkingDir] = useState("");
   const [credentialId, setCredentialId] = useState<string>("");
+  const [backend, setBackend] = useState<string>("claude-code");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
   const setSessions = useSessionStore((s) => s.setSessions);
@@ -27,48 +38,48 @@ export function SessionList() {
   const setArchived = useSessionStore((s) => s.setArchivedSessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
+  const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
   const setMessages = useSessionStore((s) => s.setMessages);
   const setPendingQueue = useSessionStore((s) => s.setPendingQueue);
   const setPendingQuestions = useSessionStore((s) => s.setPendingQuestions);
   const credentials = useSessionStore((s) => s.credentials);
-  const claudeCreds = credentials.filter((c) => c.backend === "claude-code");
+  const availableBackends = useSessionStore((s) => s.availableBackends);
+  // Credentials shown in the create form are scoped to the selected backend.
+  const backendCreds = credentials.filter((c) => c.backend === backend);
+  const codexAvailable = availableBackends.includes("codex");
+
+  // This list shows exactly its agent's sessions (bucketed by agent_id).
+  const agentSessions = sessions.filter((s) => s.agent_id === agentId);
+  const agentArchived = archived.filter((s) => s.agent_id === agentId);
 
   const headers = {
     "Content-Type": "application/json",
     Authorization: `Bearer ${token}`,
   };
 
-  const fetchSessions = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/sessions`, { headers });
-      if (res.ok) {
-        setSessions(await res.json());
-      }
-    } catch {
-      // ignore
-    }
-  }, [token]);
-
   const createSession = async () => {
     const name = newName.trim() || "New Session";
     try {
-      const res = await fetch(`${API_URL}/api/sessions`, {
+      const res = await fetch(`${API_URL}/api/agents/${agentId}/sessions`, {
         method: "POST",
         headers,
         body: JSON.stringify({
           name,
           working_dir: workingDir.trim() || null,
           credential_id: credentialId || null,
+          backend,
         }),
       });
       if (res.ok) {
         const session: SessionInfo = await res.json();
         setSessions([...sessions, session]);
+        setActiveAgentId(agentId);
         setActiveSessionId(session.id);
         setNewName("");
         setWorkingDir("");
         setCredentialId("");
-        setShowForm(false);
+        setBackend("claude-code");
+        onCloseForm();
       }
     } catch {
       // ignore
@@ -91,10 +102,8 @@ export function SessionList() {
   };
 
   const selectSession = async (id: string) => {
+    setActiveAgentId(agentId);
     setActiveSessionId(id);
-    // Fetch message history + bg tasks in parallel — the BgTaskChip
-    // mounted inside chat history needs the task list to render
-    // anything but a placeholder, and we don't want a render flash.
     try {
       const [detailRes, bgRes] = await Promise.all([
         fetch(`${API_URL}/api/sessions/${id}`, { headers }),
@@ -112,10 +121,7 @@ export function SessionList() {
         }
       }
       if (bgRes.ok) {
-        const tasks = await bgRes.json();
-        // API returns most-recent first; the store renderer doesn't
-        // care about order so we keep as-is.
-        useSessionStore.getState().setBgTasks(id, tasks);
+        useSessionStore.getState().setBgTasks(id, await bgRes.json());
       }
     } catch {
       // ignore
@@ -124,10 +130,9 @@ export function SessionList() {
 
   const fetchArchived = useCallback(async () => {
     try {
-      const res = await fetch(
-        `${API_URL}/api/sessions?include_archived=true`,
-        { headers }
-      );
+      const res = await fetch(`${API_URL}/api/sessions?include_archived=true`, {
+        headers,
+      });
       if (res.ok) {
         const all: SessionInfo[] = await res.json();
         setArchived(all.filter((s) => s.archived));
@@ -135,6 +140,7 @@ export function SessionList() {
     } catch {
       // ignore
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
   const unarchive = async (id: string) => {
@@ -147,6 +153,7 @@ export function SessionList() {
         const revived: SessionInfo = await res.json();
         setSessions([...sessions, revived]);
         setArchived(archived.filter((s) => s.id !== id));
+        setActiveAgentId(agentId);
         setActiveSessionId(revived.id);
       }
     } catch {
@@ -154,35 +161,19 @@ export function SessionList() {
     }
   };
 
-  // Fetch sessions on mount
-  useEffect(() => {
-    fetchSessions();
-  }, [fetchSessions]);
-
-  // Refresh archived list whenever the user opens it (so it reflects
-  // recent /archive calls from any tab).
   useEffect(() => {
     if (archivedExpanded) fetchArchived();
   }, [archivedExpanded, fetchArchived]);
 
   return (
-    <div className="session-list shrink-0 pb-3">
-      <div className="session-list-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
-        <h2 className="text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
-          Sessions
-        </h2>
-        <button
-          className="btn-session-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
-          onClick={() => setShowForm((v) => !v)}
-          title={showForm ? "Cancel" : "New session"}
-          aria-label={showForm ? "Cancel" : "New session"}
-        >
-          {showForm ? <IconX size={14} /> : <IconPlus size={14} />}
-        </button>
-      </div>
-
-      <div className="session-list-items flex flex-col gap-0.5 mt-1">
-        {sessions.map((s) => (
+    <div className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40">
+      <div className="session-list-items flex flex-col gap-0.5">
+        {agentSessions.length === 0 && !formOpen && (
+          <div className="text-[11px] italic text-sidebar-foreground/40 px-2 py-1">
+            No sessions yet.
+          </div>
+        )}
+        {agentSessions.map((s) => (
           <div
             key={s.id}
             className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
@@ -236,32 +227,30 @@ export function SessionList() {
         ))}
       </div>
 
-      {/* Archived expander — shown below the live items, collapsed by
-       *  default. Clicking opens a list with per-item Unarchive +
-       *  read-only "view history" affordances. */}
-      <div className="archived-section mt-2">
+      {/* Archived expander — per agent, collapsed by default. */}
+      <div className="archived-section mt-1">
         <button
           type="button"
-          className="btn-archived-toggle group flex w-full h-8 items-center gap-2 rounded-lg px-2 text-[12px] text-sidebar-foreground/55 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
+          className="btn-archived-toggle group flex w-full h-7 items-center gap-2 rounded-lg px-2 text-[11px] text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
           onClick={() => setArchivedExpanded((v) => !v)}
           aria-expanded={archivedExpanded}
         >
           <IconChevronRight
-            size={12}
+            size={11}
             className={`shrink-0 transition-transform ${archivedExpanded ? "rotate-90" : ""}`}
           />
           <span className="uppercase tracking-wide">
-            Archived{archived.length > 0 ? ` (${archived.length})` : ""}
+            Archived{agentArchived.length > 0 ? ` (${agentArchived.length})` : ""}
           </span>
         </button>
         {archivedExpanded && (
           <div className="archived-list flex flex-col gap-0.5 mt-1">
-            {archived.length === 0 && (
+            {agentArchived.length === 0 && (
               <div className="text-xs italic text-sidebar-foreground/50 px-2 py-1.5">
                 No archived sessions.
               </div>
             )}
-            {archived.map((s) => (
+            {agentArchived.map((s) => (
               <div
                 key={s.id}
                 className={`archived-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
@@ -293,7 +282,7 @@ export function SessionList() {
         )}
       </div>
 
-      {showForm && (
+      {formOpen && (
         <div className="session-create mt-2 rounded-lg border-[0.7px] border-border bg-card p-3 space-y-2">
           <Input
             type="text"
@@ -301,6 +290,7 @@ export function SessionList() {
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Session name"
+            autoFocus
           />
           <Input
             type="text"
@@ -309,21 +299,62 @@ export function SessionList() {
             onChange={(e) => setWorkingDir(e.target.value)}
             placeholder="Working directory (optional)"
           />
-          {claudeCreds.length > 0 && (
+          {codexAvailable && (
+            <div
+              className="session-backend-select flex gap-2"
+              role="radiogroup"
+              aria-label="Backend"
+            >
+              {[
+                { id: "claude-code", label: "Claude" },
+                { id: "codex", label: "Codex" },
+              ].map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={backend === b.id}
+                  className={`btn-backend btn-backend-${b.id} flex-1 h-8 rounded-md border text-xs transition-colors ${
+                    backend === b.id
+                      ? "border-primary bg-primary/10 text-foreground font-medium"
+                      : "border-border text-muted-foreground hover:bg-sidebar-accent"
+                  }`}
+                  onClick={() => {
+                    setBackend(b.id);
+                    setCredentialId("");
+                  }}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {backendCreds.length > 0 && (
             <select
               className="session-credential-select flex h-9 w-full rounded-md border border-border bg-input px-3 py-1 text-sm text-foreground outline-none focus:border-ring focus:ring-2 focus:ring-ring/30"
               value={credentialId}
               onChange={(e) => setCredentialId(e.target.value)}
             >
               <option value="">Default auth (CLI login)</option>
-              {claudeCreds.map((c) => (
+              {backendCreds.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.label}
                 </option>
               ))}
             </select>
           )}
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setNewName("");
+                setWorkingDir("");
+                onCloseForm();
+              }}
+            >
+              Cancel
+            </Button>
             <Button className="btn btn-create" size="sm" onClick={createSession}>
               Create
             </Button>

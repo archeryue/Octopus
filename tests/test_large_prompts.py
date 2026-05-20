@@ -197,7 +197,8 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
     await db.initialize()
     try:
         await mgr.initialize(db)
-        session = await mgr.create_session("Huge")
+        agent = await db.get_system_agent()
+        session = await mgr.create_session(agent["id"], name="Huge")
 
         received_prompts: list[str] = []
 
@@ -227,7 +228,7 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
             async def stop(self):
                 pass
 
-        mgr._make_backend = lambda s: RecordingBackend()  # type: ignore[method-assign,assignment]
+        mgr._make_backend = lambda s, agent=None: RecordingBackend()  # type: ignore[method-assign,assignment]
 
         huge = "Q" * (LARGE_PROMPT_THRESHOLD_BYTES + 50_000)
         async for _ in mgr.send_message(session.id, huge):

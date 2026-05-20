@@ -89,6 +89,15 @@ class Session:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     claude_session_id: str | None = None
     credential_id: str | None = None
+    # Owning agent (agent-refactor.md). agent_id is required for any session
+    # created post-refactor; left optional on the dataclass so legacy
+    # in-memory construction paths don't break mid-migration.
+    agent_id: str | None = None
+    # Who created this session: 'user' | 'schedule' | 'bridge'. Scheduler
+    # fires auto-archive on idle (§5.6); bridge/user sessions persist.
+    origin: str = "user"
+    # Which AI backend drives this session ('claude-code' | 'codex').
+    backend: str = "claude-code"
     _message_count: int = field(default=0, repr=False)
     _active_task: asyncio.Task | None = field(default=None, repr=False)
     # Per-prompt task that interrupt() targets; the outer _active_task is
@@ -140,6 +149,9 @@ class SessionManager:
                 created_at=row["created_at"],
                 claude_session_id=row["claude_session_id"],
                 credential_id=row.get("credential_id"),
+                agent_id=row.get("agent_id"),
+                origin=row.get("origin") or "user",
+                backend=row.get("backend") or "claude-code",
             )
             session._message_count = await db.count_messages(session.id)
             self.sessions[session.id] = session
@@ -166,16 +178,40 @@ class SessionManager:
 
     async def create_session(
         self,
-        name: str,
+        agent_id: str,
+        name: str | None = None,
         working_dir: str | None = None,
         credential_id: str | None = None,
+        origin: str = "user",
+        backend: str = "claude-code",
     ) -> Session:
+        """Create a conversation thread owned by `agent_id`.
+
+        A session is *an instance of talking to an agent* (agent-refactor.md
+        §5.2). Refuses a missing/unknown agent. `working_dir` defaults to
+        `settings.default_working_dir` — agents are not path-aware. `name`
+        defaults to a generated "{agent} — {timestamp}" label.
+        """
+        if not agent_id:
+            raise ValueError("agent_id is required to create a session")
+        agent = await self.db.get_agent(agent_id) if self.db else None
+        if self.db and agent is None:
+            raise ValueError(f"Agent {agent_id} not found")
+
+        if not name:
+            label = (agent or {}).get("name", "Agent")
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            name = f"{label} — {stamp}"
+
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
             name=name,
             working_dir=working_dir or settings.default_working_dir,
             credential_id=credential_id,
+            agent_id=agent_id,
+            origin=origin,
+            backend=backend,
         )
         self.sessions[sid] = session
         if self.db:
@@ -186,6 +222,9 @@ class SessionManager:
                 created_at=session.created_at,
                 claude_session_id=session.claude_session_id,
                 credential_id=session.credential_id,
+                agent_id=session.agent_id,
+                origin=session.origin,
+                backend=session.backend,
             )
         return session
 
@@ -196,6 +235,9 @@ class SessionManager:
         claude_session_id: str | None = None,
         credential_id: str | None = None,
         messages: list[MessageContent] | None = None,
+        agent_id: str | None = None,
+        origin: str = "user",
+        backend: str = "claude-code",
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
         session = Session(
@@ -204,6 +246,9 @@ class SessionManager:
             working_dir=working_dir or settings.default_working_dir,
             claude_session_id=claude_session_id,
             credential_id=credential_id,
+            agent_id=agent_id,
+            origin=origin,
+            backend=backend,
         )
         self.sessions[sid] = session
         if self.db:
@@ -214,6 +259,9 @@ class SessionManager:
                 created_at=session.created_at,
                 claude_session_id=session.claude_session_id,
                 credential_id=session.credential_id,
+                agent_id=session.agent_id,
+                origin=session.origin,
+                backend=session.backend,
             )
         if messages:
             for msg in messages:
@@ -229,11 +277,12 @@ class SessionManager:
         The old session row stays in the DB (with `archived = 1`) so the
         message history isn't lost — it just disappears from the default
         sessions list. The new session starts with no `claude_session_id`
-        so the CLI begins a clean conversation.
+        so the CLI begins a clean conversation, under the same agent.
 
-        Anything keyed off the *logical* session — schedules, bridge
-        mappings — is repointed from the old id to the new one, so the
-        user's automation keeps firing against the live session.
+        Schedules and bridges are owned by the *Agent* now, not the
+        session, so there is nothing to repoint (agent-refactor.md §5.2).
+        The only bridge-aware step: if this session was some chat's sticky
+        pointer, null it so the next inbound message opens a fresh thread.
 
         If the old session has a running turn, it's interrupted first.
         """
@@ -262,18 +311,26 @@ class SessionManager:
             await self.db.update_session_field(session_id, archived=True)
         self.sessions.pop(session_id, None)
 
-        # New session inherits name / working_dir / credential_id but
-        # starts with no claude_session_id (fresh conversation).
+        # New session inherits agent / name / working_dir / credential_id /
+        # origin but starts with no claude_session_id (fresh conversation).
+        agent_id = old.agent_id
+        if agent_id is None and self.db:
+            sys_agent = await self.db.get_system_agent()
+            agent_id = sys_agent["id"] if sys_agent else None
         new = await self.create_session(
+            agent_id=agent_id,
             name=old.name,
             working_dir=old.working_dir,
             credential_id=old.credential_id,
+            origin=old.origin,
+            backend=old.backend,
         )
 
-        # Repoint anything bound to the logical session id.
+        # Schedules/bridges point at the agent, not the session — nothing to
+        # repoint. Just clear any sticky bridge pointer aimed at the old
+        # session so the next inbound message opens a fresh thread.
         if self.db:
-            await self.db.repoint_schedules(old.id, new.id)
-            await self.db.repoint_bridge_mappings(old.id, new.id)
+            await self.db.clear_bridge_sticky_for_session(old.id)
 
         await self._broadcast(
             {
@@ -284,6 +341,67 @@ class SessionManager:
             }
         )
         return new
+
+    async def auto_archive_scheduled_session(self, session_id: str) -> bool:
+        """Hide a finished scheduler-origin session (agent-refactor.md §5.6).
+
+        Unlike `archive_session`, no replacement thread is created — the next
+        fire materializes its own fresh session under the agent. No-op if the
+        session is gone, not schedule-origin, or still running. Returns True
+        if it archived.
+        """
+        session = self.sessions.get(session_id)
+        if session is None or session.origin != "schedule":
+            return False
+        if session._active_task and not session._active_task.done():
+            return False  # still working — don't yank it
+        if self.db:
+            await self.db.update_session_field(session_id, archived=True)
+            await self.db.clear_bridge_sticky_for_session(session_id)
+        self.sessions.pop(session_id, None)
+        await self._broadcast(
+            {
+                "type": "session_archived",
+                "old_session_id": session_id,
+                "new_session_id": None,
+                "name": session.name,
+            }
+        )
+        return True
+
+    async def evict_agent_sessions(self, agent_id: str) -> list[str]:
+        """Drop all live sessions owned by an agent from the in-memory map
+        (used when the agent is archived — the DB rows are already flagged
+        archived by `db.archive_agent`). Stops any running turn first.
+        Returns the evicted session ids.
+        """
+        evicted: list[str] = []
+        for sid, session in list(self.sessions.items()):
+            if session.agent_id != agent_id:
+                continue
+            if session._inner_task and not session._inner_task.done():
+                session._inner_task.cancel()
+            if session._active_task and not session._active_task.done():
+                session._active_task.cancel()
+            if session._backend:
+                try:
+                    await asyncio.wait_for(session._backend.stop(), timeout=2.0)
+                except Exception:
+                    pass
+                session._backend = None
+            session._pending_queue.clear()
+            self._cancel_all_question_timers(session)
+            self.sessions.pop(sid, None)
+            evicted.append(sid)
+            await self._broadcast(
+                {
+                    "type": "session_archived",
+                    "old_session_id": sid,
+                    "new_session_id": None,
+                    "name": session.name,
+                }
+            )
+        return evicted
 
     async def list_archived_sessions(self) -> list[dict[str, Any]]:
         """Return SessionInfo-shaped dicts for every archived DB row.
@@ -310,6 +428,9 @@ class SessionManager:
                     "message_count": count,
                     "claude_session_id": row["claude_session_id"],
                     "credential_id": row.get("credential_id"),
+                    "agent_id": row.get("agent_id"),
+                    "origin": row.get("origin") or "user",
+                    "backend": row.get("backend") or "claude-code",
                     "archived": True,
                 }
             )
@@ -340,6 +461,9 @@ class SessionManager:
             message_count=len(messages),
             claude_session_id=match["claude_session_id"],
             credential_id=match.get("credential_id"),
+            agent_id=match.get("agent_id"),
+            origin=match.get("origin") or "user",
+            backend=match.get("backend") or "claude-code",
             archived=True,
             messages=messages,
             pending_queue=[],
@@ -370,6 +494,9 @@ class SessionManager:
             created_at=match["created_at"],
             claude_session_id=match["claude_session_id"],
             credential_id=match.get("credential_id"),
+            agent_id=match.get("agent_id"),
+            origin=match.get("origin") or "user",
+            backend=match.get("backend") or "claude-code",
         )
         session._message_count = await self.db.count_messages(session.id)
         self.sessions[session.id] = session
@@ -519,6 +646,11 @@ class SessionManager:
         # Queue is drained — fire the session-idle notifier (future-
         # features #5). Detached because notifier sends do network I/O.
         await self._fire_session_idle_notification(session)
+
+        # Scheduler-origin sessions hide themselves once idle so heavy
+        # schedules don't pile up the active list (agent-refactor.md §5.6).
+        if session.origin == "schedule":
+            await self.auto_archive_scheduled_session(session_id)
 
     async def _fire_session_idle_notification(self, session: Session) -> None:
         """Notify async targets that this session just went fully idle.
@@ -838,12 +970,16 @@ class SessionManager:
         _MAX_RECOVERY_ATTEMPTS so a genuinely broken state can't loop.
         """
 
-        credential = await self._resolve_credential(session)
+        # Load the owning agent fresh each turn — this is the live-reference
+        # point: editing an agent's prompt/model/tools/MCP affects its
+        # already-open sessions on their next turn (agent-refactor.md §5.2).
+        agent = await self._load_agent(session)
+        credential = await self._resolve_credential(session, agent)
         current_prompt = prompt
         recovery_attempts = 0
 
         while True:
-            backend = self._make_backend(session)
+            backend = self._make_backend(session, agent)
             session._backend = backend
             saw_result = False
             saw_tool_use = False
@@ -926,6 +1062,10 @@ class SessionManager:
             # once) — leave it alone.
             if saw_result:
                 return
+            if not backend.wants_premature_exit_recovery:
+                # Backend opts out of the Claude-CLI premature-exit recovery
+                # (Codex runs exactly once per turn) — codex-backend.md §5.6.
+                return
             if recovery_attempts >= self._MAX_RECOVERY_ATTEMPTS:
                 logger.warning(
                     "Session %s: CLI premature-exit retry budget exhausted; "
@@ -965,20 +1105,77 @@ class SessionManager:
 
             current_prompt = "continue"
 
-    def _make_backend(self, session: Session) -> BackendBase:
-        """Instantiate the backend for a session. Currently only Claude Code.
+    async def _load_agent(self, session: Session) -> dict[str, Any] | None:
+        """Fetch the session's owning agent row (or None for legacy/no-DB)."""
+        if self.db is None or not session.agent_id:
+            return None
+        return await self.db.get_agent(session.agent_id)
 
-        Future: dispatch on `session.backend` field ("claude-code" | "codex").
+    def _make_backend(
+        self, session: Session, agent: dict[str, Any] | None = None
+    ) -> BackendBase:
+        """Instantiate the backend for a session, configured from its agent.
+
+        The agent supplies the system prompt, model, built-in MCP set, and
+        tool allow/deny policy (agent-refactor.md §5.2). When no agent is
+        attached (legacy paths / tests), the backend runs with its defaults.
+
+        Dispatches on `session.backend` (codex-backend.md §5.5).
         """
-        return ClaudeCodeBackend(session_id=session.id)
+        system_prompt: str | None = None
+        model: str | None = None
+        mcp_servers: list[str] | None = None
+        allowed_tools: list[str] | None = None
+        disallowed_tools: list[str] | None = None
+        if agent:
+            system_prompt = agent.get("system_prompt") or None
+            model = agent.get("model") or None
+            servers = agent.get("mcp_servers")
+            mcp_servers = list(servers) if servers is not None else None
+            allowed_tools = _split_tool_list(agent.get("tool_allow"))
+            disallowed_tools = _split_tool_list(agent.get("tool_deny"))
+
+        if session.backend == "codex":
+            from .backends.codex import CodexBackend
+
+            return CodexBackend(
+                session_id=session.id,
+                model=model,
+                system_prompt=system_prompt,
+                mcp_servers=mcp_servers,
+                credential_home=self._codex_home_for(session),
+            )
+        if session.backend in ("claude-code", None):
+            return ClaudeCodeBackend(
+                session_id=session.id,
+                model=model,
+                system_prompt=system_prompt,
+                mcp_servers=mcp_servers,
+                allowed_tools=allowed_tools,
+                disallowed_tools=disallowed_tools,
+            )
+        raise ValueError(f"Unknown backend: {session.backend!r}")
+
+    def _codex_home_for(self, session: Session) -> str | None:
+        """Resolve the CODEX_HOME directory for a Codex session's effective
+        credential (codex-backend.md §7). A Codex credential is a
+        directory-backed login, not a secret string. Returns None to inherit
+        the host's default `~/.codex` (option A — host `codex login`)."""
+        return None
 
     # Refresh the access_token if it expires within this many seconds. A
     # 5-minute pad covers a slow turn that crosses the boundary without
     # forcing a refresh on every spawn.
     _OAUTH_REFRESH_LEEWAY_SEC = 300
 
-    async def _resolve_credential(self, session: Session) -> BackendCredential | None:
-        """Look up the session's credential and decrypt the secret.
+    async def _resolve_credential(
+        self, session: Session, agent: dict[str, Any] | None = None
+    ) -> BackendCredential | None:
+        """Look up the effective credential and decrypt the secret.
+
+        Credential resolution is `session.credential_id` if set, else the
+        agent's `credential_id` — the per-session override wins
+        (agent-refactor.md §5.2 / decision #2).
 
         For OAuth-token credentials (stored as a JSON bundle with a
         refresh_token), this refreshes the access_token if it's near or
@@ -991,20 +1188,25 @@ class SessionManager:
         decryption fails, or the credential was marked needs_reconnect by a
         previous failed refresh.
         """
-        if not session.credential_id or self.db is None:
+        if self.db is None:
             return None
-        row = await self.db.get_credential(session.credential_id)
+        cred_id = session.credential_id or (
+            agent.get("credential_id") if agent else None
+        )
+        if not cred_id:
+            return None
+        row = await self.db.get_credential(cred_id)
         if row is None:
             logger.warning(
                 "Session %s references missing credential %s; running without auth override",
                 session.id,
-                session.credential_id,
+                cred_id,
             )
             return None
         if row.get("needs_reconnect"):
             logger.warning(
                 "Credential %s is in needs_reconnect state (%s); running without auth override",
-                session.credential_id,
+                cred_id,
                 row.get("last_refresh_error_code"),
             )
             return None
@@ -1013,7 +1215,7 @@ class SessionManager:
         except ValueError:
             logger.warning(
                 "Could not decrypt credential %s (wrong auth token?); running without auth override",
-                session.credential_id,
+                cred_id,
             )
             return None
 
@@ -1022,7 +1224,7 @@ class SessionManager:
         # the access_token as the runtime secret.
         if row["auth_type"] == "oauth" and plaintext.startswith("{"):
             access_token = await self._refresh_oauth_if_needed(
-                credential_id=session.credential_id,
+                credential_id=cred_id,
                 backend=row["backend"],
                 bundle_json=plaintext,
             )
@@ -1550,6 +1752,18 @@ def _guess_mime(filename: str) -> str:
 
     guess, _ = mimetypes.guess_type(filename)
     return guess or "application/octet-stream"
+
+
+def _split_tool_list(raw: str | None) -> list[str] | None:
+    """Parse an agent's newline-separated tool/MCP name list.
+
+    Empty / whitespace-only → None (meaning "no restriction" for allow,
+    "nothing extra" for deny). Order preserved, blanks dropped.
+    """
+    if not raw:
+        return None
+    items = [line.strip() for line in raw.splitlines() if line.strip()]
+    return items or None
 
 
 def _rewrite_slash_commands(prompt: str) -> str:

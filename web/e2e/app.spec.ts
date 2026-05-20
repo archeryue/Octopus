@@ -50,9 +50,7 @@ test.describe("Login", () => {
     await page.locator('input[type="password"]').fill(TOKEN);
     await page.locator("button.btn-login").click();
     // Should see the main app layout
-    await expect(page.locator(".session-list-header h2")).toHaveText(
-      "Sessions"
-    );
+    await expect(page.locator(".agent-list-header h2")).toHaveText("Agents");
   });
 });
 
@@ -62,7 +60,7 @@ test.describe("Session Management", () => {
     await page.goto("/");
     await page.locator('input[type="password"]').fill(TOKEN);
     await page.locator("button.btn-login").click();
-    await expect(page.locator(".session-list-header")).toBeVisible();
+    await expect(page.locator(".agent-list-header")).toBeVisible();
   });
 
   test("creates a new session", async ({ page }) => {
@@ -121,7 +119,7 @@ test.describe("Chat", () => {
     await page.goto("/");
     await page.locator('input[type="password"]').fill(TOKEN);
     await page.locator("button.btn-login").click();
-    await expect(page.locator(".session-list-header")).toBeVisible();
+    await expect(page.locator(".agent-list-header")).toBeVisible();
 
     // Create a session
     await page.locator(".btn-session-add").click();

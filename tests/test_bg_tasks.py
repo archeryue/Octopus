@@ -443,7 +443,9 @@ async def api_client(tmp_path):
 
 async def test_rest_start_and_get_bg_task(api_client):
     client, wd = api_client
-    sess = await session_manager.create_session("rest", working_dir=str(wd))
+    sess = await session_manager.create_session(
+        (await session_manager.db.get_system_agent())["id"], name="rest", working_dir=str(wd)
+    )
     r = await client.post(
         f"/api/sessions/{sess.id}/bg-tasks",
         json={"command": "echo hello", "description": "say hi"},
@@ -470,7 +472,9 @@ async def test_rest_start_and_get_bg_task(api_client):
 
 async def test_rest_rejects_empty_command(api_client):
     client, wd = api_client
-    sess = await session_manager.create_session("rest", working_dir=str(wd))
+    sess = await session_manager.create_session(
+        (await session_manager.db.get_system_agent())["id"], name="rest", working_dir=str(wd)
+    )
     r = await client.post(
         f"/api/sessions/{sess.id}/bg-tasks",
         json={"command": "  "},
@@ -481,7 +485,9 @@ async def test_rest_rejects_empty_command(api_client):
 
 async def test_rest_list(api_client):
     client, wd = api_client
-    sess = await session_manager.create_session("rest", working_dir=str(wd))
+    sess = await session_manager.create_session(
+        (await session_manager.db.get_system_agent())["id"], name="rest", working_dir=str(wd)
+    )
     await client.post(
         f"/api/sessions/{sess.id}/bg-tasks",
         json={"command": "true"},
@@ -494,7 +500,9 @@ async def test_rest_list(api_client):
 
 async def test_rest_cancel_running(api_client):
     client, wd = api_client
-    sess = await session_manager.create_session("rest", working_dir=str(wd))
+    sess = await session_manager.create_session(
+        (await session_manager.db.get_system_agent())["id"], name="rest", working_dir=str(wd)
+    )
     start = await client.post(
         f"/api/sessions/{sess.id}/bg-tasks",
         json={"command": "sleep 30"},
@@ -512,7 +520,9 @@ async def test_rest_cancel_running(api_client):
 
 async def test_rest_cancel_already_finished(api_client):
     client, wd = api_client
-    sess = await session_manager.create_session("rest", working_dir=str(wd))
+    sess = await session_manager.create_session(
+        (await session_manager.db.get_system_agent())["id"], name="rest", working_dir=str(wd)
+    )
     start = await client.post(
         f"/api/sessions/{sess.id}/bg-tasks",
         json={"command": "true"},
@@ -558,7 +568,9 @@ async def test_deliver_bg_result_starts_a_new_session_turn(api_client):
     but the user_message broadcast happens *before* the backend turn,
     which is what we're checking."""
     client, wd = api_client
-    sess = await session_manager.create_session("delivery", working_dir=str(wd))
+    sess = await session_manager.create_session(
+        (await session_manager.db.get_system_agent())["id"], name="delivery", working_dir=str(wd)
+    )
 
     captured: list[dict] = []
     async def collect(msg):

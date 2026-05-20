@@ -19,6 +19,9 @@ def _to_session_info(
         message_count=s._message_count if message_count is None else message_count,
         claude_session_id=s.claude_session_id,
         credential_id=s.credential_id,
+        agent_id=s.agent_id,
+        origin=s.origin,
+        backend=s.backend,
         archived=archived,
     )
 
@@ -35,13 +38,46 @@ async def list_sessions(
     return live + archived
 
 
+async def _check_credential_backend(credential_id: str | None, backend: str) -> None:
+    """A session must not run a credential whose backend differs from its own
+    (codex-backend.md §4.2) — e.g. a Codex subscription on a Claude session.
+    400 on mismatch. A missing credential is tolerated (resolved later)."""
+    if not credential_id:
+        return
+    row = await session_manager.db.get_credential(credential_id)
+    if row is None:
+        return
+    if row["backend"] != backend:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Credential backend {row['backend']!r} does not match session "
+            f"backend {backend!r}",
+        )
+
+
 @router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)
 async def create_session(
     req: CreateSessionRequest, _: str = Depends(verify_token)
 ):
-    s = await session_manager.create_session(
-        req.name, req.working_dir, credential_id=req.credential_id
-    )
+    # A session is owned by an agent. agent_id is required, but for exactly
+    # one release we fall back to the Default Agent when the client omits it
+    # (agent-refactor.md §5.4).
+    agent_id = req.agent_id
+    if agent_id is None:
+        sys_agent = await session_manager.db.get_system_agent()
+        agent_id = sys_agent["id"] if sys_agent else None
+    backend = req.backend.value
+    await _check_credential_backend(req.credential_id, backend)
+    try:
+        s = await session_manager.create_session(
+            agent_id,
+            req.name,
+            req.working_dir,
+            credential_id=req.credential_id,
+            backend=backend,
+        )
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return _to_session_info(s, message_count=0)
 
 
@@ -49,12 +85,18 @@ async def create_session(
 async def import_session(
     req: ImportSessionRequest, _: str = Depends(verify_token)
 ):
+    agent_id = req.agent_id
+    if agent_id is None:
+        sys_agent = await session_manager.db.get_system_agent()
+        agent_id = sys_agent["id"] if sys_agent else None
     s = await session_manager.import_session(
         name=req.name,
         working_dir=req.working_dir,
         claude_session_id=req.claude_session_id,
         credential_id=req.credential_id,
         messages=req.messages,
+        agent_id=agent_id,
+        backend=req.backend.value,
     )
     messages_raw = await session_manager.db.load_messages(s.id)
     messages = [MessageContent(**m) for m in messages_raw]
@@ -67,6 +109,9 @@ async def import_session(
         message_count=s._message_count,
         claude_session_id=s.claude_session_id,
         credential_id=s.credential_id,
+        agent_id=s.agent_id,
+        origin=s.origin,
+        backend=s.backend,
         messages=messages,
         pending_queue=[qp.prompt for qp in s._pending_queue],
         pending_questions=[
@@ -97,6 +142,9 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
             message_count=s._message_count,
             claude_session_id=s.claude_session_id,
             credential_id=s.credential_id,
+            agent_id=s.agent_id,
+            origin=s.origin,
+            backend=s.backend,
             messages=messages,
             pending_queue=[qp.prompt for qp in s._pending_queue],
             pending_questions=[

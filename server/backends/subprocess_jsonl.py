@@ -7,6 +7,7 @@ and (optionally) `send_initial_prompt`. Lifecycle and I/O are shared.
 from __future__ import annotations
 
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -51,6 +52,10 @@ def _which_with_fallback(binary: str) -> str | None:
         "/usr/local/bin",
         "/opt/homebrew/bin",
     ]
+    # nvm installs node (and npm-global CLIs like `codex`) under
+    # ~/.nvm/versions/node/<ver>/bin, which a non-interactive service PATH
+    # never includes. Glob every installed version so the CLI resolves.
+    extras += sorted(glob.glob(os.path.join(home, ".nvm/versions/node/*/bin")))
     extra_path = os.pathsep.join(extras)
     full_path = os.pathsep.join(p for p in (os.environ.get("PATH", ""), extra_path) if p)
     return shutil.which(binary, path=full_path)

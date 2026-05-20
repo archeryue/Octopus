@@ -4,6 +4,100 @@
  */
 
 export interface paths {
+    "/api/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agents */
+        get: operations["list_agents_api_agents_get"];
+        put?: never;
+        /** Create Agent */
+        post: operations["create_agent_api_agents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Agent */
+        get: operations["get_agent_api_agents__agent_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Agent */
+        delete: operations["delete_agent_api_agents__agent_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Agent */
+        patch: operations["update_agent_api_agents__agent_id__patch"];
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Agent */
+        post: operations["archive_agent_api_agents__agent_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Sessions */
+        get: operations["list_agent_sessions_api_agents__agent_id__sessions_get"];
+        put?: never;
+        /**
+         * Create Agent Session
+         * @description Preferred path to start a session — the agent comes from the URL, so
+         *     the body's `agent_id` (if any) is ignored.
+         */
+        post: operations["create_agent_session_api_agents__agent_id__sessions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Schedules */
+        get: operations["list_agent_schedules_api_agents__agent_id__schedules_get"];
+        put?: never;
+        /** Create Agent Schedule */
+        post: operations["create_agent_schedule_api_agents__agent_id__schedules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions": {
         parameters: {
             query?: never;
@@ -156,6 +250,168 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/files/meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * File Meta
+         * @description Metadata-only sibling of /files.
+         *
+         *     The dialog hits this first to decide which renderer to mount and
+         *     whether to skip the bytes fetch entirely (e.g. for an oversized
+         *     file, we show the error inline rather than streaming kilobytes
+         *     that will never render). Same security path as /files.
+         */
+        get: operations["file_meta_api_sessions__session_id__files_meta_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get File */
+        get: operations["get_file_api_sessions__session_id__files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/bg-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Bg Tasks
+         * @description All bg tasks for a session, most-recent first. Used by the
+         *     sidebar / chip popover. Includes finished tasks so users can scroll
+         *     back through history.
+         */
+        get: operations["list_bg_tasks_api_sessions__session_id__bg_tasks_get"];
+        put?: never;
+        /**
+         * Start Bg Task
+         * @description Start a new background task. Called by the bg MCP server.
+         *
+         *     Returns the freshly-created task row so the MCP tool can echo the
+         *     task_id back to the model. The subprocess is already running by the
+         *     time this returns — callers don't wait for completion.
+         */
+        post: operations["start_bg_task_api_sessions__session_id__bg_tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/bg-tasks/{task_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Bg Task */
+        get: operations["get_bg_task_api_sessions__session_id__bg_tasks__task_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/bg-tasks/{task_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Bg Task
+         * @description Best-effort cancel. Returns {cancelled: bool}; cancelled=False
+         *     means the task wasn't currently running (already finished, or
+         *     server restarted and lost the in-memory handle).
+         */
+        post: operations["cancel_bg_task_api_sessions__session_id__bg_tasks__task_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/questions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Question
+         * @description Called by the MCP server. Creates a pending question, broadcasts
+         *     the WS event so the frontend renders the form, returns the
+         *     question_id the MCP server should long-poll on.
+         */
+        post: operations["create_question_api_sessions__session_id__questions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/questions/{question_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Wait For Answer
+         * @description MCP-server-facing long-poll. Returns when the user (or the
+         *     session-level auto-answer timeout) submits. 408 on per-call
+         *     timeout — the MCP server should loop and retry.
+         */
+        get: operations["wait_for_answer_api_sessions__session_id__questions__question_id__answer_get"];
+        put?: never;
+        /**
+         * Submit Answer
+         * @description Frontend-facing. The user pressed submit; route into the
+         *     session_manager which formats the answer, persists the chat
+         *     entry, broadcasts the question_answer WS event, and sets the
+         *     Event that wakes the MCP server's long-poll.
+         */
+        post: operations["submit_answer_api_sessions__session_id__questions__question_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedules": {
         parameters: {
             query?: never;
@@ -166,7 +422,12 @@ export interface paths {
         /** List Schedules */
         get: operations["list_schedules_api_schedules_get"];
         put?: never;
-        /** Create Schedule */
+        /**
+         * Create Schedule
+         * @description Create a schedule. Prefer `agent_id`; `session_id` is accepted for one
+         *     release and resolved to the session's owning agent (agent-refactor.md
+         *     §5.4).
+         */
         post: operations["create_schedule_api_schedules_post"];
         delete?: never;
         options?: never;
@@ -330,6 +591,28 @@ export interface paths {
         patch: operations["update_notifier_api_notifiers__notifier_id__patch"];
         trace?: never;
     };
+    "/api/backends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Backends
+         * @description Which AI backends are usable on this host (codex-backend.md §6.1).
+         *     `claude-code` is always listed; `codex` appears only when its binary
+         *     resolves on PATH.
+         */
+        get: operations["list_backends_api_backends_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -351,6 +634,136 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentCreate */
+        AgentCreate: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Avatar */
+            avatar?: string | null;
+            /**
+             * System Prompt
+             * @default
+             */
+            system_prompt: string;
+            /** Model */
+            model?: string | null;
+            /** Credential Id */
+            credential_id?: string | null;
+            /**
+             * Mcp Servers
+             * @default [
+             *       "ask",
+             *       "bg",
+             *       "viewer"
+             *     ]
+             */
+            mcp_servers: string[];
+            /**
+             * Tool Allow
+             * @default
+             */
+            tool_allow: string;
+            /**
+             * Tool Deny
+             * @default
+             */
+            tool_deny: string;
+        };
+        /** AgentRead */
+        AgentRead: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Avatar */
+            avatar?: string | null;
+            /**
+             * System Prompt
+             * @default
+             */
+            system_prompt: string;
+            /** Model */
+            model?: string | null;
+            /** Credential Id */
+            credential_id?: string | null;
+            /**
+             * Mcp Servers
+             * @default []
+             */
+            mcp_servers: string[];
+            /**
+             * Tool Allow
+             * @default
+             */
+            tool_allow: string;
+            /**
+             * Tool Deny
+             * @default
+             */
+            tool_deny: string;
+            /**
+             * Is System
+             * @default false
+             */
+            is_system: boolean;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /**
+             * Active Session Count
+             * @default 0
+             */
+            active_session_count: number;
+        };
+        /** AgentUpdate */
+        AgentUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+            /** Avatar */
+            avatar?: string | null;
+            /** System Prompt */
+            system_prompt?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Credential Id */
+            credential_id?: string | null;
+            /** Mcp Servers */
+            mcp_servers?: string[] | null;
+            /** Tool Allow */
+            tool_allow?: string | null;
+            /** Tool Deny */
+            tool_deny?: string | null;
+        };
+        /**
+         * AnswerItem
+         * @description One entry in the frontend's answer submission. Mirrors the
+         *     legacy WS answer_question payload so existing UI code keeps
+         *     working.
+         */
+        AnswerItem: {
+            /** Selected */
+            selected?: string[] | null;
+            /** Text */
+            text?: string | null;
+        };
         /**
          * AttachmentMetadata
          * @description Metadata for a user-uploaded file attached to a message.
@@ -407,28 +820,42 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /**
+         * CreateQuestionRequest
+         * @description Body for POST /questions. The schema mirrors the existing
+         *     AskUserQuestion tool input so the model's call shape is unchanged.
+         */
+        CreateQuestionRequest: {
+            /** Questions */
+            questions: {
+                [key: string]: unknown;
+            }[];
+        };
         /** CreateScheduleRequest */
         CreateScheduleRequest: {
-            /** Session Id */
-            session_id: string;
             /** Name */
             name: string;
             /** Prompt */
             prompt: string;
             /** Interval Seconds */
             interval_seconds: number;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Session Id */
+            session_id?: string | null;
         };
         /** CreateSessionRequest */
         CreateSessionRequest: {
-            /**
-             * Name
-             * @default New Session
-             */
-            name: string;
+            /** Name */
+            name?: string | null;
             /** Working Dir */
             working_dir?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
         };
         /**
          * CredentialInfo
@@ -484,6 +911,10 @@ export interface components {
             claude_session_id?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
             /**
              * Messages
              * @default []
@@ -596,8 +1027,8 @@ export interface components {
         ScheduleInfo: {
             /** Id */
             id: string;
-            /** Session Id */
-            session_id: string;
+            /** Agent Id */
+            agent_id: string;
             /** Name */
             name: string;
             /** Prompt */
@@ -631,6 +1062,15 @@ export interface components {
             claude_session_id?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /** Agent Id */
+            agent_id?: string | null;
+            /**
+             * Origin
+             * @default user
+             */
+            origin: string;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
             /**
              * Archived
              * @default false
@@ -677,6 +1117,15 @@ export interface components {
             claude_session_id?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /** Agent Id */
+            agent_id?: string | null;
+            /**
+             * Origin
+             * @default user
+             */
+            origin: string;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
             /**
              * Archived
              * @default false
@@ -688,6 +1137,18 @@ export interface components {
          * @enum {string}
          */
         SessionStatus: "idle" | "running" | "waiting_approval";
+        /** StartBgTaskRequest */
+        StartBgTaskRequest: {
+            /** Command */
+            command: string;
+            /** Description */
+            description?: string | null;
+        };
+        /** SubmitAnswerRequest */
+        SubmitAnswerRequest: {
+            /** Answers */
+            answers: components["schemas"]["AnswerItem"][];
+        };
         /** UpdateCredentialRequest */
         UpdateCredentialRequest: {
             /** Label */
@@ -739,6 +1200,328 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_agents_api_agents_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_agent_api_agents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_api_agents__agent_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_agent_api_agents__agent_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_agent_api_agents__agent_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_agent_api_agents__agent_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_sessions_api_agents__agent_id__sessions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_agent_session_api_agents__agent_id__sessions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_schedules_api_agents__agent_id__schedules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_agent_schedule_api_agents__agent_id__schedules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateScheduleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_sessions_api_sessions_get: {
         parameters: {
             query?: {
@@ -1026,7 +1809,9 @@ export interface operations {
     };
     download_attachment_api_sessions__session_id__attachments__attachment_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -1043,6 +1828,323 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    file_meta_api_sessions__session_id__files_meta_get: {
+        parameters: {
+            query: {
+                path: string;
+                token?: string | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_file_api_sessions__session_id__files_get: {
+        parameters: {
+            query: {
+                path: string;
+                token?: string | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_bg_tasks_api_sessions__session_id__bg_tasks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_bg_task_api_sessions__session_id__bg_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartBgTaskRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_bg_task_api_sessions__session_id__bg_tasks__task_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_bg_task_api_sessions__session_id__bg_tasks__task_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_question_api_sessions__session_id__questions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateQuestionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    wait_for_answer_api_sessions__session_id__questions__question_id__answer_get: {
+        parameters: {
+            query?: {
+                timeout?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                question_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_answer_api_sessions__session_id__questions__question_id__answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                question_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmitAnswerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -1500,6 +2602,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_backends_api_backends_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

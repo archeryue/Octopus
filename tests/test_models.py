@@ -9,8 +9,12 @@ from server.models import (
 
 def test_create_session_request_defaults():
     req = CreateSessionRequest()
-    assert req.name == "New Session"
+    # name now defaults to None — the route resolves a generated label from
+    # the owning agent (agent-refactor.md §5.2). agent_id is optional on the
+    # wire (Default-Agent fallback) for one release.
+    assert req.name is None
     assert req.working_dir is None
+    assert req.agent_id is None
 
 
 def test_create_session_request_custom():

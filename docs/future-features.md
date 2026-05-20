@@ -1,47 +1,62 @@
 # Roadmap — open work
 
-Octopus has three open initiatives, each with a full tech plan in
-[`plans/`](plans/). This file is the **index and the build order**; the
-plans are the source of truth. Landed work is removed from here — the
-done record is the git log.
+Octopus has three initiatives, each with a full tech plan in
+[`plans/`](plans/). This file is the **index**; the plans are the source
+of truth.
 
-Build order is dependency-driven; the rationale and the cross-cutting
-coordination points are in the last two sections.
+**Progress (2026-05-19 session):** #2 Agents has **landed** (all suites
+green); #1 Codex backend is **built to its verifiable bound** (data model,
+dispatch, `codex.py`, normalizer + `build_args` tests, `GET /api/backends`,
+backend selector UI) with only the subscription-gated parts deferred; #3
+Connectors' plan has been **revised to agent-scoped** and awaits
+implementation. Details per-initiative below.
 
 ---
 
 ## 1. Codex backend — [`plans/codex-backend.md`](plans/codex-backend.md)
 
-**Status**: planned, grounded. **Recommended first.**
+**Status**: ✅ **DONE & live-verified (2026-05-19).** Only the *optional*
+in-app login UI is deferred (host `codex login` works today).
 
-A second AI backend (`codex`) beside `claude-code`, driven by the user's
-own **ChatGPT subscription** (not an API key). The plan is grounded
-against VM0's shipped Codex support and the installed `codex` 0.132.0 —
-the `exec --json` event schema, the spawn command, and instruction
-injection (`-c developer_instructions`) are verified. One product
-decision is still open: the login flow (host `codex login` vs in-app
-`--device-auth`, §7/§10).
+A second AI backend (`codex`) beside `claude-code`, driven by the user's own
+**ChatGPT subscription**. **Shipped:** `sessions.backend` column + migration;
+`_make_backend` dispatch + `wants_premature_exit_recovery` opt-out;
+`server/backends/codex.py` (`exec --json` normalizer, `build_args` grounded on
+real `codex` 0.132.0, MCP injection via per-session `-c mcp_servers.*`
+overrides, **stdin closed on spawn** so codex doesn't block); `GET
+/api/backends`; credential↔backend validation; nvm-aware binary discovery;
+the Claude/Codex selector in the new-session form.
 
-**Why first**: ready to build, self-contained (no dependency on the
-other two), high value, and it nails down the Codex MCP-injection path
-that the connectors plan otherwise lists as an open question.
+**Phase C (live, on a logged-in subscription) — confirmed end-to-end:** the
+event schema matches (text / command_execution / **mcp_tool_call** — the last
+was a real normalizer gap caught and fixed); MCP injection is honored (codex
+launched our viewer server, env passed through, model called the tool); resume
+works. Verified by `tests/test_backend_codex_real.py` (4/4, gated on a login)
+and `web/e2e/codex.spec.ts` (full UI → real response). Schema recorded in
+`docs/codex-protocol-notes.md`.
+
+**Deferred (product decision, not blocked):** the in-app `--device-auth` login
+UI (§6.3 / §10). Host `codex login` already works — no API key, no UI needed.
 
 ## 2. First-class Agents — [`plans/agent-refactor.md`](plans/agent-refactor.md)
 
-**Status**: planned. **The foundation.**
+**Status**: ✅ **LANDED (2026-05-19).** The foundation.
 
-Promote `Agent` to the durable definition of an assistant (system
-prompt, model, credential, MCP set) that **owns** Sessions, Schedules,
-and Bridges. Three PRs: schema + backfill → backend + routes → frontend.
+Promoted `Agent` to the durable definition of an assistant (system prompt,
+model, credential, MCP set, tool policy) that **owns** Sessions, Schedules,
+and Bridges. Shipped all three phases: schema + idempotent backfill (Default
+Agent); `AgentManager` + `/api/agents` routes; `_make_backend` reads config
+from the agent each turn (live-reference); scheduler fires per-agent into
+fresh auto-archiving sessions; bridges bind chats to agents with a sticky
+session; frontend two-pane sidebar + Agent settings dialog + agent-scoped
+schedules. All suites green (434→450 backend, 33 vitest, 50/50 e2e).
 
-**Why second**: it reshapes the ownership graph that Connectors build
-on, and it's the keystone for the eventual agent-memory north star. It
-touches the same `sessions` table and `_make_backend` as the Codex work
-— see coordination notes.
+The agent-memory north star (Deferred, below) now has its durable key.
 
 ## 3. Connectors — [`plans/connectors.md`](plans/connectors.md)
 
-**Status**: planned. **After Agents.**
+**Status**: planned; **plan revised to agent-scoped** (see the banner atop
+`connectors.md`). **After OAuth client registration.**
 
 First-class third-party **outbound** tools (Notion, **Gmail**, Slack,
 GitHub, …) the user installs once and the agent calls as MCP tools.

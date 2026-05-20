@@ -229,30 +229,37 @@ function handleWsMessage(data: Record<string, unknown>) {
       // session and replaced it with new_session_id. Update the
       // sessions list + swap active if this tab was on the old one.
       const oldId = data.old_session_id as string;
-      const newId = data.new_session_id as string;
+      // null = the session was hidden with no replacement (a scheduler-origin
+      // session auto-archiving on idle, or an agent being archived).
+      const newId = data.new_session_id as string | null;
       const name = data.name as string;
       const store = getState();
+      const prev = store.sessions.find((s) => s.id === oldId);
       const next = store.sessions.filter((s) => s.id !== oldId);
-      if (!next.some((s) => s.id === newId)) {
+      if (newId && !next.some((s) => s.id === newId)) {
         next.push({
           id: newId,
           name,
-          working_dir: store.sessions.find((s) => s.id === oldId)?.working_dir ?? "",
+          working_dir: prev?.working_dir ?? "",
           status: "idle",
           created_at: new Date().toISOString(),
           message_count: 0,
           claude_session_id: null,
-          credential_id:
-            store.sessions.find((s) => s.id === oldId)?.credential_id ?? null,
+          credential_id: prev?.credential_id ?? null,
+          agent_id: prev?.agent_id ?? null,
+          origin: prev?.origin ?? "user",
+          backend: prev?.backend ?? "claude-code",
           archived: false,
         });
       }
       store.setSessions(next);
       if (store.activeSessionId === oldId) {
         store.setActiveSessionId(newId);
-        store.setMessages(newId, []);
-        store.setPendingQueue(newId, []);
-        store.setPendingQuestions(newId, []);
+        if (newId) {
+          store.setMessages(newId, []);
+          store.setPendingQueue(newId, []);
+          store.setPendingQuestions(newId, []);
+        }
       }
       break;
     }

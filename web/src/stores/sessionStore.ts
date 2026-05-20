@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  AgentRead as ApiAgentRead,
   AttachmentMetadata as ApiAttachmentMetadata,
   BackendKind as ApiBackendKind,
   CredentialInfo as ApiCredentialInfo,
@@ -13,6 +14,7 @@ import type {
 // from FastAPI's openapi.json via `bun run generate:contracts`.
 export type SessionStatus = ApiSessionStatus;
 export type SessionInfo = ApiSessionInfo;
+export type Agent = ApiAgentRead;
 export type BackendKind = ApiBackendKind;
 export type CredentialInfo = ApiCredentialInfo;
 export type Schedule = ScheduleInfo;
@@ -58,6 +60,22 @@ export interface PendingQuestion {
 interface SessionStore {
   token: string;
   setToken: (t: string) => void;
+
+  // Agents own sessions/schedules/bridges (agent-refactor.md). The sidebar
+  // is two-pane: pick an agent, then see its sessions. `activeAgentId`
+  // drives the session/schedule filters.
+  agents: Agent[];
+  setAgents: (a: Agent[]) => void;
+  upsertAgent: (a: Agent) => void;
+  removeAgent: (id: string) => void;
+  activeAgentId: string | null;
+  setActiveAgentId: (id: string | null) => void;
+
+  // Which AI backends this host can run (GET /api/backends). 'claude-code'
+  // is always present; 'codex' only when the binary resolves. Drives the
+  // backend selector in the session-create form (codex-backend.md §6).
+  availableBackends: string[];
+  setAvailableBackends: (b: string[]) => void;
 
   sessions: SessionInfo[];
   setSessions: (s: SessionInfo[]) => void;
@@ -152,6 +170,25 @@ export const useSessionStore = create<SessionStore>((set) => ({
     localStorage.setItem("octopus_token", t);
     set({ token: t });
   },
+
+  agents: [],
+  setAgents: (agents) => set({ agents }),
+  upsertAgent: (agent) =>
+    set((s) => {
+      const idx = s.agents.findIndex((a) => a.id === agent.id);
+      const agents =
+        idx >= 0
+          ? [...s.agents.slice(0, idx), agent, ...s.agents.slice(idx + 1)]
+          : [...s.agents, agent];
+      return { agents };
+    }),
+  removeAgent: (id) =>
+    set((s) => ({ agents: s.agents.filter((a) => a.id !== id) })),
+  activeAgentId: null,
+  setActiveAgentId: (activeAgentId) => set({ activeAgentId }),
+
+  availableBackends: ["claude-code"],
+  setAvailableBackends: (availableBackends) => set({ availableBackends }),
 
   sessions: [],
   setSessions: (sessions) => set({ sessions }),

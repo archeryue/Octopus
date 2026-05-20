@@ -6,7 +6,7 @@ import { Input } from "./ui/input";
 
 export function ScheduleList() {
   const token = useSessionStore((s) => s.token);
-  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const activeAgentId = useSessionStore((s) => s.activeAgentId);
   const schedules = useSessionStore((s) => s.schedules);
   const setSchedules = useSessionStore((s) => s.setSchedules);
 
@@ -26,16 +26,15 @@ export function ScheduleList() {
     if (token) fetchSchedules();
   }, [token, fetchSchedules]);
 
-  const sessionSchedules = schedules.filter((s) => s.session_id === activeSessionId);
+  const agentSchedules = schedules.filter((s) => s.agent_id === activeAgentId);
 
   const handleCreate = async () => {
-    if (!name.trim() || !prompt.trim() || !activeSessionId) return;
+    if (!name.trim() || !prompt.trim() || !activeAgentId) return;
     const interval = Math.max(1, parseInt(intervalMin, 10) || 5) * 60;
-    const resp = await fetch("/api/schedules", {
+    const resp = await fetch(`/api/agents/${activeAgentId}/schedules`, {
       method: "POST",
       headers,
       body: JSON.stringify({
-        session_id: activeSessionId,
         name: name.trim(),
         prompt: prompt.trim(),
         interval_seconds: interval,
@@ -64,7 +63,7 @@ export function ScheduleList() {
     fetchSchedules();
   };
 
-  if (!activeSessionId) return null;
+  if (!activeAgentId) return null;
 
   return (
     <div className="schedule-section shrink-0 pb-3 pt-2">
@@ -118,7 +117,7 @@ export function ScheduleList() {
       )}
 
       <div className="flex flex-col gap-0.5 mt-1">
-        {sessionSchedules.map((sched) => (
+        {agentSchedules.map((sched) => (
           <div
             key={sched.id}
             className={`schedule-item group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors ${

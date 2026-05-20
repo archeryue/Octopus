@@ -83,11 +83,16 @@ export function ChatView({
   const messages = activeSessionId ? (messagesMap[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
   const sessions = useSessionStore((s) => s.sessions);
   const archivedSessions = useSessionStore((s) => s.archivedSessions);
+  const agents = useSessionStore((s) => s.agents);
   const activeSession = useMemo(
     () =>
       sessions.find((s) => s.id === activeSessionId) ??
       archivedSessions.find((s) => s.id === activeSessionId),
     [sessions, archivedSessions, activeSessionId]
+  );
+  const activeAgent = useMemo(
+    () => agents.find((a) => a.id === activeSession?.agent_id),
+    [agents, activeSession?.agent_id]
   );
   const isArchived = !!activeSession?.archived;
   const pendingQueueMap = useSessionStore((s) => s.pendingQueue);
@@ -473,6 +478,22 @@ export function ChatView({
       </button>
       {activeSession && (
         <>
+          {activeAgent && (
+            <span
+              className="chat-agent inline-flex items-center gap-1.5 text-sm text-muted-foreground shrink-0"
+              title={`Agent: ${activeAgent.name}`}
+            >
+              <span aria-hidden className="text-base leading-none">
+                {activeAgent.avatar || "🐙"}
+              </span>
+              <span className="hidden sm:inline truncate max-w-[10rem]">
+                {activeAgent.name}
+              </span>
+              <span aria-hidden className="text-border">
+                /
+              </span>
+            </span>
+          )}
           <h3 className="text-[15px] font-semibold text-foreground truncate">
             {activeSession.name || "Session"}
           </h3>
