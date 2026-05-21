@@ -42,7 +42,7 @@ class FakeProvider:
     async def exchange_code(self, **k):
         return OAuthTokenSet("at", "rt", time.time() + 3600)
 
-    async def refresh(self, refresh_token):
+    async def refresh(self, *, client_id, client_secret, refresh_token):
         self.refresh_calls += 1
         if self.refresh_delay:
             await asyncio.sleep(self.refresh_delay)
@@ -103,9 +103,13 @@ def provider():
 
 
 @pytest.fixture
-def mgr(db, provider, clean_registry):
+async def mgr(db, provider, clean_registry):
     register(FakeConnector(provider))
-    return ConnectorManager(db)
+    m = ConnectorManager(db)
+    # Configure the kind's OAuth client in-app so it's "available" and the
+    # token-refresh path can resolve client creds.
+    await m.set_client_creds("fakekind", "cid", "csec")
+    return m
 
 
 def _token_set(expires_in: float = 3600.0) -> OAuthTokenSet:
@@ -120,10 +124,18 @@ async def _agent(db: Database, agent_id: str = "a-1") -> None:
 # --- catalog ---------------------------------------------------------------
 
 
-def test_catalog_reflects_availability(db, clean_registry, provider):
+@pytest.mark.asyncio
+async def test_catalog_reflects_availability(db, clean_registry, provider):
     register(FakeConnector(provider))
     register(UnconfiguredConnector())
-    cat = {c["kind"]: c for c in ConnectorManager(db).catalog()}
+    m = ConnectorManager(db)
+    # Nothing configured yet → both unavailable.
+    cat = {c["kind"]: c for c in await m.catalog()}
+    assert cat["fakekind"]["available"] is False
+    assert cat["noconfig"]["available"] is False
+    # Setting the OAuth client in-app flips availability.
+    await m.set_client_creds("fakekind", "cid", "csec")
+    cat = {c["kind"]: c for c in await m.catalog()}
     assert cat["fakekind"]["available"] is True
     assert cat["fakekind"]["display_name"] == "Fake"
     assert cat["noconfig"]["available"] is False
@@ -260,6 +272,41 @@ async def test_replace_agent_connectors_diffs(mgr, db):
 
     with pytest.raises(ConnectorError):
         await mgr.replace_agent_connectors("a-1", ["ghost"])
+
+
+@pytest.mark.asyncio
+async def test_resolve_client_creds_db_and_env(db, clean_registry, provider, monkeypatch):
+    from server.config import settings
+
+    register(FakeConnector(provider))
+    m = ConnectorManager(db)
+
+    # Nothing set anywhere.
+    assert await m.resolve_client_creds("fakekind") is None
+
+    # Env fallback (github is a real settings field; resolution doesn't require
+    # the kind to be registered).
+    assert await m.resolve_client_creds("github") is None
+    monkeypatch.setattr(settings, "github_oauth_client_id", "env-id")
+    monkeypatch.setattr(settings, "github_oauth_client_secret", "env-sec")
+    assert await m.resolve_client_creds("github") == ("env-id", "env-sec")
+
+    # DB config for a registered kind; secret round-trips, config hides it.
+    await m.set_client_creds("fakekind", "db-id", "db-sec")
+    assert await m.resolve_client_creds("fakekind") == ("db-id", "db-sec")
+    fcfg = await m.client_config("fakekind", "https://octo.example")
+    assert fcfg["configured"] is True
+    assert fcfg["client_id"] == "db-id" and fcfg["source"] == "db"
+    assert "client_secret" not in fcfg
+    assert fcfg["redirect_uri"] == "https://octo.example/api/connectors/oauth/callback"
+
+    # Clearing drops back to "nothing" (fakekind has no env field).
+    assert await m.clear_client_creds("fakekind") is True
+    assert await m.resolve_client_creds("fakekind") is None
+
+    # Unknown kind can't be configured.
+    with pytest.raises(ConnectorError):
+        await m.set_client_creds("ghost", "x", "y")
 
 
 @pytest.mark.asyncio

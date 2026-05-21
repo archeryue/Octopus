@@ -182,6 +182,34 @@ CREATE TABLE IF NOT EXISTS agent_connectors (
 CREATE INDEX IF NOT EXISTS idx_agent_connectors_agent
   ON agent_connectors(agent_id);
 
+-- Per-kind OAuth *client* credentials (the app registered with the provider),
+-- set in-app so a connector works without editing env + restarting. client_id
+-- is not secret; the secret is encrypted like connector tokens. When there's
+-- no row, resolution falls back to env (OCTOPUS_<KIND>_OAUTH_CLIENT_ID/_SECRET).
+CREATE TABLE IF NOT EXISTS connector_oauth_clients (
+    kind TEXT PRIMARY KEY,                 -- 'github' | 'gmail' | …
+    client_id TEXT NOT NULL,
+    client_secret_encrypted TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- User-defined ("custom") connectors: a brand-new connector kind added
+-- entirely from the browser, no server code. The OAuth *client* creds live in
+-- connector_oauth_clients (same as built-ins); this row holds the definition
+-- the generic OAuth provider + generic MCP server read.
+CREATE TABLE IF NOT EXISTS custom_connectors (
+    kind TEXT PRIMARY KEY,                 -- user-chosen slug, e.g. 'linear'
+    display_name TEXT NOT NULL,
+    authorize_url TEXT NOT NULL,
+    token_url TEXT NOT NULL,
+    scopes TEXT,                           -- JSON list of OAuth scopes
+    pkce INTEGER NOT NULL DEFAULT 0,
+    api_base TEXT NOT NULL,                -- base URL the agent's request tool calls
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 -- Async notification targets (future-features #5). Each row is one
 -- destination Octopus can poke when a session transitions to idle
 -- (and, later, when an AskUserQuestion is pending / a schedule fails).
@@ -1149,6 +1177,142 @@ class Database:
         )
         rows = await cursor.fetchall()
         return [self._row_to_connector(row) for row in rows]
+
+    # --- per-kind OAuth client credentials (in-app config) ----------------
+
+    async def set_connector_oauth_client(
+        self, kind: str, client_id: str, client_secret_encrypted: str, now: str
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO connector_oauth_clients "
+            "(kind, client_id, client_secret_encrypted, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(kind) DO UPDATE SET "
+            "client_id=excluded.client_id, "
+            "client_secret_encrypted=excluded.client_secret_encrypted, "
+            "updated_at=excluded.updated_at",
+            (kind, client_id, client_secret_encrypted, now, now),
+        )
+        await self._conn.commit()
+
+    async def get_connector_oauth_client(
+        self, kind: str
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT kind, client_id, client_secret_encrypted "
+            "FROM connector_oauth_clients WHERE kind = ?",
+            (kind,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "kind": row[0],
+            "client_id": row[1],
+            "client_secret_encrypted": row[2],
+        }
+
+    async def delete_connector_oauth_client(self, kind: str) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM connector_oauth_clients WHERE kind = ?", (kind,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    async def delete_connector_installations_by_kind(self, kind: str) -> int:
+        """Delete every installation of a kind (cascades to secrets +
+        agent_connectors). Used when a custom connector is removed."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM connector_installations WHERE kind = ?", (kind,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+
+    # --- custom (user-defined) connector definitions ----------------------
+
+    @staticmethod
+    def _row_to_custom(row: tuple[Any, ...]) -> dict[str, Any]:
+        # Columns: kind, display_name, authorize_url, token_url, scopes, pkce,
+        # api_base, created_at, updated_at.
+        try:
+            scopes = json.loads(row[4]) if row[4] else []
+        except (json.JSONDecodeError, TypeError):
+            scopes = []
+        return {
+            "kind": row[0],
+            "display_name": row[1],
+            "authorize_url": row[2],
+            "token_url": row[3],
+            "scopes": scopes,
+            "pkce": bool(row[5]),
+            "api_base": row[6],
+            "created_at": row[7],
+            "updated_at": row[8],
+        }
+
+    async def save_custom_connector(
+        self,
+        *,
+        kind: str,
+        display_name: str,
+        authorize_url: str,
+        token_url: str,
+        scopes: list[str],
+        pkce: bool,
+        api_base: str,
+        now: str,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO custom_connectors "
+            "(kind, display_name, authorize_url, token_url, scopes, pkce, "
+            " api_base, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(kind) DO UPDATE SET "
+            "display_name=excluded.display_name, "
+            "authorize_url=excluded.authorize_url, token_url=excluded.token_url, "
+            "scopes=excluded.scopes, pkce=excluded.pkce, "
+            "api_base=excluded.api_base, updated_at=excluded.updated_at",
+            (
+                kind, display_name, authorize_url, token_url,
+                json.dumps(scopes), int(bool(pkce)), api_base, now, now,
+            ),
+        )
+        await self._conn.commit()
+
+    _CUSTOM_COLS = (
+        "kind, display_name, authorize_url, token_url, scopes, pkce, "
+        "api_base, created_at, updated_at"
+    )
+
+    async def get_custom_connector(self, kind: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._CUSTOM_COLS} FROM custom_connectors WHERE kind = ?",
+            (kind,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_custom(row) if row else None
+
+    async def list_custom_connectors(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._CUSTOM_COLS} FROM custom_connectors ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_custom(row) for row in rows]
+
+    async def delete_custom_connector(self, kind: str) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM custom_connectors WHERE kind = ?", (kind,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
 
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         await self._ensure_connected()

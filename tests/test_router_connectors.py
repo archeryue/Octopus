@@ -1,6 +1,6 @@
 """Tests for the /api/connectors routes (connectors.md §5.5 / §8): auth,
-catalog, the OAuth start→callback→status install flow, installation CRUD, the
-internal token route, and the agent-scoped enable routes."""
+in-app OAuth-client config, catalog availability, the OAuth install flow,
+installation CRUD, the internal token route, and agent-scoped enable routes."""
 
 from __future__ import annotations
 
@@ -30,16 +30,16 @@ class FakeProvider:
     token_url = "https://fake/token"
     default_scopes = ["s"]
     pkce = True
-    client_id = "cid"
-    client_secret = "csec"
 
-    def build_authorize_url(self, *, redirect_uri, code_challenge, state):
-        return f"{self.authorize_url}?state={state}"
+    def build_authorize_url(self, *, client_id, redirect_uri, code_challenge, state):
+        return f"{self.authorize_url}?client_id={client_id}&state={state}"
 
-    async def exchange_code(self, *, code, redirect_uri, code_verifier, state):
+    async def exchange_code(
+        self, *, client_id, client_secret, code, redirect_uri, code_verifier, state
+    ):
         return OAuthTokenSet("at-" + code, "rt", time.time() + 3600, scopes=["s"])
 
-    async def refresh(self, refresh_token):
+    async def refresh(self, *, client_id, client_secret, refresh_token):
         return OAuthTokenSet("at2", refresh_token, time.time() + 3600)
 
 
@@ -53,17 +53,6 @@ class FakeConnector(ConnectorBase):
 
     async def fetch_external_identity(self, token_set):
         return ("ext-1", "me@example.com")
-
-
-class UnconfiguredProvider:
-    kind = "noconfig"
-    pkce = False
-
-
-class UnconfiguredConnector(ConnectorBase):
-    kind = "noconfig"
-    display_name = "NoConfig"
-    oauth = UnconfiguredProvider()
 
 
 @pytest.fixture
@@ -88,15 +77,25 @@ async def client():
     await db.close()
 
 
+async def _configure(client, kind="fakekind"):
+    r = await client.put(
+        f"/api/connectors/{kind}/oauth-client",
+        json={"client_id": "cid", "client_secret": "csec"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
 async def _start(client, kind="fakekind", **body):
-    r = await client.post(
+    return await client.post(
         "/api/connectors/oauth/start", json={"kind": kind, **body}, headers=HEADERS
     )
-    return r
 
 
 async def _install(client, code="abc"):
-    """Run the full OAuth flow and return the created installation dict."""
+    """Configure the OAuth client, then run the full OAuth flow."""
+    await _configure(client)
     r = await _start(client)
     assert r.status_code == 201, r.text
     login_id = r.json()["login_id"]
@@ -121,17 +120,95 @@ async def _new_agent(client, name="Researcher"):
 
 @pytest.mark.asyncio
 async def test_requires_auth(client):
-    r = await client.get("/api/connectors")
-    assert r.status_code in (401, 403)
+    assert (await client.get("/api/connectors")).status_code in (401, 403)
 
 
 @pytest.mark.asyncio
 async def test_catalog_lists_registered_kinds(client):
-    r = await client.get("/api/connectors/catalog", headers=HEADERS)
-    assert r.status_code == 200
-    cat = {c["kind"]: c for c in r.json()}
-    assert cat["fakekind"]["available"] is True
+    cat = {
+        c["kind"]: c
+        for c in (await client.get("/api/connectors/catalog", headers=HEADERS)).json()
+    }
     assert cat["fakekind"]["display_name"] == "Fake"
+    assert cat["fakekind"]["available"] is False  # not configured yet
+
+
+# --- in-app OAuth client config -------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_oauth_client_set_get_delete(client):
+    g = await client.get("/api/connectors/fakekind/oauth-client", headers=HEADERS)
+    assert g.status_code == 200
+    assert g.json()["configured"] is False
+    assert g.json()["redirect_uri"].endswith("/api/connectors/oauth/callback")
+    assert "client_secret" not in g.json()  # secret never returned
+
+    p = await _configure(client)
+    assert p["configured"] is True and p["client_id"] == "cid" and p["source"] == "db"
+
+    # Catalog availability flips on.
+    cat = {
+        c["kind"]: c
+        for c in (await client.get("/api/connectors/catalog", headers=HEADERS)).json()
+    }
+    assert cat["fakekind"]["available"] is True
+
+    d = await client.delete(
+        "/api/connectors/fakekind/oauth-client", headers=HEADERS
+    )
+    assert d.status_code == 204
+    g2 = await client.get("/api/connectors/fakekind/oauth-client", headers=HEADERS)
+    assert g2.json()["configured"] is False
+
+    # Unknown kind.
+    assert (
+        await client.get("/api/connectors/ghost/oauth-client", headers=HEADERS)
+    ).status_code == 404
+
+
+# --- custom connectors -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_and_delete_custom_connector(client):
+    r = await client.post(
+        "/api/connectors/custom",
+        json={
+            "kind": "linear",
+            "display_name": "Linear",
+            "authorize_url": "https://l/auth",
+            "token_url": "https://l/tok",
+            "scopes": ["read"],
+            "pkce": True,
+            "api_base": "https://api.linear.app",
+            "client_id": "cid",
+            "client_secret": "csec",
+        },
+        headers=HEADERS,
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["kind"] == "linear" and body["custom"] is True
+    assert body["available"] is True  # creds set during create
+
+    cat = {
+        c["kind"]: c
+        for c in (await client.get("/api/connectors/catalog", headers=HEADERS)).json()
+    }
+    assert cat["linear"]["custom"] is True
+
+    assert (
+        await client.delete("/api/connectors/custom/linear", headers=HEADERS)
+    ).status_code == 204
+    cat = {
+        c["kind"]: c
+        for c in (await client.get("/api/connectors/catalog", headers=HEADERS)).json()
+    }
+    assert "linear" not in cat
+    assert (
+        await client.delete("/api/connectors/custom/ghost", headers=HEADERS)
+    ).status_code == 404
 
 
 # --- OAuth install flow ----------------------------------------------------
@@ -139,15 +216,13 @@ async def test_catalog_lists_registered_kinds(client):
 
 @pytest.mark.asyncio
 async def test_oauth_start_unknown_kind(client):
-    r = await _start(client, kind="ghost")
-    assert r.status_code == 404
+    assert (await _start(client, kind="ghost")).status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_oauth_start_unconfigured_kind(client):
-    register(UnconfiguredConnector())
-    r = await _start(client, kind="noconfig")
-    assert r.status_code == 400
+    # Registered but no OAuth client set → cannot start.
+    assert (await _start(client)).status_code == 400
 
 
 @pytest.mark.asyncio
@@ -156,7 +231,6 @@ async def test_oauth_flow_installs_and_reports_success(client):
     assert inst["kind"] == "fakekind"
     assert inst["label"] == "me@example.com"
     assert inst["external_account_id"] == "ext-1"
-    # Status poll reflects success + the new installation id.
     st = await client.get(
         f"/api/connectors/oauth/status/{login_id}", headers=HEADERS
     )
@@ -167,6 +241,7 @@ async def test_oauth_flow_installs_and_reports_success(client):
 
 @pytest.mark.asyncio
 async def test_oauth_callback_rejects_bad_state(client):
+    await _configure(client)
     r = await _start(client)
     login_id = r.json()["login_id"]
     cb = await client.get(
@@ -175,7 +250,6 @@ async def test_oauth_callback_rejects_bad_state(client):
     )
     assert cb.status_code == 200  # HTML page either way
     assert "failed" in cb.text.lower()
-    # Nothing got installed.
     assert (await client.get("/api/connectors", headers=HEADERS)).json() == []
 
 
@@ -201,9 +275,7 @@ async def test_patch_and_delete_installation(client):
     assert p.json()["label"] == "Work"
     assert p.json()["enable_by_default"] is True
 
-    d = await client.delete(f"/api/connectors/{iid}", headers=HEADERS)
-    assert d.status_code == 204
-    # Second delete 404s.
+    assert (await client.delete(f"/api/connectors/{iid}", headers=HEADERS)).status_code == 204
     assert (await client.delete(f"/api/connectors/{iid}", headers=HEADERS)).status_code == 404
 
 
@@ -213,7 +285,6 @@ async def test_token_route(client):
     r = await client.get(f"/api/connectors/{inst['id']}/token", headers=HEADERS)
     assert r.status_code == 200
     assert r.json()["access_token"] == "at-xyz"
-    # Unknown installation 404s.
     assert (
         await client.get("/api/connectors/ghost/token", headers=HEADERS)
     ).status_code == 404
@@ -241,11 +312,9 @@ async def test_agent_enable_disable_and_replace(client):
     inst, _ = await _install(client)
     agent_id = await _new_agent(client)
 
-    # Initially none enabled.
     g = await client.get(f"/api/agents/{agent_id}/connectors", headers=HEADERS)
     assert g.json()["installation_ids"] == []
 
-    # Toggle on.
     t = await client.patch(
         f"/api/agents/{agent_id}/connectors/{inst['id']}",
         json={"enabled": True},
@@ -255,7 +324,6 @@ async def test_agent_enable_disable_and_replace(client):
     g = await client.get(f"/api/agents/{agent_id}/connectors", headers=HEADERS)
     assert g.json()["installation_ids"] == [inst["id"]]
 
-    # Replace with empty set.
     p = await client.put(
         f"/api/agents/{agent_id}/connectors",
         json={"installation_ids": []},

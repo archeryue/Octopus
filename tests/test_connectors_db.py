@@ -217,3 +217,24 @@ async def test_delete_agent_drops_connector_links(db):
     # The installation survives; only the link is gone.
     assert await db.get_connector_installation("i-1") is not None
     assert await db.get_enabled_connectors_for_agent("a-1") == []
+
+
+# --- per-kind OAuth client credentials (in-app config) --------------------
+
+
+@pytest.mark.asyncio
+async def test_oauth_client_crud(db):
+    assert await db.get_connector_oauth_client("github") is None
+    await db.set_connector_oauth_client("github", "cid", "enc-secret", _now())
+    row = await db.get_connector_oauth_client("github")
+    assert row["client_id"] == "cid"
+    assert row["client_secret_encrypted"] == "enc-secret"
+
+    # Upsert on the kind PK.
+    await db.set_connector_oauth_client("github", "cid2", "enc2", _now())
+    row = await db.get_connector_oauth_client("github")
+    assert row["client_id"] == "cid2" and row["client_secret_encrypted"] == "enc2"
+
+    assert await db.delete_connector_oauth_client("github") is True
+    assert await db.get_connector_oauth_client("github") is None
+    assert await db.delete_connector_oauth_client("github") is False

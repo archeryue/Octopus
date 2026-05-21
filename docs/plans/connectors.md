@@ -1,6 +1,39 @@
 # Connectors — Tech Plan
 
-Status: draft, not started.
+Status: ✅ **LANDED & live-verified (2026-05-21).** This plan is kept for
+history; the sections below describe the original design. What actually shipped
+diverged in a few deliberate ways (see the banner just below). The how-to lives
+in `docs/connectors-setup.md`.
+
+> ## ✅ SHIPPED — what's live vs. this plan (2026-05-21)
+>
+> Built agent-scoped, Gmail + GitHub, fully browser-only, and verified against
+> live Google + GitHub. Where the implementation differs from the plan text:
+>
+> 1. **Enablement is agent-scoped** — `agent_connectors(agent_id, installation_id)`
+>    join, not the `session_connectors` in the body. SessionManager loads an
+>    agent's enabled connectors each turn and merges their MCP entries into both
+>    backends (Claude `--mcp-config`, Codex `-c mcp_servers.*`).
+> 2. **OAuth client config is IN-APP**, not env-only. `connector_oauth_clients`
+>    stores per-kind client id + encrypted secret set from the "Set up" dialog;
+>    `ConnectorManager.resolve_client_creds` is DB-first then env fallback. A
+>    browser-only user never touches server env. Routes:
+>    `GET/PUT/DELETE /api/connectors/{kind}/oauth-client`.
+> 3. **Custom connectors** (NOT in the original plan): define a new kind from
+>    the browser (`custom_connectors` table + `server/connectors/custom.py`
+>    `GenericOAuthProvider`/`CustomConnector`/`resolve_connector`); one generic
+>    `request` MCP server (`server/mcp_servers/connectors/custom.py`) gives the
+>    agent authenticated HTTP to the kind's API base. Routes:
+>    `POST /api/connectors/custom`, `DELETE /api/connectors/custom/{kind}`.
+> 4. **Redirect URI is derived from the browser request** (`X-Forwarded-Proto`/
+>    `Host`), not `OCTOPUS_PUBLIC_BASE_URL` — works behind a tunnel with zero
+>    server config (env var remains an override).
+> 5. **Provider methods take client_id/client_secret explicitly** (resolved per
+>    request) rather than reading settings, so DB-stored creds work.
+> 6. **Built-in connectors carry in-app setup guidance** (`setup_url` +
+>    `setup_steps`) shown in the Set-up dialog.
+> 7. **Notion dropped**; **GitHub** is the second built-in. **No mitmproxy** —
+>    typed MCP tools, as the body's §11 already chose.
 
 > ## ⚠️ REVISION — v1 is Gmail + GitHub; Notion dropped (2026-05-20)
 >

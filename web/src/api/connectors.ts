@@ -6,8 +6,10 @@
 import type {
   ConnectorCatalogEntry,
   ConnectorInstallationInfo,
+  ConnectorOAuthClientInfo,
   ConnectorOAuthStartResponse,
   ConnectorOAuthStatusResponse,
+  CustomConnectorCreateRequest,
   UpdateConnectorRequest,
 } from ".";
 
@@ -91,6 +93,56 @@ export async function updateInstallation(
 
 export async function deleteInstallation(token: string, id: string): Promise<void> {
   const res = await fetch(`${API}/api/connectors/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(token),
+  });
+  if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+}
+
+export async function getOAuthClient(
+  token: string,
+  kind: string
+): Promise<ConnectorOAuthClientInfo> {
+  return json(
+    await fetch(`${API}/api/connectors/${kind}/oauth-client`, {
+      headers: authHeaders(token),
+    })
+  );
+}
+
+export async function setOAuthClient(
+  token: string,
+  kind: string,
+  clientId: string,
+  clientSecret: string
+): Promise<ConnectorOAuthClientInfo> {
+  return json(
+    await fetch(`${API}/api/connectors/${kind}/oauth-client`, {
+      method: "PUT",
+      headers: authHeaders(token),
+      body: JSON.stringify({ client_id: clientId, client_secret: clientSecret }),
+    })
+  );
+}
+
+export async function createCustomConnector(
+  token: string,
+  body: CustomConnectorCreateRequest
+): Promise<ConnectorCatalogEntry> {
+  return json(
+    await fetch(`${API}/api/connectors/custom`, {
+      method: "POST",
+      headers: authHeaders(token),
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export async function deleteCustomConnector(
+  token: string,
+  kind: string
+): Promise<void> {
+  const res = await fetch(`${API}/api/connectors/custom/${kind}`, {
     method: "DELETE",
     headers: authHeaders(token),
   });

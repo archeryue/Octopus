@@ -13,7 +13,6 @@ from urllib.parse import urlencode
 
 import httpx
 
-from ..config import settings
 from ..oauth_providers import OAuthTokenSet
 from .base import ConnectorBase
 from .registry import register
@@ -31,19 +30,16 @@ class GmailOAuthProvider:
     default_scopes = ["https://www.googleapis.com/auth/gmail.modify"]
     pkce = True
 
-    @property
-    def client_id(self) -> str | None:
-        return settings.gmail_oauth_client_id
-
-    @property
-    def client_secret(self) -> str | None:
-        return settings.gmail_oauth_client_secret
-
     def build_authorize_url(
-        self, *, redirect_uri: str, code_challenge: str | None, state: str
+        self,
+        *,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str | None,
+        state: str,
     ) -> str:
         params = {
-            "client_id": self.client_id or "",
+            "client_id": client_id,
             "redirect_uri": redirect_uri,
             "response_type": "code",
             "scope": " ".join(self.default_scopes),
@@ -60,14 +56,16 @@ class GmailOAuthProvider:
     async def exchange_code(
         self,
         *,
+        client_id: str,
+        client_secret: str,
         code: str,
         redirect_uri: str,
         code_verifier: str | None,
         state: str,
     ) -> OAuthTokenSet:
         data = {
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
+            "client_id": client_id,
+            "client_secret": client_secret,
             "code": code,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code",
@@ -79,13 +77,15 @@ class GmailOAuthProvider:
         resp.raise_for_status()
         return self._parse(resp.json())
 
-    async def refresh(self, refresh_token: str) -> OAuthTokenSet:
+    async def refresh(
+        self, *, client_id: str, client_secret: str, refresh_token: str
+    ) -> OAuthTokenSet:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(
                 self.token_url,
                 data={
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "refresh_token": refresh_token,
                     "grant_type": "refresh_token",
                 },
@@ -137,6 +137,20 @@ class GmailConnector(ConnectorBase):
         "Before calling send_draft, ALWAYS show the drafted message and get "
         "an explicit yes via mcp__ask__user in the same turn — never send "
         "without the user's OK."
+    )
+    setup_url = "https://console.cloud.google.com/apis/credentials"
+    setup_steps = (
+        "Enable the Gmail API for your project "
+        "(console.cloud.google.com/apis/library/gmail.googleapis.com) — without "
+        "this, sign-in succeeds but the profile lookup fails with 403.",
+        "Google Auth Platform → Audience (console.cloud.google.com/auth/audience) "
+        "→ Test users → Add users → your own Gmail address. REQUIRED while the "
+        "app is in Testing, or sign-in is blocked with a 403.",
+        "Credentials → Create credentials → OAuth client ID → Web application.",
+        "Add the redirect URI above under 'Authorized redirect URIs'.",
+        "Paste the Client ID and secret below.",
+        "Note: while the app stays in 'Testing', Google expires the refresh "
+        "token after ~7 days, so you'll re-connect periodically.",
     )
 
     async def fetch_external_identity(self, token_set: OAuthTokenSet):

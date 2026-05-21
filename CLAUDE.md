@@ -34,10 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (268 tests)
-2. **Frontend unit tests**: `cd web && bun run test` (8 tests)
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (569 tests; the 4
+   `test_backend_codex_real.py` tests need `codex` on PATH — run with the nvm
+   bin prepended, see Conventions)
+2. **Frontend unit tests**: `cd web && bun run test` (34 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (24 tests, Playwright auto-starts servers)
+4. **E2E tests**: `cd web && bun run test:e2e` (57 tests, Playwright auto-starts servers)
 
 **Zero test failures are acceptable.** All tests must pass before committing. If a test fails, investigate and fix it — do not ignore, skip, or dismiss any failure as "flaky" or "pre-existing".
 
@@ -45,9 +47,9 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Count | What it covers |
 |-------|------|-------|----------------|
-| Backend unit | pytest | 268 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence (incl. credential storage split + refresh-error codes), JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner, bridge base/manager/telegram, tunnel config, OAuth provider registry, real-CLI integration (when `claude` is on PATH) |
-| Frontend unit | vitest | 8 | Zustand store (token, sessions, messages, status) |
-| E2E | Playwright | 31 | Login, session CRUD, real Claude responses (incl. AskUserQuestion + resume), Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), scheduled-tasks UI, waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling, OAuth dialog flow, credential override |
+| Backend unit | pytest | 569 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence (incl. credential storage split + refresh-error codes), JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner, bridge base/manager/telegram, tunnel config, OAuth provider registry, agents (manager + routes), Codex backend (normalizer + build_args; real-CLI when `codex` on PATH), **connectors** (DB split-secret + agent-join, manager incl. token-refresh lifecycle + in-app OAuth-client config + custom-connector CRUD, OAuth providers, REST routes incl. OAuth flow, the github/gmail/generic MCP servers), real-CLI integration (when `claude` is on PATH) |
+| Frontend unit | vitest | 34 | Zustand store (token, sessions, messages, status, agents, connectors), useWebSocket, BgTaskChip, FileViewerDialog |
+| E2E | Playwright | 57 | Login, session CRUD, real Claude responses (incl. AskUserQuestion + resume), Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), scheduled-tasks UI, waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling, OAuth dialog flow, credential override, agents rail/settings, **connectors** (catalog + availability gating, in-app Set-up flips a built-in to connectable, add/remove a custom connector, per-agent toggles) |
 
 ## Project Structure
 
@@ -57,8 +59,13 @@ You MUST verify your changes before considering them done:
 - `server/scheduler.py` — APScheduler-based recurring task runner
 - `server/jsonl_parser.py` — Claude Code JSONL session parser
 - `server/jsonl_writer.py` — JSONL writer for session export
-- `server/routers/` — REST + WebSocket routers (`sessions`, `schedules`, `ws`)
+- `server/routers/` — REST + WebSocket routers (`sessions`, `schedules`, `agents`, `credentials`, `connectors`, `ws`)
 - `server/bridges/` — Messaging-platform integrations (`telegram`, base + manager)
+- `server/agent_manager.py` — Agent CRUD (durable assistant definitions that own sessions/schedules)
+- `server/backends/` — AI backends (`claude_code`, `codex`) behind a common interface
+- `server/connectors/` — Connector framework: `base` (ConnectorBase + backend-neutral MCP entry), `oauth` (provider protocol + redirect-URI login manager), `registry`, built-in `github`/`gmail`, and `custom` (user-defined kinds + generic OAuth provider + `resolve_connector`)
+- `server/connector_manager.py` — Connector business logic (install upsert, in-app OAuth-client config DB→env resolve, token-refresh lifecycle, custom-connector CRUD)
+- `server/mcp_servers/connectors/` — Per-kind stdio MCP servers (`github`, `gmail`, generic `custom`) + shared token/truncation helpers
 - `web/` — React frontend (Vite + TypeScript)
 - `tests/` — Backend tests (pytest)
 - `web/src/**/*.test.ts` — Frontend unit tests (vitest, colocated with source)
@@ -94,3 +101,4 @@ cd web && npx playwright test --reporter=list  # verbose output
 - Frontend uses React 19, TypeScript strict mode, zustand for state
 - Use `useSessionStore.getState()` (not hook selectors) inside callbacks/effects that mutate store to avoid re-render loops
 - The SDK message parser is patched locally (`.venv/lib/.../message_parser.py`) to handle unknown message types — if you reinstall deps, the patch must be reapplied
+- The JS toolchain (`bun`, `node`, `npm`, `npx`) and `codex` live under `~/.nvm/versions/node/*/bin`, **not** on the default PATH. Prepend that bin dir for any frontend/codex command (`export PATH="$HOME/.nvm/versions/node/<ver>/bin:$PATH"`). It's also required for the 4 `test_backend_codex_real.py` tests to resolve `codex` (otherwise they error rather than skip)

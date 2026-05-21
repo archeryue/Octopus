@@ -14,24 +14,25 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 
 from ..auth import verify_token
-from ..config import settings
-from ..connector_manager import ConnectorError, ConnectorManager, connector_available
+from ..connector_manager import ConnectorError, ConnectorManager
 from ..connectors.oauth import ConnectorLoginError, ConnectorLoginManager
-from ..connectors.registry import get_connector
 from ..models import (
     AgentConnectorsResponse,
     ConnectorCatalogEntry,
     ConnectorInstallationInfo,
     ConnectorOAuthCancelRequest,
+    ConnectorOAuthClientInfo,
     ConnectorOAuthStartRequest,
     ConnectorOAuthStartResponse,
     ConnectorOAuthStatusResponse,
     ConnectorTokenResponse,
+    CustomConnectorCreateRequest,
     SetAgentConnectorsRequest,
+    SetConnectorOAuthClientRequest,
     ToggleAgentConnectorRequest,
     UpdateConnectorRequest,
 )
@@ -61,9 +62,9 @@ def _require_manager() -> ConnectorManager:
 
 
 def _http_error(e: ConnectorError) -> HTTPException:
-    msg = str(e)
-    code = 404 if "not found" in msg.lower() else 400
-    return HTTPException(status_code=code, detail=msg)
+    msg = str(e).lower()
+    code = 404 if ("not found" in msg or "unknown" in msg) else 400
+    return HTTPException(status_code=code, detail=str(e))
 
 
 def _to_info(row: dict) -> ConnectorInstallationInfo:
@@ -82,6 +83,15 @@ def _to_info(row: dict) -> ConnectorInstallationInfo:
     )
 
 
+def _public_base(request: Request) -> str:
+    """The browser-facing base URL, derived from the request so a remote /
+    tunneled user (no server env access) gets a redirect URI that matches what
+    they registered with the provider. Honors proxy forwarding headers."""
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    return f"{proto}://{host}" if host else str(request.base_url).rstrip("/")
+
+
 def _callback_page(title: str, body: str) -> HTMLResponse:
     return HTMLResponse(
         f"""<!doctype html><html><head><meta charset="utf-8">
@@ -98,7 +108,70 @@ def _callback_page(title: str, body: str) -> HTMLResponse:
 
 @router.get("/catalog", response_model=list[ConnectorCatalogEntry])
 async def list_catalog(_: str = Depends(verify_token)):
-    return [ConnectorCatalogEntry(**e) for e in _require_manager().catalog()]
+    return [ConnectorCatalogEntry(**e) for e in await _require_manager().catalog()]
+
+
+@router.get("/{kind}/oauth-client", response_model=ConnectorOAuthClientInfo)
+async def get_oauth_client(
+    kind: str, request: Request, _: str = Depends(verify_token)
+):
+    try:
+        return ConnectorOAuthClientInfo(
+            **await _require_manager().client_config(kind, _public_base(request))
+        )
+    except ConnectorError as e:
+        raise _http_error(e)
+
+
+@router.put("/{kind}/oauth-client", response_model=ConnectorOAuthClientInfo)
+async def set_oauth_client(
+    kind: str,
+    req: SetConnectorOAuthClientRequest,
+    request: Request,
+    _: str = Depends(verify_token),
+):
+    mgr = _require_manager()
+    try:
+        await mgr.set_client_creds(kind, req.client_id, req.client_secret)
+        return ConnectorOAuthClientInfo(
+            **await mgr.client_config(kind, _public_base(request))
+        )
+    except ConnectorError as e:
+        raise _http_error(e)
+
+
+@router.delete("/{kind}/oauth-client", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_oauth_client(kind: str, _: str = Depends(verify_token)):
+    await _require_manager().clear_client_creds(kind)
+
+
+# --- custom (user-defined) connectors -------------------------------------
+
+
+@router.post(
+    "/custom",
+    response_model=ConnectorCatalogEntry,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_custom_connector(
+    req: CustomConnectorCreateRequest, _: str = Depends(verify_token)
+):
+    mgr = _require_manager()
+    try:
+        await mgr.create_custom_connector(**req.model_dump())
+    except ConnectorError as e:
+        raise _http_error(e)
+    # Return the new catalog entry (available, since creds were just set).
+    entry = next(c for c in await mgr.catalog() if c["kind"] == req.kind.strip().lower())
+    return ConnectorCatalogEntry(**entry)
+
+
+@router.delete("/custom/{kind}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_custom_connector(kind: str, _: str = Depends(verify_token)):
+    try:
+        await _require_manager().delete_custom_connector(kind)
+    except ConnectorError as e:
+        raise _http_error(e)
 
 
 @router.get("", response_model=list[ConnectorInstallationInfo])
@@ -115,21 +188,26 @@ async def list_installations(_: str = Depends(verify_token)):
     response_model=ConnectorOAuthStartResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def oauth_start(req: ConnectorOAuthStartRequest, _: str = Depends(verify_token)):
-    connector = get_connector(req.kind)
+async def oauth_start(
+    req: ConnectorOAuthStartRequest, request: Request, _: str = Depends(verify_token)
+):
+    mgr = _require_manager()
+    connector = await mgr.get(req.kind)
     if connector is None:
         raise HTTPException(status_code=404, detail=f"unknown connector: {req.kind}")
-    if not connector_available(connector):
+    creds = await mgr.resolve_client_creds(req.kind)
+    if creds is None:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"{req.kind} is not configured — set its OAuth client id and "
-                "secret in env (see docs/connectors-setup.md)"
+                f"{req.kind} is not configured — add its OAuth client id and "
+                "secret first (Set up)"
             ),
         )
-    redirect_uri = f"{settings.resolved_public_base_url}/api/connectors/oauth/callback"
+    redirect_uri = f"{_public_base(request)}/api/connectors/oauth/callback"
     pl = _login_mgr.start(
         provider=connector.oauth,
+        client_id=creds[0],
         redirect_uri=redirect_uri,
         requested_label=req.label,
     )
@@ -156,12 +234,18 @@ async def oauth_callback(
         _login_mgr.mark_error(pl.login_id, "no authorization code")
         return _callback_page("Connection failed", "No authorization code returned.")
 
-    connector = get_connector(pl.kind)
+    connector = await _require_manager().get(pl.kind)
     if connector is None:
         _login_mgr.mark_error(pl.login_id, "connector kind disappeared")
         return _callback_page("Connection failed", "Connector no longer registered.")
+    creds = await _require_manager().resolve_client_creds(pl.kind)
+    if creds is None:
+        _login_mgr.mark_error(pl.login_id, "OAuth client not configured")
+        return _callback_page("Connection failed", "OAuth client not configured.")
     try:
         token_set = await connector.oauth.exchange_code(
+            client_id=creds[0],
+            client_secret=creds[1],
             code=code,
             redirect_uri=pl.redirect_uri,
             code_verifier=pl.verifier,

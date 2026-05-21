@@ -16,12 +16,19 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import re
+
 from .config import settings
 from .connectors.base import ConnectorInstallation
+from .connectors.custom import CustomConnector, resolve_connector
 from .connectors.registry import all_connectors, get_connector
 from .crypto import decrypt, encrypt
 from .database import Database
 from .oauth_providers import OAuthTokenSet
+
+# Slugs reserved by routes / built-ins; a custom kind can't take these.
+_KIND_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+_RESERVED_KINDS = {"oauth", "catalog", "custom"}
 
 # Refresh when the access token expires within this window.
 _REFRESH_SKEW_SECONDS = 300
@@ -61,13 +68,12 @@ def _expires_iso(epoch: float) -> str | None:
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
 
 
-def connector_available(connector: Any) -> bool:
-    """A kind is installable only when both OAuth client creds are present.
-    Real providers carry `client_id`/`client_secret` (from settings); a kind
-    with either missing is greyed out in the catalog."""
-    cid = getattr(connector.oauth, "client_id", None)
-    csec = getattr(connector.oauth, "client_secret", None)
-    return bool(cid and csec)
+def _env_client_creds(kind: str) -> tuple[str, str] | None:
+    """OAuth client creds for a kind from env (the fallback when nothing is
+    set in-app): OCTOPUS_<KIND>_OAUTH_CLIENT_ID / _SECRET."""
+    cid = getattr(settings, f"{kind}_oauth_client_id", None)
+    csec = getattr(settings, f"{kind}_oauth_client_secret", None)
+    return (cid, csec) if cid and csec else None
 
 
 class ConnectorManager:
@@ -75,19 +81,129 @@ class ConnectorManager:
         self.db = db
         self._locks: dict[str, asyncio.Lock] = {}
 
+    async def get(self, kind: str):
+        """A connector by kind — built-in (code) or custom (DB), else None."""
+        return await resolve_connector(self.db, kind)
+
+    # --- custom (user-defined) connector definitions ---------------------
+
+    async def create_custom_connector(
+        self,
+        *,
+        kind: str,
+        display_name: str,
+        authorize_url: str,
+        token_url: str,
+        scopes: list[str],
+        pkce: bool,
+        api_base: str,
+        client_id: str,
+        client_secret: str,
+    ) -> dict[str, Any]:
+        kind = (kind or "").strip().lower()
+        if not _KIND_RE.match(kind) or kind in _RESERVED_KINDS:
+            raise ConnectorError(
+                "kind must be a slug (lowercase letters, digits, - or _) and "
+                "not a reserved word"
+            )
+        if get_connector(kind) is not None:
+            raise ConnectorError(f"{kind!r} is a built-in connector")
+        if await self.db.get_custom_connector(kind) is not None:
+            raise ConnectorError(f"a custom connector {kind!r} already exists")
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.save_custom_connector(
+            kind=kind,
+            display_name=display_name.strip() or kind,
+            authorize_url=authorize_url.strip(),
+            token_url=token_url.strip(),
+            scopes=list(scopes),
+            pkce=bool(pkce),
+            api_base=api_base.strip(),
+            now=now,
+        )
+        # Client creds reuse the in-app config store (same as built-ins).
+        await self.set_client_creds(kind, client_id, client_secret)
+        row = await self.db.get_custom_connector(kind)
+        assert row is not None
+        return row
+
+    async def delete_custom_connector(self, kind: str) -> None:
+        if await self.db.get_custom_connector(kind) is None:
+            raise ConnectorError("custom connector not found")
+        # Tear down everything tied to the kind so nothing is orphaned.
+        await self.db.delete_connector_installations_by_kind(kind)
+        await self.db.delete_connector_oauth_client(kind)
+        await self.db.delete_custom_connector(kind)
+
+    # --- OAuth client credentials (in-app config, DB-first then env) ------
+
+    async def resolve_client_creds(self, kind: str) -> tuple[str, str] | None:
+        """Effective (client_id, client_secret) for a kind: the in-app DB row
+        wins, else the env fallback, else None (→ catalog shows unavailable)."""
+        row = await self.db.get_connector_oauth_client(kind)
+        if row and row["client_id"] and row["client_secret_encrypted"]:
+            return row["client_id"], decrypt(
+                row["client_secret_encrypted"], settings.auth_token
+            )
+        return _env_client_creds(kind)
+
+    async def set_client_creds(
+        self, kind: str, client_id: str, client_secret: str
+    ) -> None:
+        if await resolve_connector(self.db, kind) is None:
+            raise ConnectorError(f"unknown connector kind: {kind}")
+        now = datetime.now(timezone.utc).isoformat()
+        await self.db.set_connector_oauth_client(
+            kind, client_id, encrypt(client_secret, settings.auth_token), now
+        )
+
+    async def clear_client_creds(self, kind: str) -> bool:
+        return await self.db.delete_connector_oauth_client(kind)
+
+    async def client_config(self, kind: str, public_base: str) -> dict[str, Any]:
+        """Non-secret view of a kind's OAuth client config for the UI: whether
+        it's configured, the client_id, the source, and the redirect URI to
+        register with the provider. `public_base` is derived from the caller's
+        request so a browser-only user behind a tunnel gets the right URI."""
+        if await resolve_connector(self.db, kind) is None:
+            raise ConnectorError(f"unknown connector kind: {kind}")
+        row = await self.db.get_connector_oauth_client(kind)
+        if row and row["client_id"]:
+            client_id, source = row["client_id"], "db"
+        else:
+            env = _env_client_creds(kind)
+            client_id, source = (env[0], "env") if env else (None, None)
+        return {
+            "kind": kind,
+            "configured": client_id is not None,
+            "client_id": client_id,
+            "source": source,
+            "redirect_uri": f"{public_base}/api/connectors/oauth/callback",
+        }
+
     # --- catalog + installations -----------------------------------------
 
-    def catalog(self) -> list[dict[str, Any]]:
-        return [
-            {
-                "kind": c.kind,
-                "display_name": c.display_name,
-                "category": c.category,
-                "allows_multiple": c.allows_multiple,
-                "available": connector_available(c),
-            }
-            for c in all_connectors()
+    async def catalog(self) -> list[dict[str, Any]]:
+        connectors = list(all_connectors()) + [
+            CustomConnector(row) for row in await self.db.list_custom_connectors()
         ]
+        out: list[dict[str, Any]] = []
+        for c in connectors:
+            out.append(
+                {
+                    "kind": c.kind,
+                    "display_name": c.display_name,
+                    "category": c.category,
+                    "allows_multiple": c.allows_multiple,
+                    "available": (await self.resolve_client_creds(c.kind))
+                    is not None,
+                    "scopes": list(getattr(c.oauth, "default_scopes", [])),
+                    "custom": getattr(c, "is_custom", False),
+                    "setup_url": getattr(c, "setup_url", "") or None,
+                    "setup_steps": list(getattr(c, "setup_steps", [])),
+                }
+            )
+        return out
 
     async def list_installations(self) -> list[dict[str, Any]]:
         return await self.db.load_connector_installations()
@@ -104,7 +220,7 @@ class ConnectorManager:
     ) -> dict[str, Any]:
         """Persist a freshly-authorized installation, upserting on the
         provider account so re-auth of the same account overwrites."""
-        connector = get_connector(kind)
+        connector = await resolve_connector(self.db, kind)
         if connector is None:
             raise ConnectorError(f"unknown connector kind: {kind}")
         external_id, identity_label = await connector.fetch_external_identity(
@@ -197,12 +313,21 @@ class ConnectorManager:
                 and ts.expires_at_epoch - time.time() < _REFRESH_SKEW_SECONDS
             )
             if near_expiry and ts.refresh_token:
-                connector = get_connector(inst["kind"])
+                connector = await resolve_connector(self.db, inst["kind"])
                 provider = getattr(connector, "oauth", None)
                 if provider is None:
                     raise ConnectorError(f"no provider for kind {inst['kind']!r}")
+                creds = await self.resolve_client_creds(inst["kind"])
+                if creds is None:
+                    raise ConnectorError(
+                        f"{inst['kind']} OAuth client is not configured"
+                    )
                 try:
-                    new_ts = await provider.refresh(ts.refresh_token)
+                    new_ts = await provider.refresh(
+                        client_id=creds[0],
+                        client_secret=creds[1],
+                        refresh_token=ts.refresh_token,
+                    )
                 except Exception as e:  # provider/transport failure → reconnect
                     await self.db.update_connector_installation(
                         installation_id,

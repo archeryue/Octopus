@@ -1,6 +1,6 @@
 """Gmail connector descriptor + OAuth provider (connectors.md Phase C / §6.2):
 PKCE+offline authorize URL, token parse with expiry, the live refresh path,
-and identity via the profile endpoint."""
+and identity via the profile endpoint. Client creds are passed explicitly."""
 
 from __future__ import annotations
 
@@ -8,8 +8,6 @@ import time
 
 import pytest
 
-from server.config import settings
-from server.connector_manager import connector_available
 from server.connectors import gmail as gm
 from server.connectors.registry import get_connector
 
@@ -53,10 +51,9 @@ def test_gmail_is_registered():
     assert isinstance(get_connector("gmail"), gm.GmailConnector)
 
 
-def test_build_authorize_url_pkce_offline(monkeypatch):
-    monkeypatch.setattr(settings, "gmail_oauth_client_id", "cid")
+def test_build_authorize_url_pkce_offline():
     url = gm.GmailOAuthProvider().build_authorize_url(
-        redirect_uri="https://app/cb", code_challenge="chal", state="lid:rnd"
+        client_id="cid", redirect_uri="https://app/cb", code_challenge="chal", state="lid:rnd"
     )
     assert "client_id=cid" in url
     assert "access_type=offline" in url
@@ -66,18 +63,9 @@ def test_build_authorize_url_pkce_offline(monkeypatch):
     assert "gmail.modify" in url
 
 
-def test_availability(monkeypatch):
-    monkeypatch.setattr(settings, "gmail_oauth_client_id", "cid")
-    monkeypatch.setattr(settings, "gmail_oauth_client_secret", "csec")
-    assert connector_available(gm.GmailConnector()) is True
-    monkeypatch.setattr(settings, "gmail_oauth_client_secret", None)
-    assert connector_available(gm.GmailConnector()) is False
-
-
 @pytest.mark.asyncio
 async def test_exchange_code_parses_expiry(monkeypatch):
-    monkeypatch.setattr(settings, "gmail_oauth_client_id", "cid")
-    monkeypatch.setattr(settings, "gmail_oauth_client_secret", "csec")
+    cap: dict = {}
     monkeypatch.setattr(
         gm.httpx,
         "AsyncClient",
@@ -88,16 +76,23 @@ async def test_exchange_code_parses_expiry(monkeypatch):
                 "expires_in": 3599,
                 "scope": "https://www.googleapis.com/auth/gmail.modify",
                 "token_type": "Bearer",
-            }
+            },
+            capture=cap,
         ),
     )
     ts = await gm.GmailOAuthProvider().exchange_code(
-        code="c", redirect_uri="https://app/cb", code_verifier="v", state="s"
+        client_id="cid",
+        client_secret="csec",
+        code="c",
+        redirect_uri="https://app/cb",
+        code_verifier="v",
+        state="s",
     )
     assert ts.access_token == "ya29.x"
     assert ts.refresh_token == "1//r"
     assert ts.expires_at_epoch > time.time()  # short-lived, set from expires_in
     assert ts.scopes == ["https://www.googleapis.com/auth/gmail.modify"]
+    assert cap["data"]["client_secret"] == "csec"
 
 
 @pytest.mark.asyncio
@@ -108,7 +103,9 @@ async def test_refresh_keeps_old_refresh_token(monkeypatch):
         "AsyncClient",
         _fake_client({"access_token": "ya29.new", "expires_in": 3599}),
     )
-    ts = await gm.GmailOAuthProvider().refresh("1//old")
+    ts = await gm.GmailOAuthProvider().refresh(
+        client_id="cid", client_secret="csec", refresh_token="1//old"
+    )
     assert ts.access_token == "ya29.new"
     assert ts.refresh_token == "1//old"
 
@@ -119,7 +116,9 @@ async def test_refresh_failure_carries_code(monkeypatch):
         gm.httpx, "AsyncClient", _fake_client({"error": "invalid_grant"}, status=400)
     )
     with pytest.raises(RuntimeError) as ei:
-        await gm.GmailOAuthProvider().refresh("1//revoked")
+        await gm.GmailOAuthProvider().refresh(
+            client_id="cid", client_secret="csec", refresh_token="1//revoked"
+        )
     assert getattr(ei.value, "code", None) == "invalid_grant"
 
 

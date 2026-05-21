@@ -16,6 +16,16 @@ implementation. Details per-initiative below.
 Markdown the agent already reads/writes directly via the filesystem, so no
 connector is needed).
 
+**Update (2026-05-21): #3 Connectors has LANDED and is live-verified.** All
+three roadmap initiatives are now done. Connectors shipped agent-scoped and
+**fully browser-only**: configure a built-in connector's OAuth client in the
+UI (no env/restart), or define a brand-new **custom** connector kind from the
+browser (generic OAuth provider + one generic `request` MCP tool). The OAuth
+redirect URI is derived from the browser request, so it works behind a tunnel
+with zero server access. Verified end-to-end against live Google + GitHub:
+GitHub installed and Gmail sent a real email through the connector. See the
+revised "3. Connectors" section below.
+
 ---
 
 ## 1. Codex backend — [`plans/codex-backend.md`](plans/codex-backend.md)
@@ -60,36 +70,37 @@ The agent-memory north star (Deferred, below) now has its durable key.
 
 ## 3. Connectors — [`plans/connectors.md`](plans/connectors.md)
 
-**Status**: planned; **plan revised to agent-scoped** and **re-scoped to
-Gmail + GitHub first** (see the two banners atop `connectors.md`). **After
-OAuth client registration.**
+**Status**: ✅ **LANDED & live-verified (2026-05-21).** Agent-scoped,
+Gmail + GitHub, fully browser-only. (See `docs/connectors-setup.md` for the
+how-to and the two banners atop `connectors.md` for how the build diverged
+from the original plan.)
 
-First-class third-party **outbound** tools the user installs once and the
-agent calls as MCP tools. **v1 ships Gmail + GitHub** — the two services the
-user lives in daily:
-- **Gmail** — search / read / label / draft, plus send gated behind an
-  explicit per-turn confirm. There is no standalone email feature; email
-  lands here.
-- **GitHub** — issues / PRs / repo + file reads / code search /
-  create + comment.
+First-class third-party **outbound** tools the user installs once and an agent
+calls as MCP tools. Shipped:
+- **GitHub** — `search_issues`, `get_issue`, `get_pr`, `list_repos`,
+  `get_file`, `search_code`, `create_issue`, `comment`.
+- **Gmail** — `search`, `get`, `list_labels`, `create_draft`, `send_draft`
+  (gated behind an explicit per-turn confirm), `label`/`unlabel`. There is no
+  standalone email feature; email lives here.
+- **Custom connectors** — define a brand-new kind entirely in the browser
+  (authorize/token URLs, scopes, PKCE, API base, client id/secret); a generic
+  OAuth provider drives the flow and one generic `request(method, path, …)`
+  MCP tool gives the agent authenticated access to that API.
 
-**Notion is dropped** (2026-05-20): the user moved their documents to
-Obsidian, i.e. local Markdown the agent already edits directly through the
-filesystem — no connector required. The Notion-specific design in
-`connectors.md` (§6.1, the Phase-B "first connector", the system-prompt
-example) is superseded; **GitHub takes the "second proof connector" slot**,
-and its concrete OAuth + tool surface gets pinned down at implementation and
-verified live (tracked in `connectors.md` §13 "still unverified"), rather
-than fabricated now.
+**How it diverged from the plan (all for the better):**
+- **Enablement is agent-scoped** (`agent_connectors` join), not per-session.
+- **OAuth client config is in-app**, not env-only — paste client id/secret in
+  the UI (stored encrypted), so a remote/browser-only user needs no server
+  access. Env vars remain a fallback.
+- **The OAuth redirect URI is derived from the browser request** (X-Forwarded
+  headers), so it's correct behind a tunnel with zero server config.
+- **Notion dropped** (user moved to Obsidian — local Markdown the agent edits
+  directly).
 
-**Why still pending**:
-- The plan must be applied in its **agent-scoped** shape (agent-refactor
-  decisions #5 / #8) — connectors enable per *agent*, not per session, which
-  supersedes the per-session model still written in the plan body.
-- Needs **OAuth client registration** with Google (Gmail) and GitHub before
-  it can be verified end-to-end; the §8 fake-HTTP fixtures let Phases A–B be
-  built and tested without live clients.
-- The Codex MCP injection path it depends on is settled by plan #1.
+**Verified end-to-end on live infrastructure:** GitHub connected
+(`archeryue`, scopes repo + read:org) and Gmail sent a real email through the
+connector — proving build → browser install → per-agent enable → tools
+injected at session spawn → real outbound action.
 
 ---
 

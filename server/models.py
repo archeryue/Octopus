@@ -275,7 +275,41 @@ class ConnectorCatalogEntry(BaseModel):
     display_name: str
     category: str
     allows_multiple: bool
-    available: bool  # both OAuth client id + secret configured in env
+    available: bool  # OAuth client id + secret configured (in-app or env)
+    scopes: list[str] = []  # OAuth scopes requested at sign-in
+    custom: bool = False  # user-defined (deletable) vs built-in
+    setup_url: str | None = None  # provider's app-registration page
+    setup_steps: list[str] = []  # in-app "how to register" guidance
+
+
+class CustomConnectorCreateRequest(BaseModel):
+    """Define a brand-new connector kind from the browser (connectors.md
+    custom-connectors). Client creds are stored alongside built-in config."""
+
+    kind: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    authorize_url: str = Field(min_length=1)
+    token_url: str = Field(min_length=1)
+    scopes: list[str] = []
+    pkce: bool = False
+    api_base: str = Field(min_length=1)
+    client_id: str = Field(min_length=1)
+    client_secret: str = Field(min_length=1)
+
+
+class ConnectorOAuthClientInfo(BaseModel):
+    """Non-secret view of a kind's OAuth client config (for the setup dialog)."""
+
+    kind: str
+    configured: bool
+    client_id: str | None = None
+    source: str | None = None  # "db" | "env" | None
+    redirect_uri: str
+
+
+class SetConnectorOAuthClientRequest(BaseModel):
+    client_id: str = Field(min_length=1)
+    client_secret: str = Field(min_length=1)
 
 
 class ConnectorInstallationInfo(BaseModel):

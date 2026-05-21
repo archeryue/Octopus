@@ -59,7 +59,7 @@ In development, the Vite dev server runs on port 5173 with hot-reload and proxie
 | `models.py` | Pydantic models for API requests/responses (`CreateSessionRequest`, `ImportSessionRequest`, `SessionInfo`, `SessionDetail`, `MessageContent`, `WsSendMessage`, `WsToolDecision`, `WsInterrupt`, `ScheduleInfo`, `CreateScheduleRequest`, `UpdateScheduleRequest`) and enums (`SessionStatus`, `MessageRole`). |
 | `session_manager.py` | Core component. Manages multiple Claude Code sessions via `claude-code-sdk`. Handles message streaming, tool result forwarding, broadcast to connected WebSocket clients and bridges. Supports interactive tool approval via `PendingApproval` futures, mid-turn interrupt via `interrupt()`, and a per-session pending-message queue that drains after the current turn. Uses `_receive_safe()` to skip unparseable SDK messages. |
 | `scheduler.py` | `ScheduleRunner` — APScheduler-based recurring task runner. Loads enabled schedules from SQLite at startup, fires `session_manager.send_message()` on interval, skips ticks when the target session is busy, updates `last_run_at`. CRUD methods (`add`, `remove`, `set_enabled`) keep the in-memory `AsyncIOScheduler` in sync with DB writes. |
-| `database.py` | SQLite persistence layer (`aiosqlite`). Three tables: `sessions`, `messages`, `bridge_mappings`. Write-through caching, WAL journal mode, foreign key cascading deletes. |
+| `database.py` | SQLite persistence layer (`aiosqlite`), WAL mode, FK cascade. Tables include `agents`, `sessions`, `messages`, `bridge_mappings`, `backend_credentials`/`credential_secrets`, `connector_installations`/`connector_installation_secrets`/`agent_connectors`/`connector_oauth_clients`/`custom_connectors`, `schedules`, `notifiers`, `bg_tasks`. New tables go in `_SCHEMA`; additive column changes go through idempotent `_apply_migrations`. |
 | `jsonl_parser.py` | Parses Claude Code JSONL session files — extracts metadata (session ID, cwd, first user message), converts message formats, consolidates multi-block messages (merges consecutive text, folds tool_result into tool_use). Filters by primary session ID (hint from filename or most-common count). |
 | `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format (with uuid chain, parentUuid links, version `2.1.62`, timestamps) for local resumption via `claude --resume`. |
 | `tunnel.py` | CloudflareTunnel subprocess manager — starts `cloudflared tunnel --url`, parses the `trycloudflare.com` URL from stderr, monitors the process, and provides graceful stop (terminate with kill fallback). |
@@ -77,6 +77,24 @@ The bridge system provides messaging platform integrations, allowing users to in
 | `base.py` | Abstract `Bridge` base class and `TextBuffer`. Defines the interface all bridges must implement: `start`, `stop`, `send_text`, `send_tool_approval_request`, `send_tool_use`, `send_tool_result`, `send_status`, `send_result`, `send_error`. Includes event dispatcher (`handle_event`) that routes SessionManager events to the appropriate send method. TextBuffer aggregates streaming `assistant_text` chunks and flushes based on size (default 4096) or time (default 0.5s). |
 | `manager.py` | `BridgeManager` — routes messages between messaging platforms and SessionManager. Maintains `platform:chat_id` → `session_id` mappings (persisted in SQLite). Handles slash commands (`/new`, `/sessions`, `/switch`, `/current`, `/help`). Forwards user messages to `SessionManager.send_message()` and routes session events back to the correct bridge and chat via broadcast subscription. Manages active stream tasks per chat. |
 | `telegram.py` | `TelegramBridge` — Telegram Bot integration via long-polling (`getUpdates`). Sends messages with Markdown formatting, splits long text at 4096-char boundaries (preferring newline splits), sends inline keyboards for tool approval (Allow/Deny buttons with `approve:<id>`/`deny:<id>` callback data), typing indicators for running status, rate limit retry (429 with `retry_after`). Access control via `allowed_chat_ids`. |
+
+### Connector System (`server/connectors/` + `server/connector_manager.py`)
+
+Connectors give an agent OAuth-authorized access to third-party APIs (GitHub,
+Gmail, or user-defined "custom" kinds) as MCP tools. Enablement is **agent-scoped**;
+setup is **browser-only** (in-app OAuth-client config, no server env/restart).
+See `docs/connectors-setup.md` and `docs/plans/connectors.md`.
+
+| File | Purpose |
+|---|---|
+| `connectors/base.py` | `ConnectorBase` ABC + `ConnectorInstallation`. Backend-neutral `mcp_entry` → `{command, args, env}` merged into both backends' MCP config; system-prompt blurb; in-app `setup_url`/`setup_steps`. |
+| `connectors/oauth.py` | `ConnectorOAuthProvider` protocol + `ConnectorLoginManager` (redirect-URI OAuth; composite `login_id:state` CSRF; TTL/GC). |
+| `connectors/registry.py` | `KIND_REGISTRY` of built-in connector instances (self-registered on import). |
+| `connectors/github.py`, `gmail.py` | Built-in connectors: OAuth provider config + identity lookup + tool list. |
+| `connectors/custom.py` | User-defined connectors: `GenericOAuthProvider` (standard OAuth2 from stored URLs/scopes/PKCE), `CustomConnector` (from a DB row), `resolve_connector(db, kind)` (built-in code kind, else custom DB kind — used everywhere a connector is looked up). |
+| `connector_manager.py` | Install upsert-on-account; in-app OAuth-client config (DB-first, env fallback); server-side token refresh-on-near-expiry behind a per-installation lock; `needs_reconnect` lifecycle; custom-connector CRUD; catalog. |
+| `mcp_servers/connectors/` | Per-installation stdio MCP servers: `github.py`, `gmail.py` (typed tools), `custom.py` (generic `request(method, path, …)` tool), `_shared.py` (token fetch + cache, 32 KB truncation, 401→reconnect). |
+| `routers/connectors.py` | REST: catalog; OAuth start/callback(HTML)/status/cancel; install PATCH/DELETE; internal `/token` + `/mark-needs-reconnect`; in-app `/{kind}/oauth-client`; custom `POST /custom` + `DELETE /custom/{kind}`; agent-scoped `/api/agents/{id}/connectors`. Redirect URI derived from the request (tunnel-safe). |
 
 ### Frontend (`web/src/`)
 

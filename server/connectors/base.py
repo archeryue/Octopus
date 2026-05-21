@@ -82,6 +82,11 @@ class ConnectorBase(abc.ABC):
     tools: tuple[str, ...] = ()
     # One-line intro for the system-prompt section; override per kind.
     blurb_intro: str = ""
+    # In-app setup guidance (shown in the "Set up" dialog so a browser-only
+    # user knows how to register the OAuth app): a link to the provider's
+    # app-registration page + ordered steps.
+    setup_url: str = ""
+    setup_steps: tuple[str, ...] = ()
 
     @property
     def mcp_module(self) -> str:

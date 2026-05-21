@@ -1121,12 +1121,12 @@ class SessionManager:
         if self.db is None or agent is None:
             return []
         from .connectors.base import ConnectorInstallation
-        from .connectors.registry import get_connector
+        from .connectors.custom import resolve_connector
 
         rows = await self.db.get_enabled_connectors_for_agent(agent["id"])
         out: list[tuple[Any, Any]] = []
         for row in rows:
-            connector = get_connector(row["kind"])
+            connector = await resolve_connector(self.db, row["kind"])
             if connector is not None:
                 out.append((connector, ConnectorInstallation.from_row(row)))
         return out

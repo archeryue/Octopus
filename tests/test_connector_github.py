@@ -1,13 +1,11 @@
 """GitHub connector descriptor + OAuth provider (connectors.md Phase B / §6).
-HTTP is mocked by monkeypatching the module's httpx.AsyncClient (repo
-convention, see test_notifiers)."""
+Client creds are passed explicitly (resolved from DB/env by the manager). HTTP
+is mocked by monkeypatching the module's httpx.AsyncClient."""
 
 from __future__ import annotations
 
 import pytest
 
-from server.config import settings
-from server.connector_manager import connector_available
 from server.connectors import github as gh
 from server.connectors.registry import get_connector
 
@@ -50,10 +48,9 @@ def test_github_is_registered():
     assert isinstance(get_connector("github"), gh.GitHubConnector)
 
 
-def test_build_authorize_url(monkeypatch):
-    monkeypatch.setattr(settings, "github_oauth_client_id", "cid")
+def test_build_authorize_url():
     url = gh.GitHubOAuthProvider().build_authorize_url(
-        redirect_uri="https://app/cb", code_challenge=None, state="lid:rnd"
+        client_id="cid", redirect_uri="https://app/cb", code_challenge=None, state="lid:rnd"
     )
     assert url.startswith("https://github.com/login/oauth/authorize?")
     assert "client_id=cid" in url
@@ -61,20 +58,9 @@ def test_build_authorize_url(monkeypatch):
     assert "scope=repo+read%3Aorg" in url
 
 
-def test_availability_reflects_settings(monkeypatch):
-    monkeypatch.setattr(settings, "github_oauth_client_id", None)
-    monkeypatch.setattr(settings, "github_oauth_client_secret", None)
-    assert connector_available(gh.GitHubConnector()) is False
-    monkeypatch.setattr(settings, "github_oauth_client_id", "cid")
-    monkeypatch.setattr(settings, "github_oauth_client_secret", "csec")
-    assert connector_available(gh.GitHubConnector()) is True
-
-
 @pytest.mark.asyncio
 async def test_exchange_code_parses_token(monkeypatch):
     cap: dict = {}
-    monkeypatch.setattr(settings, "github_oauth_client_id", "cid")
-    monkeypatch.setattr(settings, "github_oauth_client_secret", "csec")
     monkeypatch.setattr(
         gh.httpx,
         "AsyncClient",
@@ -84,13 +70,19 @@ async def test_exchange_code_parses_token(monkeypatch):
         ),
     )
     ts = await gh.GitHubOAuthProvider().exchange_code(
-        code="c", redirect_uri="https://app/cb", code_verifier=None, state="s"
+        client_id="cid",
+        client_secret="csec",
+        code="c",
+        redirect_uri="https://app/cb",
+        code_verifier=None,
+        state="s",
     )
     assert ts.access_token == "gho_x"
     assert ts.scopes == ["repo", "read:org"]
     assert ts.expires_at_epoch == 0.0  # classic app token: non-expiring
     assert ts.refresh_token is None
-    # Sends the client secret to GitHub's token endpoint.
+    # The passed-in client secret reaches GitHub's token endpoint.
+    assert cap["data"]["client_id"] == "cid"
     assert cap["data"]["client_secret"] == "csec"
 
 
@@ -105,7 +97,12 @@ async def test_exchange_code_surfaces_error(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="expired"):
         await gh.GitHubOAuthProvider().exchange_code(
-            code="c", redirect_uri="https://app/cb", code_verifier=None, state="s"
+            client_id="cid",
+            client_secret="csec",
+            code="c",
+            redirect_uri="https://app/cb",
+            code_verifier=None,
+            state="s",
         )
 
 

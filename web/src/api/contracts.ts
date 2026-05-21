@@ -572,6 +572,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/connectors/{kind}/oauth-client": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Oauth Client */
+        get: operations["get_oauth_client_api_connectors__kind__oauth_client_get"];
+        /** Set Oauth Client */
+        put: operations["set_oauth_client_api_connectors__kind__oauth_client_put"];
+        post?: never;
+        /** Delete Oauth Client */
+        delete: operations["delete_oauth_client_api_connectors__kind__oauth_client_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/custom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Custom Connector */
+        post: operations["create_custom_connector_api_connectors_custom_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/custom/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Custom Connector */
+        delete: operations["delete_custom_connector_api_connectors_custom__kind__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/connectors": {
         parameters: {
             query?: never;
@@ -1007,6 +1060,23 @@ export interface components {
             allows_multiple: boolean;
             /** Available */
             available: boolean;
+            /**
+             * Scopes
+             * @default []
+             */
+            scopes: string[];
+            /**
+             * Custom
+             * @default false
+             */
+            custom: boolean;
+            /** Setup Url */
+            setup_url?: string | null;
+            /**
+             * Setup Steps
+             * @default []
+             */
+            setup_steps: string[];
         };
         /** ConnectorInstallationInfo */
         ConnectorInstallationInfo: {
@@ -1046,6 +1116,22 @@ export interface components {
         ConnectorOAuthCancelRequest: {
             /** Login Id */
             login_id: string;
+        };
+        /**
+         * ConnectorOAuthClientInfo
+         * @description Non-secret view of a kind's OAuth client config (for the setup dialog).
+         */
+        ConnectorOAuthClientInfo: {
+            /** Kind */
+            kind: string;
+            /** Configured */
+            configured: boolean;
+            /** Client Id */
+            client_id?: string | null;
+            /** Source */
+            source?: string | null;
+            /** Redirect Uri */
+            redirect_uri: string;
         };
         /** ConnectorOAuthStartRequest */
         ConnectorOAuthStartRequest: {
@@ -1176,6 +1262,37 @@ export interface components {
          * @enum {string}
          */
         CredentialStatus: "active" | "needs_reconnect";
+        /**
+         * CustomConnectorCreateRequest
+         * @description Define a brand-new connector kind from the browser (connectors.md
+         *     custom-connectors). Client creds are stored alongside built-in config.
+         */
+        CustomConnectorCreateRequest: {
+            /** Kind */
+            kind: string;
+            /** Display Name */
+            display_name: string;
+            /** Authorize Url */
+            authorize_url: string;
+            /** Token Url */
+            token_url: string;
+            /**
+             * Scopes
+             * @default []
+             */
+            scopes: string[];
+            /**
+             * Pkce
+             * @default false
+             */
+            pkce: boolean;
+            /** Api Base */
+            api_base: string;
+            /** Client Id */
+            client_id: string;
+            /** Client Secret */
+            client_secret: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1424,6 +1541,13 @@ export interface components {
         SetAgentConnectorsRequest: {
             /** Installation Ids */
             installation_ids: string[];
+        };
+        /** SetConnectorOAuthClientRequest */
+        SetConnectorOAuthClientRequest: {
+            /** Client Id */
+            client_id: string;
+            /** Client Secret */
+            client_secret: string;
         };
         /** StartBgTaskRequest */
         StartBgTaskRequest: {
@@ -2805,6 +2929,163 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectorCatalogEntry"][];
+                };
+            };
+        };
+    };
+    get_oauth_client_api_connectors__kind__oauth_client_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorOAuthClientInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_oauth_client_api_connectors__kind__oauth_client_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetConnectorOAuthClientRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorOAuthClientInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_oauth_client_api_connectors__kind__oauth_client_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_custom_connector_api_connectors_custom_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CustomConnectorCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorCatalogEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_custom_connector_api_connectors_custom__kind__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

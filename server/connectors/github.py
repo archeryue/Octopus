@@ -14,7 +14,6 @@ from urllib.parse import urlencode
 
 import httpx
 
-from ..config import settings
 from ..oauth_providers import OAuthTokenSet
 from .base import ConnectorBase
 from .registry import register
@@ -30,21 +29,16 @@ class GitHubOAuthProvider:
     default_scopes = ["repo", "read:org"]
     pkce = False  # GitHub OAuth Apps authenticate with a client secret
 
-    # Read from settings lazily so env / test monkeypatch is respected and a
-    # missing client id/secret reads as "unavailable" in the catalog.
-    @property
-    def client_id(self) -> str | None:
-        return settings.github_oauth_client_id
-
-    @property
-    def client_secret(self) -> str | None:
-        return settings.github_oauth_client_secret
-
     def build_authorize_url(
-        self, *, redirect_uri: str, code_challenge: str | None, state: str
+        self,
+        *,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str | None,
+        state: str,
     ) -> str:
         params = {
-            "client_id": self.client_id or "",
+            "client_id": client_id,
             "redirect_uri": redirect_uri,
             "scope": " ".join(self.default_scopes),
             "state": state,
@@ -55,6 +49,8 @@ class GitHubOAuthProvider:
     async def exchange_code(
         self,
         *,
+        client_id: str,
+        client_secret: str,
         code: str,
         redirect_uri: str,
         code_verifier: str | None,
@@ -64,8 +60,8 @@ class GitHubOAuthProvider:
             resp = await client.post(
                 self.token_url,
                 data={
-                    "client_id": self.client_id,
-                    "client_secret": self.client_secret,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
                     "code": code,
                     "redirect_uri": redirect_uri,
                 },
@@ -86,7 +82,9 @@ class GitHubOAuthProvider:
             token_type=body.get("token_type", "bearer"),
         )
 
-    async def refresh(self, refresh_token: str) -> OAuthTokenSet:
+    async def refresh(
+        self, *, client_id: str, client_secret: str, refresh_token: str
+    ) -> OAuthTokenSet:
         # Classic OAuth-App tokens don't expire; the manager never reaches here
         # (it only refreshes when expires_at_epoch is set). GitHub Apps with
         # expiring user tokens would implement the refresh-token grant here.
@@ -113,6 +111,13 @@ class GitHubConnector(ConnectorBase):
         "Read and act on the linked GitHub account: search issues/PRs, read "
         "repos and files, search code, open issues, and comment. Creating "
         "issues/comments writes to GitHub — say what you're about to do first."
+    )
+    setup_url = "https://github.com/settings/developers"
+    setup_steps = (
+        "Open GitHub → Settings → Developer settings → OAuth Apps → New OAuth App.",
+        "Set 'Authorization callback URL' to the redirect URI above.",
+        "Register the app, then click 'Generate a new client secret'.",
+        "Paste the Client ID and secret below.",
     )
 
     async def fetch_external_identity(self, token_set: OAuthTokenSet):

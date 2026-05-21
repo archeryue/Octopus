@@ -55,14 +55,22 @@ class ConnectorOAuthProvider(Protocol):
     pkce: bool
 
     def build_authorize_url(
-        self, *, redirect_uri: str, code_challenge: str | None, state: str
+        self,
+        *,
+        client_id: str,
+        redirect_uri: str,
+        code_challenge: str | None,
+        state: str,
     ) -> str:
-        """The URL the user opens to consent."""
+        """The URL the user opens to consent. Client id is resolved by the
+        caller (DB-stored config or env) and passed in."""
         ...
 
     async def exchange_code(
         self,
         *,
+        client_id: str,
+        client_secret: str,
         code: str,
         redirect_uri: str,
         code_verifier: str | None,
@@ -71,7 +79,9 @@ class ConnectorOAuthProvider(Protocol):
         """POST the authorization code to the token endpoint."""
         ...
 
-    async def refresh(self, refresh_token: str) -> OAuthTokenSet:
+    async def refresh(
+        self, *, client_id: str, client_secret: str, refresh_token: str
+    ) -> OAuthTokenSet:
         """Mint a fresh access token from a refresh token."""
         ...
 
@@ -127,6 +137,7 @@ class ConnectorLoginManager:
         self,
         *,
         provider: ConnectorOAuthProvider,
+        client_id: str,
         redirect_uri: str,
         requested_label: str | None = None,
     ) -> PendingLogin:
@@ -136,6 +147,7 @@ class ConnectorLoginManager:
         verifier = gen_verifier() if provider.pkce else None
         challenge = challenge_from(verifier) if verifier else None
         authorize_url = provider.build_authorize_url(
+            client_id=client_id,
             redirect_uri=redirect_uri,
             code_challenge=challenge,
             state=f"{login_id}:{raw_state}",
