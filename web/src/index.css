@@ -1,18 +1,12 @@
-:root {
-  /* Legacy palette kept for the two selectors below that still
-   * reference --bg-tertiary / --border (markdown code blocks +
-   * scrollbar). All other surfaces are driven by tokens.css. After
-   * the vm0 steal these resolve to cool-gray values from the new
-   * light palette so they read consistently against `bg-card`. */
-  --bg-tertiary: hsl(216 26% 96%);   /* matches --gray-50 */
-  --border: hsl(215 21% 89%);        /* matches --gray-200 */
-  --accent: hsl(222 76% 30%);        /* matches --primary-700 (dark blue) */
-  --accent-dim: hsl(218 72% 56%);    /* matches --primary-500 */
-  --green: #2da44e;
-  --red: #cf222e;
-  --yellow: #bf8700;
-  --radius: 8px;
-}
+/* All design tokens (colors, radius, sidebar surfaces) live in
+ * tokens.css as `H S% L%` triplets wrapped by `hsl(var(--token))`.
+ * This file used to carry a legacy unlayered `:root` palette
+ * (--accent, --border, …) that silently broke those tokens: being
+ * unlayered it beat tokens.css's layered values, and because it
+ * stored *full* `hsl(...)` colors, `hsl(var(--accent))` resolved to
+ * the invalid `hsl(hsl(...))` — killing every `bg-accent`/`border-border`
+ * hover. The few selectors below that need those values now read the
+ * gray scale from tokens.css directly. */
 
 /* Universal reset. Wrapped in `@layer base` so Tailwind v4's utility
  * classes (which live in cascade layers) can still set padding/margin.
@@ -114,7 +108,7 @@ body {
 /* Markdown nested output — react-markdown wraps assistant text in
  * .markdown; these selectors style its <pre>/<code>/<table> output. */
 .msg-assistant .markdown pre {
-  background: var(--bg-tertiary);
+  background: hsl(var(--gray-50));
   padding: 0.6rem;
   border-radius: var(--radius);
   overflow-x: auto;
@@ -124,7 +118,7 @@ body {
 }
 
 .msg-assistant .markdown code {
-  background: var(--bg-tertiary);
+  background: hsl(var(--gray-50));
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
   font-size: 0.9em;
@@ -156,19 +150,19 @@ body {
 
 .msg-assistant .markdown th,
 .msg-assistant .markdown td {
-  border: 1px solid var(--border);
+  border: 1px solid hsl(var(--gray-200));
   padding: 0.4rem 0.7rem;
   text-align: left;
   white-space: nowrap;
 }
 
 .msg-assistant .markdown th {
-  background: var(--bg-tertiary);
+  background: hsl(var(--gray-50));
   font-weight: 600;
 }
 
 .msg-assistant .markdown tr:nth-child(even) {
-  background: var(--bg-tertiary);
+  background: hsl(var(--gray-50));
 }
 
 /* Mobile responsive */

@@ -6,7 +6,7 @@ const SESSIONS_API = "http://localhost:8765/api/sessions";
 
 // Agent names this spec creates — cleaned up in afterAll so reruns against
 // the same in-memory server don't accumulate (and unique-name create works).
-const OWNED_AGENTS = new Set(["E2E Researcher", "E2E Persisted"]);
+const OWNED_AGENTS = new Set(["E2E Researcher", "E2E Persisted", "E2E Rail"]);
 const OWNED_SESSIONS = new Set(["Agent Thread"]);
 
 async function login(page: Page) {
@@ -109,6 +109,43 @@ test.describe("Agents", () => {
     await expect(page.locator("#agent-prompt")).toHaveValue(
       "second prompt — edited"
     );
+  });
+
+  test("the settings rail switches which agent you're editing", async ({
+    page,
+  }) => {
+    // Create an agent so there are at least two to switch between.
+    await page.locator(".btn-agent-add").click();
+    await page.locator("#agent-name").fill("E2E Rail");
+    await page.locator("#agent-prompt").fill("rail prompt");
+    await page.locator(".btn-agent-save").click();
+    await expect(
+      page.locator(".agent-item", { hasText: "E2E Rail" })
+    ).toBeVisible();
+
+    // Opening from the account menu focuses the active agent (the one we just
+    // created). The rail lists every agent plus a "New agent" entry.
+    await openAgentSettings(page);
+    await expect(page.locator("#agent-name")).toHaveValue("E2E Rail");
+    await expect(page.locator(".agent-rail-new")).toBeVisible();
+
+    // Switch to the system agent in the rail — the form reseeds and the
+    // Archive button disappears (system agents can't be archived).
+    await page.locator(".agent-rail-item", { hasText: "Octo" }).click();
+    await expect(page.locator("#agent-name")).toHaveValue("Octo");
+    await expect(
+      page.locator(".agent-settings button", { hasText: "Archive agent" })
+    ).toHaveCount(0);
+
+    // Switch back to our agent — Archive returns; then "New agent" clears it.
+    await page.locator(".agent-rail-item", { hasText: "E2E Rail" }).click();
+    await expect(page.locator("#agent-name")).toHaveValue("E2E Rail");
+    await expect(
+      page.locator(".agent-settings button", { hasText: "Archive agent" })
+    ).toBeVisible();
+
+    await page.locator(".agent-rail-new").click();
+    await expect(page.locator("#agent-name")).toHaveValue("");
   });
 
   test("the Default Agent cannot be archived from settings", async ({ page }) => {

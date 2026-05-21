@@ -16,7 +16,7 @@ import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
 import { useViewportHeight } from "./hooks/useViewportHeight";
 import { useWebSocket } from "./hooks/useWebSocket";
-import { useSessionStore, type Agent } from "./stores/sessionStore";
+import { useSessionStore } from "./stores/sessionStore";
 
 function App() {
   useViewportHeight();
@@ -84,9 +84,11 @@ function AuthenticatedApp({
   const activeAgentId = useSessionStore((s) => s.activeAgentId);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Agent-settings dialog lives at the app level (not the sidebar) so it can
-  // be driven from the account menu. `null` target = create a new agent.
+  // be driven from the account menu. It's a two-pane manager: this id just
+  // seeds which agent is selected when it opens (`null` = the new-agent draft);
+  // the dialog's own rail handles switching between agents after that.
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
-  const [agentEditing, setAgentEditing] = useState<Agent | null>(null);
+  const [agentInitialId, setAgentInitialId] = useState<string | null>(null);
 
   const signOut = () => {
     setToken("");
@@ -94,17 +96,18 @@ function AuthenticatedApp({
   };
 
   const openCreateAgent = () => {
-    setAgentEditing(null);
+    setAgentInitialId(null);
     setAgentDialogOpen(true);
   };
-  // "Agent settings" in the account menu edits the active agent (fall back to
-  // the system agent, then create mode if there are somehow no agents).
+  // "Agent settings" in the account menu opens the manager focused on the
+  // active agent (fall back to the system agent, then the new-agent draft if
+  // there are somehow no agents).
   const openActiveAgentSettings = () => {
     const active =
       agents.find((a) => a.id === activeAgentId) ??
       agents.find((a) => a.is_system) ??
       null;
-    setAgentEditing(active);
+    setAgentInitialId(active?.id ?? null);
     setAgentDialogOpen(true);
   };
 
@@ -176,7 +179,7 @@ function AuthenticatedApp({
       <AgentSettings
         open={agentDialogOpen}
         onOpenChange={setAgentDialogOpen}
-        agent={agentEditing}
+        initialAgentId={agentInitialId}
       />
       <FileViewerDialog />
     </div>

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // Full-stack Codex proof: the backend selector appears when codex is
 // available, a Codex session is created through the UI, and a real codex
@@ -8,6 +8,16 @@ import { test, expect } from "@playwright/test";
 const TOKEN = "changeme";
 const API = "http://localhost:8765/api";
 const OWNED = new Set(["Codex E2E"]);
+
+/** Click the new-session "+" on the default "Octo" agent's row. The button is
+ * per-agent, and specs share one in-memory backend DB, so a bare
+ * ".btn-session-add" turns ambiguous once a concurrent spec creates another
+ * agent. Scoping to Octo keeps it unambiguous. */
+const addOctoSession = (page: Page) =>
+  page
+    .locator(".agent-item", { hasText: "Octo" })
+    .locator(".btn-session-add")
+    .click();
 
 test.describe.configure({ timeout: 120_000 });
 
@@ -47,7 +57,7 @@ test("create a Codex session via the UI and get a real response", async ({
   await expect(page.locator(".agent-list-header")).toBeVisible();
 
   // The create form shows the Claude/Codex selector when codex is available.
-  await page.locator(".btn-session-add").click();
+  await addOctoSession(page);
   await expect(page.locator(".session-backend-select")).toBeVisible();
   await page.locator(".btn-backend-codex").click();
   await page

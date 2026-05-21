@@ -8,6 +8,16 @@ const TOKEN = "changeme";
 const SERVER_URL = "http://localhost:8765";
 const API = `${SERVER_URL}/api`;
 
+/** Click the new-session "+" on the default "Octo" agent's row. The button is
+ * per-agent, and specs share one in-memory backend DB, so a bare
+ * ".btn-session-add" turns ambiguous once a concurrent spec creates another
+ * agent. Scoping to Octo keeps it unambiguous. */
+const addOctoSession = (page: Page) =>
+  page
+    .locator(".agent-item", { hasText: "Octo" })
+    .locator(".btn-session-add")
+    .click();
+
 const OWNED_NAMES = new Set([
   "Schedule UI Test",
   "Waiting Hint Yes",
@@ -546,8 +556,8 @@ test.describe("Credentials Panel", () => {
 
     await login(page);
 
-    // Open the create-session form via the Sessions section's "+" button.
-    await page.locator(".btn-session-add").click();
+    // Open the create-session form via the default agent's "+" button.
+    await addOctoSession(page);
 
     // Selector is rendered, default option is "Default auth (CLI login)",
     // and our seeded credential is selectable.

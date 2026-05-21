@@ -1,7 +1,17 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const TOKEN = "changeme";
 const API = "http://localhost:8765/api/sessions";
+
+/** Click the new-session "+" on the default "Octo" agent's row. The button is
+ * per-agent now, and specs share one in-memory backend DB, so a bare
+ * ".btn-session-add" turns ambiguous (strict-mode violation) the moment a
+ * concurrent spec has created another agent. Scoping to Octo is unambiguous. */
+const addOctoSession = (page: Page) =>
+  page
+    .locator(".agent-item", { hasText: "Octo" })
+    .locator(".btn-session-add")
+    .click();
 
 // Names of sessions this spec creates — only delete these to avoid
 // disturbing sessions in-flight on parallel worker processes.
@@ -64,7 +74,7 @@ test.describe("Session Management", () => {
   });
 
   test("creates a new session", async ({ page }) => {
-    await page.locator(".btn-session-add").click();
+    await addOctoSession(page);
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("E2E Test Session");
@@ -88,7 +98,7 @@ test.describe("Session Management", () => {
 
   test("deletes a session", async ({ page }) => {
     // Create a session first
-    await page.locator(".btn-session-add").click();
+    await addOctoSession(page);
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("To Delete");
@@ -122,7 +132,7 @@ test.describe("Chat", () => {
     await expect(page.locator(".agent-list-header")).toBeVisible();
 
     // Create a session
-    await page.locator(".btn-session-add").click();
+    await addOctoSession(page);
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Chat Test");
