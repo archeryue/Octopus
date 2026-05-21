@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { IconPlus } from "@tabler/icons-react";
+import { fetchAgentConnectors, toggleAgentConnector } from "../api/connectors";
 import { useSessionStore, type Agent } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import {
@@ -42,6 +43,9 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
   const setSessions = useSessionStore((s) => s.setSessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
+  const connectorInstallations = useSessionStore((s) => s.connectorInstallations);
+  const agentConnectorIds = useSessionStore((s) => s.agentConnectorIds);
+  const setAgentConnectorIds = useSessionStore((s) => s.setAgentConnectorIds);
   const claudeCreds = credentials.filter((c) => c.backend === "claude-code");
 
   // `null` selection = the "New agent" draft; otherwise the agent being edited.
@@ -89,6 +93,30 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
     setToolDeny(a?.tool_deny ?? "");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selectedId]);
+
+  // Load the agent's enabled connectors when editing an existing one. New
+  // agents have no id yet; their connectors are managed after first save.
+  useEffect(() => {
+    if (!open || !selectedId) return;
+    fetchAgentConnectors(token, selectedId)
+      .then((ids) => setAgentConnectorIds(selectedId, ids))
+      .catch(() => {});
+  }, [open, selectedId, token, setAgentConnectorIds]);
+
+  const toggleConnector = async (installationId: string, enabled: boolean) => {
+    if (!selected) return;
+    const cur = agentConnectorIds[selected.id] ?? [];
+    // Optimistic; revert on failure.
+    setAgentConnectorIds(
+      selected.id,
+      enabled ? [...cur, installationId] : cur.filter((x) => x !== installationId)
+    );
+    try {
+      await toggleAgentConnector(token, selected.id, installationId, enabled);
+    } catch {
+      setAgentConnectorIds(selected.id, cur);
+    }
+  };
 
   // Has the form drifted from the persisted agent (or, in new mode, from an
   // empty draft)? Used to warn before discarding edits on a rail switch.
@@ -348,6 +376,55 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
                   </label>
                 ))}
               </div>
+            </div>
+
+            {/* Connectors — agent-scoped enablement (connectors.md revision).
+             * Toggling here calls the agent-connectors API immediately (no
+             * Save needed); new agents must be saved first to get an id. */}
+            <div className="agent-connectors space-y-1.5">
+              <Label>Connectors</Label>
+              {!selected ? (
+                <p className="text-xs text-muted-foreground">
+                  Save the agent first, then enable connectors for it.
+                </p>
+              ) : connectorInstallations.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  No connectors installed yet — add one in the sidebar's
+                  Connectors section.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {connectorInstallations.map((inst) => {
+                    const enabled = (
+                      agentConnectorIds[selected.id] ?? []
+                    ).includes(inst.id);
+                    return (
+                      <label
+                        key={inst.id}
+                        className="agent-connector-row flex items-center gap-2 text-sm text-foreground"
+                      >
+                        <input
+                          type="checkbox"
+                          className="agent-connector-toggle"
+                          data-installation={inst.id}
+                          checked={enabled}
+                          onChange={(e) =>
+                            toggleConnector(inst.id, e.target.checked)
+                          }
+                        />
+                        <span className="truncate">
+                          {inst.kind} · {inst.label}
+                        </span>
+                        {inst.needs_reconnect && (
+                          <span className="text-xs text-destructive">
+                            needs reconnect
+                          </span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2">

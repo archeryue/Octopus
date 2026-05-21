@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..connectors.base import render_connectors_blurb
 from .base import BackendCredential, BackendEvent
 from .subprocess_jsonl import SubprocessJsonlBackend
 
@@ -116,6 +117,7 @@ class CodexBackend(SubprocessJsonlBackend):
         system_prompt: str | None = None,
         mcp_servers: list[str] | None = None,
         credential_home: str | None = None,
+        connectors: list[tuple[Any, Any]] | None = None,
     ) -> None:
         super().__init__()
         self._session_id = session_id
@@ -125,6 +127,10 @@ class CodexBackend(SubprocessJsonlBackend):
         self._agent_system_prompt = system_prompt
         # Subset of {"viewer","bg","ask"} to register; None = all three.
         self._mcp_servers = mcp_servers
+        # Agent-enabled connectors (connectors.md §5.6) as
+        # (ConnectorBase, ConnectorInstallation) tuples — rendered into
+        # `-c mcp_servers.*` overrides + a developer-instructions blurb.
+        self._connectors = connectors or []
         # Per-credential CODEX_HOME (holds auth.json + token refresh). None
         # inherits the host's default ~/.codex (option A — host `codex login`,
         # codex-backend.md §7).
@@ -180,12 +186,32 @@ class CodexBackend(SubprocessJsonlBackend):
                     "-c",
                     f"{base}.env.{env_key}={_toml_basic_string(env_val)}",
                 ]
+
+        # Agent-enabled connectors (connectors.md §5.6). The connector returns
+        # a backend-neutral {command, args, env}; render it into the same
+        # `-c mcp_servers.<key>.*` override shape as the built-ins.
+        for connector, installation in self._connectors:
+            entry = connector.mcp_entry(installation, callback_env)
+            base = f"mcp_servers.{connector.mcp_key(installation)}"
+            args += [
+                "-c",
+                f"{base}.command={_toml_basic_string(entry['command'])}",
+            ]
+            args += ["-c", f"{base}.args={_toml_string_array(entry['args'])}"]
+            for env_key, env_val in entry["env"].items():
+                args += [
+                    "-c",
+                    f"{base}.env.{env_key}={_toml_basic_string(env_val)}",
+                ]
         return args
 
     def _developer_instructions(self) -> str:
+        base = _OCTOPUS_SYSTEM_PROMPT_CODEX
         if self._agent_system_prompt:
-            return f"{self._agent_system_prompt}\n\n{_OCTOPUS_SYSTEM_PROMPT_CODEX}"
-        return _OCTOPUS_SYSTEM_PROMPT_CODEX
+            base = f"{self._agent_system_prompt}\n\n{base}"
+        if self._connectors:
+            base = f"{base}\n\n{render_connectors_blurb(self._connectors)}"
+        return base
 
     def build_args(
         self,

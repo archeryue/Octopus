@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..connectors.base import render_connectors_blurb
 from .base import BackendCredential, BackendEvent
 from .subprocess_jsonl import SubprocessJsonlBackend
 
@@ -202,6 +203,7 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         mcp_servers: list[str] | None = None,
         allowed_tools: list[str] | None = None,
         disallowed_tools: list[str] | None = None,
+        connectors: list[tuple[Any, Any]] | None = None,
     ) -> None:
         super().__init__()
         # Accepted for back-compat (see PermissionCallback comment above);
@@ -225,6 +227,11 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         self._mcp_servers = mcp_servers
         self._allowed_tools = allowed_tools
         self._disallowed_tools = disallowed_tools
+        # Agent-enabled connectors (connectors.md §5.6) as
+        # (ConnectorBase, ConnectorInstallation) tuples. Each contributes one
+        # per-installation MCP server entry + a system-prompt blurb. Empty for
+        # the Default Agent / legacy paths.
+        self._connectors = connectors or []
         # Capture the CLI's `system/init` session_id so we can attach it
         # to the `result` BackendEvent (the result event's own session_id
         # is the same value, but `init` arrives first and the field gives
@@ -310,6 +317,14 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
             }
         else:
             selected = all_servers
+        # Merge the agent's enabled connectors (connectors.md §5.6). Each gets
+        # a per-installation key (`<kind>_<id6>`) so two accounts of one kind
+        # don't collide, and the shared callback_env + OCTOPUS_INSTALLATION_ID
+        # so its MCP server can fetch the right token at call time.
+        for connector, installation in self._connectors:
+            selected[connector.mcp_key(installation)] = connector.mcp_entry(
+                installation, callback_env
+            )
         mcp_config = json.dumps({"mcpServers": selected})
 
         # VM0-style command shape. Notes on each flag:
@@ -342,6 +357,10 @@ class ClaudeCodeBackend(SubprocessJsonlBackend):
         append_prompt = _OCTOPUS_SYSTEM_PROMPT
         if self._agent_system_prompt:
             append_prompt = f"{self._agent_system_prompt}\n\n{_OCTOPUS_SYSTEM_PROMPT}"
+        if self._connectors:
+            append_prompt = (
+                f"{append_prompt}\n\n{render_connectors_blurb(self._connectors)}"
+            )
 
         argv = [
             self.binary,

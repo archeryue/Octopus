@@ -262,10 +262,13 @@ test.describe("Message Queue & Interrupt", () => {
     );
     await page.locator("button.btn-send").click();
 
-    // Wait for the run to start
+    // Wait for the run to start. The first turn cold-starts a real `claude`
+    // process; under full-suite parallel load (several workers each spawning
+    // claude) that can take well over 15s, so allow generous headroom — the
+    // describe budget is 180s.
     await expect(
       page.locator(".status-badge.status-running")
-    ).toBeVisible({ timeout: 15_000 });
+    ).toBeVisible({ timeout: 60_000 });
 
     // Send button switches its semantic label to "Queue message" while a
     // turn is running. The button is icon-only (post-VM0-style redesign),

@@ -21,7 +21,8 @@ from .tunnel import CloudflareTunnel
 from .database import Database
 from .notifiers import notifier_manager
 from .agent_manager import AgentManager
-from .routers import agents, attachments, bg_tasks as bg_tasks_router, credentials, files, notifiers, questions, schedules, sessions, ws
+from .connector_manager import ConnectorManager
+from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, files, notifiers, questions, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
     schedules._db = db
     schedules._runner = schedule_runner
     agents.set_manager(AgentManager(db))
+    connectors.set_manager(ConnectorManager(db))
     credentials.set_db(db)
     notifiers.set_db(db)
     notifier_manager.set_db(db)
@@ -126,6 +128,8 @@ app.include_router(bg_tasks_router.router)
 app.include_router(questions.router)
 app.include_router(schedules.router)
 app.include_router(credentials.router)
+app.include_router(connectors.router)
+app.include_router(connectors.agent_router)
 app.include_router(notifiers.router)
 app.include_router(ws.router)
 

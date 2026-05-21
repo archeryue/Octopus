@@ -2,6 +2,35 @@
 
 Status: draft, not started.
 
+> ## ⚠️ REVISION — v1 is Gmail + GitHub; Notion dropped (2026-05-20)
+>
+> The connector set changed. **v1 now ships Gmail + GitHub** — the two
+> services the user uses every day — **not Notion + Gmail.** **Notion is
+> removed entirely:** the user migrated their documents to Obsidian (local
+> Markdown the agent already reads/writes directly via the filesystem, so a
+> Notion connector buys nothing). Apply these deltas alongside the
+> agent-scoping revision below; the OAuth / MCP-server / truncation / refresh
+> machinery is connector-agnostic and stands unchanged:
+>
+> 1. **GitHub replaces Notion as the "first connector end-to-end."** Phase B
+>    (§9) builds **GitHub**, not Notion; Phase C stays Gmail. §6.1 (Notion) is
+>    void — a GitHub descriptor + MCP server takes its place (issues, PRs,
+>    repo + file reads, code search, create/comment).
+> 2. **Wherever the body says "Notion" as a shipped v1 connector, read
+>    "GitHub"** — §1 goal list, §5.1 file layout, the §5.8 system-prompt
+>    example, the §6 title, and §8's fixtures (a fake-GitHub HTTP stub
+>    replaces fake-Notion). §6.3 moves `github` *out* of "not in v1."
+> 3. **GitHub specifics are not yet verified** (treat as §13 items, don't
+>    fabricate): authorization-code flow against
+>    `github.com/login/oauth/authorize` → `/access_token`, identity via
+>    `GET /user`, scopes ~ `repo` + `read:org`. A classic OAuth app's tokens
+>    don't expire (like Notion's did), so the refresh path stays dead code
+>    unless we adopt GitHub-App expiring tokens. The exact tool list + names
+>    (under the 60-char cap, §5.3) get pinned down at implementation.
+> 4. **Env vars (§7): `OCTOPUS_NOTION_OAUTH_*` → `OCTOPUS_GITHUB_OAUTH_*`;**
+>    `OCTOPUS_GMAIL_OAUTH_*` stays. `docs/connectors-setup.md` documents
+>    GitHub OAuth-app registration instead of Notion.
+
 > ## ⚠️ REVISION — connectors are AGENT-scoped (2026-05-19)
 >
 > This plan was written for **per-session** connector enablement. The

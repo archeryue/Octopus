@@ -36,7 +36,23 @@ class Settings(BaseSettings):
     # where no human will ever see the prompt). 0 disables auto-answer.
     ask_user_question_timeout_seconds: int = 1800
 
+    # Connectors (connectors.md §7). The public base URL is what connector
+    # OAuth redirect URIs are built against; behind a tunnel it must be set
+    # to the stable public host. Unset → computed as http://127.0.0.1:{port}.
+    # Per-kind client credentials gate availability in the catalog: a kind is
+    # only installable once both its id and secret are present.
+    public_base_url: str | None = None
+    gmail_oauth_client_id: str | None = None
+    gmail_oauth_client_secret: str | None = None
+    github_oauth_client_id: str | None = None
+    github_oauth_client_secret: str | None = None
+
     model_config = {"env_prefix": "OCTOPUS_", "env_file": ".env"}
+
+    @property
+    def resolved_public_base_url(self) -> str:
+        """Base URL for OAuth redirect URIs — explicit config or localhost."""
+        return self.public_base_url or f"http://127.0.0.1:{self.port}"
 
 
 settings = Settings()

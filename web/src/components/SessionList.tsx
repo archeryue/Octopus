@@ -167,7 +167,7 @@ export function SessionList({
 
   return (
     <div className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40">
-      <div className="session-list-items flex flex-col gap-0.5">
+      <div className="session-list-items flex flex-col gap-0">
         {agentSessions.length === 0 && !formOpen && (
           <div className="text-[11px] italic text-sidebar-foreground/40 px-2 py-1">
             No sessions yet.

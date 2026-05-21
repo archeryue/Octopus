@@ -66,7 +66,7 @@ export function ScheduleList() {
   if (!activeAgentId) return null;
 
   return (
-    <div className="schedule-section shrink-0 pb-3 pt-2">
+    <div className="schedule-section shrink-0">
       <div className="schedule-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
         <span className="schedule-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Schedules

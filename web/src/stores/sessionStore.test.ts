@@ -227,4 +227,48 @@ describe("sessionStore", () => {
     expect(state.messages["s1"][0].content).toBe("msg for s1");
     expect(state.messages["s2"][0].content).toBe("msg for s2");
   });
+
+  it("manages connector installations and per-agent enablement", () => {
+    const {
+      setConnectorInstallations,
+      upsertConnectorInstallation,
+      removeConnectorInstallation,
+      setAgentConnectorIds,
+    } = useSessionStore.getState();
+    const mk = (id: string, kind: string, label: string) => ({
+      id,
+      kind,
+      label,
+      auth_type: "oauth" as const,
+      external_account_id: label,
+      scopes: [],
+      enable_by_default: false,
+      needs_reconnect: false,
+      token_expires_at: null,
+      last_refresh_error_code: null,
+      created_at: "2026-01-01",
+    });
+
+    setConnectorInstallations([mk("i1", "github", "octocat")]);
+    expect(useSessionStore.getState().connectorInstallations).toHaveLength(1);
+
+    // upsert appends a new one, patches existing in place.
+    upsertConnectorInstallation(mk("i2", "gmail", "me@x.com"));
+    expect(useSessionStore.getState().connectorInstallations).toHaveLength(2);
+    upsertConnectorInstallation({ ...mk("i2", "gmail", "renamed@x.com") });
+    expect(
+      useSessionStore.getState().connectorInstallations.find((i) => i.id === "i2")
+        ?.label
+    ).toBe("renamed@x.com");
+
+    // Enable both for an agent, then removing an installation prunes it from
+    // every agent's enabled set.
+    setAgentConnectorIds("a1", ["i1", "i2"]);
+    expect(useSessionStore.getState().agentConnectorIds["a1"]).toEqual(["i1", "i2"]);
+    removeConnectorInstallation("i1");
+    expect(
+      useSessionStore.getState().connectorInstallations.map((i) => i.id)
+    ).toEqual(["i2"]);
+    expect(useSessionStore.getState().agentConnectorIds["a1"]).toEqual(["i2"]);
+  });
 });

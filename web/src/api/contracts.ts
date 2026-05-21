@@ -555,6 +555,199 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/connectors/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Catalog */
+        get: operations["list_catalog_api_connectors_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Installations */
+        get: operations["list_installations_api_connectors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Oauth Start */
+        post: operations["oauth_start_api_connectors_oauth_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Oauth Callback
+         * @description Third-party browser redirect lands here. No bearer — `state` is the
+         *     CSRF anchor. Returns a small self-closing HTML page either way.
+         */
+        get: operations["oauth_callback_api_connectors_oauth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/oauth/status/{login_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Oauth Status */
+        get: operations["oauth_status_api_connectors_oauth_status__login_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/oauth/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Oauth Cancel */
+        post: operations["oauth_cancel_api_connectors_oauth_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/{installation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Installation */
+        delete: operations["delete_installation_api_connectors__installation_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Installation */
+        patch: operations["update_installation_api_connectors__installation_id__patch"];
+        trace?: never;
+    };
+    "/api/connectors/{installation_id}/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Token */
+        get: operations["get_token_api_connectors__installation_id__token_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/{installation_id}/mark-needs-reconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark Needs Reconnect */
+        post: operations["mark_needs_reconnect_api_connectors__installation_id__mark_needs_reconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/connectors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Agent Connectors */
+        get: operations["list_agent_connectors_api_agents__agent_id__connectors_get"];
+        /** Set Agent Connectors */
+        put: operations["set_agent_connectors_api_agents__agent_id__connectors_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/connectors/{installation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Toggle Agent Connector */
+        patch: operations["toggle_agent_connector_api_agents__agent_id__connectors__installation_id__patch"];
+        trace?: never;
+    };
     "/api/notifiers": {
         parameters: {
             query?: never;
@@ -634,6 +827,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AgentConnectorsResponse */
+        AgentConnectorsResponse: {
+            /** Installation Ids */
+            installation_ids: string[];
+        };
         /** AgentCreate */
         AgentCreate: {
             /** Name */
@@ -796,6 +994,91 @@ export interface components {
         Body_upload_attachment_api_sessions__session_id__attachments_post: {
             /** File */
             file: string;
+        };
+        /** ConnectorCatalogEntry */
+        ConnectorCatalogEntry: {
+            /** Kind */
+            kind: string;
+            /** Display Name */
+            display_name: string;
+            /** Category */
+            category: string;
+            /** Allows Multiple */
+            allows_multiple: boolean;
+            /** Available */
+            available: boolean;
+        };
+        /** ConnectorInstallationInfo */
+        ConnectorInstallationInfo: {
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** @default oauth */
+            auth_type: components["schemas"]["AuthType"];
+            /** External Account Id */
+            external_account_id?: string | null;
+            /**
+             * Scopes
+             * @default []
+             */
+            scopes: string[];
+            /**
+             * Enable By Default
+             * @default false
+             */
+            enable_by_default: boolean;
+            /**
+             * Needs Reconnect
+             * @default false
+             */
+            needs_reconnect: boolean;
+            /** Token Expires At */
+            token_expires_at?: string | null;
+            /** Last Refresh Error Code */
+            last_refresh_error_code?: string | null;
+            /** Created At */
+            created_at: string;
+        };
+        /** ConnectorOAuthCancelRequest */
+        ConnectorOAuthCancelRequest: {
+            /** Login Id */
+            login_id: string;
+        };
+        /** ConnectorOAuthStartRequest */
+        ConnectorOAuthStartRequest: {
+            /** Kind */
+            kind: string;
+            /** Label */
+            label?: string | null;
+        };
+        /** ConnectorOAuthStartResponse */
+        ConnectorOAuthStartResponse: {
+            /** Login Id */
+            login_id: string;
+            /** Authorize Url */
+            authorize_url: string;
+        };
+        /** ConnectorOAuthStatusResponse */
+        ConnectorOAuthStatusResponse: {
+            /** Status */
+            status: string;
+            /** Installation Id */
+            installation_id?: string | null;
+            /** Message */
+            message?: string | null;
+        };
+        /**
+         * ConnectorTokenResponse
+         * @description Internal — returned only to the connector MCP subprocess.
+         */
+        ConnectorTokenResponse: {
+            /** Access Token */
+            access_token: string;
+            /** Expires At Epoch */
+            expires_at_epoch: number;
         };
         /** CreateCredentialRequest */
         CreateCredentialRequest: {
@@ -1137,6 +1420,11 @@ export interface components {
          * @enum {string}
          */
         SessionStatus: "idle" | "running" | "waiting_approval";
+        /** SetAgentConnectorsRequest */
+        SetAgentConnectorsRequest: {
+            /** Installation Ids */
+            installation_ids: string[];
+        };
         /** StartBgTaskRequest */
         StartBgTaskRequest: {
             /** Command */
@@ -1148,6 +1436,18 @@ export interface components {
         SubmitAnswerRequest: {
             /** Answers */
             answers: components["schemas"]["AnswerItem"][];
+        };
+        /** ToggleAgentConnectorRequest */
+        ToggleAgentConnectorRequest: {
+            /** Enabled */
+            enabled: boolean;
+        };
+        /** UpdateConnectorRequest */
+        UpdateConnectorRequest: {
+            /** Label */
+            label?: string | null;
+            /** Enable By Default */
+            enable_by_default?: boolean | null;
         };
         /** UpdateCredentialRequest */
         UpdateCredentialRequest: {
@@ -2468,6 +2768,400 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["OAuthCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_catalog_api_connectors_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorCatalogEntry"][];
+                };
+            };
+        };
+    };
+    list_installations_api_connectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorInstallationInfo"][];
+                };
+            };
+        };
+    };
+    oauth_start_api_connectors_oauth_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorOAuthStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorOAuthStartResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oauth_callback_api_connectors_oauth_callback_get: {
+        parameters: {
+            query?: {
+                code?: string | null;
+                state?: string;
+                error?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oauth_status_api_connectors_oauth_status__login_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                login_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorOAuthStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    oauth_cancel_api_connectors_oauth_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorOAuthCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_installation_api_connectors__installation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                installation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_installation_api_connectors__installation_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                installation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateConnectorRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorInstallationInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_token_api_connectors__installation_id__token_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                installation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorTokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_needs_reconnect_api_connectors__installation_id__mark_needs_reconnect_post: {
+        parameters: {
+            query?: {
+                error_code?: string;
+            };
+            header?: never;
+            path: {
+                installation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_agent_connectors_api_agents__agent_id__connectors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentConnectorsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_agent_connectors_api_agents__agent_id__connectors_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAgentConnectorsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentConnectorsResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    toggle_agent_connector_api_agents__agent_id__connectors__installation_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                installation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToggleAgentConnectorRequest"];
             };
         };
         responses: {

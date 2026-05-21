@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { IconChevronRight, IconPlus } from "@tabler/icons-react";
+import { fetchInstallations } from "../api/connectors";
 import { useSessionStore, type Agent, type SessionInfo } from "../stores/sessionStore";
 import { SessionList } from "./SessionList";
 
@@ -17,6 +18,9 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
   const setSessions = useSessionStore((s) => s.setSessions);
   const setAvailableBackends = useSessionStore((s) => s.setAvailableBackends);
+  const setConnectorInstallations = useSessionStore(
+    (s) => s.setConnectorInstallations
+  );
 
   // Which agents are unfolded (showing their sessions). Multiple may be open;
   // folding keeps the sidebar from filling with sessions when there are many
@@ -57,6 +61,11 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
         if (d?.available) setAvailableBackends(d.available);
       })
       .catch(() => {});
+    // Connector installations are global; Agent settings reads them to render
+    // each agent's per-connector toggles.
+    fetchInstallations(token)
+      .then(setConnectorInstallations)
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
@@ -86,7 +95,7 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
   };
 
   return (
-    <div className="agent-list shrink-0 pb-3">
+    <div className="agent-list shrink-0">
       <div className="agent-list-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
         <h2 className="text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
           Agents
@@ -101,7 +110,7 @@ export function AgentList({ onCreateAgent }: { onCreateAgent: () => void }) {
         </button>
       </div>
 
-      <div className="agent-list-items flex flex-col gap-0.5 mt-1">
+      <div className="agent-list-items flex flex-col gap-0 mt-1">
         {agents.map((a) => {
           const isActive = a.id === activeAgentId;
           const isExpanded = expanded.has(a.id);

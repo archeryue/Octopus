@@ -11,6 +11,11 @@ backend selector UI) with only the subscription-gated parts deferred; #3
 Connectors' plan has been **revised to agent-scoped** and awaits
 implementation. Details per-initiative below.
 
+**Update (2026-05-20):** Connectors **re-scoped to Gmail + GitHub first**;
+**Notion dropped** — the user migrated their documents to Obsidian (local
+Markdown the agent already reads/writes directly via the filesystem, so no
+connector is needed).
+
 ---
 
 ## 1. Codex backend — [`plans/codex-backend.md`](plans/codex-backend.md)
@@ -55,19 +60,36 @@ The agent-memory north star (Deferred, below) now has its durable key.
 
 ## 3. Connectors — [`plans/connectors.md`](plans/connectors.md)
 
-**Status**: planned; **plan revised to agent-scoped** (see the banner atop
-`connectors.md`). **After OAuth client registration.**
+**Status**: planned; **plan revised to agent-scoped** and **re-scoped to
+Gmail + GitHub first** (see the two banners atop `connectors.md`). **After
+OAuth client registration.**
 
-First-class third-party **outbound** tools (Notion, **Gmail**, Slack,
-GitHub, …) the user installs once and the agent calls as MCP tools.
-Notion ships first; **Gmail is Connectors Phase C** — there is no
-standalone email feature, email lands here.
+First-class third-party **outbound** tools the user installs once and the
+agent calls as MCP tools. **v1 ships Gmail + GitHub** — the two services the
+user lives in daily:
+- **Gmail** — search / read / label / draft, plus send gated behind an
+  explicit per-turn confirm. There is no standalone email feature; email
+  lands here.
+- **GitHub** — issues / PRs / repo + file reads / code search /
+  create + comment.
 
-**Why last**: Connectors are **agent-scoped** (agent-refactor decisions
-#5 / #8), which supersedes the per-session enablement model currently
-written in `plans/connectors.md` — that plan must be revised to the
-agent-scoped shape before this starts. The Codex MCP path it depends on
-is settled by plan #1.
+**Notion is dropped** (2026-05-20): the user moved their documents to
+Obsidian, i.e. local Markdown the agent already edits directly through the
+filesystem — no connector required. The Notion-specific design in
+`connectors.md` (§6.1, the Phase-B "first connector", the system-prompt
+example) is superseded; **GitHub takes the "second proof connector" slot**,
+and its concrete OAuth + tool surface gets pinned down at implementation and
+verified live (tracked in `connectors.md` §13 "still unverified"), rather
+than fabricated now.
+
+**Why still pending**:
+- The plan must be applied in its **agent-scoped** shape (agent-refactor
+  decisions #5 / #8) — connectors enable per *agent*, not per session, which
+  supersedes the per-session model still written in the plan body.
+- Needs **OAuth client registration** with Google (Gmail) and GitHub before
+  it can be verified end-to-end; the §8 fake-HTTP fixtures let Phases A–B be
+  built and tested without live clients.
+- The Codex MCP injection path it depends on is settled by plan #1.
 
 ---
 

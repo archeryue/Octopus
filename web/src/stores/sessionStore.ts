@@ -3,6 +3,8 @@ import type {
   AgentRead as ApiAgentRead,
   AttachmentMetadata as ApiAttachmentMetadata,
   BackendKind as ApiBackendKind,
+  ConnectorCatalogEntry as ApiConnectorCatalogEntry,
+  ConnectorInstallationInfo as ApiConnectorInstallationInfo,
   CredentialInfo as ApiCredentialInfo,
   ScheduleInfo,
   SessionInfo as ApiSessionInfo,
@@ -17,6 +19,8 @@ export type SessionInfo = ApiSessionInfo;
 export type Agent = ApiAgentRead;
 export type BackendKind = ApiBackendKind;
 export type CredentialInfo = ApiCredentialInfo;
+export type ConnectorCatalogEntry = ApiConnectorCatalogEntry;
+export type ConnectorInstallationInfo = ApiConnectorInstallationInfo;
 export type Schedule = ScheduleInfo;
 export type AttachmentMetadata = ApiAttachmentMetadata;
 
@@ -108,6 +112,18 @@ interface SessionStore {
 
   credentials: CredentialInfo[];
   setCredentials: (c: CredentialInfo[]) => void;
+
+  // Connectors (connectors.md). Installations are global; the catalog lists
+  // installable kinds. Per-agent enablement (which installations an agent may
+  // call) is keyed by agentId → installation ids.
+  connectorCatalog: ConnectorCatalogEntry[];
+  setConnectorCatalog: (c: ConnectorCatalogEntry[]) => void;
+  connectorInstallations: ConnectorInstallationInfo[];
+  setConnectorInstallations: (c: ConnectorInstallationInfo[]) => void;
+  upsertConnectorInstallation: (c: ConnectorInstallationInfo) => void;
+  removeConnectorInstallation: (id: string) => void;
+  agentConnectorIds: Record<string, string[]>;
+  setAgentConnectorIds: (agentId: string, ids: string[]) => void;
 
   // Per-session queue of messages waiting for the current run to finish.
   // Mirrored from server `queued` / `dequeued` events; not persisted.
@@ -230,6 +246,43 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   credentials: [],
   setCredentials: (credentials) => set({ credentials }),
+
+  connectorCatalog: [],
+  setConnectorCatalog: (connectorCatalog) => set({ connectorCatalog }),
+  connectorInstallations: [],
+  setConnectorInstallations: (connectorInstallations) =>
+    set({ connectorInstallations }),
+  upsertConnectorInstallation: (c) =>
+    set((s) => {
+      const idx = s.connectorInstallations.findIndex((i) => i.id === c.id);
+      const connectorInstallations =
+        idx >= 0
+          ? [
+              ...s.connectorInstallations.slice(0, idx),
+              c,
+              ...s.connectorInstallations.slice(idx + 1),
+            ]
+          : [...s.connectorInstallations, c];
+      return { connectorInstallations };
+    }),
+  removeConnectorInstallation: (id) =>
+    set((s) => ({
+      connectorInstallations: s.connectorInstallations.filter(
+        (i) => i.id !== id
+      ),
+      // Also drop it from every agent's enabled set so the UI stays consistent.
+      agentConnectorIds: Object.fromEntries(
+        Object.entries(s.agentConnectorIds).map(([aid, ids]) => [
+          aid,
+          ids.filter((x) => x !== id),
+        ])
+      ),
+    })),
+  agentConnectorIds: {},
+  setAgentConnectorIds: (agentId, ids) =>
+    set((s) => ({
+      agentConnectorIds: { ...s.agentConnectorIds, [agentId]: ids },
+    })),
 
   pendingQueue: {},
   setPendingQueue: (sessionId, queue) =>

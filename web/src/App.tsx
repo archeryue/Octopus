@@ -4,6 +4,7 @@ import { AccountDropdown } from "./components/AccountDropdown";
 import { AgentList } from "./components/AgentList";
 import { AgentSettings } from "./components/AgentSettings";
 import { ChatView } from "./components/ChatView";
+import { ConnectorList } from "./components/ConnectorList";
 import { CredentialList } from "./components/CredentialList";
 // SessionList is rendered inside AgentList (nested under the active agent),
 // not as its own sidebar section — sessions belong to an agent.
@@ -118,7 +119,7 @@ function AuthenticatedApp({
         aria-label="Sidebar"
       >
         {/* Wordmark — vm0 has an org switcher here; we just brand it. */}
-        <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-3 pb-2">
+        <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-1 pb-2">
           <div className="flex items-center gap-2 min-w-0">
             <OctopusLogo size={22} className="text-primary shrink-0" />
             <span className="truncate text-base font-bold text-sidebar-foreground">
@@ -143,6 +144,7 @@ function AuthenticatedApp({
         <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 pt-2">
           <AgentList onCreateAgent={openCreateAgent} />
           <ScheduleList />
+          <ConnectorList />
           <CredentialList />
         </nav>
 

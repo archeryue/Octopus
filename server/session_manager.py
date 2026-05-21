@@ -975,11 +975,12 @@ class SessionManager:
         # already-open sessions on their next turn (agent-refactor.md §5.2).
         agent = await self._load_agent(session)
         credential = await self._resolve_credential(session, agent)
+        connectors = await self._load_connectors(agent)
         current_prompt = prompt
         recovery_attempts = 0
 
         while True:
-            backend = self._make_backend(session, agent)
+            backend = self._make_backend(session, agent, connectors)
             session._backend = backend
             saw_result = False
             saw_tool_use = False
@@ -1111,8 +1112,30 @@ class SessionManager:
             return None
         return await self.db.get_agent(session.agent_id)
 
+    async def _load_connectors(
+        self, agent: dict[str, Any] | None
+    ) -> list[tuple[Any, Any]]:
+        """The agent's enabled connectors as (ConnectorBase, installation)
+        tuples — loaded fresh each turn (same live-reference contract as the
+        agent itself). Kinds no longer registered are skipped."""
+        if self.db is None or agent is None:
+            return []
+        from .connectors.base import ConnectorInstallation
+        from .connectors.registry import get_connector
+
+        rows = await self.db.get_enabled_connectors_for_agent(agent["id"])
+        out: list[tuple[Any, Any]] = []
+        for row in rows:
+            connector = get_connector(row["kind"])
+            if connector is not None:
+                out.append((connector, ConnectorInstallation.from_row(row)))
+        return out
+
     def _make_backend(
-        self, session: Session, agent: dict[str, Any] | None = None
+        self,
+        session: Session,
+        agent: dict[str, Any] | None = None,
+        connectors: list[tuple[Any, Any]] | None = None,
     ) -> BackendBase:
         """Instantiate the backend for a session, configured from its agent.
 
@@ -1144,6 +1167,7 @@ class SessionManager:
                 system_prompt=system_prompt,
                 mcp_servers=mcp_servers,
                 credential_home=self._codex_home_for(session),
+                connectors=connectors,
             )
         if session.backend in ("claude-code", None):
             return ClaudeCodeBackend(
@@ -1153,6 +1177,7 @@ class SessionManager:
                 mcp_servers=mcp_servers,
                 allowed_tools=allowed_tools,
                 disallowed_tools=disallowed_tools,
+                connectors=connectors,
             )
         raise ValueError(f"Unknown backend: {session.backend!r}")
 

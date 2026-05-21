@@ -128,6 +128,60 @@ CREATE TABLE IF NOT EXISTS credential_secrets (
         ON DELETE CASCADE
 );
 
+-- Connectors (connectors.md) — first-class third-party MCP tools the user
+-- installs once (OAuth) and an agent calls during a turn. Two-layer model
+-- mirroring backend_credentials: a metadata row + a split-out encrypted
+-- secret. Unlike credentials there is no legacy in-table secret column — the
+-- token blob lives ONLY in connector_installation_secrets.
+CREATE TABLE IF NOT EXISTS connector_installations (
+    id TEXT PRIMARY KEY,                   -- 12-char hex
+    kind TEXT NOT NULL,                    -- 'gmail' | 'github' | …
+    label TEXT NOT NULL,                   -- 'archeryue7@gmail.com'
+    auth_type TEXT NOT NULL,               -- 'oauth' | 'api_key'
+    external_account_id TEXT,              -- email / github "login:id" / workspace id
+    scopes TEXT,                           -- JSON list of granted OAuth scopes
+    enable_by_default INTEGER NOT NULL DEFAULT 0,  -- auto-enable on newly-created agents
+    needs_reconnect INTEGER NOT NULL DEFAULT 0,
+    token_expires_at TEXT,                 -- ISO8601, null = non-expiring
+    last_refresh_error_code TEXT,          -- mirrors backend_credentials
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_connector_installations_kind
+  ON connector_installations(kind);
+
+-- Dedup: one installation per (kind, external account). The install flow
+-- upserts on this — re-authorizing the same account overwrites rather than
+-- duplicating. Partial index so rows mid-install (identity not yet known)
+-- don't collide on a shared NULL.
+CREATE UNIQUE INDEX IF NOT EXISTS connector_installations_account_unique
+  ON connector_installations(kind, external_account_id)
+  WHERE external_account_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS connector_installation_secrets (
+    installation_id TEXT PRIMARY KEY,
+    secret_encrypted TEXT NOT NULL,
+    FOREIGN KEY (installation_id) REFERENCES connector_installations(id)
+        ON DELETE CASCADE
+);
+
+-- AGENT-scoped enablement (connectors.md revision 2026-05-20 + agent-refactor
+-- §5.5): a row means "this agent has this installation turned on". The
+-- effective MCP set for a turn is the agent's built-in mcp_servers ∪ its
+-- enabled connectors. Cascades on both sides — deleting an agent or an
+-- installation drops the link.
+CREATE TABLE IF NOT EXISTS agent_connectors (
+    agent_id TEXT NOT NULL,
+    installation_id TEXT NOT NULL,
+    PRIMARY KEY (agent_id, installation_id),
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (installation_id) REFERENCES connector_installations(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_connectors_agent
+  ON agent_connectors(agent_id);
+
 -- Async notification targets (future-features #5). Each row is one
 -- destination Octopus can poke when a session transitions to idle
 -- (and, later, when an AskUserQuestion is pending / a schedule fails).
@@ -872,6 +926,229 @@ class Database:
         )
         await self._conn.commit()
         return cursor.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Connectors (connectors.md). Installations mirror the credential
+    # split-secret pattern; agent_connectors is the agent-scoped enable
+    # join. The encrypted token blob lives only in
+    # connector_installation_secrets and is fetched on demand by the
+    # connector MCP subprocess via the internal /token route.
+    # ------------------------------------------------------------------
+
+    _CONNECTOR_COLS = (
+        "id, kind, label, auth_type, external_account_id, scopes, "
+        "enable_by_default, needs_reconnect, token_expires_at, "
+        "last_refresh_error_code, created_at"
+    )
+
+    @staticmethod
+    def _row_to_connector(row: tuple[Any, ...]) -> dict[str, Any]:
+        try:
+            scopes = json.loads(row[5]) if row[5] else []
+        except (json.JSONDecodeError, TypeError):
+            scopes = []
+        return {
+            "id": row[0],
+            "kind": row[1],
+            "label": row[2],
+            "auth_type": row[3],
+            "external_account_id": row[4],
+            "scopes": scopes,
+            "enable_by_default": bool(row[6]),
+            "needs_reconnect": bool(row[7]),
+            "token_expires_at": row[8],
+            "last_refresh_error_code": row[9],
+            "created_at": row[10],
+        }
+
+    async def save_connector_installation(
+        self,
+        *,
+        installation_id: str,
+        kind: str,
+        label: str,
+        auth_type: str,
+        secret_encrypted: str,
+        created_at: str,
+        external_account_id: str | None = None,
+        scopes: list[str] | None = None,
+        enable_by_default: bool = False,
+        token_expires_at: str | None = None,
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO connector_installations "
+            "(id, kind, label, auth_type, external_account_id, scopes, "
+            " enable_by_default, needs_reconnect, token_expires_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            (
+                installation_id, kind, label, auth_type, external_account_id,
+                json.dumps(scopes) if scopes is not None else None,
+                int(bool(enable_by_default)), token_expires_at, created_at,
+            ),
+        )
+        await self._conn.execute(
+            "INSERT OR REPLACE INTO connector_installation_secrets "
+            "(installation_id, secret_encrypted) VALUES (?, ?)",
+            (installation_id, secret_encrypted),
+        )
+        await self._conn.commit()
+
+    async def load_connector_installations(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
+            "ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_connector(row) for row in rows]
+
+    async def get_connector_installation(
+        self, installation_id: str
+    ) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
+            "WHERE id = ?",
+            (installation_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_connector(row) if row else None
+
+    async def get_connector_installation_by_account(
+        self, kind: str, external_account_id: str
+    ) -> dict[str, Any] | None:
+        """Look up by (kind, external account) — the dedup key the install
+        flow upserts on."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
+            "WHERE kind = ? AND external_account_id = ?",
+            (kind, external_account_id),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_connector(row) if row else None
+
+    async def get_connector_secret(self, installation_id: str) -> str | None:
+        """The encrypted token blob — only the internal /token route reads
+        this."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT secret_encrypted FROM connector_installation_secrets "
+            "WHERE installation_id = ?",
+            (installation_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def update_connector_installation(
+        self, installation_id: str, **fields: Any
+    ) -> None:
+        await self._ensure_connected()
+        meta_allowed = {
+            "label",
+            "external_account_id",
+            "scopes",
+            "enable_by_default",
+            "needs_reconnect",
+            "token_expires_at",
+            "last_refresh_error_code",
+        }
+        # Nullable columns must be writable to NULL (e.g. clearing a stale
+        # last_refresh_error_code after a good refresh). Columns omitted by
+        # the caller are left untouched.
+        nullable_meta = {
+            "external_account_id",
+            "scopes",
+            "token_expires_at",
+            "last_refresh_error_code",
+        }
+        meta_updates = {
+            k: v
+            for k, v in fields.items()
+            if k in meta_allowed and (v is not None or k in nullable_meta)
+        }
+        if "scopes" in meta_updates and meta_updates["scopes"] is not None:
+            meta_updates["scopes"] = json.dumps(meta_updates["scopes"])
+        for boolish in ("enable_by_default", "needs_reconnect"):
+            if boolish in meta_updates and meta_updates[boolish] is not None:
+                meta_updates[boolish] = int(bool(meta_updates[boolish]))
+
+        secret_value = fields.get("secret_encrypted")
+
+        if meta_updates:
+            set_clause = ", ".join(f"{k} = ?" for k in meta_updates)
+            values = list(meta_updates.values()) + [installation_id]
+            await self._conn.execute(
+                f"UPDATE connector_installations SET {set_clause} WHERE id = ?",
+                values,
+            )
+
+        if secret_value is not None:
+            await self._conn.execute(
+                "INSERT OR REPLACE INTO connector_installation_secrets "
+                "(installation_id, secret_encrypted) VALUES (?, ?)",
+                (installation_id, secret_value),
+            )
+
+        if meta_updates or secret_value is not None:
+            await self._conn.commit()
+
+    async def delete_connector_installation(self, installation_id: str) -> bool:
+        await self._ensure_connected()
+        # ON DELETE CASCADE drops the secret row and any agent_connectors links.
+        cursor = await self._conn.execute(
+            "DELETE FROM connector_installations WHERE id = ?", (installation_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
+    # --- agent-scoped enablement join -------------------------------------
+
+    async def set_agent_connector(
+        self, agent_id: str, installation_id: str, enabled: bool
+    ) -> None:
+        """Toggle one connector for one agent (presence in the join = on)."""
+        await self._ensure_connected()
+        if enabled:
+            await self._conn.execute(
+                "INSERT OR IGNORE INTO agent_connectors "
+                "(agent_id, installation_id) VALUES (?, ?)",
+                (agent_id, installation_id),
+            )
+        else:
+            await self._conn.execute(
+                "DELETE FROM agent_connectors "
+                "WHERE agent_id = ? AND installation_id = ?",
+                (agent_id, installation_id),
+            )
+        await self._conn.commit()
+
+    async def get_agent_connector_ids(self, agent_id: str) -> list[str]:
+        """Installation ids enabled for an agent."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT installation_id FROM agent_connectors WHERE agent_id = ?",
+            (agent_id,),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
+    async def get_enabled_connectors_for_agent(
+        self, agent_id: str
+    ) -> list[dict[str, Any]]:
+        """Full installation rows for an agent's enabled connectors — the
+        join SessionManager reads at spawn time to build the MCP set."""
+        await self._ensure_connected()
+        cols = ", ".join(f"ci.{c}" for c in self._CONNECTOR_COLS.split(", "))
+        cursor = await self._conn.execute(
+            f"SELECT {cols} FROM connector_installations ci "
+            "JOIN agent_connectors ac ON ac.installation_id = ci.id "
+            "WHERE ac.agent_id = ? ORDER BY ci.created_at",
+            (agent_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_connector(row) for row in rows]
 
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         await self._ensure_connected()

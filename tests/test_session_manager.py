@@ -953,7 +953,7 @@ async def test_run_backend_translates_events_end_to_end(manager):
             pass
 
     # Patch the factory so _run_backend uses our scripted backend
-    def fake_factory(s, agent=None):
+    def fake_factory(s, agent=None, connectors=None):
         return ScriptedBackend()
 
     manager._make_backend = fake_factory  # type: ignore[method-assign]
@@ -1042,7 +1042,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
         ]),
     ])
 
-    manager._make_backend = lambda s, agent=None: next(backends_iter)  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None, connectors=None: next(backends_iter)  # type: ignore[method-assign,assignment]
 
     ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
     types = [m["type"] for m in ws_msgs]
@@ -1107,7 +1107,7 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s, agent=None: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None, connectors=None: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
 
     ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
 
@@ -1161,7 +1161,7 @@ async def test_run_backend_does_not_respawn_on_clean_exit(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s, agent=None: CleanBackend()  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None, connectors=None: CleanBackend()  # type: ignore[method-assign,assignment]
 
     _ = [m async for m in manager._run_backend(session, "go")]
     assert invocations == ["go"]  # exactly one — no retry
@@ -1192,7 +1192,7 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s, agent=None: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
+    manager._make_backend = lambda s, agent=None, connectors=None: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
 
     _ = [m async for m in manager._run_backend(session, "go")]
     assert invocations == ["go"]  # no retry — not the bug we recover from

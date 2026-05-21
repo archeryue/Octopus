@@ -266,6 +266,76 @@ class UpdateCredentialRequest(BaseModel):
     secret: str | None = Field(default=None, min_length=1)
 
 
+# Connectors (connectors.md). Installations are global; enablement is
+# agent-scoped (the agent_connectors join). Secrets are never returned.
+
+
+class ConnectorCatalogEntry(BaseModel):
+    kind: str
+    display_name: str
+    category: str
+    allows_multiple: bool
+    available: bool  # both OAuth client id + secret configured in env
+
+
+class ConnectorInstallationInfo(BaseModel):
+    id: str
+    kind: str
+    label: str
+    auth_type: AuthType = AuthType.oauth
+    external_account_id: str | None = None
+    scopes: list[str] = []
+    enable_by_default: bool = False
+    needs_reconnect: bool = False
+    token_expires_at: str | None = None
+    last_refresh_error_code: str | None = None
+    created_at: str
+
+
+class ConnectorOAuthStartRequest(BaseModel):
+    kind: str
+    label: str | None = None
+
+
+class ConnectorOAuthStartResponse(BaseModel):
+    login_id: str
+    authorize_url: str
+
+
+class ConnectorOAuthStatusResponse(BaseModel):
+    status: str  # ConnectorLoginState value
+    installation_id: str | None = None
+    message: str | None = None
+
+
+class ConnectorOAuthCancelRequest(BaseModel):
+    login_id: str
+
+
+class UpdateConnectorRequest(BaseModel):
+    label: str | None = None
+    enable_by_default: bool | None = None
+
+
+class ConnectorTokenResponse(BaseModel):
+    """Internal — returned only to the connector MCP subprocess."""
+
+    access_token: str
+    expires_at_epoch: float
+
+
+class AgentConnectorsResponse(BaseModel):
+    installation_ids: list[str]
+
+
+class SetAgentConnectorsRequest(BaseModel):
+    installation_ids: list[str]
+
+
+class ToggleAgentConnectorRequest(BaseModel):
+    enabled: bool
+
+
 # Notifiers
 
 
