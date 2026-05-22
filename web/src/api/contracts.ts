@@ -98,6 +98,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/schedules/from_text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Agent Schedule From Text
+         * @description Natural-language schedule creation. Parses `text` (rigid `<interval>
+         *     <prompt>` fast-path, else a one-shot AI parse using the agent's Claude) into
+         *     a recurrence + prompt, then creates the schedule. Parse failures surface as
+         *     422 with a user-facing detail.
+         */
+        post: operations["create_agent_schedule_from_text_api_agents__agent_id__schedules_from_text_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions": {
         parameters: {
             query?: never;
@@ -549,6 +572,61 @@ export interface paths {
          * @description Abort an in-flight login (kills the subprocess). Idempotent.
          */
         post: operations["oauth_cancel_api_credentials_oauth_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/credentials/codex/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Codex Login Start */
+        post: operations["codex_login_start_api_credentials_codex_start_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/credentials/codex/{login_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Codex Login Status
+         * @description Poll an in-flight Codex login. On success, persist the credential row
+         *     (pointing at the CODEX_HOME dir) once and return it.
+         */
+        get: operations["codex_login_status_api_credentials_codex__login_id__status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/credentials/codex/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Codex Login Cancel */
+        post: operations["codex_login_cancel_api_credentials_codex_cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1048,6 +1126,33 @@ export interface components {
             /** File */
             file: string;
         };
+        /** CodexLoginCancelRequest */
+        CodexLoginCancelRequest: {
+            /** Login Id */
+            login_id: string;
+        };
+        /** CodexLoginStartRequest */
+        CodexLoginStartRequest: {
+            /** Label */
+            label: string;
+        };
+        /** CodexLoginStartResponse */
+        CodexLoginStartResponse: {
+            /** Login Id */
+            login_id: string;
+        };
+        /** CodexLoginStatusResponse */
+        CodexLoginStatusResponse: {
+            /** State */
+            state: string;
+            /** Verification Url */
+            verification_url?: string | null;
+            /** User Code */
+            user_code?: string | null;
+            /** Message */
+            message?: string | null;
+            credential?: components["schemas"]["CredentialInfo"] | null;
+        };
         /** ConnectorCatalogEntry */
         ConnectorCatalogEntry: {
             /** Kind */
@@ -1423,6 +1528,22 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /**
+         * ScheduleFromTextRequest
+         * @description Natural-language schedule: `text` is parsed (rigid fast-path, else AI)
+         *     into a recurrence + prompt. `timezone` is the user's IANA tz (browser-
+         *     detected) so "9am" means their local 9am; `now` lets tests pin the clock.
+         */
+        ScheduleFromTextRequest: {
+            /** Text */
+            text: string;
+            /** Timezone */
+            timezone?: string | null;
+            /** Now */
+            now?: string | null;
+            /** Session Id */
+            session_id?: string | null;
+        };
         /** ScheduleInfo */
         ScheduleInfo: {
             /** Id */
@@ -1434,13 +1555,24 @@ export interface components {
             /** Prompt */
             prompt: string;
             /** Interval Seconds */
-            interval_seconds: number;
+            interval_seconds?: number | null;
+            /** Cron */
+            cron?: string | null;
+            /** Timezone */
+            timezone?: string | null;
+            /**
+             * Recurrence Label
+             * @default
+             */
+            recurrence_label: string;
             /** Enabled */
             enabled: boolean;
             /** Created At */
             created_at: string;
             /** Last Run At */
             last_run_at?: string | null;
+            /** Origin Session Id */
+            origin_session_id?: string | null;
         };
         /** SessionDetail */
         SessionDetail: {
@@ -1923,6 +2055,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateScheduleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_agent_schedule_from_text_api_agents__agent_id__schedules_from_text_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleFromTextRequest"];
             };
         };
         responses: {
@@ -2892,6 +3059,101 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["OAuthCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    codex_login_start_api_credentials_codex_start_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexLoginStartRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexLoginStartResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    codex_login_status_api_credentials_codex__login_id__status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                login_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodexLoginStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    codex_login_cancel_api_credentials_codex_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CodexLoginCancelRequest"];
             };
         };
         responses: {

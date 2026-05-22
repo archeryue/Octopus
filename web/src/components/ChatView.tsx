@@ -9,10 +9,6 @@ import {
 } from "@tabler/icons-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
-  formatScheduleInterval,
-  parseScheduleCommand,
-} from "../lib/schedule";
-import {
   useSessionStore,
   type AttachmentMetadata,
   type Message,
@@ -407,10 +403,12 @@ export function ChatView({
       return;
     }
 
-    // /schedule command — create a recurring prompt for this session's agent
-    // without leaving the chat. Bare `/schedule` just opens the overview;
-    // `/schedule <interval> <prompt>` parses + posts to the agent-scoped
-    // schedules API. Confirmation / errors render as a local notice bubble.
+    // /schedule command — natural-language scheduling. Bare `/schedule` opens
+    // the overview; otherwise the whole line goes to the backend, which parses
+    // it (explicit "30m …" instantly, else a one-shot AI parse using this
+    // agent's Claude) into a recurrence + prompt and creates the schedule.
+    // The browser timezone is sent so "9am" means the user's local 9am.
+    // Confirmation / errors render as a local notice bubble.
     const lower = trimmed.toLowerCase();
     if (lower === "/schedule" || lower.startsWith("/schedule ")) {
       setInput("");
@@ -429,14 +427,9 @@ export function ChatView({
         addNotice("Couldn't schedule: this session has no owning agent.", true);
         return;
       }
-      const parsed = parseScheduleCommand(args);
-      if (!parsed.ok) {
-        addNotice(parsed.error, true);
-        return;
-      }
       try {
         const res = await fetch(
-          `${window.location.origin}/api/agents/${agentId}/schedules`,
+          `${window.location.origin}/api/agents/${agentId}/schedules/from_text`,
           {
             method: "POST",
             headers: {
@@ -444,22 +437,29 @@ export function ChatView({
               Authorization: `Bearer ${store.token}`,
             },
             body: JSON.stringify({
-              name: parsed.name,
-              prompt: parsed.prompt,
-              interval_seconds: parsed.intervalSeconds,
+              text: args,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              // Remember the originating session so each fire appends its run
+              // into this conversation instead of a throwaway one.
+              session_id: sid,
             }),
           }
         );
         if (!res.ok) {
-          addNotice(`Couldn't create schedule (HTTP ${res.status}).`, true);
+          let detail = `Couldn't create schedule (HTTP ${res.status}).`;
+          try {
+            const body = await res.json();
+            if (typeof body?.detail === "string") detail = body.detail;
+          } catch {
+            // keep the generic message
+          }
+          addNotice(detail, true);
           return;
         }
         const created = await res.json();
         store.setSchedules([...store.schedules, created]);
         addNotice(
-          `📅 Scheduled "${parsed.name}" — runs every ${formatScheduleInterval(
-            parsed.intervalSeconds
-          )}. Manage in Schedules.`
+          `📅 Scheduled "${created.name}" — ${created.recurrence_label}. Manage in Schedules.`
         );
       } catch {
         addNotice("Couldn't create schedule — network error.", true);

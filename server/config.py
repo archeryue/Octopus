@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # under this root and sends the backend a small pointer message
     # instructing the model to Read the file. See server/large_prompts.py.
     large_prompts_dir: str = "~/.octopus/large-prompts"
+    # Per-credential CODEX_HOME root (codex-backend.md §7, option B). Each
+    # in-app Codex login gets `<codex_home_dir>/<credential_id>/`, which holds
+    # the `auth.json` Codex writes + manages. `~` expanded at use time.
+    codex_home_dir: str = "~/.octopus/codex"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False

@@ -1268,9 +1268,11 @@ async def test_archive_hides_old_session_from_list_but_keeps_db_row(manager):
 
 @pytest.mark.asyncio
 async def test_archive_leaves_agent_schedules_and_nulls_bridge_sticky(manager):
-    """Schedules/bridges are agent-owned now (agent-refactor.md §5.2), so
-    archiving a session doesn't repoint them. The only bridge-aware step:
-    a sticky pointer at the archived session is nulled."""
+    """Schedule/bridge *ownership* is agent-scoped (agent-refactor.md §5.2), so
+    archiving a session doesn't change a schedule's owning agent (the schedule
+    here has no origin session, so it isn't repointed either — that path is
+    covered by test_archive_repoints_origin_session_schedules). The only
+    bridge-aware step: a sticky pointer at the archived session is nulled."""
     old = await _new(manager, name="Auto", working_dir="/tmp")
     agent_id = old.agent_id
     await manager.db.save_schedule(
@@ -1297,6 +1299,74 @@ async def test_archive_leaves_agent_schedules_and_nulls_bridge_sticky(manager):
     assert bridges[0]["session_id"] is None
     # The replacement thread is under the same agent.
     assert new.agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_archive_repoints_origin_session_schedules(manager):
+    """A schedule created from a session (origin_session_id == that session)
+    follows the live successor when the session is archived: the DB row is
+    repointed onto the new session and the live job is re-registered."""
+    old = await _new(manager, name="Origin", working_dir="/tmp")
+    agent_id = old.agent_id
+
+    rescheduled: list[dict] = []
+
+    class FakeRunner:
+        async def reschedule(self, row):
+            rescheduled.append(row)
+
+    manager.set_schedule_runner(FakeRunner())
+
+    await manager.db.save_schedule(
+        schedule_id="s-origin",
+        agent_id=agent_id,
+        name="digest",
+        prompt="summarize",
+        interval_seconds=300,
+        created_at="2026-01-01T00:00:00+00:00",
+        origin_session_id=old.id,
+    )
+    # An unrelated schedule (no origin) must be left alone.
+    await manager.db.save_schedule(
+        schedule_id="s-other",
+        agent_id=agent_id,
+        name="other",
+        prompt="ping",
+        interval_seconds=300,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    new = await manager.archive_session(old.id)
+
+    rows = {r["id"]: r for r in await manager.db.load_schedules()}
+    # The origin-anchored schedule now points at the successor session.
+    assert rows["s-origin"]["origin_session_id"] == new.id
+    # The unrelated schedule is untouched.
+    assert rows["s-other"]["origin_session_id"] is None
+    # Only the repointed schedule was re-registered, with the new origin.
+    assert [r["id"] for r in rescheduled] == ["s-origin"]
+    assert rescheduled[0]["origin_session_id"] == new.id
+
+
+@pytest.mark.asyncio
+async def test_archive_repoints_origin_schedules_without_runner(manager):
+    """The DB repoint happens even if no ScheduleRunner is wired (e.g. a
+    headless context) — only the live re-register is skipped."""
+    old = await _new(manager, name="Origin2", working_dir="/tmp")
+    await manager.db.save_schedule(
+        schedule_id="s-db-only",
+        agent_id=old.agent_id,
+        name="digest",
+        prompt="summarize",
+        interval_seconds=300,
+        created_at="2026-01-01T00:00:00+00:00",
+        origin_session_id=old.id,
+    )
+
+    new = await manager.archive_session(old.id)
+
+    rows = await manager.db.load_schedules()
+    assert rows[0]["origin_session_id"] == new.id
 
 
 @pytest.mark.asyncio

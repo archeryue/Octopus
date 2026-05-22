@@ -141,14 +141,24 @@ class WsToolDecision(BaseModel):
 # Schedules
 
 class ScheduleInfo(BaseModel):
+    # Recurrence is exactly one of `interval_seconds` (fire every N seconds) or
+    # `cron` + `timezone` (5-field crontab in that tz). `recurrence_label` is
+    # the human-readable description the UI shows.
     id: str
     agent_id: str
     name: str
     prompt: str
-    interval_seconds: int
+    interval_seconds: int | None = None
+    cron: str | None = None
+    timezone: str | None = None
+    recurrence_label: str = ""
     enabled: bool
     created_at: str
     last_run_at: str | None = None
+    # The session the `/schedule` command was created in. When set and still
+    # live, each fire appends into that conversation; otherwise a fresh
+    # schedule-origin session is materialized. Null for agent/API-created ones.
+    origin_session_id: str | None = None
 
 
 class CreateScheduleRequest(BaseModel):
@@ -160,6 +170,19 @@ class CreateScheduleRequest(BaseModel):
     # exactly one — `agent_id` directly, or `session_id` (legacy compat,
     # resolved to the session's agent for one release).
     agent_id: str | None = None
+    session_id: str | None = None
+
+
+class ScheduleFromTextRequest(BaseModel):
+    """Natural-language schedule: `text` is parsed (rigid fast-path, else AI)
+    into a recurrence + prompt. `timezone` is the user's IANA tz (browser-
+    detected) so "9am" means their local 9am; `now` lets tests pin the clock."""
+
+    text: str = Field(min_length=1)
+    timezone: str | None = None
+    now: str | None = None
+    # The session the command was typed in. Stored on the schedule so each fire
+    # appends the run into that same conversation (rather than a throwaway one).
     session_id: str | None = None
 
 

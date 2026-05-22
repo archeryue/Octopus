@@ -35,16 +35,9 @@ _STREAM_END = object()
 _STDOUT_LINE_LIMIT_BYTES = 4 * 1024 * 1024
 
 
-def _which_with_fallback(binary: str) -> str | None:
-    """shutil.which, then retry against PATH + common per-user install dirs.
-
-    systemd's default PATH excludes ~/.local/bin and node/npm global bins,
-    so a CLI installed for the invoking user is invisible to the service
-    unless we add those dirs ourselves.
-    """
-    found = shutil.which(binary)
-    if found is not None:
-        return found
+def _fallback_path_dirs() -> list[str]:
+    """Per-user install dirs a systemd-style service PATH typically strips:
+    ~/.local/bin, npm-global, Homebrew, and every nvm node version's bin."""
     home = os.path.expanduser("~")
     extras = [
         os.path.join(home, ".local/bin"),
@@ -56,9 +49,36 @@ def _which_with_fallback(binary: str) -> str | None:
     # ~/.nvm/versions/node/<ver>/bin, which a non-interactive service PATH
     # never includes. Glob every installed version so the CLI resolves.
     extras += sorted(glob.glob(os.path.join(home, ".nvm/versions/node/*/bin")))
-    extra_path = os.pathsep.join(extras)
+    return extras
+
+
+def _which_with_fallback(binary: str) -> str | None:
+    """shutil.which, then retry against PATH + common per-user install dirs.
+
+    systemd's default PATH excludes ~/.local/bin and node/npm global bins,
+    so a CLI installed for the invoking user is invisible to the service
+    unless we add those dirs ourselves.
+    """
+    found = shutil.which(binary)
+    if found is not None:
+        return found
+    extra_path = os.pathsep.join(_fallback_path_dirs())
     full_path = os.pathsep.join(p for p in (os.environ.get("PATH", ""), extra_path) if p)
     return shutil.which(binary, path=full_path)
+
+
+def augmented_path(base: str | None = None, extra_dir: str | None = None) -> str:
+    """Build a PATH that includes the per-user install dirs (and optionally the
+    resolved CLI's own dir) ahead of the base PATH.
+
+    Critical for node-based CLIs: `claude`/`codex` are `#!/usr/bin/env node`
+    scripts, so the *child* process must find `node` at exec time. The service
+    PATH usually omits the nvm bin where node lives → the shebang fails with
+    exit 127. We prepend those dirs (node sits alongside the resolved CLI)."""
+    if base is None:
+        base = os.environ.get("PATH", "")
+    dirs = ([extra_dir] if extra_dir else []) + _fallback_path_dirs()
+    return os.pathsep.join([d for d in dirs if d] + ([base] if base else []))
 
 
 class SubprocessJsonlBackend(BackendBase):
@@ -139,6 +159,14 @@ class SubprocessJsonlBackend(BackendBase):
                     f"{argv[0]} not found on PATH — install the CLI first"
                 )
             argv = [resolved, *argv[1:]]
+
+        # Ensure the child can find `node` (and other helpers) at exec time —
+        # the resolved CLI is a `#!/usr/bin/env node` script and the service
+        # PATH may omit the nvm bin where node lives (else: exit 127).
+        env = kwargs.get("env") or os.environ.copy()
+        cli_dir = os.path.dirname(argv[0]) if argv and os.path.isabs(argv[0]) else None
+        env["PATH"] = augmented_path(env.get("PATH"), cli_dir)
+        kwargs["env"] = env
 
         logger.info("Spawning backend: %s (cwd=%s)", argv, kwargs.get("cwd"))
         self._process = await asyncio.create_subprocess_exec(

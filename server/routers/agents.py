@@ -10,6 +10,7 @@ from ..models import (
     AgentUpdate,
     CreateScheduleRequest,
     CreateSessionRequest,
+    ScheduleFromTextRequest,
     ScheduleInfo,
     SessionInfo,
 )
@@ -141,10 +142,10 @@ async def create_agent_session(
 async def list_agent_schedules(agent_id: str, _: str = Depends(verify_token)):
     if await _get_manager().get_agent(agent_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-    from .schedules import _get_db
+    from .schedules import _get_db, to_schedule_info
 
     rows = await _get_db().load_schedules()
-    return [ScheduleInfo(**r) for r in rows if r["agent_id"] == agent_id]
+    return [to_schedule_info(r) for r in rows if r["agent_id"] == agent_id]
 
 
 @router.post(
@@ -157,9 +158,58 @@ async def create_agent_schedule(
 ):
     if await _get_manager().get_agent(agent_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-    from .schedules import create_schedule_for_agent
+    from .schedules import create_schedule_for_agent, to_schedule_info
 
     row = await create_schedule_for_agent(
-        agent_id, req.name, req.prompt, req.interval_seconds
+        agent_id,
+        req.name,
+        req.prompt,
+        interval_seconds=req.interval_seconds,
+        origin_session_id=req.session_id,
     )
-    return ScheduleInfo(**row)
+    return to_schedule_info(row)
+
+
+@router.post(
+    "/{agent_id}/schedules/from_text",
+    response_model=ScheduleInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_agent_schedule_from_text(
+    agent_id: str, req: ScheduleFromTextRequest, _: str = Depends(verify_token)
+):
+    """Natural-language schedule creation. Parses `text` (rigid `<interval>
+    <prompt>` fast-path, else a one-shot AI parse using the agent's Claude) into
+    a recurrence + prompt, then creates the schedule. Parse failures surface as
+    422 with a user-facing detail."""
+    agent = await _get_manager().get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+    from .schedules import create_schedule_for_agent, to_schedule_info
+    from ..schedule_ai import ScheduleParseError, parse_schedule_text
+
+    credential = await session_manager.resolve_credential_by_id(
+        agent.get("credential_id"), context=f"schedule-parse agent {agent_id}"
+    )
+    try:
+        parsed = await parse_schedule_text(
+            req.text,
+            timezone=req.timezone,
+            now_iso=req.now,
+            model=agent.get("model"),
+            credential=credential,
+        )
+    except ScheduleParseError as e:
+        raise HTTPException(422, str(e))
+
+    row = await create_schedule_for_agent(
+        agent_id,
+        parsed.name,
+        parsed.prompt,
+        interval_seconds=parsed.interval_seconds,
+        cron=parsed.cron,
+        tz=parsed.timezone,
+        recurrence_label=parsed.recurrence_label,
+        origin_session_id=req.session_id,
+    )
+    return to_schedule_info(row)

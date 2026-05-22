@@ -512,11 +512,13 @@ test.describe("Credentials Panel", () => {
     });
 
     await login(page);
-    // Click the "+" button in the Harness section header
+    // Click the "+" button in the Harness section header, then pick Claude
+    // Code in the backend chooser.
     await page
       .locator(".credential-section .btn-credential-add")
       .first()
       .click();
+    await page.locator(".btn-choose-claude").click();
 
     // The sign-in dialog opens
     const dialog = page.locator('[role="dialog"]', {
@@ -537,6 +539,80 @@ test.describe("Credentials Panel", () => {
     // Cancel closes the dialog
     await dialog.locator("button", { hasText: "Cancel" }).click();
     await expect(dialog).toHaveCount(0);
+  });
+
+  test("sign-in with Codex shows the device code and completes", async ({
+    page,
+  }) => {
+    // Mock the codex device-auth endpoints so the test is deterministic and
+    // needs neither the codex CLI nor a ChatGPT account. The backend logic is
+    // covered by tests/test_codex_login.py against a fake CLI.
+    // start is non-blocking → returns just a login_id; the URL+code and then
+    // success arrive via status polls.
+    await page.route("**/api/credentials/codex/start", (route) => {
+      route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify({ login_id: "codex-login" }),
+      });
+    });
+    let polls = 0;
+    await page.route("**/api/credentials/codex/codex-login/status", (route) => {
+      polls += 1;
+      const device = {
+        verification_url: "https://auth.openai.com/codex/device",
+        user_code: "TEST-CODE9",
+      };
+      const body =
+        polls === 1
+          ? { state: "pending", ...device }
+          : {
+              state: "success",
+              ...device,
+              credential: {
+                id: "codex-cred-1",
+                backend: "codex",
+                label: "ChatGPT E2E",
+                auth_type: "oauth",
+                created_at: "2026-05-22T00:00:00Z",
+              },
+            };
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+
+    await login(page);
+    await page
+      .locator(".credential-section .btn-credential-add")
+      .first()
+      .click();
+
+    // Pick Codex in the chooser, name it, continue.
+    await page.locator(".btn-choose-codex").click();
+    const dialog = page.locator('[role="dialog"]', {
+      hasText: "Sign in with Codex",
+    });
+    await expect(dialog).toBeVisible();
+    await dialog.locator("#codex-label").fill("ChatGPT E2E");
+    await dialog.locator(".btn-codex-start").click();
+
+    // The device URL + one-time code render.
+    await expect(dialog.locator(".codex-device-url")).toContainText(
+      "auth.openai.com/codex/device"
+    );
+    await expect(dialog.locator(".codex-user-code")).toContainText("TEST-CODE9");
+
+    // Polling reports success → dialog closes and the credential appears,
+    // badged as Codex.
+    await expect(dialog).toHaveCount(0, { timeout: 6000 });
+    const item = page.locator(".credential-item", { hasText: "ChatGPT E2E" });
+    await expect(item).toBeVisible();
+    await expect(item.locator(".credential-badge.backend-codex")).toHaveText(
+      "Codex"
+    );
   });
 
   test("create-session form shows credential selector when credentials exist", async ({

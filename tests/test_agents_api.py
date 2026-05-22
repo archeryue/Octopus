@@ -233,3 +233,89 @@ async def test_agent_scoped_schedule_crud(client):
 
     listed = await client.get(f"/api/agents/{agent['id']}/schedules", headers=HEADERS)
     assert [s["id"] for s in listed.json()] == [sched["id"]]
+
+
+# --- natural-language /schedule (from_text) ---
+
+
+@pytest.mark.asyncio
+async def test_schedule_from_text_rigid(client):
+    """Explicit "<interval> <prompt>" needs no AI — the rigid fast path runs."""
+    agent = await _create_agent(client, name="Rigid Sched")
+    resp = await client.post(
+        f"/api/agents/{agent['id']}/schedules/from_text",
+        json={"text": "30m check the build"},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["interval_seconds"] == 1800
+    assert data["cron"] is None
+    assert data["prompt"] == "check the build"
+    assert data["recurrence_label"] == "Every 30m"
+
+
+@pytest.mark.asyncio
+async def test_schedule_from_text_ai_cron(client, monkeypatch):
+    """Natural language → AI parse → cron schedule (AI call mocked)."""
+    from server import schedule_ai
+
+    async def fake_oneshot(prompt, **kwargs):
+        assert "America/Los_Angeles" in prompt
+        return (
+            '{"name":"Gmail summary","prompt":"summarize my unread email",'
+            '"recurrence":{"kind":"cron","cron":"0 9 * * *"},'
+            '"recurrence_label":"Every day at 9:00 AM"}'
+        )
+
+    monkeypatch.setattr(schedule_ai, "run_claude_oneshot", fake_oneshot)
+
+    agent = await _create_agent(client, name="NL Sched")
+    resp = await client.post(
+        f"/api/agents/{agent['id']}/schedules/from_text",
+        json={
+            "text": "summarize my unread email every morning at 9am",
+            "timezone": "America/Los_Angeles",
+            "session_id": "chat-session-1",
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["cron"] == "0 9 * * *"
+    assert data["timezone"] == "America/Los_Angeles"
+    assert data["interval_seconds"] is None
+    assert data["recurrence_label"] == "Every day at 9:00 AM"
+    assert data["prompt"] == "summarize my unread email"
+    # The session the command was issued from is remembered so each fire
+    # appends the summary into that same conversation.
+    assert data["origin_session_id"] == "chat-session-1"
+
+
+@pytest.mark.asyncio
+async def test_schedule_from_text_parse_error_is_422(client, monkeypatch):
+    from server import schedule_ai
+
+    async def fake_oneshot(prompt, **kwargs):
+        return "I'm not sure what you mean."
+
+    monkeypatch.setattr(schedule_ai, "run_claude_oneshot", fake_oneshot)
+
+    agent = await _create_agent(client, name="Bad Sched")
+    resp = await client.post(
+        f"/api/agents/{agent['id']}/schedules/from_text",
+        json={"text": "do something clever at some point"},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 422
+    assert isinstance(resp.json()["detail"], str)
+
+
+@pytest.mark.asyncio
+async def test_schedule_from_text_unknown_agent(client):
+    resp = await client.post(
+        "/api/agents/nope/schedules/from_text",
+        json={"text": "30m check the build"},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 404

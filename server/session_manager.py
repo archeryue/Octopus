@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -134,9 +135,16 @@ class SessionManager:
         # session manager doesn't take a hard dependency on the
         # notifiers package's import surface.
         self._notifier_manager: Any = None
+        # Likewise wired in by main.py — the ScheduleRunner. Used to
+        # re-register jobs when archiving a session repoints the schedules
+        # anchored to it. Opaque: we only call `.reschedule(row)`.
+        self._schedule_runner: Any = None
 
     def set_notifier_manager(self, mgr: Any) -> None:
         self._notifier_manager = mgr
+
+    def set_schedule_runner(self, runner: Any) -> None:
+        self._schedule_runner = runner
 
     async def initialize(self, db: Database) -> None:
         self.db = db
@@ -326,10 +334,18 @@ class SessionManager:
             backend=old.backend,
         )
 
-        # Schedules/bridges point at the agent, not the session — nothing to
-        # repoint. Just clear any sticky bridge pointer aimed at the old
-        # session so the next inbound message opens a fresh thread.
+        # Schedules/bridges are agent-owned, so ownership needs no repoint.
+        # But a schedule created from this session (origin_session_id == old.id)
+        # should follow the live successor thread, otherwise its runs fall back
+        # to throwaway sessions. Move them onto `new`, then re-register the live
+        # jobs so the next fire targets the successor, not the archived session.
+        # Also clear any sticky bridge pointer aimed at the old session so the
+        # next inbound message opens a fresh thread.
         if self.db:
+            repointed = await self.db.repoint_schedules_origin(old.id, new.id)
+            if self._schedule_runner is not None:
+                for row in repointed:
+                    await self._schedule_runner.reschedule(row)
             await self.db.clear_bridge_sticky_for_session(old.id)
 
         await self._broadcast(
@@ -1166,7 +1182,7 @@ class SessionManager:
                 model=model,
                 system_prompt=system_prompt,
                 mcp_servers=mcp_servers,
-                credential_home=self._codex_home_for(session),
+                credential_home=self._codex_home_for(session, agent),
                 connectors=connectors,
             )
         if session.backend in ("claude-code", None):
@@ -1181,12 +1197,26 @@ class SessionManager:
             )
         raise ValueError(f"Unknown backend: {session.backend!r}")
 
-    def _codex_home_for(self, session: Session) -> str | None:
+    def _codex_home_for(
+        self, session: Session, agent: dict[str, Any] | None = None
+    ) -> str | None:
         """Resolve the CODEX_HOME directory for a Codex session's effective
         credential (codex-backend.md §7). A Codex credential is a
-        directory-backed login, not a secret string. Returns None to inherit
-        the host's default `~/.codex` (option A — host `codex login`)."""
-        return None
+        directory-backed login, not a secret string: its dir is deterministic
+        (`<codex_home_dir>/<credential_id>/`), so we resolve it from the
+        effective credential id (session override, else agent default) with no
+        DB call. Returns None — inheriting the host's default `~/.codex`
+        (option A) — when no credential is attached or its dir isn't a
+        completed login (no `auth.json`)."""
+        from .codex_login import codex_home_for
+
+        cred_id = session.credential_id or (
+            agent.get("credential_id") if agent else None
+        )
+        if not cred_id:
+            return None
+        home = codex_home_for(cred_id)
+        return home if os.path.exists(os.path.join(home, "auth.json")) else None
 
     # Refresh the access_token if it expires within this many seconds. A
     # 5-minute pad covers a slow turn that crosses the boundary without
@@ -1213,18 +1243,28 @@ class SessionManager:
         decryption fails, or the credential was marked needs_reconnect by a
         previous failed refresh.
         """
-        if self.db is None:
-            return None
         cred_id = session.credential_id or (
             agent.get("credential_id") if agent else None
         )
-        if not cred_id:
+        return await self.resolve_credential_by_id(
+            cred_id, context=f"session {session.id}"
+        )
+
+    async def resolve_credential_by_id(
+        self, cred_id: str | None, *, context: str = ""
+    ) -> BackendCredential | None:
+        """Resolve a credential id to a decrypted BackendCredential (refreshing
+        an OAuth bundle if near expiry). Returns None when there's no id, the
+        row is missing, it's marked needs_reconnect, or decryption fails — the
+        caller then runs with whatever auth the CLI finds on its own. `context`
+        is a label for log lines (e.g. the owning session/agent)."""
+        if self.db is None or not cred_id:
             return None
         row = await self.db.get_credential(cred_id)
         if row is None:
             logger.warning(
-                "Session %s references missing credential %s; running without auth override",
-                session.id,
+                "%s references missing credential %s; running without auth override",
+                context or "caller",
                 cred_id,
             )
             return None

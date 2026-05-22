@@ -132,9 +132,18 @@ async def update_credential(
 @router.delete("/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_credential(credential_id: str, _: str = Depends(verify_token)):
     db = _require_db()
+    row = await db.get_credential(credential_id)
     deleted = await db.delete_credential(credential_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="credential not found")
+    # A Codex credential is a directory-backed login — remove its CODEX_HOME
+    # (auth.json + token) so deletion actually revokes local access.
+    if row is not None and row.get("backend") == BackendKind.codex.value:
+        import shutil
+
+        from ..codex_login import codex_home_for
+
+        shutil.rmtree(codex_home_for(credential_id), ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +292,104 @@ async def oauth_complete(
 async def oauth_cancel(req: OAuthCancelRequest, _: str = Depends(verify_token)):
     """Abort an in-flight login (kills the subprocess). Idempotent."""
     await oauth_login_manager.cancel(req.login_id)
+
+
+# ---------------------------------------------------------------------------
+# Codex (ChatGPT) in-app device-auth login
+# ---------------------------------------------------------------------------
+#
+# Unlike Claude (HTTP + pasted code), Codex auth is directory-backed: we run
+# `codex login --device-auth` against a per-credential CODEX_HOME and surface
+# the URL + one-time code. Codex polls for authorization and writes auth.json
+# into that dir on success; the credential row points at the dir, no secret.
+
+
+class CodexLoginStartRequest(BaseModel):
+    label: str = Field(min_length=1)
+
+
+class CodexLoginStartResponse(BaseModel):
+    # Returns immediately after spawning — the URL + code aren't ready yet
+    # (codex fetches them from auth.openai.com); the UI polls `status` for them.
+    login_id: str
+
+
+class CodexLoginStatusResponse(BaseModel):
+    state: str  # CodexLoginState value
+    verification_url: str | None = None
+    user_code: str | None = None
+    message: str | None = None
+    credential: CredentialInfo | None = None
+
+
+class CodexLoginCancelRequest(BaseModel):
+    login_id: str
+
+
+@router.post(
+    "/codex/start",
+    response_model=CodexLoginStartResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def codex_login_start(
+    req: CodexLoginStartRequest, _: str = Depends(verify_token)
+):
+    from ..codex_login import codex_login_manager
+
+    try:
+        session = await codex_login_manager.start(req.label.strip())
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+    return CodexLoginStartResponse(login_id=session.id)
+
+
+@router.get("/codex/{login_id}/status", response_model=CodexLoginStatusResponse)
+async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
+    """Poll an in-flight Codex login. On success, persist the credential row
+    (pointing at the CODEX_HOME dir) once and return it."""
+    from ..codex_login import CodexLoginState, codex_login_manager
+
+    session = codex_login_manager.get(login_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="unknown login_id")
+
+    credential: CredentialInfo | None = None
+    if session.state == CodexLoginState.success and not session.persisted:
+        db = _require_db()
+        created_at = datetime.now(timezone.utc).isoformat()
+        # No real secret for Codex — the credential *is* the CODEX_HOME dir.
+        # Store the dir path (encrypted, harmless) so the row is self-describing;
+        # session_manager resolves the dir deterministically from credential_id.
+        await db.save_credential(
+            credential_id=session.credential_id,
+            backend=BackendKind.codex.value,
+            label=session.label,
+            auth_type=AuthType.oauth.value,
+            secret_encrypted=encrypt(session.codex_home, settings.auth_token),
+            created_at=created_at,
+        )
+        session.persisted = True
+        credential = CredentialInfo(
+            id=session.credential_id,
+            backend=BackendKind.codex,
+            label=session.label,
+            auth_type=AuthType.oauth,
+            created_at=created_at,
+        )
+
+    return CodexLoginStatusResponse(
+        state=session.state.value,
+        verification_url=session.verification_url,
+        user_code=session.user_code,
+        message=session.message,
+        credential=credential,
+    )
+
+
+@router.post("/codex/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def codex_login_cancel(
+    req: CodexLoginCancelRequest, _: str = Depends(verify_token)
+):
+    from ..codex_login import codex_login_manager
+
+    await codex_login_manager.cancel(req.login_id)

@@ -77,12 +77,31 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 -- A schedule belongs to the Agent ("every morning, summarize my inbox"),
 -- not to a throwaway thread. Each fire materializes a fresh session under
 -- the agent (scheduler.py). No persistent session_id here anymore.
+--
+-- Recurrence is exactly one of:
+--   * interval_seconds  — fire every N seconds (APScheduler interval trigger)
+--   * cron + timezone   — fire on a 5-field crontab in that tz (cron trigger)
+-- recurrence_label is the human-readable description shown in the UI (the AI
+-- parser supplies it for natural-language schedules; the interval fast-path
+-- derives it). Nullable for legacy rows — the UI falls back to formatting
+-- interval_seconds.
+-- origin_session_id: when a schedule is created from the `/schedule` chat
+-- command it remembers the session it was typed in, so each fire appends the
+-- run into that same conversation (the result lands where the user is looking)
+-- instead of a throwaway session. Nullable — agent/API-created schedules have
+-- none and fall back to a fresh schedule-origin session. No FK: liveness is
+-- decided at fire time by session_manager.get_session, so a stale pointer (the
+-- origin session was deleted/archived) harmlessly degrades to the fallback.
 CREATE TABLE IF NOT EXISTS schedules (
     id TEXT PRIMARY KEY,
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+    origin_session_id TEXT,
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
-    interval_seconds INTEGER NOT NULL,
+    interval_seconds INTEGER,
+    cron TEXT,
+    timezone TEXT,
+    recurrence_label TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     last_run_at TEXT
@@ -339,6 +358,52 @@ class Database:
             pass
 
         await self._migrate_agents()
+        await self._migrate_schedule_recurrence()
+
+    async def _migrate_schedule_recurrence(self) -> None:
+        """Schedules gained cron/timezone/recurrence_label and `interval_seconds`
+        became nullable (natural-language + time-of-day scheduling), then later
+        an `origin_session_id` (a `/schedule` created in a chat remembers its
+        session so fires append into that conversation). Rebuild the table once
+        for the recurrence shape — guarded on the `cron` column being absent —
+        then additively ensure the origin column. Fresh DBs (already the full
+        shape from _SCHEMA) and re-boots no-op. Runs after `_migrate_agents`, so
+        the table already has `agent_id` and no `session_id`. Existing rows are
+        interval schedules: cron/timezone/recurrence_label stay NULL and the UI
+        formats interval_seconds."""
+        if not await self._has_column(
+            "schedules", "cron"
+        ) and await self._has_column("schedules", "interval_seconds"):
+            await self._conn.executescript(
+                """
+                CREATE TABLE schedules__rec (
+                    id TEXT PRIMARY KEY,
+                    agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    interval_seconds INTEGER,
+                    cron TEXT,
+                    timezone TEXT,
+                    recurrence_label TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    last_run_at TEXT
+                );
+                INSERT INTO schedules__rec
+                    (id, agent_id, name, prompt, interval_seconds, enabled,
+                     created_at, last_run_at)
+                    SELECT id, agent_id, name, prompt, interval_seconds, enabled,
+                           created_at, last_run_at FROM schedules;
+                DROP TABLE schedules;
+                ALTER TABLE schedules__rec RENAME TO schedules;
+                """
+            )
+        # origin_session_id is additive on top of the recurrence shape. Guarded
+        # so re-running (and fresh DBs that already have it from _SCHEMA) no-op.
+        if not await self._has_column("schedules", "origin_session_id"):
+            await self._conn.execute(
+                "ALTER TABLE schedules ADD COLUMN origin_session_id TEXT"
+            )
 
     async def _column_info(self, table: str) -> list[tuple[Any, ...]]:
         cursor = await self._conn.execute(f"PRAGMA table_info({table})")
@@ -756,22 +821,44 @@ class Database:
         agent_id: str,
         name: str,
         prompt: str,
-        interval_seconds: int,
         created_at: str,
+        interval_seconds: int | None = None,
+        cron: str | None = None,
+        timezone: str | None = None,
+        recurrence_label: str | None = None,
         enabled: bool = True,
+        origin_session_id: str | None = None,
     ) -> None:
+        """Persist a schedule. Exactly one of `interval_seconds` or `cron`
+        (with `timezone`) defines the recurrence; the caller validates that.
+        `origin_session_id`, when set, is the session the `/schedule` command was
+        typed in — fires append into it instead of a throwaway session."""
         await self._ensure_connected()
         await self._conn.execute(
-            "INSERT INTO schedules (id, agent_id, name, prompt, interval_seconds, enabled, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (schedule_id, agent_id, name, prompt, interval_seconds, int(enabled), created_at),
+            "INSERT INTO schedules (id, agent_id, origin_session_id, name, prompt, "
+            "interval_seconds, cron, timezone, recurrence_label, enabled, "
+            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                schedule_id,
+                agent_id,
+                origin_session_id,
+                name,
+                prompt,
+                interval_seconds,
+                cron,
+                timezone,
+                recurrence_label,
+                int(enabled),
+                created_at,
+            ),
         )
         await self._conn.commit()
 
     async def load_schedules(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT id, agent_id, name, prompt, interval_seconds, enabled, created_at, last_run_at "
+            "SELECT id, agent_id, name, prompt, interval_seconds, cron, timezone, "
+            "recurrence_label, enabled, created_at, last_run_at, origin_session_id "
             "FROM schedules"
         )
         rows = await cursor.fetchall()
@@ -782,9 +869,13 @@ class Database:
                 "name": row[2],
                 "prompt": row[3],
                 "interval_seconds": row[4],
-                "enabled": bool(row[5]),
-                "created_at": row[6],
-                "last_run_at": row[7],
+                "cron": row[5],
+                "timezone": row[6],
+                "recurrence_label": row[7],
+                "enabled": bool(row[8]),
+                "created_at": row[9],
+                "last_run_at": row[10],
+                "origin_session_id": row[11],
             }
             for row in rows
         ]
@@ -794,9 +885,41 @@ class Database:
         await self._conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
         await self._conn.commit()
 
+    async def repoint_schedules_origin(
+        self, old_session_id: str, new_session_id: str
+    ) -> list[dict[str, Any]]:
+        """Move every schedule anchored to `old_session_id` onto
+        `new_session_id` (used when a session is archived and replaced — its
+        schedules should keep appending into the live successor thread). Returns
+        the affected schedule rows (post-update) so the caller can re-register
+        their jobs. No-op returning [] when nothing points at the old session."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id FROM schedules WHERE origin_session_id = ?",
+            (old_session_id,),
+        )
+        affected = {row[0] for row in await cursor.fetchall()}
+        if not affected:
+            return []
+        await self._conn.execute(
+            "UPDATE schedules SET origin_session_id = ? WHERE origin_session_id = ?",
+            (new_session_id, old_session_id),
+        )
+        await self._conn.commit()
+        return [r for r in await self.load_schedules() if r["id"] in affected]
+
     async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
         await self._ensure_connected()
-        allowed = {"name", "prompt", "interval_seconds", "enabled", "last_run_at"}
+        allowed = {
+            "name",
+            "prompt",
+            "interval_seconds",
+            "cron",
+            "timezone",
+            "recurrence_label",
+            "enabled",
+            "last_run_at",
+        }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return

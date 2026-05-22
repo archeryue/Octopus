@@ -71,6 +71,8 @@ async def test_create_schedule(client):
     # session's owning agent (agent-refactor.md §5.4).
     sess = (await client.get(f"/api/sessions/{session_id}", headers=HEADERS)).json()
     assert data["agent_id"] == sess["agent_id"]
+    # The originating session is remembered so fires append into it.
+    assert data["origin_session_id"] == session_id
 
 
 @pytest.mark.asyncio

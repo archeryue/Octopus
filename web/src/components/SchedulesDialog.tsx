@@ -5,7 +5,6 @@ import {
   IconClock,
   IconX,
 } from "@tabler/icons-react";
-import { formatScheduleInterval } from "../lib/schedule";
 import { useSessionStore, type Agent, type Schedule } from "../stores/sessionStore";
 import {
   Dialog,
@@ -148,9 +147,9 @@ function ScheduleRow({
           <span className="schedule-name truncate text-sm font-medium text-foreground">
             {sched.name}
           </span>
-          <span className="schedule-interval inline-flex items-center gap-1 whitespace-nowrap font-mono text-xs text-muted-foreground">
+          <span className="schedule-interval inline-flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground">
             <IconClock size={11} />
-            {formatScheduleInterval(sched.interval_seconds)}
+            {sched.recurrence_label || "—"}
           </span>
         </div>
         <div

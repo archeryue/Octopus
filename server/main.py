@@ -62,6 +62,7 @@ async def lifespan(app: FastAPI):
     schedule_runner = ScheduleRunner(session_manager, db)
     await schedule_runner.initialize()
     app.state.schedule_runner = schedule_runner
+    session_manager.set_schedule_runner(schedule_runner)
     schedules._db = db
     schedules._runner = schedule_runner
     agents.set_manager(AgentManager(db))
@@ -102,6 +103,8 @@ async def lifespan(app: FastAPI):
     # Clean up any in-flight OAuth login subprocesses before we tear down DB.
     from .oauth_login import oauth_login_manager
     await oauth_login_manager.shutdown()
+    from .codex_login import codex_login_manager
+    await codex_login_manager.shutdown()
 
     await bg_task_manager.shutdown()
     await schedule_runner.shutdown()
