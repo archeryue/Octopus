@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS agents (
     system_prompt TEXT NOT NULL DEFAULT '',
     model TEXT,                             -- e.g. "claude-opus-4-7"; null = backend default
     credential_id TEXT REFERENCES backend_credentials(id) ON DELETE SET NULL,
+    backend TEXT NOT NULL DEFAULT 'claude-code',  -- default harness for new sessions
     mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","viewer"]',
                                             -- JSON array of built-in Octopus MCP server ids.
     tool_allow TEXT NOT NULL DEFAULT '',    -- newline-separated tool/MCP names; empty = allow all
@@ -359,6 +360,16 @@ class Database:
 
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
+
+        # agents.backend — default harness for an agent's new sessions. DEFAULT
+        # backfills existing agents to claude-code → no behavior change.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE agents ADD COLUMN backend TEXT NOT NULL "
+                "DEFAULT 'claude-code'"
+            )
+        except Exception:
+            pass
 
     async def _migrate_schedule_recurrence(self) -> None:
         """Schedules gained cron/timezone/recurrence_label and `interval_seconds`
@@ -1474,7 +1485,7 @@ class Database:
     _AGENT_COLS = (
         "id, name, description, avatar, system_prompt, model, credential_id, "
         "mcp_servers, tool_allow, tool_deny, is_system, archived, "
-        "created_at, updated_at"
+        "created_at, updated_at, backend"
     )
 
     @staticmethod
@@ -1498,10 +1509,11 @@ class Database:
             "archived": bool(row[11]),
             "created_at": row[12],
             "updated_at": row[13],
+            "backend": row[14] or "claude-code",
         }
         # Optional active-session count appended by load_agents / get_agent.
-        if len(row) > 14:
-            agent["active_session_count"] = row[14]
+        if len(row) > 15:
+            agent["active_session_count"] = row[15]
         return agent
 
     # Subquery counting live (non-archived) sessions for an agent — shared
@@ -1523,6 +1535,7 @@ class Database:
         system_prompt: str = "",
         model: str | None = None,
         credential_id: str | None = None,
+        backend: str = "claude-code",
         mcp_servers: list[str] | None = None,
         tool_allow: str = "",
         tool_deny: str = "",
@@ -1535,13 +1548,14 @@ class Database:
         await self._conn.execute(
             "INSERT INTO agents "
             "(id, name, description, avatar, system_prompt, model, "
-            " credential_id, mcp_servers, tool_allow, tool_deny, is_system, "
-            " archived, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            " credential_id, backend, mcp_servers, tool_allow, tool_deny, "
+            " is_system, archived, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
             (
                 agent_id, name, description, avatar, system_prompt, model,
-                credential_id, servers_json, tool_allow, tool_deny,
-                int(bool(is_system)), created_at, updated_at,
+                credential_id, backend or "claude-code", servers_json,
+                tool_allow, tool_deny, int(bool(is_system)),
+                created_at, updated_at,
             ),
         )
         await self._conn.commit()
@@ -1603,7 +1617,7 @@ class Database:
         await self._ensure_connected()
         allowed = {
             "name", "description", "avatar", "system_prompt", "model",
-            "credential_id", "mcp_servers", "tool_allow", "tool_deny",
+            "credential_id", "backend", "mcp_servers", "tool_allow", "tool_deny",
             "archived",
         }
         # credential_id / model / avatar are nullable and may be cleared.

@@ -6,7 +6,12 @@ const SESSIONS_API = "http://localhost:8765/api/sessions";
 
 // Agent names this spec creates — cleaned up in afterAll so reruns against
 // the same in-memory server don't accumulate (and unique-name create works).
-const OWNED_AGENTS = new Set(["E2E Researcher", "E2E Persisted", "E2E Rail"]);
+const OWNED_AGENTS = new Set([
+  "E2E Researcher",
+  "E2E Persisted",
+  "E2E Rail",
+  "E2E Codex Agent",
+]);
 const OWNED_SESSIONS = new Set(["Agent Thread"]);
 
 async function login(page: Page) {
@@ -146,6 +151,34 @@ test.describe("Agents", () => {
 
     await page.locator(".agent-rail-new").click();
     await expect(page.locator("#agent-name")).toHaveValue("");
+  });
+
+  test("sets an agent's default harness to Codex and it persists", async ({
+    page,
+  }) => {
+    // The codex CLI is on PATH in the test env, so /api/backends reports it
+    // and the Harness selector appears.
+    await page.locator(".btn-agent-add").click();
+    await page.locator("#agent-name").fill("E2E Codex Agent");
+    await expect(page.locator(".agent-backend-select")).toBeVisible();
+    await page.locator(".btn-agent-backend-codex").click();
+    await expect(page.locator(".btn-agent-backend-codex")).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+    await page.locator(".btn-agent-save").click();
+
+    const row = page.locator(".agent-item", { hasText: "E2E Codex Agent" });
+    await expect(row).toBeVisible();
+    await row.click();
+
+    // Reopen settings — the Codex default persisted.
+    await openAgentSettings(page);
+    await expect(page.locator("#agent-name")).toHaveValue("E2E Codex Agent");
+    await expect(page.locator(".btn-agent-backend-codex")).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
   });
 
   test("the Default Agent cannot be archived from settings", async ({ page }) => {

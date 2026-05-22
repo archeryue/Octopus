@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconCheck, IconCopy, IconX } from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
@@ -35,9 +35,23 @@ export function SessionList({
   const setPendingQuestions = useSessionStore((s) => s.setPendingQuestions);
   const credentials = useSessionStore((s) => s.credentials);
   const availableBackends = useSessionStore((s) => s.availableBackends);
+  const agents = useSessionStore((s) => s.agents);
   // Credentials shown in the create form are scoped to the selected backend.
   const backendCreds = credentials.filter((c) => c.backend === backend);
   const codexAvailable = availableBackends.includes("codex");
+  // New sessions inherit the agent's default harness; the form still lets you
+  // override per session.
+  const agentBackend =
+    agents.find((a) => a.id === agentId)?.backend ?? "claude-code";
+
+  // Seed the form's backend (and clear any stale credential pick) from the
+  // agent each time the create form opens.
+  useEffect(() => {
+    if (formOpen) {
+      setBackend(agentBackend);
+      setCredentialId("");
+    }
+  }, [formOpen, agentBackend]);
 
   // This list shows exactly its agent's sessions (bucketed by agent_id).
   // Archived sessions live in the account-menu manage page, not here.

@@ -26,8 +26,9 @@ class CreateSessionRequest(BaseModel):
     # omitted the route falls back to the Default Agent. See
     # docs/plans/agent-refactor.md §5.4.
     agent_id: str | None = None
-    # Which AI backend drives this session (codex-backend.md §4.1).
-    backend: BackendKind = BackendKind.claude_code
+    # Which AI backend drives this session (codex-backend.md §4.1). None =
+    # inherit the owning agent's default backend (resolved in the route).
+    backend: BackendKind | None = None
 
 
 class ImportSessionRequest(BaseModel):
@@ -197,6 +198,11 @@ class UpdateScheduleRequest(BaseModel):
 
 
 class AgentRead(BaseModel):
+    # use_enum_values keeps `backend` as the plain string ("claude-code")
+    # both when built from a DB row and when serialized — matches the TEXT
+    # column and avoids enum/value juggling at the storage layer.
+    model_config = {"use_enum_values": True}
+
     id: str
     name: str
     description: str = ""
@@ -204,6 +210,9 @@ class AgentRead(BaseModel):
     system_prompt: str = ""
     model: str | None = None
     credential_id: str | None = None
+    # Default AI backend for this agent's new sessions (codex-backend.md §4.1).
+    # Per-session overrides still win; this is the inherited default.
+    backend: BackendKind = BackendKind.claude_code
     mcp_servers: list[str] = []
     # Newline-separated tool/MCP name lists. Empty `tool_allow` = allow all;
     # `tool_deny` wins on conflict.
@@ -217,12 +226,15 @@ class AgentRead(BaseModel):
 
 
 class AgentCreate(BaseModel):
+    model_config = {"use_enum_values": True}
+
     name: str = Field(min_length=1)
     description: str = ""
     avatar: str | None = None
     system_prompt: str = ""
     model: str | None = None
     credential_id: str | None = None
+    backend: BackendKind = BackendKind.claude_code
     mcp_servers: list[str] = ["ask", "bg", "viewer"]
     tool_allow: str = ""
     tool_deny: str = ""
@@ -232,12 +244,15 @@ class AgentUpdate(BaseModel):
     # All optional; the route applies only the fields explicitly provided
     # (model_dump(exclude_unset=True)), so passing null clears a nullable
     # field while omitting it leaves the field untouched.
+    model_config = {"use_enum_values": True}
+
     name: str | None = None
     description: str | None = None
     avatar: str | None = None
     system_prompt: str | None = None
     model: str | None = None
     credential_id: str | None = None
+    backend: BackendKind | None = None
     mcp_servers: list[str] | None = None
     tool_allow: str | None = None
     tool_deny: str | None = None

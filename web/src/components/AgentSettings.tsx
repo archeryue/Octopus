@@ -16,6 +16,9 @@ import { Label } from "./ui/label";
 
 const API = `${window.location.origin}/api/agents`;
 const BUILTIN_MCP = ["ask", "bg", "viewer"] as const;
+// A small role-themed palette to pick an agent icon from (the field still
+// accepts any custom emoji). 🐙 is the Octopus default.
+const AVATAR_CHOICES = ["🐙", "🤖", "🧠", "🔬", "🛠️", "✍️", "📊", "🦉"] as const;
 
 interface Props {
   open: boolean;
@@ -46,7 +49,8 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
   const connectorInstallations = useSessionStore((s) => s.connectorInstallations);
   const agentConnectorIds = useSessionStore((s) => s.agentConnectorIds);
   const setAgentConnectorIds = useSessionStore((s) => s.setAgentConnectorIds);
-  const claudeCreds = credentials.filter((c) => c.backend === "claude-code");
+  const availableBackends = useSessionStore((s) => s.availableBackends);
+  const codexAvailable = availableBackends.includes("codex");
 
   // `null` selection = the "New agent" draft; otherwise the agent being edited.
   const [selectedId, setSelectedId] = useState<string | null>(initialAgentId);
@@ -61,11 +65,16 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [model, setModel] = useState("");
   const [credentialId, setCredentialId] = useState("");
+  const [backend, setBackend] = useState("claude-code");
   const [mcpServers, setMcpServers] = useState<string[]>([...BUILTIN_MCP]);
   const [toolAllow, setToolAllow] = useState("");
   const [toolDeny, setToolDeny] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Credentials offered in the dropdown are scoped to the chosen backend (a
+  // Claude key can't authenticate a Codex session and vice-versa).
+  const backendCreds = credentials.filter((c) => c.backend === backend);
 
   // Opening the dialog snaps the selection back to whatever the caller asked
   // for (the active agent, or `null` for the new-agent draft).
@@ -88,6 +97,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
     setSystemPrompt(a?.system_prompt ?? "");
     setModel(a?.model ?? "");
     setCredentialId(a?.credential_id ?? "");
+    setBackend(a?.backend ?? "claude-code");
     setMcpServers(a?.mcp_servers ?? [...BUILTIN_MCP]);
     setToolAllow(a?.tool_allow ?? "");
     setToolDeny(a?.tool_deny ?? "");
@@ -127,6 +137,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
     systemPrompt !== (selected?.system_prompt ?? "") ||
     model !== (selected?.model ?? "") ||
     credentialId !== (selected?.credential_id ?? "") ||
+    backend !== (selected?.backend ?? "claude-code") ||
     toolAllow !== (selected?.tool_allow ?? "") ||
     toolDeny !== (selected?.tool_deny ?? "") ||
     !sameSet(mcpServers, selected?.mcp_servers ?? [...BUILTIN_MCP]);
@@ -170,6 +181,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
       system_prompt: systemPrompt,
       model: model.trim() || null,
       credential_id: credentialId || null,
+      backend,
       mcp_servers: mcpServers,
       tool_allow: toolAllow,
       tool_deny: toolDeny,
@@ -282,26 +294,45 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
 
           {/* Editing form for the selected agent (or a fresh draft). */}
           <div className="min-w-0 flex-1 space-y-3">
-            <div className="flex gap-2">
-              <div className="w-16 space-y-1.5">
-                <Label htmlFor="agent-avatar">Icon</Label>
+            <div className="space-y-1.5">
+              <Label htmlFor="agent-name">Name</Label>
+              <Input
+                id="agent-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Researcher"
+                className="h-9"
+                autoFocus
+              />
+            </div>
+
+            {/* Icon — pick a preset or type any emoji in the custom box. */}
+            <div className="space-y-1.5">
+              <Label>Icon</Label>
+              <div className="agent-avatar-picker flex flex-wrap items-center gap-1.5">
+                {AVATAR_CHOICES.map((emoji) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    aria-label={`Icon ${emoji}`}
+                    aria-pressed={avatar === emoji}
+                    className={`btn-avatar inline-flex h-9 w-9 items-center justify-center rounded-md border text-lg leading-none transition-colors ${
+                      avatar === emoji
+                        ? "border-primary bg-primary/10"
+                        : "border-border hover:bg-accent"
+                    }`}
+                    onClick={() => setAvatar(emoji)}
+                  >
+                    {emoji}
+                  </button>
+                ))}
                 <Input
                   id="agent-avatar"
                   value={avatar}
                   onChange={(e) => setAvatar(e.target.value)}
                   placeholder="🐙"
-                  className="h-9 text-center"
-                />
-              </div>
-              <div className="flex-1 space-y-1.5">
-                <Label htmlFor="agent-name">Name</Label>
-                <Input
-                  id="agent-name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Researcher"
-                  className="h-9"
-                  autoFocus
+                  aria-label="Custom icon"
+                  className="h-9 w-14 text-center"
                 />
               </div>
             </div>
@@ -340,7 +371,43 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
               />
             </div>
 
-            {claudeCreds.length > 0 && (
+            {/* Default harness for this agent's new sessions. Shown only when
+             * Codex is available (otherwise there's nothing to choose). */}
+            {codexAvailable && (
+              <div className="space-y-1.5">
+                <Label>Harness</Label>
+                <div
+                  className="agent-backend-select flex gap-2"
+                  role="radiogroup"
+                  aria-label="Default backend"
+                >
+                  {[
+                    { id: "claude-code", label: "Claude Code" },
+                    { id: "codex", label: "Codex" },
+                  ].map((b) => (
+                    <button
+                      key={b.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={backend === b.id}
+                      className={`btn-agent-backend btn-agent-backend-${b.id} flex-1 h-9 rounded-md border text-sm transition-colors ${
+                        backend === b.id
+                          ? "border-primary bg-primary/10 text-foreground font-medium"
+                          : "border-border text-muted-foreground hover:bg-accent"
+                      }`}
+                      onClick={() => {
+                        setBackend(b.id);
+                        setCredentialId("");
+                      }}
+                    >
+                      {b.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {backendCreds.length > 0 && (
               <div className="space-y-1.5">
                 <Label htmlFor="agent-cred">Credential</Label>
                 <select
@@ -350,7 +417,7 @@ export function AgentSettings({ open, onOpenChange, initialAgentId }: Props) {
                   onChange={(e) => setCredentialId(e.target.value)}
                 >
                   <option value="">Default auth (CLI login)</option>
-                  {claudeCreds.map((c) => (
+                  {backendCreds.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.label}
                     </option>

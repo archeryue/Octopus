@@ -63,6 +63,49 @@ async def test_auth_required(client):
     assert resp.status_code in (401, 403)
 
 
+@pytest.mark.asyncio
+async def test_default_agent_backend_is_claude(client):
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    system = next(a for a in agents if a["is_system"])
+    assert system["backend"] == "claude-code"
+
+
+@pytest.mark.asyncio
+async def test_agent_backend_create_and_update(client):
+    a = await _create_agent(client, name="Codex Agent", backend="codex")
+    assert a["backend"] == "codex"
+    # round-trips through GET
+    got = (await client.get(f"/api/agents/{a['id']}", headers=HEADERS)).json()
+    assert got["backend"] == "codex"
+    # PATCH switches it back
+    patched = await client.patch(
+        f"/api/agents/{a['id']}", json={"backend": "claude-code"}, headers=HEADERS
+    )
+    assert patched.status_code == 200
+    assert patched.json()["backend"] == "claude-code"
+
+
+@pytest.mark.asyncio
+async def test_session_inherits_agent_backend(client):
+    """A session created without an explicit backend inherits the agent's
+    default; an explicit per-session backend still wins."""
+    a = await _create_agent(client, name="Codex Default", backend="codex")
+
+    inherited = await client.post(
+        f"/api/agents/{a['id']}/sessions", json={"name": "inherit"}, headers=HEADERS
+    )
+    assert inherited.status_code == 201, inherited.text
+    assert inherited.json()["backend"] == "codex"
+
+    overridden = await client.post(
+        f"/api/agents/{a['id']}/sessions",
+        json={"name": "override", "backend": "claude-code"},
+        headers=HEADERS,
+    )
+    assert overridden.status_code == 201, overridden.text
+    assert overridden.json()["backend"] == "claude-code"
+
+
 # --- CRUD ---
 
 

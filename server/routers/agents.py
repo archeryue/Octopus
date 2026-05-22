@@ -123,7 +123,13 @@ async def create_agent_session(
     the body's `agent_id` (if any) is ignored."""
     from .sessions import _check_credential_backend, _to_session_info
 
-    backend = req.backend.value
+    # Inherit the agent's default backend when the request doesn't pin one.
+    agent = await _get_manager().get_agent(agent_id)
+    backend = (
+        req.backend.value
+        if req.backend is not None
+        else (agent.get("backend") if agent else None) or "claude-code"
+    )
     await _check_credential_backend(req.credential_id, backend)
     try:
         s = await session_manager.create_session(

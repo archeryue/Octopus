@@ -66,7 +66,13 @@ async def create_session(
     if agent_id is None:
         sys_agent = await session_manager.db.get_system_agent()
         agent_id = sys_agent["id"] if sys_agent else None
-    backend = req.backend.value
+    # Inherit the owning agent's default backend when none is pinned.
+    agent = await session_manager.db.get_agent(agent_id) if agent_id else None
+    backend = (
+        req.backend.value
+        if req.backend is not None
+        else (agent.get("backend") if agent else None) or "claude-code"
+    )
     await _check_credential_backend(req.credential_id, backend)
     try:
         s = await session_manager.create_session(

@@ -983,6 +983,8 @@ export interface components {
             model?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
             /**
              * Mcp Servers
              * @default [
@@ -1025,6 +1027,8 @@ export interface components {
             model?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            /** @default claude-code */
+            backend: components["schemas"]["BackendKind"];
             /**
              * Mcp Servers
              * @default []
@@ -1074,6 +1078,7 @@ export interface components {
             model?: string | null;
             /** Credential Id */
             credential_id?: string | null;
+            backend?: components["schemas"]["BackendKind"] | null;
             /** Mcp Servers */
             mcp_servers?: string[] | null;
             /** Tool Allow */
@@ -1328,8 +1333,7 @@ export interface components {
             credential_id?: string | null;
             /** Agent Id */
             agent_id?: string | null;
-            /** @default claude-code */
-            backend: components["schemas"]["BackendKind"];
+            backend?: components["schemas"]["BackendKind"] | null;
         };
         /**
          * CredentialInfo
