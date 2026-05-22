@@ -20,6 +20,7 @@ const addOctoSession = (page: Page) =>
 
 const OWNED_NAMES = new Set([
   "Schedule UI Test",
+  "Schedule Cmd Test",
   "Waiting Hint Yes",
   "Waiting Hint No",
   "Virtuoso Long Session",
@@ -105,68 +106,68 @@ async function importSessionApi(
 // ---------------------------------------------------------------------------
 
 test.describe("Scheduled Tasks UI", () => {
-  test("schedule section is visible once an agent is active", async ({ page }) => {
-    await login(page);
-    // Schedules are agent-scoped now (agent-refactor.md §6); the Default
-    // Agent is auto-selected on login, so the section is present.
-    await expect(page.locator(".schedule-section")).toBeVisible();
-  });
-
-  test("create, toggle, and delete a schedule via the sidebar", async ({
+  test("the Schedules section opens the all-agents overview", async ({
     page,
-    request,
   }) => {
-    await createSessionApi(request, "Schedule UI Test");
-
     await login(page);
-
-    // Activate the session
-    await page
-      .locator(".session-item .session-name", { hasText: "Schedule UI Test" })
-      .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Schedule UI Test");
-
-    // Schedule section should now be visible
+    // The section is always present now (not agent-scoped) and is the entry
+    // point to the overview dialog.
     await expect(page.locator(".schedule-section")).toBeVisible();
     await expect(page.locator(".schedule-title")).toHaveText("Schedules");
 
-    // No schedules yet
-    await expect(page.locator(".schedule-item")).toHaveCount(0);
+    await page.locator(".schedule-header").click();
+    await expect(page.locator(".schedules-dialog")).toBeVisible();
+    await expect(
+      page.locator(".schedules-dialog", { hasText: "Recurring prompts" })
+    ).toBeVisible();
+  });
 
-    // Open create form
-    await page.locator(".btn-schedule-add").click();
-    await expect(page.locator(".schedule-form")).toBeVisible();
+  test("/schedule command creates a schedule shown in the overview; toggle + delete", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Schedule Cmd Test");
+    await login(page);
 
-    // Fill (60 min = 3600s, well above the run window so it won't fire)
+    // Activate the session so the chat input is available.
     await page
-      .locator('.schedule-form input[placeholder="Name"]')
-      .fill("Hourly Check");
+      .locator(".session-item .session-name", { hasText: "Schedule Cmd Test" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText(
+      "Schedule Cmd Test"
+    );
+
+    // Run the command (45m = 2700s — well above the run window; won't fire).
+    const PROMPT = "e2e schedule command probe";
     await page
-      .locator('.schedule-form textarea[placeholder="Prompt..."]')
-      .fill("Summarize the day");
-    await page.locator(".schedule-form .interval-input").fill("60");
+      .locator(".chat-input-bar textarea")
+      .fill(`/schedule 45m ${PROMPT}`);
+    await page.locator("button.btn-send").click();
 
-    // Submit (scope to schedule-form to avoid SessionList's btn-create)
-    await page.locator(".schedule-form button.btn-create").click();
+    // A confirmation notice renders in chat (not attributed to You/Claude).
+    await expect(page.locator(".msg-notice")).toContainText("Scheduled");
 
-    // Schedule item appears
-    await expect(page.locator(".schedule-item")).toHaveCount(1);
-    await expect(page.locator(".schedule-item .schedule-name")).toHaveText(
-      "Hourly Check"
-    );
-    await expect(page.locator(".schedule-item .schedule-interval")).toHaveText(
-      "60m"
-    );
-    await expect(page.locator(".schedule-item .btn-toggle")).toHaveClass(/on/);
+    // Open the overview and find our schedule (scope by its unique prompt).
+    await page.locator(".schedule-header").click();
+    await expect(page.locator(".schedules-dialog")).toBeVisible();
+    const row = page.locator(".schedules-dialog .schedule-item", {
+      hasText: PROMPT,
+    });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator(".schedule-name")).toHaveText(PROMPT);
+    await expect(row.locator(".schedule-interval")).toContainText("45m");
+    await expect(row.locator(".btn-toggle")).toHaveClass(/on/);
 
-    // Toggle disabled
-    await page.locator(".schedule-item .btn-toggle").click();
-    await expect(page.locator(".schedule-item .btn-toggle")).toHaveClass(/off/);
-    await expect(page.locator(".schedule-item")).toHaveClass(/disabled/);
+    // Toggle disabled.
+    await row.locator(".btn-toggle").click();
+    await expect(row.locator(".btn-toggle")).toHaveClass(/off/);
+    await expect(row).toHaveClass(/disabled/);
 
-    // Delete
-    await page.locator(".schedule-item .btn-delete").click();
-    await expect(page.locator(".schedule-item")).toHaveCount(0);
+    // Delete it — the row leaves the overview.
+    await row.locator(".btn-delete").click();
+    await expect(
+      page.locator(".schedules-dialog .schedule-item", { hasText: PROMPT })
+    ).toHaveCount(0);
   });
 });
 
@@ -1154,15 +1155,15 @@ test.describe("/archive command", () => {
     expect((await oldRes.json()).archived).toBe(true);
   });
 
-  test("archived expander shows the row; unarchive restores it", async ({
+  test("the account-menu manage page views and unarchives a session", async ({
     page,
     request,
   }) => {
     // Unique name so the row we're asserting on doesn't collide with
     // residue from the sibling "Archive Probe" test (both pre-test
     // imports + archive() create extra rows, and afterAll cleanup runs
-    // after both tests, so the second test's expander would otherwise
-    // contain multiple matching rows).
+    // after both tests, so the manage page would otherwise contain
+    // multiple matching rows).
     const ITEM_NAME = "Archive Probe Two";
 
     // Seed + archive in one shot via REST.
@@ -1177,34 +1178,42 @@ test.describe("/archive command", () => {
 
     await login(page);
 
-    // Open the Archived expander; the archived row appears.
-    await page.locator(".btn-archived-toggle").click();
-    const ourRow = page.locator(".archived-item", { hasText: ITEM_NAME });
+    // Open the manage page from the account menu (no sidebar expander).
+    const openArchived = async () => {
+      await page.locator(".btn-account").click();
+      await page.locator(".menu-archived-sessions").click();
+      await expect(page.locator(".archived-sessions-dialog")).toBeVisible();
+    };
+    await openArchived();
+    const ourRow = page.locator(".archived-session-row", {
+      hasText: ITEM_NAME,
+    });
     await expect(ourRow).toHaveCount(1);
 
-    // Click it; chat header shows the archived name, input bar is
-    // replaced by the read-only banner.
-    await ourRow.click();
+    // View it read-only: dialog closes, chat shows the read-only banner and
+    // the old history; the input bar is replaced by the banner.
+    await ourRow.locator(".btn-archived-view").click();
+    await expect(page.locator(".archived-sessions-dialog")).toHaveCount(0);
     await expect(page.locator(".chat-archived-banner")).toBeVisible();
-    await expect(page.locator(".chat-archived-banner")).toContainText("archived");
+    await expect(page.locator(".chat-archived-banner")).toContainText(
+      "archived"
+    );
     await expect(page.locator(".chat-input-bar")).toHaveCount(0);
-    // Old user message renders (read-only history).
     await expect(page.locator(".msg-user .msg-content")).toContainText("old");
 
-    // Unarchive: row leaves the archived list AND comes back as a
-    // live session in the main list.
-    await ourRow.hover();
-    await ourRow.locator(".btn-unarchive").click();
-
-    await expect(
-      page.locator(".archived-item", { hasText: ITEM_NAME })
-    ).toHaveCount(0);
-    // After unarchive, the chat is editable again — banner gone, input back.
+    // Reopen the manage page and unarchive: the row leaves the list and the
+    // session comes back as a live, editable session.
+    await openArchived();
+    await page
+      .locator(".archived-session-row", { hasText: ITEM_NAME })
+      .locator(".btn-archived-unarchive")
+      .click();
+    await expect(page.locator(".archived-sessions-dialog")).toHaveCount(0);
     await expect(page.locator(".chat-input-bar")).toBeVisible();
     await expect(page.locator(".chat-archived-banner")).toHaveCount(0);
 
-    // The unarchived session is what's active now (its id is imp.id).
-    // The previously-created `fresh` session is still in the list too.
+    // The unarchived session is live again (its id is imp.id); the previously
+    // created `fresh` session is still in the list too.
     const listRes = await request.get(`${API}/sessions`, {
       headers: { Authorization: `Bearer ${TOKEN}` },
     });

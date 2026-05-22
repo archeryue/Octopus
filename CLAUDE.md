@@ -37,7 +37,7 @@ You MUST verify your changes before considering them done:
 1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (569 tests; the 4
    `test_backend_codex_real.py` tests need `codex` on PATH — run with the nvm
    bin prepended, see Conventions)
-2. **Frontend unit tests**: `cd web && bun run test` (34 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (46 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
 4. **E2E tests**: `cd web && bun run test:e2e` (57 tests, Playwright auto-starts servers)
 
@@ -48,8 +48,8 @@ You MUST verify your changes before considering them done:
 | Suite | Tool | Count | What it covers |
 |-------|------|-------|----------------|
 | Backend unit | pytest | 569 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence (incl. credential storage split + refresh-error codes), JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner, bridge base/manager/telegram, tunnel config, OAuth provider registry, agents (manager + routes), Codex backend (normalizer + build_args; real-CLI when `codex` on PATH), **connectors** (DB split-secret + agent-join, manager incl. token-refresh lifecycle + in-app OAuth-client config + custom-connector CRUD, OAuth providers, REST routes incl. OAuth flow, the github/gmail/generic MCP servers), real-CLI integration (when `claude` is on PATH) |
-| Frontend unit | vitest | 34 | Zustand store (token, sessions, messages, status, agents, connectors), useWebSocket, BgTaskChip, FileViewerDialog |
-| E2E | Playwright | 57 | Login, session CRUD, real Claude responses (incl. AskUserQuestion + resume), Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), scheduled-tasks UI, waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling, OAuth dialog flow, credential override, agents rail/settings, **connectors** (catalog + availability gating, in-app Set-up flips a built-in to connectable, add/remove a custom connector, per-agent toggles) |
+| Frontend unit | vitest | 46 | Zustand store (token, sessions, messages, status, agents, connectors), useWebSocket, BgTaskChip, FileViewerDialog, `/schedule` command parsing + interval format/derive-name helpers |
+| E2E | Playwright | 57 | Login, session CRUD, real Claude responses (incl. AskUserQuestion + resume), Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), schedules (`/schedule` command → all-agents overview dialog, toggle/delete), archived-sessions account-menu manage page (view read-only + unarchive), waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling, OAuth dialog flow, credential override, agents rail/settings, **connectors** (catalog + availability gating, in-app Set-up flips a built-in to connectable, add/remove a custom connector, per-agent toggles) |
 
 ## Project Structure
 

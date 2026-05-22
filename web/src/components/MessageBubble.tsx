@@ -161,6 +161,24 @@ export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
         </div>
       );
 
+    // Ephemeral, client-side system note (e.g. the /schedule command's
+    // confirmation or a parse-error hint). Centered pill, not attributed to
+    // the user or to Claude. Not persisted — clears on reload.
+    case "notice":
+      return (
+        <div className="msg msg-notice flex justify-center py-1">
+          <span
+            className={`notice-pill max-w-[85%] rounded-full border px-3 py-1 text-xs ${
+              message.is_error
+                ? "border-destructive/30 bg-destructive/10 text-destructive"
+                : "border-border bg-muted text-muted-foreground"
+            }`}
+          >
+            {message.content}
+          </span>
+        </div>
+      );
+
     case "error":
       return (
         <div className="msg msg-error space-y-1">

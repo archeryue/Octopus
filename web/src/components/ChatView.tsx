@@ -9,6 +9,10 @@ import {
 } from "@tabler/icons-react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import {
+  formatScheduleInterval,
+  parseScheduleCommand,
+} from "../lib/schedule";
+import {
   useSessionStore,
   type AttachmentMetadata,
   type Message,
@@ -56,6 +60,9 @@ interface Props {
   ) => void;
   connected: boolean;
   onToggleSidebar: () => void;
+  // Open the all-agents Schedules overview (App owns the dialog). Used by the
+  // bare `/schedule` command.
+  onOpenSchedules: () => void;
 }
 
 const EMPTY_QUEUE: string[] = [];
@@ -69,6 +76,7 @@ export function ChatView({
   answerQuestion,
   connected,
   onToggleSidebar,
+  onOpenSchedules,
 }: Props) {
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
@@ -395,6 +403,66 @@ export function ChatView({
         store.setPendingQuestions(fresh.id, []);
       } catch {
         // best-effort — failure leaves the user in the original session
+      }
+      return;
+    }
+
+    // /schedule command — create a recurring prompt for this session's agent
+    // without leaving the chat. Bare `/schedule` just opens the overview;
+    // `/schedule <interval> <prompt>` parses + posts to the agent-scoped
+    // schedules API. Confirmation / errors render as a local notice bubble.
+    const lower = trimmed.toLowerCase();
+    if (lower === "/schedule" || lower.startsWith("/schedule ")) {
+      setInput("");
+      const store = useSessionStore.getState();
+      const sid = activeSessionId;
+      const addNotice = (content: string, isError = false) =>
+        store.addMessage(sid, { role: "system", type: "notice", content, is_error: isError });
+
+      const args = trimmed.slice("/schedule".length).trim();
+      if (!args) {
+        onOpenSchedules();
+        return;
+      }
+      const agentId = activeSession?.agent_id;
+      if (!agentId) {
+        addNotice("Couldn't schedule: this session has no owning agent.", true);
+        return;
+      }
+      const parsed = parseScheduleCommand(args);
+      if (!parsed.ok) {
+        addNotice(parsed.error, true);
+        return;
+      }
+      try {
+        const res = await fetch(
+          `${window.location.origin}/api/agents/${agentId}/schedules`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${store.token}`,
+            },
+            body: JSON.stringify({
+              name: parsed.name,
+              prompt: parsed.prompt,
+              interval_seconds: parsed.intervalSeconds,
+            }),
+          }
+        );
+        if (!res.ok) {
+          addNotice(`Couldn't create schedule (HTTP ${res.status}).`, true);
+          return;
+        }
+        const created = await res.json();
+        store.setSchedules([...store.schedules, created]);
+        addNotice(
+          `📅 Scheduled "${parsed.name}" — runs every ${formatScheduleInterval(
+            parsed.intervalSeconds
+          )}. Manage in Schedules.`
+        );
+      } catch {
+        addNotice("Couldn't create schedule — network error.", true);
       }
       return;
     }

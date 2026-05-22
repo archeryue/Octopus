@@ -3,6 +3,7 @@ import { IconMenu2 } from "@tabler/icons-react";
 import { AccountDropdown } from "./components/AccountDropdown";
 import { AgentList } from "./components/AgentList";
 import { AgentSettings } from "./components/AgentSettings";
+import { ArchivedSessionsDialog } from "./components/ArchivedSessionsDialog";
 import { ChatView } from "./components/ChatView";
 import { ConnectorList } from "./components/ConnectorList";
 import { CredentialList } from "./components/CredentialList";
@@ -11,6 +12,7 @@ import { CredentialList } from "./components/CredentialList";
 import { FileViewerDialog } from "./components/FileViewerDialog";
 import { OctopusLogo } from "./components/OctopusLogo";
 import { ScheduleList } from "./components/ScheduleList";
+import { SchedulesDialog } from "./components/SchedulesDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -90,6 +92,10 @@ function AuthenticatedApp({
   // the dialog's own rail handles switching between agents after that.
   const [agentDialogOpen, setAgentDialogOpen] = useState(false);
   const [agentInitialId, setAgentInitialId] = useState<string | null>(null);
+  // Management dialogs reached from the sidebar / account menu. Schedules is
+  // also opened from chat (bare `/schedule`), so ChatView gets the opener too.
+  const [schedulesOpen, setSchedulesOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
 
   const signOut = () => {
     setToken("");
@@ -143,7 +149,7 @@ function AuthenticatedApp({
          * sidebar edge to item text. Hover pill itself insets 20px. */}
         <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 pt-2">
           <AgentList onCreateAgent={openCreateAgent} />
-          <ScheduleList />
+          <ScheduleList onOpen={() => setSchedulesOpen(true)} />
           <ConnectorList />
           <CredentialList />
         </nav>
@@ -154,6 +160,7 @@ function AuthenticatedApp({
             onSignOut={signOut}
             onOpenSettings={() => setSettingsOpen(true)}
             onOpenAgentSettings={openActiveAgentSettings}
+            onOpenArchivedSessions={() => setArchivedOpen(true)}
           />
         </div>
       </aside>
@@ -167,6 +174,7 @@ function AuthenticatedApp({
           answerQuestion={answerQuestion}
           connected={connected}
           onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          onOpenSchedules={() => setSchedulesOpen(true)}
         />
       </div>
 
@@ -182,6 +190,11 @@ function AuthenticatedApp({
         open={agentDialogOpen}
         onOpenChange={setAgentDialogOpen}
         initialAgentId={agentInitialId}
+      />
+      <SchedulesDialog open={schedulesOpen} onOpenChange={setSchedulesOpen} />
+      <ArchivedSessionsDialog
+        open={archivedOpen}
+        onOpenChange={setArchivedOpen}
       />
       <FileViewerDialog />
     </div>

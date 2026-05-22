@@ -1,11 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  IconCheck,
-  IconChevronRight,
-  IconCopy,
-  IconRestore,
-  IconX,
-} from "@tabler/icons-react";
+import { useState } from "react";
+import { IconCheck, IconCopy, IconX } from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -29,13 +23,10 @@ export function SessionList({
   const [credentialId, setCredentialId] = useState<string>("");
   const [backend, setBackend] = useState<string>("claude-code");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [archivedExpanded, setArchivedExpanded] = useState(false);
 
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
   const setSessions = useSessionStore((s) => s.setSessions);
-  const archived = useSessionStore((s) => s.archivedSessions);
-  const setArchived = useSessionStore((s) => s.setArchivedSessions);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
@@ -49,8 +40,8 @@ export function SessionList({
   const codexAvailable = availableBackends.includes("codex");
 
   // This list shows exactly its agent's sessions (bucketed by agent_id).
+  // Archived sessions live in the account-menu manage page, not here.
   const agentSessions = sessions.filter((s) => s.agent_id === agentId);
-  const agentArchived = archived.filter((s) => s.agent_id === agentId);
 
   const headers = {
     "Content-Type": "application/json",
@@ -128,43 +119,6 @@ export function SessionList({
     }
   };
 
-  const fetchArchived = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/sessions?include_archived=true`, {
-        headers,
-      });
-      if (res.ok) {
-        const all: SessionInfo[] = await res.json();
-        setArchived(all.filter((s) => s.archived));
-      }
-    } catch {
-      // ignore
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token]);
-
-  const unarchive = async (id: string) => {
-    try {
-      const res = await fetch(`${API_URL}/api/sessions/${id}/unarchive`, {
-        method: "POST",
-        headers,
-      });
-      if (res.ok) {
-        const revived: SessionInfo = await res.json();
-        setSessions([...sessions, revived]);
-        setArchived(archived.filter((s) => s.id !== id));
-        setActiveAgentId(agentId);
-        setActiveSessionId(revived.id);
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  useEffect(() => {
-    if (archivedExpanded) fetchArchived();
-  }, [archivedExpanded, fetchArchived]);
-
   return (
     <div className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40">
       <div className="session-list-items flex flex-col gap-0">
@@ -225,61 +179,6 @@ export function SessionList({
             </div>
           </div>
         ))}
-      </div>
-
-      {/* Archived expander — per agent, collapsed by default. */}
-      <div className="archived-section mt-1">
-        <button
-          type="button"
-          className="btn-archived-toggle group flex w-full h-7 items-center gap-2 rounded-lg px-2 text-[11px] text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors"
-          onClick={() => setArchivedExpanded((v) => !v)}
-          aria-expanded={archivedExpanded}
-        >
-          <IconChevronRight
-            size={11}
-            className={`shrink-0 transition-transform ${archivedExpanded ? "rotate-90" : ""}`}
-          />
-          <span className="uppercase tracking-wide">
-            Archived{agentArchived.length > 0 ? ` (${agentArchived.length})` : ""}
-          </span>
-        </button>
-        {archivedExpanded && (
-          <div className="archived-list flex flex-col gap-0.5 mt-1">
-            {agentArchived.length === 0 && (
-              <div className="text-xs italic text-sidebar-foreground/50 px-2 py-1.5">
-                No archived sessions.
-              </div>
-            )}
-            {agentArchived.map((s) => (
-              <div
-                key={s.id}
-                className={`archived-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
-                  s.id === activeSessionId
-                    ? "active bg-[hsl(var(--gray-200))] text-foreground"
-                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent"
-                }`}
-                onClick={() => selectSession(s.id)}
-                title="View archived session (read-only)"
-              >
-                <span className="archived-name truncate text-sm italic flex-1">
-                  {s.name}
-                </span>
-                <div className="archived-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button
-                    className="btn-unarchive inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      unarchive(s.id);
-                    }}
-                    title="Unarchive — bring this session back as a live session"
-                  >
-                    <IconRestore size={14} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
       {formOpen && (
