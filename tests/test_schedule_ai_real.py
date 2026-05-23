@@ -1,13 +1,14 @@
 """Real-CLI integration test for natural-language schedule parsing.
 
 Skipped unless the `claude` binary is on PATH (mirrors test_backend_*_real.py).
-Exercises the actual one-shot parse end-to-end — proves run_claude_oneshot +
-JSON extraction + validation work against the live CLI, not just mocks."""
+Exercises the actual one-shot parse end-to-end — proves `harness.run_oneshot`
++ JSON extraction + validation work against the live CLI, not just mocks."""
 
 import shutil
 
 import pytest
 
+from server.harness import get_harness
 from server.schedule_ai import parse_schedule_text
 
 pytestmark = pytest.mark.skipif(
@@ -19,6 +20,7 @@ pytestmark = pytest.mark.skipif(
 async def test_real_ai_parses_morning_into_cron():
     parsed = await parse_schedule_text(
         "summarize my unread email every morning at 9am",
+        harness=get_harness("claude-code"),
         timezone="America/Los_Angeles",
         now_iso="2026-05-21T14:00:00",
     )
@@ -36,6 +38,7 @@ async def test_real_ai_parses_morning_into_cron():
 async def test_real_ai_parses_interval():
     parsed = await parse_schedule_text(
         "check the build status every 15 minutes",
+        harness=get_harness("claude-code"),
         timezone="UTC",
         now_iso="2026-05-21T14:00:00",
     )

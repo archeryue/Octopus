@@ -300,18 +300,18 @@ async def test_schedule_from_text_rigid(client):
 
 @pytest.mark.asyncio
 async def test_schedule_from_text_ai_cron(client, monkeypatch):
-    """Natural language → AI parse → cron schedule (AI call mocked)."""
-    from server import schedule_ai
+    """Natural language → AI parse → cron schedule (the harness one-shot mocked)."""
+    from server.harness import get_harness
 
-    async def fake_oneshot(prompt, **kwargs):
-        assert "America/Los_Angeles" in prompt
+    async def fake_oneshot(ctx):
+        assert "America/Los_Angeles" in ctx.prompt
         return (
             '{"name":"Gmail summary","prompt":"summarize my unread email",'
             '"recurrence":{"kind":"cron","cron":"0 9 * * *"},'
             '"recurrence_label":"Every day at 9:00 AM"}'
         )
 
-    monkeypatch.setattr(schedule_ai, "run_claude_oneshot", fake_oneshot)
+    monkeypatch.setattr(get_harness("claude-code"), "run_oneshot", fake_oneshot)
 
     agent = await _create_agent(client, name="NL Sched")
     resp = await client.post(
@@ -337,12 +337,12 @@ async def test_schedule_from_text_ai_cron(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_schedule_from_text_parse_error_is_422(client, monkeypatch):
-    from server import schedule_ai
+    from server.harness import get_harness
 
-    async def fake_oneshot(prompt, **kwargs):
+    async def fake_oneshot(ctx):
         return "I'm not sure what you mean."
 
-    monkeypatch.setattr(schedule_ai, "run_claude_oneshot", fake_oneshot)
+    monkeypatch.setattr(get_harness("claude-code"), "run_oneshot", fake_oneshot)
 
     agent = await _create_agent(client, name="Bad Sched")
     resp = await client.post(
@@ -355,41 +355,27 @@ async def test_schedule_from_text_parse_error_is_422(client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_schedule_from_text_codex_agent_does_not_pass_codex_cred(
-    client, monkeypatch
-):
-    """Regression: a Codex agent's NL /schedule must not feed its Codex
-    credential/model to the `claude` parse (a Codex credential's secret is a
-    CODEX_HOME path → broke `claude` auth → 422 in the field). It falls back to
-    host claude auth + default model."""
-    from server import schedule_ai
-    from server.config import settings
-    from server.crypto import encrypt
+async def test_schedule_from_text_codex_agent_parses_on_codex(client, monkeypatch):
+    """A Codex agent's NL /schedule parses on the CODEX harness, not Claude
+    (D2: Codex supports one-shot). No backend-kind nulling — the agent's own
+    model is passed, and the one-shot runs on `codex`."""
+    from server.harness import get_harness
 
-    # A Codex credential whose stored secret is a CODEX_HOME path, like real ones.
-    await session_manager.db.save_credential(
-        credential_id="cx1",
-        backend="codex",
-        label="codex-gpt",
-        auth_type="oauth",
-        secret_encrypted=encrypt("/home/u/.octopus/codex/cx1", settings.auth_token),
-        created_at="2026-01-01T00:00:00+00:00",
-    )
     agent = await _create_agent(
-        client, name="Codex Sched", backend="codex", credential_id="cx1"
+        client, name="Codex Sched", backend="codex", model="gpt-5.5"
     )
 
     seen: dict = {}
 
-    async def fake_oneshot(prompt, *, model=None, credential=None, **kw):
-        seen["model"] = model
-        seen["credential"] = credential
+    async def fake_oneshot(ctx):
+        seen["model"] = ctx.model
         return (
             '{"name":"Daily","prompt":"do it","recurrence":'
             '{"kind":"cron","cron":"0 9 * * *"},"recurrence_label":"Daily 9am"}'
         )
 
-    monkeypatch.setattr(schedule_ai, "run_claude_oneshot", fake_oneshot)
+    # Patch the CODEX harness's one-shot — proving the parse ran on codex.
+    monkeypatch.setattr(get_harness("codex"), "run_oneshot", fake_oneshot)
 
     r = await client.post(
         f"/api/agents/{agent['id']}/schedules/from_text",
@@ -397,9 +383,7 @@ async def test_schedule_from_text_codex_agent_does_not_pass_codex_cred(
         headers=HEADERS,
     )
     assert r.status_code == 201, r.text
-    # The Codex credential + model were NOT handed to the claude parse.
-    assert seen["credential"] is None
-    assert seen["model"] is None
+    assert seen["model"] == "gpt-5.5"  # the agent's own model, on its own harness
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,8 @@ from ..models import (
     CredentialInfo,
     UpdateCredentialRequest,
 )
-from ..oauth_login import LoginState, oauth_login_manager
+from ..harness import LoginMethod, get_harness, has_backend
+from ..oauth_login import LoginState
 from ..oauth_providers import OAuthTokenSet
 
 logger = logging.getLogger(__name__)
@@ -136,14 +137,11 @@ async def delete_credential(credential_id: str, _: str = Depends(verify_token)):
     deleted = await db.delete_credential(credential_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="credential not found")
-    # A Codex credential is a directory-backed login — remove its CODEX_HOME
-    # (auth.json + token) so deletion actually revokes local access.
-    if row is not None and row.get("backend") == BackendKind.codex.value:
-        import shutil
-
-        from ..codex_login import codex_home_for
-
-        shutil.rmtree(codex_home_for(credential_id), ignore_errors=True)
+    # Revoke any on-disk login state for this credential's harness (Codex
+    # rmtree's its CODEX_HOME; Claude has nothing on disk). The harness owns
+    # the cleanup — no backend-kind branching here.
+    if row is not None and has_backend(row.get("backend")):
+        get_harness(row["backend"]).login.cleanup_credential(credential_id)
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +176,14 @@ class OAuthCancelRequest(BaseModel):
     status_code=status.HTTP_201_CREATED,
 )
 async def oauth_start(req: OAuthStartRequest, _: str = Depends(verify_token)):
-    if req.backend != BackendKind.claude_code:
+    login = get_harness(req.backend.value).login
+    if login is None or login.method != LoginMethod.oauth_redirect:
         raise HTTPException(
             status_code=400,
-            detail="OAuth login is only implemented for claude-code right now",
+            detail=f"OAuth redirect login isn't available for {req.backend.value}",
         )
     try:
-        session = await oauth_login_manager.start()
+        session = await login.start()
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -231,7 +230,9 @@ async def oauth_complete(
     """
     db = _require_db()
     try:
-        session = await oauth_login_manager.submit_code(req.login_id, req.code)
+        session = await get_harness(BackendKind.claude_code.value).login.submit_code(
+            req.login_id, req.code
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown login_id")
     except RuntimeError as e:
@@ -291,7 +292,7 @@ async def oauth_complete(
 @router.post("/oauth/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def oauth_cancel(req: OAuthCancelRequest, _: str = Depends(verify_token)):
     """Abort an in-flight login (kills the subprocess). Idempotent."""
-    await oauth_login_manager.cancel(req.login_id)
+    await get_harness(BackendKind.claude_code.value).login.cancel(req.login_id)
 
 
 # ---------------------------------------------------------------------------
@@ -334,10 +335,8 @@ class CodexLoginCancelRequest(BaseModel):
 async def codex_login_start(
     req: CodexLoginStartRequest, _: str = Depends(verify_token)
 ):
-    from ..codex_login import codex_login_manager
-
     try:
-        session = await codex_login_manager.start(req.label.strip())
+        session = await get_harness(BackendKind.codex.value).login.start(req.label)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return CodexLoginStartResponse(login_id=session.id)
@@ -347,9 +346,9 @@ async def codex_login_start(
 async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
     """Poll an in-flight Codex login. On success, persist the credential row
     (pointing at the CODEX_HOME dir) once and return it."""
-    from ..codex_login import CodexLoginState, codex_login_manager
+    from ..codex_login import CodexLoginState
 
-    session = codex_login_manager.get(login_id)
+    session = get_harness(BackendKind.codex.value).login.get(login_id)
     if session is None:
         raise HTTPException(status_code=404, detail="unknown login_id")
 
@@ -390,6 +389,4 @@ async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
 async def codex_login_cancel(
     req: CodexLoginCancelRequest, _: str = Depends(verify_token)
 ):
-    from ..codex_login import codex_login_manager
-
-    await codex_login_manager.cancel(req.login_id)
+    await get_harness(BackendKind.codex.value).login.cancel(req.login_id)

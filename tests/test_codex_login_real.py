@@ -10,7 +10,7 @@ import asyncio
 import pytest
 
 from server import codex_login
-from server.backends.subprocess_jsonl import _which_with_fallback
+from server.harness.run import _which_with_fallback
 from server.config import settings
 
 pytestmark = pytest.mark.skipif(

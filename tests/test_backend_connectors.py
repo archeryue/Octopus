@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import json
 
-from server.backends.claude_code import ClaudeCodeBackend
-from server.backends.codex import CodexBackend
 from server.connectors.base import ConnectorBase, ConnectorInstallation
+from server.harness import RunConfig, get_harness
 
 
 class _FakeProvider:
@@ -46,8 +45,10 @@ def _arg_after(argv, flag):
 
 def test_claude_merges_connector_mcp_entry():
     conn, inst = _pair()
-    be = ClaudeCodeBackend(session_id="s1", connectors=[(conn, inst)])
-    argv, _ = be.build_args("hi", "/tmp", None)
+    run = get_harness("claude-code").create_run(
+        RunConfig(session_id="s1", connectors=[(conn, inst)])
+    )
+    argv, _ = run.build_argv("hi", "/tmp", None)
 
     cfg = json.loads(_arg_after(argv, "--mcp-config"))["mcpServers"]
     key = conn.mcp_key(inst)  # dummy_abcdef
@@ -63,16 +64,18 @@ def test_claude_merges_connector_mcp_entry():
 
 def test_claude_appends_connector_blurb():
     conn, inst = _pair()
-    be = ClaudeCodeBackend(session_id="s1", connectors=[(conn, inst)])
-    argv, _ = be.build_args("hi", "/tmp", None)
+    run = get_harness("claude-code").create_run(
+        RunConfig(session_id="s1", connectors=[(conn, inst)])
+    )
+    argv, _ = run.build_argv("hi", "/tmp", None)
     sp = _arg_after(argv, "--append-system-prompt")
     assert "== Connectors ==" in sp
     assert conn.tool_name(inst, "search") in sp
 
 
 def test_claude_no_connectors_unchanged():
-    be = ClaudeCodeBackend(session_id="s1")
-    argv, _ = be.build_args("hi", "/tmp", None)
+    run = get_harness("claude-code").create_run(RunConfig(session_id="s1"))
+    argv, _ = run.build_argv("hi", "/tmp", None)
     cfg = json.loads(_arg_after(argv, "--mcp-config"))["mcpServers"]
     assert set(cfg) == {"viewer", "bg", "ask"}
     assert "== Connectors ==" not in _arg_after(argv, "--append-system-prompt")
@@ -83,8 +86,10 @@ def test_claude_no_connectors_unchanged():
 
 def test_codex_merges_connector_overrides_and_blurb():
     conn, inst = _pair()
-    be = CodexBackend(session_id="s1", connectors=[(conn, inst)])
-    argv, _ = be.build_args("hi", "/tmp", None)
+    run = get_harness("codex").create_run(
+        RunConfig(session_id="s1", connectors=[(conn, inst)])
+    )
+    argv, _ = run.build_argv("hi", "/tmp", None)
     joined = " ".join(argv)
     key = conn.mcp_key(inst)
 
@@ -97,6 +102,6 @@ def test_codex_merges_connector_overrides_and_blurb():
 
 
 def test_codex_no_connectors_has_no_connector_overrides():
-    be = CodexBackend(session_id="s1")
-    argv, _ = be.build_args("hi", "/tmp", None)
+    run = get_harness("codex").create_run(RunConfig(session_id="s1"))
+    argv, _ = run.build_argv("hi", "/tmp", None)
     assert not any("mcp_servers.dummy_" in a for a in argv)

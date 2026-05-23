@@ -294,8 +294,6 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
     """If the backend's stop()/interrupt() hangs, the manager's interrupt()
     must still return promptly (within the timeout) so the WS receive loop
     isn't blocked from processing subsequent interrupts."""
-    from server.backends import BackendBase
-
     session = await _new(manager,"SlowStop")
 
     async def stub_consume(session_id: str, queued) -> None:
@@ -304,7 +302,7 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
         except asyncio.CancelledError:
             raise
 
-    class HangingBackend(BackendBase):
+    class HangingBackend:
         name = "hanging"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -534,10 +532,10 @@ async def test_manual_answer_cancels_auto_answer_timer(manager, monkeypatch):
 async def test_event_to_message_content_maps_question_request():
     """The translation layer keeps the persisted shape stable so existing
     UI handling for question_request messages doesn't break."""
-    from server.backends import BackendEvent
+    from server.harness import HarnessEvent
     from server.session_manager import SessionManager
 
-    ev = BackendEvent(
+    ev = HarnessEvent(
         type="question_request",
         tool_use_id="q-99",
         tool_input={"questions": [{"question": "X?", "options": []}]},
@@ -568,7 +566,9 @@ async def test_resolve_credential_returns_decrypted_secret(manager):
         created_at=now,
     )
     session = await _new(manager,"S", credential_id="c-1")
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred is not None
     assert cred.backend == "claude-code"
     assert cred.auth_type == "api_key"
@@ -578,7 +578,9 @@ async def test_resolve_credential_returns_decrypted_secret(manager):
 @pytest.mark.asyncio
 async def test_resolve_credential_returns_none_when_missing(manager):
     session = await _new(manager,"S", credential_id="ghost")
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred is None
 
 
@@ -612,7 +614,9 @@ async def test_resolve_credential_oauth_bundle_returns_oauth_credential(manager)
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     session = await _new(manager,"S-oauth", credential_id="c-oauth")
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred is not None
     assert cred.auth_type == "oauth"
     assert cred.secret == "oat-fresh-access"
@@ -666,7 +670,9 @@ async def test_resolve_credential_refreshes_expired_oauth_token(manager, monkeyp
     monkeypatch.setattr(provider, "refresh_access_token", fake_refresh)
 
     session = await _new(manager,"S-stale", credential_id="c-stale")
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
 
     assert captured_refresh == ["ort-still-valid"]
     assert cred is not None
@@ -676,7 +682,7 @@ async def test_resolve_credential_refreshes_expired_oauth_token(manager, monkeyp
     # The new bundle was persisted: a second resolve should find a fresh
     # row (and NOT refresh again, since the new bundle is not expired).
     captured_refresh.clear()
-    cred2 = await manager._resolve_credential(session)
+    cred2 = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred2 is not None
     assert cred2.secret == "oat-brand-new"
     assert captured_refresh == []  # no second refresh
@@ -731,7 +737,9 @@ async def test_resolve_credential_marks_needs_reconnect_on_refresh_failure(
     monkeypatch.setattr(provider, "refresh_access_token", fake_refresh)
 
     session = await _new(manager,"S-dead", credential_id="c-dead")
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred is None
 
     row = await manager.db.get_credential("c-dead")
@@ -740,7 +748,7 @@ async def test_resolve_credential_marks_needs_reconnect_on_refresh_failure(
 
     # A subsequent resolve sees needs_reconnect and returns None without
     # retrying the refresh.
-    cred2 = await manager._resolve_credential(session)
+    cred2 = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred2 is None
 
 
@@ -777,10 +785,12 @@ async def test_oauth_credential_env_var_reaches_subprocess(manager, monkeypatch)
         "EnvSessionOAuth", credential_id="c-env-oauth"
     )
 
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred is not None
-    backend = manager._make_backend(session)
-    _, kwargs = backend.build_args(
+    backend = manager._make_run(session)
+    _, kwargs = backend.build_argv(
         "prompt", session.working_dir, None, credential=cred
     )
     env = kwargs.get("env") or {}
@@ -797,8 +807,8 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
     secret really lands in the env dict that would be passed to
     asyncio.create_subprocess_exec.
 
-    Covers the chain: DB row → _resolve_credential → BackendCredential →
-    SessionManager._make_backend → ClaudeCodeBackend.build_args.
+    Covers the chain: DB row → _resolve_credential → HarnessCredential →
+    SessionManager._make_run → HarnessRun.build_argv.
     """
     from datetime import datetime, timezone
     from server.config import settings
@@ -817,13 +827,15 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
     session = await _new(manager,"EnvSession", credential_id="c-env")
 
     # 1. Resolve through the session_manager pipeline
-    cred = await manager._resolve_credential(session)
+    from server.harness import get_harness
+
+    cred = await manager._resolve_credential(session, None, get_harness("claude-code"))
     assert cred is not None and cred.secret == "sk-real-secret"
 
     # 2. The backend factory the session_manager would use must then turn
     # that credential into a real env on the subprocess invocation.
-    backend = manager._make_backend(session)
-    argv, kwargs = backend.build_args(
+    backend = manager._make_run(session)
+    argv, kwargs = backend.build_argv(
         "prompt", session.working_dir, None, credential=cred
     )
     env = kwargs.get("env") or {}
@@ -844,8 +856,8 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
     # And a sanity check on the *negative* path: a session with no
     # credential must NOT inject one (unless the parent shell already had).
     bare_session = await _new(manager,"Bare")
-    bare_backend = manager._make_backend(bare_session)
-    _, bare_kwargs = bare_backend.build_args(
+    bare_backend = manager._make_run(bare_session)
+    _, bare_kwargs = bare_backend.build_argv(
         "p", bare_session.working_dir, None, credential=None
     )
     import os as _os
@@ -855,9 +867,9 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
 
 
 @pytest.mark.asyncio
-async def test_make_backend_applies_agent_config(manager):
-    """_make_backend reads the agent's system prompt / model / MCP set /
-    tool allow-deny and translates them to CLI args (agent-refactor.md §5.2)."""
+async def test_make_run_applies_agent_config(manager):
+    """_make_run builds a run whose argv reflects the agent's system prompt /
+    model / MCP set / tool allow-deny (agent-refactor.md §5.2)."""
     import json as _json
     import uuid as _uuid
     from datetime import datetime, timezone
@@ -877,8 +889,8 @@ async def test_make_backend_applies_agent_config(manager):
     )
     session = await manager.create_session(aid, name="S")
     agent = await manager.db.get_agent(aid)
-    backend = manager._make_backend(session, agent)
-    argv, _ = backend.build_args("hi", session.working_dir, None)
+    backend = manager._make_run(session, agent)
+    argv, _ = backend.build_argv("hi", session.working_dir, None)
 
     # model
     assert "--model" in argv and "claude-opus-4-7" in argv
@@ -897,47 +909,52 @@ async def test_make_backend_applies_agent_config(manager):
 
 
 @pytest.mark.asyncio
-async def test_make_backend_dispatches_on_backend(manager):
-    """_make_backend returns CodexBackend for backend='codex' and
-    ClaudeCodeBackend for 'claude-code' (codex-backend.md §5.5). Codex must
-    not inherit the Claude premature-exit recovery."""
-    from server.backends import ClaudeCodeBackend, CodexBackend
+async def test_make_run_dispatches_on_backend(manager):
+    """_make_run builds a HarnessRun whose profile matches session.backend
+    (codex-backend.md §5.5). Codex must not inherit the Claude premature-exit
+    recovery (a Claude-CLI bug workaround)."""
+    from server.harness import HarnessRun, get_harness
 
     agent = await manager.db.get_system_agent()
     claude_s = await manager.create_session(agent["id"], name="C", backend="claude-code")
     codex_s = await manager.create_session(agent["id"], name="X", backend="codex")
 
-    assert isinstance(manager._make_backend(claude_s, agent), ClaudeCodeBackend)
-    cx = manager._make_backend(codex_s, agent)
-    assert isinstance(cx, CodexBackend)
-    assert cx.wants_premature_exit_recovery is False
+    claude_run = manager._make_run(claude_s, agent)
+    codex_run = manager._make_run(codex_s, agent)
+    assert isinstance(claude_run, HarnessRun) and isinstance(codex_run, HarnessRun)
+    assert claude_run.profile.backend == "claude-code"
+    assert codex_run.profile.backend == "codex"
+
+    # Premature-exit recovery is a harness property, not a per-run flag.
+    assert get_harness("claude-code").premature_exit_recovery is True
+    assert get_harness("codex").premature_exit_recovery is False
 
 
 @pytest.mark.asyncio
 async def test_run_backend_translates_events_end_to_end(manager):
     """Stub the backend to produce a sequence of events and verify
     _run_backend translates each one to the expected WS message shape."""
-    from server.backends import BackendBase, BackendEvent
+    from server.harness import HarnessEvent
 
     session = await _new(manager,"E2E")
 
     events_to_emit = [
-        BackendEvent(type="text", content="hello"),
-        BackendEvent(
+        HarnessEvent(type="text", content="hello"),
+        HarnessEvent(
             type="tool_use",
             tool_name="Bash",
             tool_input={"command": "ls"},
             tool_use_id="t1",
         ),
-        BackendEvent(
+        HarnessEvent(
             type="tool_result", content="out", tool_use_id="t1", is_error=False
         ),
-        BackendEvent(
+        HarnessEvent(
             type="result", session_id="claude-sid-1", cost=0.01, num_turns=1
         ),
     ]
 
-    class ScriptedBackend(BackendBase):
+    class ScriptedBackend:
         name = "scripted"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -956,7 +973,7 @@ async def test_run_backend_translates_events_end_to_end(manager):
     def fake_factory(s, agent=None, connectors=None):
         return ScriptedBackend()
 
-    manager._make_backend = fake_factory  # type: ignore[method-assign]
+    manager._make_run = fake_factory  # type: ignore[method-assign]
 
     ws_msgs = [m async for m in manager._run_backend(session, "go")]
     types = [m["type"] for m in ws_msgs]
@@ -982,7 +999,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
     `result` event, _run_backend should respawn the backend exactly
     once with prompt='continue' and the captured resume id, then
     surface the events from the recovery turn."""
-    from server.backends import BackendBase, BackendEvent
+    from server.harness import HarnessEvent
 
     session = await _new(manager,"Recovery")
 
@@ -991,11 +1008,10 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
     # what it owed us after the continue nudge.
     invocations: list[dict[str, Any]] = []
 
-    class FlakyBackend(BackendBase):
+    class FlakyBackend:
         name = "flaky"
-        wants_premature_exit_recovery = True
 
-        def __init__(self, events: list[BackendEvent]) -> None:
+        def __init__(self, events: list[HarnessEvent]) -> None:
             self._events = events
             self.started_with: dict[str, Any] | None = None
 
@@ -1018,22 +1034,22 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
 
     backends_iter = iter([
         FlakyBackend([
-            BackendEvent(type="session_started", session_id="claude-sid-recover"),
-            BackendEvent(
+            HarnessEvent(type="session_started", session_id="claude-sid-recover"),
+            HarnessEvent(
                 type="tool_use",
                 tool_name="Read",
                 tool_input={"file_path": "/big.md"},
                 tool_use_id="tu1",
             ),
-            BackendEvent(
+            HarnessEvent(
                 type="tool_result", content="...", tool_use_id="tu1", is_error=False
             ),
             # No `result` — this is the bug.
         ]),
         FlakyBackend([
-            BackendEvent(type="session_started", session_id="claude-sid-recover"),
-            BackendEvent(type="text", content="continuing where I left off"),
-            BackendEvent(
+            HarnessEvent(type="session_started", session_id="claude-sid-recover"),
+            HarnessEvent(type="text", content="continuing where I left off"),
+            HarnessEvent(
                 type="result",
                 session_id="claude-sid-recover",
                 cost=0.02,
@@ -1042,7 +1058,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
         ]),
     ])
 
-    manager._make_backend = lambda s, agent=None, connectors=None: next(backends_iter)  # type: ignore[method-assign,assignment]
+    manager._make_run = lambda s, agent=None, connectors=None: next(backends_iter)  # type: ignore[method-assign,assignment]
 
     ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
     types = [m["type"] for m in ws_msgs]
@@ -1070,30 +1086,29 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
     """If the second CLI invocation also exits prematurely after a
     tool roundtrip, give up rather than loop forever. The retry
     budget is one — after that the turn ends without a `result`."""
-    from server.backends import BackendBase, BackendEvent
+    from server.harness import HarnessEvent
 
     session = await _new(manager,"BoundedRecovery")
 
     invocations: list[dict[str, Any]] = []
 
-    def make_flaky_events() -> list[BackendEvent]:
+    def make_flaky_events() -> list[HarnessEvent]:
         return [
-            BackendEvent(type="session_started", session_id="claude-sid-stuck"),
-            BackendEvent(
+            HarnessEvent(type="session_started", session_id="claude-sid-stuck"),
+            HarnessEvent(
                 type="tool_use",
                 tool_name="Read",
                 tool_input={"file_path": "/big.md"},
                 tool_use_id="tu",
             ),
-            BackendEvent(
+            HarnessEvent(
                 type="tool_result", content="...", tool_use_id="tu", is_error=False
             ),
             # No `result` — bug fires every time.
         ]
 
-    class AlwaysFlakyBackend(BackendBase):
+    class AlwaysFlakyBackend:
         name = "always-flaky"
-        wants_premature_exit_recovery = True
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
             invocations.append({"prompt": prompt, "resume_id": resume_id})
@@ -1107,7 +1122,7 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s, agent=None, connectors=None: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
+    manager._make_run = lambda s, agent=None, connectors=None: AlwaysFlakyBackend()  # type: ignore[method-assign,assignment]
 
     ws_msgs: list[dict[str, Any]] = [m async for m in manager._run_backend(session, "go")]
 
@@ -1128,13 +1143,13 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
 async def test_run_backend_does_not_respawn_on_clean_exit(manager):
     """A turn that ends with a `result` event is healthy — no
     recovery should fire even if it included tool calls."""
-    from server.backends import BackendBase, BackendEvent
+    from server.harness import HarnessEvent
 
     session = await _new(manager,"CleanExit")
 
     invocations: list[str] = []
 
-    class CleanBackend(BackendBase):
+    class CleanBackend:
         name = "clean"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -1142,18 +1157,18 @@ async def test_run_backend_does_not_respawn_on_clean_exit(manager):
 
         def stream(self):
             async def _gen():
-                yield BackendEvent(type="session_started", session_id="sid-clean")
-                yield BackendEvent(
+                yield HarnessEvent(type="session_started", session_id="sid-clean")
+                yield HarnessEvent(
                     type="tool_use",
                     tool_name="Read",
                     tool_input={"file_path": "/x"},
                     tool_use_id="t",
                 )
-                yield BackendEvent(
+                yield HarnessEvent(
                     type="tool_result", content="ok", tool_use_id="t", is_error=False
                 )
-                yield BackendEvent(type="text", content="done")
-                yield BackendEvent(
+                yield HarnessEvent(type="text", content="done")
+                yield HarnessEvent(
                     type="result", session_id="sid-clean", cost=0.01, num_turns=1
                 )
             return _gen()
@@ -1161,7 +1176,7 @@ async def test_run_backend_does_not_respawn_on_clean_exit(manager):
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s, agent=None, connectors=None: CleanBackend()  # type: ignore[method-assign,assignment]
+    manager._make_run = lambda s, agent=None, connectors=None: CleanBackend()  # type: ignore[method-assign,assignment]
 
     _ = [m async for m in manager._run_backend(session, "go")]
     assert invocations == ["go"]  # exactly one — no retry
@@ -1172,12 +1187,12 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
     """If the CLI dies without ever emitting a tool_use, that's not
     the documented bug — could be auth failure, network drop, etc.
     Don't retry; surface the incomplete turn as-is."""
-    from server.backends import BackendBase, BackendEvent
+    from server.harness import HarnessEvent
 
     session = await _new(manager,"DiesEarly")
     invocations: list[str] = []
 
-    class CrashEarlyBackend(BackendBase):
+    class CrashEarlyBackend:
         name = "crash-early"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -1185,14 +1200,14 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
 
         def stream(self):
             async def _gen():
-                yield BackendEvent(type="session_started", session_id="sid-early")
+                yield HarnessEvent(type="session_started", session_id="sid-early")
                 # No tool_use. No result. CLI just died.
             return _gen()
 
         async def stop(self):
             pass
 
-    manager._make_backend = lambda s, agent=None, connectors=None: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
+    manager._make_run = lambda s, agent=None, connectors=None: CrashEarlyBackend()  # type: ignore[method-assign,assignment]
 
     _ = [m async for m in manager._run_backend(session, "go")]
     assert invocations == ["go"]  # no retry — not the bug we recover from

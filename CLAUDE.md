@@ -34,10 +34,11 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (639 tests; the 5
-   codex real-CLI tests (`test_backend_codex_real.py` + `test_codex_login_real.py`)
-   need `codex` on PATH and the 2 `test_schedule_ai_real.py` tests need `claude`
-   on PATH — run with the nvm bin prepended, see Conventions)
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (632 tests; the
+   real-CLI tests auto-skip unless their binary is on PATH —
+   `test_backend_claude_code_real.py` + `test_schedule_ai_real.py` need
+   `claude`; `test_backend_codex_real.py` + `test_codex_login_real.py` need
+   `codex` — run with the nvm bin prepended, see Conventions)
 2. **Frontend unit tests**: `cd web && bun run test` (34 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
 4. **E2E tests**: `cd web && bun run test:e2e` (59 tests, Playwright auto-starts servers)
@@ -48,7 +49,7 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Count | What it covers |
 |-------|------|-------|----------------|
-| Backend unit | pytest | 639 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence (incl. credential storage split + refresh-error codes), JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner (interval **and cron** triggers) + schedule-recurrence migration, **natural-language `/schedule` parsing** (`schedule_ai`: rigid fast-path, JSON extraction, cron/interval validation, `from_text` route with mocked + real-CLI AI), bridge base/manager/telegram, tunnel config, OAuth provider registry, agents (manager + routes), Codex backend (normalizer + build_args; real-CLI when `codex` on PATH), **Codex in-app login** (`codex_login` device-auth orchestrator with a fake CLI: scrape URL+code, success/fail/cancel, per-credential `CODEX_HOME` resolution, `/credentials/codex/*` routes; real-CLI start when `codex` on PATH), **connectors** (DB split-secret + agent-join, manager incl. token-refresh lifecycle + in-app OAuth-client config + custom-connector CRUD, OAuth providers, REST routes incl. OAuth flow, the github/gmail/generic MCP servers), real-CLI integration (when `claude` is on PATH) |
+| Backend unit | pytest | 632 | Config, models, session manager, REST API (auth, CRUD, 404s, reset), database persistence (incl. credential storage split + refresh-error codes), JSONL parser/writer, CLI (handoff, pull), import API, schedules CRUD + scheduler runner (interval **and cron** triggers) + schedule-recurrence migration, **natural-language `/schedule` parsing** (`schedule_ai`: rigid fast-path, JSON extraction, cron/interval validation, `from_text` route — harness-agnostic, runs on the agent's own harness claude-code **or** codex, with fake + real-CLI AI), bridge base/manager/telegram, tunnel config, OAuth provider registry, agents (manager + routes), **harness layer** (`harness`: one `Harness` + one `HarnessRun` subprocess engine driven by a per-backend `RuntimeProfile` value — no per-framework subclasses; shared MCP/system-prompt assembly, registry + derived predicates, `run_oneshot` for both backends, claude + codex argv/parser snapshots, real-CLI for both when on PATH), **Codex in-app login** (`codex_login` device-auth orchestrator with a fake CLI: scrape URL+code, success/fail/cancel, per-credential `CODEX_HOME` resolution via `resolve_credential_by_id(style="home_dir")`, `/credentials/codex/*` routes; real-CLI start when `codex` on PATH), **connectors** (DB split-secret + agent-join, manager incl. token-refresh lifecycle + in-app OAuth-client config + custom-connector CRUD, OAuth providers, REST routes incl. OAuth flow, the github/gmail/generic MCP servers) |
 | Frontend unit | vitest | 34 | Zustand store (token, sessions, messages, status, agents, connectors), useWebSocket, BgTaskChip, FileViewerDialog |
 | E2E | Playwright | 59 | Login, session CRUD, real Claude responses (incl. AskUserQuestion + resume), Enter to send, input/state while running, WebSocket reconnect, mobile layout, CLI handoff/pull + roundtrip + API cleanup, Telegram bridge (fake API server), schedules (`/schedule` command → all-agents overview dialog, toggle/delete), archived-sessions account-menu manage page (view read-only + unarchive), waiting-input hint, message queue + Esc interrupt, virtualized chat scrolling, OAuth dialog flow (Claude Code + **Codex device-code sign-in** via the Harness chooser), credential override, agents rail/settings, **connectors** (catalog + availability gating, in-app Set-up flips a built-in to connectable, add/remove a custom connector, per-agent toggles) |
 
@@ -63,7 +64,7 @@ You MUST verify your changes before considering them done:
 - `server/routers/` — REST + WebSocket routers (`sessions`, `schedules`, `agents`, `credentials`, `connectors`, `ws`)
 - `server/bridges/` — Messaging-platform integrations (`telegram`, base + manager)
 - `server/agent_manager.py` — Agent CRUD (durable assistant definitions that own sessions/schedules)
-- `server/backends/` — AI backends (`claude_code`, `codex`) behind a common interface
+- `server/harness/` — Harness layer: the single boundary for all model/runtime interaction (`docs/plan/harness-layer.md`). One `Harness` class + one `HarnessRun` engine, configured by a `RuntimeProfile` *value* per backend kind (`claude_code`, `codex`) — no per-framework subclasses. Holds `assembly` (shared per-turn MCP/system-prompt assembly), `run` (subprocess+JSONL engine + PATH helpers), `registry` (`get_harness`/`available_backends`), `login` (LoginDriver protocol). Capabilities are derived from the profile; `run_oneshot` powers backend-agnostic `/schedule` parsing.
 - `server/connectors/` — Connector framework: `base` (ConnectorBase + backend-neutral MCP entry), `oauth` (provider protocol + redirect-URI login manager), `registry`, built-in `github`/`gmail`, and `custom` (user-defined kinds + generic OAuth provider + `resolve_connector`)
 - `server/connector_manager.py` — Connector business logic (install upsert, in-app OAuth-client config DB→env resolve, token-refresh lifecycle, custom-connector CRUD)
 - `server/mcp_servers/connectors/` — Per-kind stdio MCP servers (`github`, `gmail`, generic `custom`) + shared token/truncation helpers

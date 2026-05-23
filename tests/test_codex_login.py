@@ -148,32 +148,38 @@ async def test_codex_login_status_unknown(client):
 
 
 @pytest.mark.asyncio
-async def test_codex_home_for_resolution():
-    """`_codex_home_for` resolves the per-credential dir deterministically and
-    only when it's a completed login (auth.json present)."""
+async def test_codex_home_credential_resolution():
+    """The codex home_dir credential resolves deterministically and only when
+    it's a completed login (auth.json present). Resolution now lives in
+    resolve_credential_by_id(style="home_dir") + _resolve_credential's
+    session→agent precedence (the old _codex_home_for, folded in)."""
     from types import SimpleNamespace
 
+    from server.harness import get_harness
     from server.session_manager import SessionManager
 
     mgr = SessionManager()
+    codex = get_harness("codex")  # credential_style == "home_dir"
     sess = SimpleNamespace(credential_id="credX", id="s1")
 
-    # No dir yet → fall back to host login.
-    assert mgr._codex_home_for(sess) is None
+    # No dir yet → fall back to host login (None).
+    assert await mgr._resolve_credential(sess, None, codex) is None
 
     home = codex_login.codex_home_for("credX")
     os.makedirs(home, exist_ok=True)
     # Dir exists but no auth.json (interrupted login) → still None.
-    assert mgr._codex_home_for(sess) is None
+    assert await mgr._resolve_credential(sess, None, codex) is None
 
     open(os.path.join(home, "auth.json"), "w").close()
-    assert mgr._codex_home_for(sess) == home
+    cred = await mgr._resolve_credential(sess, None, codex)
+    assert cred is not None and cred.home_dir == home and cred.backend == "codex"
 
     # Falls back to the agent's default credential when the session has none.
     no_cred = SimpleNamespace(credential_id=None, id="s2")
-    assert mgr._codex_home_for(no_cred, {"credential_id": "credX"}) == home
+    cred2 = await mgr._resolve_credential(no_cred, {"credential_id": "credX"}, codex)
+    assert cred2 is not None and cred2.home_dir == home
     # No credential anywhere → None.
-    assert mgr._codex_home_for(no_cred, None) is None
+    assert await mgr._resolve_credential(no_cred, None, codex) is None
 
 
 @pytest.mark.asyncio

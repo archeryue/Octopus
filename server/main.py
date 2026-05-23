@@ -140,13 +140,14 @@ app.include_router(ws.router)
 @app.get("/api/backends")
 async def list_backends(_: str = Depends(verify_token)):
     """Which AI backends are usable on this host (codex-backend.md §6.1).
-    `claude-code` is always listed; `codex` appears only when its binary
-    resolves on PATH."""
-    from .backends.subprocess_jsonl import _which_with_fallback
+    A harness kind appears only when its CLI resolves on PATH. `claude-code`
+    is always listed (the default) even if not yet installed, matching the
+    historical contract."""
+    from .harness import available_backends
 
-    available = ["claude-code"]
-    if _which_with_fallback("codex") is not None:
-        available.append("codex")
+    available = available_backends()
+    if "claude-code" not in available:
+        available = ["claude-code", *available]
     return {"available": available}
 
 

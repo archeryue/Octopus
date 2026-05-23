@@ -20,8 +20,8 @@ import os
 
 import pytest
 
-from server.backends import BackendEvent, CodexBackend
-from server.backends.subprocess_jsonl import _which_with_fallback
+from server.harness import HarnessEvent, RunConfig, get_harness
+from server.harness.run import _which_with_fallback
 
 _codex = _which_with_fallback("codex")
 _logged_in = os.path.exists(os.path.expanduser("~/.codex/auth.json"))
@@ -32,18 +32,15 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-class _RealCodexBackend(CodexBackend):
-    """Resolve the binary via the nvm-aware fallback so the subprocess spawns
-    even when codex is only under ~/.nvm/.../bin (not on the service PATH)."""
-
-    def build_args(self, prompt, working_dir, resume_id, credential=None):
-        argv, kw = super().build_args(prompt, working_dir, resume_id, credential)
-        argv[0] = _codex
-        return argv, kw
+def _codex_run(**cfg):
+    """A codex HarnessRun for the given RunConfig. The engine resolves the
+    `codex` binary via the same nvm-aware fallback, so this spawns even when
+    codex lives only under ~/.nvm/.../bin (not on the service PATH)."""
+    return get_harness("codex").create_run(RunConfig(**cfg))
 
 
-async def _drain(backend: CodexBackend, timeout: float = 150.0) -> list[BackendEvent]:
-    events: list[BackendEvent] = []
+async def _drain(backend, timeout: float = 150.0) -> list[HarnessEvent]:
+    events: list[HarnessEvent] = []
 
     async def collect() -> None:
         async for ev in backend.stream():
@@ -61,7 +58,7 @@ async def _drain(backend: CodexBackend, timeout: float = 150.0) -> list[BackendE
 
 @pytest.mark.asyncio
 async def test_real_text_then_result(tmp_path):
-    backend = _RealCodexBackend(session_id="rt", mcp_servers=[])
+    backend = _codex_run(session_id="rt", mcp_servers=[])
     await backend.start("Reply with exactly: PONG. Do not use any tools.", str(tmp_path))
     try:
         events = await _drain(backend)
@@ -82,7 +79,7 @@ async def test_real_text_then_result(tmp_path):
 
 @pytest.mark.asyncio
 async def test_real_command_execution(tmp_path):
-    backend = _RealCodexBackend(session_id="rc", mcp_servers=[])
+    backend = _codex_run(session_id="rc", mcp_servers=[])
     await backend.start(
         "Use the shell to run exactly: echo PONG_FROM_CODEX. Then reply: done.",
         str(tmp_path),
@@ -110,7 +107,7 @@ async def test_real_mcp_tool_call_viewer(tmp_path):
     call it — proves MCP injection works and the normalizer maps the
     mcp_tool_call item to mcp__viewer__show_file."""
     (tmp_path / "hello.txt").write_text("hello content\n")
-    backend = _RealCodexBackend(session_id="rm", mcp_servers=["viewer"])
+    backend = _codex_run(session_id="rm", mcp_servers=["viewer"])
     await backend.start(
         "You have an MCP tool whose name starts with `mcp__viewer` for opening "
         "a file in a viewer. Call it to open `hello.txt`. Then reply: done.",
@@ -137,7 +134,7 @@ async def test_real_mcp_tool_call_viewer(tmp_path):
 
 @pytest.mark.asyncio
 async def test_real_resume_across_two_subprocesses(tmp_path):
-    b1 = _RealCodexBackend(session_id="r1", mcp_servers=[])
+    b1 = _codex_run(session_id="r1", mcp_servers=[])
     await b1.start(
         "Remember this exact word for later: MARIGOLD. Reply only with OK.",
         str(tmp_path),
@@ -149,7 +146,7 @@ async def test_real_resume_across_two_subprocesses(tmp_path):
     sid = next(e for e in e1 if e.type == "result").session_id
     assert sid, "turn 1 didn't yield a resumable thread id"
 
-    b2 = _RealCodexBackend(session_id="r2", mcp_servers=[])
+    b2 = _codex_run(session_id="r2", mcp_servers=[])
     await b2.start(
         "What exact word did I ask you to remember? Reply only with that word.",
         str(tmp_path),

@@ -25,8 +25,8 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
-from .backends.subprocess_jsonl import _which_with_fallback, augmented_path
 from .config import settings
+from .harness.run import _which_with_fallback, augmented_path
 
 logger = logging.getLogger(__name__)
 

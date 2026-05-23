@@ -6,7 +6,7 @@ prepends the per-user install dirs so the child resolves node."""
 
 import os
 
-from server.backends.subprocess_jsonl import _fallback_path_dirs, augmented_path
+from server.harness.run import _fallback_path_dirs, augmented_path
 
 
 def test_augmented_path_prepends_extra_then_fallbacks_then_base():

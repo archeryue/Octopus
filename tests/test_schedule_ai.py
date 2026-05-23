@@ -188,9 +188,9 @@ async def test_parse_schedule_text_rigid_skips_ai():
 
 @pytest.mark.asyncio
 async def test_parse_schedule_text_ai_cron():
-    async def fake_runner(prompt, **k):
+    async def fake_runner(ctx):
         # The prompt should carry the timezone we passed.
-        assert "America/Los_Angeles" in prompt
+        assert "America/Los_Angeles" in ctx.prompt
         return (
             '```json\n{"name":"Gmail","prompt":"summarize unread email",'
             '"recurrence":{"kind":"cron","cron":"0 9 * * *"},'
@@ -223,7 +223,29 @@ async def test_parse_schedule_text_empty_raises():
         await parse_schedule_text("   ")
 
 
-def test_run_oneshot_is_the_default(monkeypatch):
-    # parse_schedule_text resolves the module-level runner at call time, so a
-    # monkeypatch of run_claude_oneshot takes effect (route tests rely on this).
-    assert schedule_ai.run_claude_oneshot.__name__ == "run_claude_oneshot"
+@pytest.mark.asyncio
+async def test_harness_run_oneshot_is_the_default_runner():
+    """With no explicit runner, the AI path calls harness.run_oneshot —
+    backend-agnostic, the agent's own harness (claude-code or codex)."""
+
+    class FakeHarness:
+        called_with = None
+
+        async def run_oneshot(self, ctx):
+            FakeHarness.called_with = ctx
+            return (
+                '{"name":"X","prompt":"do it","recurrence":'
+                '{"kind":"interval","interval_seconds":300},"recurrence_label":"every 5m"}'
+            )
+
+    p = await parse_schedule_text("something useful every 5 minutes", harness=FakeHarness())
+    assert p.interval_seconds == 300
+    assert FakeHarness.called_with is not None  # the harness one-shot ran
+
+
+@pytest.mark.asyncio
+async def test_parse_schedule_text_no_harness_no_runner_raises():
+    """A free-text (non-rigid) parse with no harness and no runner is an
+    explicit error, not a silent fallback to some hardcoded CLI."""
+    with pytest.raises(ScheduleParseError):
+        await parse_schedule_text("do something clever sometime")

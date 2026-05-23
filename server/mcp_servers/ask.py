@@ -32,8 +32,8 @@ question is `{question, header?, multiSelect?, options:[{label,
 description}]}`. We don't validate exhaustively — the host re-
 validates and the frontend renders whatever it gets.
 
-Spawned by claude as a child via `--mcp-config`. Env injected by
-`server/backends/claude_code.py:build_args`:
+Spawned by the harness as a child MCP server. Env injected by the harness
+assembly (`server/harness/assembly.py:build_callback_env`):
   OCTOPUS_API_BASE     http://127.0.0.1:{settings.port}
   OCTOPUS_AUTH_TOKEN   the bearer token
   OCTOPUS_SESSION_ID   the session this CLI invocation belongs to

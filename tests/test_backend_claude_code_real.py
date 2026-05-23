@@ -15,7 +15,7 @@ import shutil
 
 import pytest
 
-from server.backends import BackendEvent, ClaudeCodeBackend
+from server.harness import HarnessEvent, RunConfig, get_harness
 
 # Widen PATH so shutil.which("claude") finds the binary even when the
 # user's shell didn't export ~/.local/bin (typical for non-interactive
@@ -37,8 +37,14 @@ pytestmark = pytest.mark.skipif(
 CWD = os.getcwd()
 
 
-async def _drain(backend: ClaudeCodeBackend, timeout: float = 60.0) -> list[BackendEvent]:
-    events: list[BackendEvent] = []
+def _claude_run(**cfg):
+    """A claude-code HarnessRun for the given RunConfig; the engine resolves
+    the `claude` binary via the nvm-aware fallback."""
+    return get_harness("claude-code").create_run(RunConfig(**cfg))
+
+
+async def _drain(backend, timeout: float = 60.0) -> list[HarnessEvent]:
+    events: list[HarnessEvent] = []
 
     async def collect() -> None:
         async for ev in backend.stream():
@@ -67,7 +73,7 @@ _CONTROL_PROTOCOL_RED_FLAGS = (
 
 
 def _assert_no_control_protocol_errors(
-    backend: ClaudeCodeBackend, events: list[BackendEvent]
+    backend, events: list[HarnessEvent]
 ) -> None:
     """Fail loudly if the CLI logged a control-protocol error during this
     run, even if the model recovered (e.g. by retrying the tool call)."""
@@ -100,7 +106,7 @@ def _assert_no_control_protocol_errors(
 
 @pytest.mark.asyncio
 async def test_real_simple_text_then_result():
-    backend = ClaudeCodeBackend(model="haiku")
+    backend = _claude_run(model="haiku")
     await backend.start("Reply with exactly: PONG", CWD)
     try:
         events = await _drain(backend, timeout=60.0)
@@ -129,7 +135,7 @@ async def test_real_simple_text_then_result():
 
 @pytest.mark.asyncio
 async def test_real_tool_use_then_tool_result():
-    backend = ClaudeCodeBackend(model="haiku")
+    backend = _claude_run(model="haiku")
     await backend.start(
         "Use the Bash tool to run this exact command: echo PONG_FROM_BASH. "
         "Then say 'done' and stop.",
@@ -185,7 +191,7 @@ async def test_real_resume_across_two_subprocesses():
     and proves it still has the context."""
 
     # Turn 1
-    b1 = ClaudeCodeBackend(model="haiku")
+    b1 = _claude_run(model="haiku")
     await b1.start(
         "Remember this exact word for later: MARIGOLD. Reply only with OK.",
         CWD,
@@ -202,7 +208,7 @@ async def test_real_resume_across_two_subprocesses():
     assert sid, "turn 1 didn't yield a resumable session id"
 
     # Turn 2 — fresh backend, --resume
-    b2 = ClaudeCodeBackend(model="haiku")
+    b2 = _claude_run(model="haiku")
     await b2.start(
         "What was the exact word I asked you to remember? Reply only with that word.",
         CWD,
@@ -231,7 +237,7 @@ async def test_real_interrupt_terminates_in_flight_turn():
     """Send a prompt that would take a while; immediately interrupt; the
     stream should terminate without hanging."""
 
-    backend = ClaudeCodeBackend(model="haiku")
+    backend = _claude_run(model="haiku")
     # Prompt that's likely to take multiple turns / tool uses so we have
     # time to interrupt before result lands.
     await backend.start(
@@ -239,7 +245,7 @@ async def test_real_interrupt_terminates_in_flight_turn():
         "broken into 10 sections, with citations for each.",
         CWD,
     )
-    events: list[BackendEvent] = []
+    events: list[HarnessEvent] = []
 
     async def consume() -> None:
         async for ev in backend.stream():
@@ -277,10 +283,10 @@ async def test_real_credential_with_bad_key_yields_auth_error():
     """A credential with an obviously-invalid API key must override the
     default OAuth and cause the CLI to surface an auth error in its result.
     Proves the env-var injection actually takes effect at the CLI."""
-    from server.backends import BackendCredential
+    from server.harness import HarnessCredential
 
-    backend = ClaudeCodeBackend(model="haiku")
-    bad_cred = BackendCredential(
+    backend = _claude_run(model="haiku")
+    bad_cred = HarnessCredential(
         backend="claude-code",
         auth_type="api_key",
         secret="sk-ant-bogus-key-octopus-test",

@@ -453,10 +453,10 @@ def test_build_args_injects_viewer_mcp_config(tmp_path):
     silently lose the flag on a future refactor."""
     import json as _json
 
-    from server.backends.claude_code import ClaudeCodeBackend
+    from server.harness import RunConfig, get_harness
 
-    backend = ClaudeCodeBackend()
-    argv, spawn = backend.build_args(
+    run = get_harness("claude-code").create_run(RunConfig())
+    argv, spawn = run.build_argv(
         prompt="hi", working_dir=str(tmp_path), resume_id=None, credential=None
     )
     assert "--mcp-config" in argv

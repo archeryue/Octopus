@@ -188,7 +188,7 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
     is faithful to what the user sent), but the backend receives the
     pointer, not the 100 KB blob. Without this, the spill module is
     decoupled from the path that actually triggers E2BIG."""
-    from server.backends import BackendBase, BackendEvent
+    from server.harness import HarnessEvent
     from server.database import Database
     from server.session_manager import SessionManager
 
@@ -202,8 +202,7 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
 
         received_prompts: list[str] = []
 
-        class RecordingBackend(BackendBase):
-            name = "recording"
+        class RecordingBackend:
 
             async def start(
                 self, prompt, working_dir, resume_id=None, credential=None
@@ -212,11 +211,11 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
 
             def stream(self):
                 async def _gen():
-                    yield BackendEvent(
+                    yield HarnessEvent(
                         type="session_started", session_id="sid-huge"
                     )
-                    yield BackendEvent(type="text", content="ok")
-                    yield BackendEvent(
+                    yield HarnessEvent(type="text", content="ok")
+                    yield HarnessEvent(
                         type="result",
                         session_id="sid-huge",
                         cost=0.0,
@@ -228,7 +227,7 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
             async def stop(self):
                 pass
 
-        mgr._make_backend = lambda s, agent=None, connectors=None: RecordingBackend()  # type: ignore[method-assign,assignment]
+        mgr._make_run = lambda s, agent=None, connectors=None: RecordingBackend()  # type: ignore[method-assign,assignment]
 
         huge = "Q" * (LARGE_PROMPT_THRESHOLD_BYTES + 50_000)
         async for _ in mgr.send_message(session.id, huge):

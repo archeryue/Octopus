@@ -20,7 +20,13 @@ from .large_prompts import (
     delete_session_large_prompts,
     spill_if_large,
 )
-from .backends import BackendBase, BackendCredential, BackendEvent, ClaudeCodeBackend
+from .harness import (
+    HarnessCredential,
+    HarnessEvent,
+    HarnessRun,
+    RunConfig,
+    get_harness,
+)
 from .config import settings
 from .crypto import decrypt, encrypt
 from .database import Database
@@ -104,7 +110,7 @@ class Session:
     # Per-prompt task that interrupt() targets; the outer _active_task is
     # the orchestrator loop and survives interrupts so it can drain the queue.
     _inner_task: asyncio.Task | None = field(default=None, repr=False)
-    _backend: BackendBase | None = field(default=None, repr=False)
+    _backend: HarnessRun | None = field(default=None, repr=False)
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
     _pending_questions: dict[str, PendingQuestion] = field(default_factory=dict, repr=False)
     # question_id -> background timer that auto-answers if the user
@@ -922,7 +928,7 @@ class SessionManager:
         await self._broadcast(event)
         return True
 
-    async def _safe_backend_interrupt(self, backend: BackendBase) -> None:
+    async def _safe_backend_interrupt(self, backend: HarnessRun) -> None:
         """Best-effort background teardown of a wedged backend subprocess.
 
         Used from interrupt() so the WS caller isn't held by SIGTERM/SIGKILL
@@ -990,13 +996,14 @@ class SessionManager:
         # point: editing an agent's prompt/model/tools/MCP affects its
         # already-open sessions on their next turn (agent-refactor.md §5.2).
         agent = await self._load_agent(session)
-        credential = await self._resolve_credential(session, agent)
+        harness = get_harness(session.backend)
+        credential = await self._resolve_credential(session, agent, harness)
         connectors = await self._load_connectors(agent)
         current_prompt = prompt
         recovery_attempts = 0
 
         while True:
-            backend = self._make_backend(session, agent, connectors)
+            backend = self._make_run(session, agent, connectors)
             session._backend = backend
             saw_result = False
             saw_tool_use = False
@@ -1079,8 +1086,8 @@ class SessionManager:
             # once) — leave it alone.
             if saw_result:
                 return
-            if not backend.wants_premature_exit_recovery:
-                # Backend opts out of the Claude-CLI premature-exit recovery
+            if not harness.premature_exit_recovery:
+                # Harness opts out of the Claude-CLI premature-exit recovery
                 # (Codex runs exactly once per turn) — codex-backend.md §5.6.
                 return
             if recovery_attempts >= self._MAX_RECOVERY_ATTEMPTS:
@@ -1147,76 +1154,52 @@ class SessionManager:
                 out.append((connector, ConnectorInstallation.from_row(row)))
         return out
 
-    def _make_backend(
+    def _make_run(
         self,
         session: Session,
         agent: dict[str, Any] | None = None,
         connectors: list[tuple[Any, Any]] | None = None,
-    ) -> BackendBase:
-        """Instantiate the backend for a session, configured from its agent.
+    ) -> HarnessRun:
+        """Build the per-turn run for a session via its harness. Single seam
+        the run loop calls (and tests monkeypatch); dispatches on
+        `session.backend` through the registry — no kind branching here."""
+        return get_harness(session.backend).create_run(
+            self._run_config(session, agent, connectors)
+        )
 
-        The agent supplies the system prompt, model, built-in MCP set, and
-        tool allow/deny policy (agent-refactor.md §5.2). When no agent is
-        attached (legacy paths / tests), the backend runs with its defaults.
-
-        Dispatches on `session.backend` (codex-backend.md §5.5).
-        """
+    def _run_config(
+        self,
+        session: Session,
+        agent: dict[str, Any] | None = None,
+        connectors: list[tuple[Any, Any]] | None = None,
+    ) -> RunConfig:
+        """Build the per-turn RunConfig from the (freshly-loaded) agent. The
+        agent supplies the system prompt, model, built-in MCP set, and tool
+        allow/deny policy (agent-refactor.md §5.2). The harness this is handed
+        to (`get_harness(session.backend).create_run(config)`) renders it the
+        way its profile dictates — no backend-kind branching here."""
         system_prompt: str | None = None
         model: str | None = None
         mcp_servers: list[str] | None = None
-        allowed_tools: list[str] | None = None
-        disallowed_tools: list[str] | None = None
+        tool_allow: list[str] | None = None
+        tool_deny: list[str] | None = None
         if agent:
             system_prompt = agent.get("system_prompt") or None
             model = agent.get("model") or None
             servers = agent.get("mcp_servers")
             mcp_servers = list(servers) if servers is not None else None
-            allowed_tools = _split_tool_list(agent.get("tool_allow"))
-            disallowed_tools = _split_tool_list(agent.get("tool_deny"))
+            tool_allow = _split_tool_list(agent.get("tool_allow"))
+            tool_deny = _split_tool_list(agent.get("tool_deny"))
 
-        if session.backend == "codex":
-            from .backends.codex import CodexBackend
-
-            return CodexBackend(
-                session_id=session.id,
-                model=model,
-                system_prompt=system_prompt,
-                mcp_servers=mcp_servers,
-                credential_home=self._codex_home_for(session, agent),
-                connectors=connectors,
-            )
-        if session.backend in ("claude-code", None):
-            return ClaudeCodeBackend(
-                session_id=session.id,
-                model=model,
-                system_prompt=system_prompt,
-                mcp_servers=mcp_servers,
-                allowed_tools=allowed_tools,
-                disallowed_tools=disallowed_tools,
-                connectors=connectors,
-            )
-        raise ValueError(f"Unknown backend: {session.backend!r}")
-
-    def _codex_home_for(
-        self, session: Session, agent: dict[str, Any] | None = None
-    ) -> str | None:
-        """Resolve the CODEX_HOME directory for a Codex session's effective
-        credential (codex-backend.md §7). A Codex credential is a
-        directory-backed login, not a secret string: its dir is deterministic
-        (`<codex_home_dir>/<credential_id>/`), so we resolve it from the
-        effective credential id (session override, else agent default) with no
-        DB call. Returns None — inheriting the host's default `~/.codex`
-        (option A) — when no credential is attached or its dir isn't a
-        completed login (no `auth.json`)."""
-        from .codex_login import codex_home_for
-
-        cred_id = session.credential_id or (
-            agent.get("credential_id") if agent else None
+        return RunConfig(
+            session_id=session.id,
+            system_prompt=system_prompt,
+            model=model,
+            mcp_servers=mcp_servers,
+            tool_allow=tool_allow,
+            tool_deny=tool_deny,
+            connectors=connectors or [],
         )
-        if not cred_id:
-            return None
-        home = codex_home_for(cred_id)
-        return home if os.path.exists(os.path.join(home, "auth.json")) else None
 
     # Refresh the access_token if it expires within this many seconds. A
     # 5-minute pad covers a slow turn that crosses the boundary without
@@ -1224,41 +1207,49 @@ class SessionManager:
     _OAUTH_REFRESH_LEEWAY_SEC = 300
 
     async def _resolve_credential(
-        self, session: Session, agent: dict[str, Any] | None = None
-    ) -> BackendCredential | None:
-        """Look up the effective credential and decrypt the secret.
+        self, session: Session, agent: dict[str, Any] | None, harness
+    ) -> HarnessCredential | None:
+        """Look up the effective credential and resolve it for `harness`.
 
-        Credential resolution is `session.credential_id` if set, else the
-        agent's `credential_id` — the per-session override wins
-        (agent-refactor.md §5.2 / decision #2).
-
-        For OAuth-token credentials (stored as a JSON bundle with a
-        refresh_token), this refreshes the access_token if it's near or
-        past expiry, persists the new bundle, and returns the resolved
-        access_token. For long-lived sk-ant- keys (either auth_type=api_key
-        or the legacy auth_type=oauth shape where mint_api_key succeeded),
-        returns the key as-is.
-
-        Returns None when no credential is attached, the row is missing,
-        decryption fails, or the credential was marked needs_reconnect by a
-        previous failed refresh.
+        Effective id is `session.credential_id` if set, else the agent's
+        (agent-refactor.md §5.2 / decision #2). The harness's profile
+        `credential_style` picks the shape: `env_secret` decrypts the secret
+        (refreshing an OAuth bundle if near expiry); `home_dir` resolves the
+        CODEX_HOME directory. Returns None when nothing's attached / resolvable.
         """
         cred_id = session.credential_id or (
             agent.get("credential_id") if agent else None
         )
         return await self.resolve_credential_by_id(
-            cred_id, context=f"session {session.id}"
+            cred_id, style=harness.profile.credential_style, context=f"session {session.id}"
         )
 
     async def resolve_credential_by_id(
-        self, cred_id: str | None, *, context: str = ""
-    ) -> BackendCredential | None:
-        """Resolve a credential id to a decrypted BackendCredential (refreshing
-        an OAuth bundle if near expiry). Returns None when there's no id, the
-        row is missing, it's marked needs_reconnect, or decryption fails — the
-        caller then runs with whatever auth the CLI finds on its own. `context`
-        is a label for log lines (e.g. the owning session/agent)."""
-        if self.db is None or not cred_id:
+        self, cred_id: str | None, *, style: str = "env_secret", context: str = ""
+    ) -> HarnessCredential | None:
+        """Resolve a credential id into a `HarnessCredential` of the shape the
+        harness needs (`style`). Returns None when there's no id, the row is
+        missing/needs_reconnect, or it can't be resolved — the caller then runs
+        with whatever auth the CLI finds on its own. `context` labels log lines.
+
+        - ``home_dir`` (Codex): the credential is directory-backed; its dir is
+          deterministic (`<codex_home_dir>/<credential_id>/`), so we resolve it
+          with no DB read and require a completed login (auth.json present).
+        - ``env_secret`` (Claude): decrypt the secret; refresh an OAuth bundle
+          if near expiry, else use the long-lived key as-is.
+        """
+        if not cred_id:
+            return None
+
+        if style == "home_dir":
+            from .codex_login import codex_home_for
+
+            home = codex_home_for(cred_id)
+            if not os.path.exists(os.path.join(home, "auth.json")):
+                return None  # inherit the host default ~/.codex (option A)
+            return HarnessCredential(backend="codex", auth_type="oauth", home_dir=home)
+
+        if self.db is None:
             return None
         row = await self.db.get_credential(cred_id)
         if row is None:
@@ -1295,7 +1286,7 @@ class SessionManager:
             )
             if access_token is None:
                 return None
-            return BackendCredential(
+            return HarnessCredential(
                 backend=row["backend"],
                 auth_type="oauth",
                 secret=access_token,
@@ -1304,7 +1295,7 @@ class SessionManager:
         # Either auth_type=api_key OR legacy auth_type=oauth where the
         # stored secret is the long-lived sk-ant- key from mint_api_key.
         # Both flow through ANTHROPIC_API_KEY at the backend.
-        return BackendCredential(
+        return HarnessCredential(
             backend=row["backend"],
             auth_type="api_key",
             secret=plaintext,
@@ -1444,7 +1435,7 @@ class SessionManager:
     # ------------------------------------------------------------------ event translation
 
     @staticmethod
-    def _event_to_message_content(event: BackendEvent) -> MessageContent | None:
+    def _event_to_message_content(event: HarnessEvent) -> MessageContent | None:
         if event.type == "text":
             if not event.content or not event.content.strip():
                 return None
@@ -1493,7 +1484,7 @@ class SessionManager:
         return None
 
     @staticmethod
-    def _event_to_ws_message(session_id: str, event: BackendEvent) -> dict[str, Any] | None:
+    def _event_to_ws_message(session_id: str, event: HarnessEvent) -> dict[str, Any] | None:
         if event.type == "text":
             if not event.content or not event.content.strip():
                 return None

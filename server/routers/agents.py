@@ -185,31 +185,32 @@ async def create_agent_schedule_from_text(
     agent_id: str, req: ScheduleFromTextRequest, _: str = Depends(verify_token)
 ):
     """Natural-language schedule creation. Parses `text` (rigid `<interval>
-    <prompt>` fast-path, else a one-shot AI parse via the `claude` CLI) into a
-    recurrence + prompt, then creates the schedule. Parse failures surface as
-    422 with a user-facing detail."""
+    <prompt>` fast-path, else a one-shot AI parse on the agent's own harness)
+    into a recurrence + prompt, then creates the schedule. Parse failures
+    surface as 422 with a user-facing detail."""
     agent = await _get_manager().get_agent(agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     from .schedules import create_schedule_for_agent, to_schedule_info
+    from ..harness import get_harness
     from ..schedule_ai import ScheduleParseError, parse_schedule_text
 
-    # The AI parse always runs the `claude` CLI, so only reuse the agent's
-    # model/credential when they're Claude's. A Codex agent's model name and
-    # credential (whose secret is a CODEX_HOME path, not a Claude key) would
-    # break `claude` — fall back to its own host login + default model.
+    # The AI parse runs on the agent's own harness (claude-code or codex —
+    # both support one-shot, D2), with its own model + credential resolved in
+    # the shape that harness needs. No backend-kind branching.
+    harness = get_harness(agent.get("backend"))
     credential = await session_manager.resolve_credential_by_id(
-        agent.get("credential_id"), context=f"schedule-parse agent {agent_id}"
+        agent.get("credential_id"),
+        style=harness.profile.credential_style,
+        context=f"schedule-parse agent {agent_id}",
     )
-    if credential is not None and credential.backend != "claude-code":
-        credential = None
-    model = agent.get("model") if (agent.get("backend") or "claude-code") == "claude-code" else None
     try:
         parsed = await parse_schedule_text(
             req.text,
+            harness=harness,
             timezone=req.timezone,
             now_iso=req.now,
-            model=model,
+            model=agent.get("model") or None,
             credential=credential,
         )
     except ScheduleParseError as e:

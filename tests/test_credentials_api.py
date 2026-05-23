@@ -227,7 +227,10 @@ async def test_oauth_start_502_on_orchestrator_runtime_error(client, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_oauth_start_rejects_codex_for_now(client):
+async def test_oauth_start_rejects_codex(client):
+    """OAuth-redirect start is rejected for codex — its login method is
+    device_code (the harness's `login.method` gates this, not a hardcoded
+    backend check)."""
     c, _ = client
     res = await c.post(
         "/api/credentials/oauth/start",
@@ -235,7 +238,7 @@ async def test_oauth_start_rejects_codex_for_now(client):
         headers=AUTH,
     )
     assert res.status_code == 400
-    assert "claude-code" in res.json()["detail"]
+    assert "codex" in res.json()["detail"].lower()
 
 
 @pytest.mark.asyncio

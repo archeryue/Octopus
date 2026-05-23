@@ -1,25 +1,24 @@
 """Natural-language schedule parsing for the `/schedule` command.
 
-Two-tier parse, both backend-side so there's a single source of truth:
+Two-tier parse, both harness-agnostic so there's a single source of truth:
 
   1. Deterministic *rigid* fast path — `<interval> <prompt>` (e.g.
      "30m check email"). No AI, no network, instant. Covers explicit forms.
-  2. AI path — a one-shot `claude --print` call that turns free text like
-     "summarize my gmail unreads every morning 9am" into a structured
-     recurrence (cron or interval) + task prompt + human label. Reuses the
-     agent's Claude auth.
+  2. AI path — a one-shot model call (`harness.run_oneshot`) that turns free
+     text like "summarize my gmail unreads every morning 9am" into a structured
+     recurrence (cron or interval) + task prompt + human label. Runs on the
+     agent's own harness (claude-code or codex) with its resolved credential —
+     no hardcoded binary.
 
 The pure helpers (rigid parse, JSON extraction, validation, label
-formatting) are unit-tested directly; the subprocess call (`run_claude_oneshot`)
-is injectable so route/unit tests don't need the real CLI.
+formatting) are unit-tested directly; the one-shot call goes through the
+harness, so route/unit tests pass a fake harness (or `runner`).
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,7 +26,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.triggers.cron import CronTrigger
 
-from .backends import BackendCredential
+from .harness import HarnessCredential, HarnessOneshotError, OneShotContext
 
 logger = logging.getLogger(__name__)
 
@@ -257,75 +256,34 @@ def validate_parsed(obj: dict, *, default_tz: str, original_text: str) -> Parsed
     raise ScheduleParseError("Couldn't work out the timing. Try e.g. \"every day at 9am\".")
 
 
-async def run_claude_oneshot(
-    prompt: str,
-    *,
-    model: str | None = None,
-    credential: BackendCredential | None = None,
-    working_dir: str | None = None,
-    binary: str = "claude",
-    timeout: float = 90.0,
-) -> str:
-    """One-shot, tool-free `claude --print --output-format=json` call. Returns
-    the model's text (the `result` field). Mirrors how the claude-code backend
-    applies a resolved credential to the subprocess env."""
-    argv = [binary, "--print", "--output-format=json"]
-    if model:
-        argv += ["--model", model]
-    argv += ["--", prompt]
-
-    env = os.environ.copy()
-    if credential is not None:
-        if credential.auth_type == "api_key":
-            env["ANTHROPIC_API_KEY"] = credential.secret
-        elif credential.auth_type == "oauth":
-            env["CLAUDE_CODE_OAUTH_TOKEN"] = credential.secret
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=working_dir or os.getcwd(),
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-    except FileNotFoundError:
-        raise ScheduleParseError(
-            "Natural-language scheduling needs the Claude CLI. Use the explicit "
-            'form instead, e.g. "/schedule 30m check the build".'
-        )
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        raise ScheduleParseError("The AI took too long to read that. Try rephrasing or use \"30m …\".")
-
-    if proc.returncode != 0:
-        logger.warning("schedule AI parse exited %s: %s", proc.returncode, err.decode()[:300])
-        raise ScheduleParseError("Couldn't reach the AI to read that. Try the explicit \"30m …\" form.")
-    try:
-        data = json.loads(out.decode())
-    except json.JSONDecodeError:
-        raise ScheduleParseError("The AI returned an unexpected response. Try rephrasing.")
-    text = data.get("result")
-    if not isinstance(text, str) or not text.strip():
-        raise ScheduleParseError("The AI returned an empty response. Try rephrasing.")
-    return text
+# Map a harness one-shot failure code to a user-facing schedule message.
+_ONESHOT_ERROR_MESSAGES = {
+    "not_found": (
+        "Natural-language scheduling needs the agent's CLI installed. Use the "
+        'explicit form instead, e.g. "/schedule 30m check the build".'
+    ),
+    "timeout": 'The AI took too long to read that. Try rephrasing or use "30m …".',
+    "failed": 'Couldn\'t reach the AI to read that. Try the explicit "30m …" form.',
+    "bad_output": "The AI returned an unexpected response. Try rephrasing.",
+    "empty": "The AI returned an empty response. Try rephrasing.",
+}
 
 
 async def parse_schedule_text(
     text: str,
     *,
+    harness=None,
     timezone: str | None = None,
     now_iso: str | None = None,
     model: str | None = None,
-    credential: BackendCredential | None = None,
+    credential: HarnessCredential | None = None,
     working_dir: str | None = None,
     runner=None,
 ) -> ParsedSchedule:
     """Turn free text into a ParsedSchedule. Tries the rigid form first (no
-    AI), then the AI path. `runner` defaults to `run_claude_oneshot`, looked up
-    at call time so tests can monkeypatch it (or pass one explicitly)."""
+    AI), then the AI path via `harness.run_oneshot`. `runner` (an async
+    callable taking an OneShotContext) defaults to `harness.run_oneshot`, so
+    tests can pass a fake runner or a fake harness instead of a real CLI."""
     text = (text or "").strip()
     if not text:
         raise ScheduleParseError(USAGE)
@@ -334,11 +292,22 @@ async def parse_schedule_text(
     if rigid is not None:
         return rigid
 
-    run = runner or run_claude_oneshot
+    run = runner or (harness.run_oneshot if harness is not None else None)
+    if run is None:
+        raise ScheduleParseError(
+            "Natural-language scheduling isn't available for this agent's harness. "
+            'Use the explicit form, e.g. "/schedule 30m check the build".'
+        )
     tz = normalize_timezone(timezone)
     now = now_iso or datetime.now(ZoneInfo(tz)).isoformat(timespec="minutes")
     prompt = build_parse_prompt(text, now, tz)
-    model_text = await run(
-        prompt, model=model, credential=credential, working_dir=working_dir
+    ctx = OneShotContext(
+        prompt=prompt, model=model, credential=credential, working_dir=working_dir
     )
+    try:
+        model_text = await run(ctx)
+    except HarnessOneshotError as e:
+        raise ScheduleParseError(
+            _ONESHOT_ERROR_MESSAGES.get(e.code, _ONESHOT_ERROR_MESSAGES["failed"])
+        )
     return validate_parsed(extract_json(model_text), default_tz=tz, original_text=text)

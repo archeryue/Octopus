@@ -65,10 +65,12 @@ def _get_session_preview(path: Path) -> str:
 def build_import_payload(
     jsonl_path: Path, name: str | None = None
 ) -> dict:
-    """Parse a JSONL file and build the import API payload."""
-    from .jsonl_parser import parse_jsonl_file
+    """Parse a Claude Code JSONL file (via the claude harness's transcript
+    codec) and build the import API payload. Handoff reads Claude's on-disk
+    JSONL, so the codec is always the claude-code harness's."""
+    from .harness import get_harness
 
-    parsed = parse_jsonl_file(jsonl_path)
+    parsed = get_harness("claude-code").transcript_codec.parse_file(str(jsonl_path))
     meta = parsed.metadata
 
     return {
@@ -155,7 +157,7 @@ def do_handoff(args: argparse.Namespace) -> None:
 
 def do_pull(args: argparse.Namespace) -> None:
     """Execute the pull subcommand — fetch a session from Octopus and write as JSONL."""
-    from .jsonl_writer import write_jsonl_file
+    from .harness import get_harness
     from .models import MessageContent
 
     server = args.server.rstrip("/")
@@ -181,6 +183,18 @@ def do_pull(args: argparse.Namespace) -> None:
         print(f"Error: Could not connect to {server} — {e.reason}", file=sys.stderr)
         sys.exit(1)
 
+    # Only harnesses with a transcript codec can be written to disk (Claude
+    # Code JSONL). A Codex session has no on-disk transcript format → say so.
+    backend = data.get("backend") or "claude-code"
+    harness = get_harness(backend)
+    if not harness.can_export:
+        print(
+            f"Error: pull isn't supported for the {backend} harness — it has no "
+            "on-disk transcript format.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     claude_session_id = data.get("claude_session_id")
     if not claude_session_id:
         import uuid
@@ -197,7 +211,9 @@ def do_pull(args: argparse.Namespace) -> None:
     project_dir = Path(args.project_dir) if args.project_dir else get_project_dir(working_dir)
     out_path = project_dir / f"{claude_session_id}.jsonl"
 
-    write_jsonl_file(out_path, messages, claude_session_id, working_dir)
+    harness.transcript_codec.write_file(
+        str(out_path), messages, claude_session_id, working_dir
+    )
 
     msg_count = len(messages)
     print(f"Pulled session with {msg_count} messages → {out_path}")

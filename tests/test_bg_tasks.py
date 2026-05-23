@@ -772,10 +772,10 @@ def test_mcp_bg_list_summary(monkeypatch):
 
 
 def test_build_args_registers_bg_mcp_with_session_env(tmp_path):
-    from server.backends.claude_code import ClaudeCodeBackend
+    from server.harness import RunConfig, get_harness
 
-    backend = ClaudeCodeBackend(session_id="sess-xyz")
-    argv, spawn = backend.build_args(
+    run = get_harness("claude-code").create_run(RunConfig(session_id="sess-xyz"))
+    argv, spawn = run.build_argv(
         prompt="hi", working_dir=str(tmp_path), resume_id=None, credential=None
     )
     cfg_idx = argv.index("--mcp-config") + 1
@@ -788,10 +788,10 @@ def test_build_args_registers_bg_mcp_with_session_env(tmp_path):
 
 
 def test_build_args_omits_session_env_when_none(tmp_path):
-    from server.backends.claude_code import ClaudeCodeBackend
+    from server.harness import RunConfig, get_harness
 
-    backend = ClaudeCodeBackend()  # no session_id
-    argv, _ = backend.build_args(
+    run = get_harness("claude-code").create_run(RunConfig())  # no session_id
+    argv, _ = run.build_argv(
         prompt="hi", working_dir=str(tmp_path), resume_id=None, credential=None
     )
     cfg = json.loads(argv[argv.index("--mcp-config") + 1])
@@ -800,10 +800,10 @@ def test_build_args_omits_session_env_when_none(tmp_path):
 
 
 def test_build_args_system_prompt_teaches_bg_usage(tmp_path):
-    from server.backends.claude_code import ClaudeCodeBackend
+    from server.harness import RunConfig, get_harness
 
-    backend = ClaudeCodeBackend(session_id="s")
-    argv, _ = backend.build_args(
+    run = get_harness("claude-code").create_run(RunConfig(session_id="s"))
+    argv, _ = run.build_argv(
         prompt="hi", working_dir=str(tmp_path), resume_id=None, credential=None
     )
     sp = argv[argv.index("--append-system-prompt") + 1]
