@@ -185,8 +185,8 @@ async def create_agent_schedule_from_text(
     agent_id: str, req: ScheduleFromTextRequest, _: str = Depends(verify_token)
 ):
     """Natural-language schedule creation. Parses `text` (rigid `<interval>
-    <prompt>` fast-path, else a one-shot AI parse using the agent's Claude) into
-    a recurrence + prompt, then creates the schedule. Parse failures surface as
+    <prompt>` fast-path, else a one-shot AI parse via the `claude` CLI) into a
+    recurrence + prompt, then creates the schedule. Parse failures surface as
     422 with a user-facing detail."""
     agent = await _get_manager().get_agent(agent_id)
     if agent is None:
@@ -194,15 +194,22 @@ async def create_agent_schedule_from_text(
     from .schedules import create_schedule_for_agent, to_schedule_info
     from ..schedule_ai import ScheduleParseError, parse_schedule_text
 
+    # The AI parse always runs the `claude` CLI, so only reuse the agent's
+    # model/credential when they're Claude's. A Codex agent's model name and
+    # credential (whose secret is a CODEX_HOME path, not a Claude key) would
+    # break `claude` — fall back to its own host login + default model.
     credential = await session_manager.resolve_credential_by_id(
         agent.get("credential_id"), context=f"schedule-parse agent {agent_id}"
     )
+    if credential is not None and credential.backend != "claude-code":
+        credential = None
+    model = agent.get("model") if (agent.get("backend") or "claude-code") == "claude-code" else None
     try:
         parsed = await parse_schedule_text(
             req.text,
             timezone=req.timezone,
             now_iso=req.now,
-            model=agent.get("model"),
+            model=model,
             credential=credential,
         )
     except ScheduleParseError as e:

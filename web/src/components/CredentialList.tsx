@@ -327,12 +327,10 @@ export function CredentialList() {
             className="credential-item group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
             key={c.id}
           >
+            {/* Both Claude and Codex are harness backends → same blue badge.
+                (Connectors use the gray/secondary badge to set them apart.) */}
             <span
-              className={`credential-badge backend-${c.backend} text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 ${
-                c.backend === "claude-code"
-                  ? "bg-primary-100 text-primary-700"
-                  : "bg-secondary text-secondary-foreground"
-              }`}
+              className={`credential-badge backend-${c.backend} text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 bg-primary-100 text-primary-700`}
             >
               {c.backend === "claude-code" ? "Claude" : "Codex"}
             </span>

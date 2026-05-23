@@ -355,6 +355,54 @@ async def test_schedule_from_text_parse_error_is_422(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_schedule_from_text_codex_agent_does_not_pass_codex_cred(
+    client, monkeypatch
+):
+    """Regression: a Codex agent's NL /schedule must not feed its Codex
+    credential/model to the `claude` parse (a Codex credential's secret is a
+    CODEX_HOME path → broke `claude` auth → 422 in the field). It falls back to
+    host claude auth + default model."""
+    from server import schedule_ai
+    from server.config import settings
+    from server.crypto import encrypt
+
+    # A Codex credential whose stored secret is a CODEX_HOME path, like real ones.
+    await session_manager.db.save_credential(
+        credential_id="cx1",
+        backend="codex",
+        label="codex-gpt",
+        auth_type="oauth",
+        secret_encrypted=encrypt("/home/u/.octopus/codex/cx1", settings.auth_token),
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    agent = await _create_agent(
+        client, name="Codex Sched", backend="codex", credential_id="cx1"
+    )
+
+    seen: dict = {}
+
+    async def fake_oneshot(prompt, *, model=None, credential=None, **kw):
+        seen["model"] = model
+        seen["credential"] = credential
+        return (
+            '{"name":"Daily","prompt":"do it","recurrence":'
+            '{"kind":"cron","cron":"0 9 * * *"},"recurrence_label":"Daily 9am"}'
+        )
+
+    monkeypatch.setattr(schedule_ai, "run_claude_oneshot", fake_oneshot)
+
+    r = await client.post(
+        f"/api/agents/{agent['id']}/schedules/from_text",
+        json={"text": "do it every morning at 9am", "timezone": "UTC"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 201, r.text
+    # The Codex credential + model were NOT handed to the claude parse.
+    assert seen["credential"] is None
+    assert seen["model"] is None
+
+
+@pytest.mark.asyncio
 async def test_schedule_from_text_unknown_agent(client):
     resp = await client.post(
         "/api/agents/nope/schedules/from_text",
