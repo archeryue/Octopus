@@ -8,6 +8,15 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
+# Event types hidden from a chat in "quiet" mode (the default): tool-call
+# mechanics and per-turn bookkeeping. Assistant text ("octo messages"),
+# errors, and tool-approval prompts always pass through — suppressing an
+# approval prompt would deadlock the session with no way to answer. The
+# per-chat verbose flag gates this upstream in BridgeManager._on_broadcast.
+QUIET_SUPPRESSED_EVENTS = frozenset(
+    {"tool_use", "tool_result", "result", "status"}
+)
+
 
 @dataclass
 class TextBuffer:
@@ -148,6 +157,30 @@ class Bridge(ABC):
     async def send_error(self, chat_id: str, message: str) -> None:
         """Send an error message."""
 
+    async def send_session_list(
+        self,
+        chat_id: str,
+        sessions: list[dict[str, Any]],
+        note: str | None = None,
+    ) -> None:
+        """Render a switchable list of sessions.
+
+        Each item is ``{id, name, status, current}``. The base implementation
+        is plain text + a ``/switch <id>`` hint; platforms with rich UI (e.g.
+        Telegram inline buttons) override this. ``note`` is an optional
+        trailing line, e.g. a truncation notice. Callers guarantee a non-empty
+        list.
+        """
+        lines = [
+            f"  {s['id']} - {s['name']} [{s['status']}]"
+            f"{' (current)' if s.get('current') else ''}"
+            for s in sessions
+        ]
+        text = "Sessions:\n" + "\n".join(lines) + "\n\nUse /switch <id> to switch."
+        if note:
+            text += f"\n{note}"
+        await self.send_text(chat_id, text)
+
     # --- Text buffering ---
 
     @property
@@ -177,7 +210,13 @@ class Bridge(ABC):
     # --- Event dispatcher ---
 
     async def handle_event(self, chat_id: str, event: dict[str, Any]) -> None:
-        """Route a SessionManager event to the appropriate send method."""
+        """Route a SessionManager event to the appropriate send method.
+
+        Per-chat verbosity filtering (quiet mode hiding `QUIET_SUPPRESSED_EVENTS`)
+        happens upstream in `BridgeManager._on_broadcast`, which knows the
+        chat's `verbose` flag; events that reach here are already meant to be
+        shown.
+        """
         event_type = event.get("type")
 
         try:

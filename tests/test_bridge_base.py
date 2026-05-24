@@ -251,6 +251,34 @@ class TestBridgeHandleEvent:
         assert bridge.calls == []
 
 
+class TestSendSessionListDefault:
+    async def test_text_fallback_lists_and_marks_current(self):
+        bridge = MockBridge()
+        await bridge.send_session_list(
+            "c1",
+            [
+                {"id": "s1", "name": "First", "status": "idle", "current": True},
+                {"id": "s2", "name": "Second", "status": "running", "current": False},
+            ],
+        )
+        assert len(bridge.calls) == 1
+        method, payload = bridge.calls[0]
+        assert method == "send_text"
+        text = payload["text"]
+        assert "s1 - First [idle] (current)" in text
+        assert "s2 - Second [running]" in text
+        assert "/switch <id>" in text
+
+    async def test_note_appended(self):
+        bridge = MockBridge()
+        await bridge.send_session_list(
+            "c1",
+            [{"id": "s1", "name": "First", "status": "idle", "current": False}],
+            note="more exist",
+        )
+        assert "more exist" in bridge.calls[0][1]["text"]
+
+
 # --- Helpers ---
 
 

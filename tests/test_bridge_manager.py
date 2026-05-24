@@ -55,12 +55,17 @@ class MockBridge(Bridge):
     async def send_error(self, chat_id, message):
         self.sent.append(("send_error", chat_id, {"message": message}))
 
+    async def send_session_list(self, chat_id, sessions, note=None):
+        self.sent.append(
+            ("send_session_list", chat_id, {"sessions": sessions, "note": note})
+        )
+
 
 # --- Mock SessionManager (agent-aware) ---
 
 
 class MockSession:
-    def __init__(self, id, name="Test", agent_id=None, origin="user"):
+    def __init__(self, id, name="Test", agent_id=None, origin="user", created_at="2024-01-01T00:00:00Z"):
         self.id = id
         self.name = name
         self.working_dir = "."
@@ -68,6 +73,7 @@ class MockSession:
         self._message_count = 0
         self.agent_id = agent_id
         self.origin = origin
+        self.created_at = created_at
 
 
 class MockSessionManager:
@@ -159,8 +165,8 @@ class TestBinding:
         binding = manager._binding("mock", "c1")
         assert binding is not None
         default = await db.get_system_agent()
-        assert binding[0] == default["id"]
-        assert binding[1] is not None  # sticky session created
+        assert binding.agent_id == default["id"]
+        assert binding.session_id is not None  # sticky session created
 
     async def test_archived_sticky_opens_fresh(self, manager, bridge, session_mgr):
         await manager.handle_incoming("mock", "c1", "hello", bridge)
@@ -198,8 +204,8 @@ class TestCommands:
         bridge.sent.clear()
         await manager.handle_incoming("mock", "c1", "/agent Helper", bridge)
         binding = manager._binding("mock", "c1")
-        assert binding[0] == "ag2"
-        assert binding[1] is None  # sticky cleared on rebind
+        assert binding.agent_id == "ag2"
+        assert binding.session_id is None  # sticky cleared on rebind
         assert "Helper" in bridge.sent[0][2]["text"]
 
     async def test_cmd_agent_unknown(self, manager, bridge):
@@ -218,9 +224,24 @@ class TestCommands:
         await manager.handle_incoming("mock", "c1", "/new First", bridge)
         bridge.sent.clear()
         await manager.handle_incoming("mock", "c1", "/sessions", bridge)
-        text = bridge.sent[0][2]["text"]
-        assert "First" in text
-        assert "(current)" in text
+        kind, _, payload = bridge.sent[0]
+        assert kind == "send_session_list"
+        names = [s["name"] for s in payload["sessions"]]
+        assert "First" in names
+        current = [s for s in payload["sessions"] if s["current"]]
+        assert current and current[0]["name"] == "First"
+        assert payload["note"] is None
+
+    async def test_cmd_sessions_truncates_to_limit(self, manager, bridge, session_mgr):
+        agent_id = await manager._ensure_bound("mock", "c1")
+        for i in range(manager.SESSION_LIST_LIMIT + 5):
+            await session_mgr.create_session(agent_id, name=f"S{i}")
+        bridge.sent.clear()
+        await manager.handle_incoming("mock", "c1", "/sessions", bridge)
+        payload = bridge.sent[0][2]
+        assert len(payload["sessions"]) == manager.SESSION_LIST_LIMIT
+        assert payload["note"] is not None
+        assert "/switch" in payload["note"]
 
     async def test_cmd_switch(self, manager, bridge):
         await manager.handle_incoming("mock", "c1", "/new First", bridge)
@@ -266,6 +287,8 @@ class TestCommands:
         text = bridge.sent[0][2]["text"]
         assert "/new" in text
         assert "/agent" in text
+        assert "/quiet" in text
+        assert "/verbose" in text
 
     async def test_cmd_unknown(self, manager, bridge):
         await manager.handle_incoming("mock", "c1", "/foo", bridge)
@@ -280,12 +303,12 @@ class TestMappings:
         mgr1 = BridgeManager(session_mgr, db)
         await mgr1.initialize()
         await mgr1.handle_incoming("mock", "c1", "hi", MockBridge(mgr1))
-        agent_id, sticky = mgr1._binding("mock", "c1")
+        b1 = mgr1._binding("mock", "c1")
 
         mgr2 = BridgeManager(session_mgr, db)
         await mgr2.initialize()
-        binding2 = mgr2._binding("mock", "c1")
-        assert binding2 == (agent_id, sticky)
+        b2 = mgr2._binding("mock", "c1")
+        assert (b2.agent_id, b2.session_id) == (b1.agent_id, b1.session_id)
 
     async def test_remove_mapping(self, manager, bridge):
         await manager.handle_incoming("mock", "c1", "hi", bridge)
@@ -299,21 +322,88 @@ class TestMappings:
 
 class TestBroadcast:
     async def test_broadcast_routes_to_sticky_chat(self, manager, bridge):
+        # An always-passed event (error) reaches the sticky chat regardless
+        # of verbosity.
         await manager.handle_incoming("mock", "c1", "/new Test", bridge)
         sid = manager.get_session_id("mock", "c1")
         bridge.sent.clear()
         await manager._on_broadcast(
-            {"type": "status", "session_id": sid, "status": "running"}
+            {"type": "error", "session_id": sid, "message": "boom"}
         )
         assert len(bridge.sent) == 1
-        assert bridge.sent[0][0] == "send_status"
+        assert bridge.sent[0][0] == "send_error"
 
     async def test_broadcast_ignores_unmapped(self, manager, bridge):
         await manager._on_broadcast(
-            {"type": "status", "session_id": "other", "status": "running"}
+            {"type": "error", "session_id": "other", "message": "boom"}
         )
         assert len(bridge.sent) == 0
 
     async def test_broadcast_no_session_id(self, manager, bridge):
-        await manager._on_broadcast({"type": "status"})
+        await manager._on_broadcast({"type": "error", "message": "boom"})
         assert len(bridge.sent) == 0
+
+
+class TestVerbosity:
+    @pytest.mark.parametrize(
+        "event",
+        [
+            {"type": "tool_use", "tool": "Bash", "input": {}},
+            {"type": "tool_result", "output": "x", "is_error": False},
+            {"type": "result", "cost": 0.01, "is_error": False},
+            {"type": "status", "status": "running"},
+        ],
+    )
+    async def test_quiet_default_suppresses_tool_events(self, manager, bridge, event):
+        await manager.handle_incoming("mock", "c1", "/new Test", bridge)
+        sid = manager.get_session_id("mock", "c1")
+        bridge.sent.clear()
+        await manager._on_broadcast({**event, "session_id": sid})
+        assert bridge.sent == []
+
+    async def test_quiet_forwards_octo_text(self, manager, bridge):
+        await manager.handle_incoming("mock", "c1", "/new Test", bridge)
+        sid = manager.get_session_id("mock", "c1")
+        bridge.sent.clear()
+        await manager._on_broadcast(
+            {"type": "assistant_text", "session_id": sid, "content": "hi there"}
+        )
+        # assistant_text is buffered; force a flush to observe the send.
+        await bridge._flush_buffer("c1")
+        assert bridge.sent == [("send_text", "c1", {"text": "hi there"})]
+
+    async def test_verbose_forwards_tool_events(self, manager, bridge):
+        await manager.handle_incoming("mock", "c1", "/new Test", bridge)
+        await manager.handle_incoming("mock", "c1", "/verbose", bridge)
+        sid = manager.get_session_id("mock", "c1")
+        bridge.sent.clear()
+        await manager._on_broadcast(
+            {"type": "tool_use", "session_id": sid, "tool": "Bash", "input": {}}
+        )
+        assert len(bridge.sent) == 1
+        assert bridge.sent[0][0] == "send_tool_use"
+
+    async def test_cmd_verbose_then_quiet_toggles(self, manager, bridge):
+        await manager.handle_incoming("mock", "c1", "/verbose", bridge)
+        assert manager._binding("mock", "c1").verbose is True
+        assert "Verbose" in bridge.sent[-1][2]["text"]
+        await manager.handle_incoming("mock", "c1", "/quiet", bridge)
+        assert manager._binding("mock", "c1").verbose is False
+        assert "Quiet" in bridge.sent[-1][2]["text"]
+
+    async def test_verbose_persists_across_reload(self, session_mgr, db):
+        mgr1 = BridgeManager(session_mgr, db)
+        await mgr1.initialize()
+        await mgr1.handle_incoming("mock", "c1", "/verbose", MockBridge(mgr1))
+        assert mgr1._binding("mock", "c1").verbose is True
+
+        mgr2 = BridgeManager(session_mgr, db)
+        await mgr2.initialize()
+        assert mgr2._binding("mock", "c1").verbose is True
+
+    async def test_verbose_survives_agent_rebind(self, manager, bridge, db):
+        now = datetime.now(timezone.utc).isoformat()
+        await db.save_agent(agent_id="ag2", name="Helper", created_at=now, updated_at=now)
+        await manager.handle_incoming("mock", "c1", "/verbose", bridge)
+        await manager.handle_incoming("mock", "c1", "/agent Helper", bridge)
+        assert manager._binding("mock", "c1").verbose is True

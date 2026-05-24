@@ -24,6 +24,7 @@ def manager():
     mgr = MagicMock()
     mgr.handle_incoming = AsyncMock()
     mgr.handle_tool_decision = AsyncMock()
+    mgr.switch_session = AsyncMock(return_value="Switched to session 'First' (s1).")
     return mgr
 
 
@@ -64,6 +65,42 @@ class TestSendToolApproval:
         assert len(keyboard[0]) == 2
         assert keyboard[0][0]["callback_data"] == "approve:tu1"
         assert keyboard[0][1]["callback_data"] == "deny:tu1"
+
+
+class TestSendSessionList:
+    async def test_renders_switch_buttons(self, bridge):
+        await bridge.send_session_list(
+            "123",
+            [
+                {"id": "s1", "name": "First", "status": "idle", "current": True},
+                {"id": "s2", "name": "Second", "status": "running", "current": False},
+            ],
+        )
+        call_data = bridge._client.post.call_args[1]["json"]
+        keyboard = call_data["reply_markup"]["inline_keyboard"]
+        assert len(keyboard) == 2
+        assert keyboard[0][0]["callback_data"] == "switch:s1"
+        assert "✓" in keyboard[0][0]["text"]  # current session marked
+        assert keyboard[1][0]["callback_data"] == "switch:s2"
+        assert "✓" not in keyboard[1][0]["text"]
+
+    async def test_note_appended(self, bridge):
+        await bridge.send_session_list(
+            "123",
+            [{"id": "s1", "name": "First", "status": "idle", "current": False}],
+            note="Showing the 30 most recent of 35.",
+        )
+        call_data = bridge._client.post.call_args[1]["json"]
+        assert "most recent" in call_data["text"]
+
+    async def test_long_name_truncated(self, bridge):
+        await bridge.send_session_list(
+            "123",
+            [{"id": "s1", "name": "x" * 200, "status": "idle", "current": False}],
+        )
+        call_data = bridge._client.post.call_args[1]["json"]
+        label = call_data["reply_markup"]["inline_keyboard"][0][0]["text"]
+        assert len(label) <= 61  # 57 chars + ellipsis + slack
 
 
 class TestSendToolUse:
@@ -139,6 +176,23 @@ class TestHandleUpdate:
         manager.handle_tool_decision.assert_called_once_with(
             "telegram", "123", "tu1", False
         )
+
+    async def test_callback_query_switch(self, bridge, manager):
+        query = {
+            "id": "q1",
+            "data": "switch:s1",
+            "message": {"chat": {"id": 123}, "message_id": 42},
+        }
+        await bridge._handle_callback_query(query)
+        manager.switch_session.assert_called_once_with("telegram", "123", "s1")
+        manager.handle_tool_decision.assert_not_called()
+        # The confirmation text is sent back to the chat.
+        sent = [
+            c.kwargs["json"]
+            for c in bridge._client.post.call_args_list
+            if c.kwargs["json"].get("text", "").startswith("Switched")
+        ]
+        assert sent and sent[0]["chat_id"] == 123
 
     async def test_access_control_rejects(self, manager):
         b = TelegramBridge(manager, token="test", allowed_chat_ids=["999"])

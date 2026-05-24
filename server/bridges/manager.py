@@ -2,24 +2,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..database import Database
     from ..session_manager import SessionManager
 
-from .base import Bridge
+from .base import QUIET_SUPPRESSED_EVENTS, Bridge
 
 logger = logging.getLogger(__name__)
 
 BRIDGE_COMMANDS = {
     "/new": "Start a fresh session under the bound agent",
     "/agent": "Rebind this chat to a different agent (/agent <name|id>)",
-    "/sessions": "List sessions for the bound agent",
+    "/sessions": "List sessions (tap one to switch)",
     "/switch": "Point at an existing session (/switch <session_id>)",
     "/current": "Show current session info",
+    "/quiet": "Show only the agent's replies (hide tool activity)",
+    "/verbose": "Also show tool activity (tool calls, results, cost)",
     "/help": "Show available commands",
 }
+
+
+@dataclass
+class ChatBinding:
+    """A chat's durable binding: which agent it talks to, the sticky session
+    pointer (the currently-open thread, nullable), and its output verbosity.
+
+    `verbose` is quiet by default — only the agent's natural-language replies,
+    errors, and approval prompts reach the chat. It's a chat-level preference
+    that persists across `/agent` rebinds and `/new`/`/switch` thread rolls.
+    """
+
+    agent_id: str
+    session_id: str | None = None
+    verbose: bool = False
 
 
 class BridgeManager:
@@ -38,19 +56,27 @@ class BridgeManager:
     - Manages bridge lifecycle (start/stop)
     """
 
+    # Most-recent sessions to render as tappable buttons in /sessions. Telegram
+    # caps inline keyboards; older sessions stay reachable via /switch <id>.
+    SESSION_LIST_LIMIT = 30
+
     def __init__(self, session_mgr: SessionManager, db: Database) -> None:
         self.session_mgr = session_mgr
         self.db = db
         self._bridges: dict[str, Bridge] = {}
-        # "platform:chat_id" -> (agent_id, sticky session_id | None)
-        self._mappings: dict[str, tuple[str, str | None]] = {}
+        # "platform:chat_id" -> ChatBinding
+        self._mappings: dict[str, ChatBinding] = {}
 
     async def initialize(self) -> None:
         """Load persisted chat→agent bindings (with sticky session) from DB."""
         rows = await self.db.load_bridge_mappings()
         for row in rows:
             key = f"{row['platform']}:{row['chat_id']}"
-            self._mappings[key] = (row["agent_id"], row["session_id"])
+            self._mappings[key] = ChatBinding(
+                agent_id=row["agent_id"],
+                session_id=row["session_id"],
+                verbose=bool(row.get("verbose")),
+            )
         logger.info("Loaded %d bridge mappings from database", len(rows))
 
     def register_bridge(self, bridge: Bridge) -> None:
@@ -75,23 +101,30 @@ class BridgeManager:
     def _mapping_key(self, platform: str, chat_id: str) -> str:
         return f"{platform}:{chat_id}"
 
-    def _binding(self, platform: str, chat_id: str) -> tuple[str, str | None] | None:
-        """(agent_id, sticky session_id|None) for a chat, or None if unbound."""
+    def _binding(self, platform: str, chat_id: str) -> ChatBinding | None:
+        """The chat's ChatBinding, or None if unbound."""
         return self._mappings.get(self._mapping_key(platform, chat_id))
 
     def get_session_id(self, platform: str, chat_id: str) -> str | None:
         """The chat's current sticky session id (used by broadcast routing
         and tool-decision handling). None when unbound or no live thread."""
         binding = self._binding(platform, chat_id)
-        return binding[1] if binding else None
+        return binding.session_id if binding else None
 
     async def bind_agent(
         self, platform: str, chat_id: str, agent_id: str, session_id: str | None = None
     ) -> None:
         """Bind (or rebind) a chat to an agent, optionally with a sticky
-        session. Rebinding to a different agent clears the sticky pointer."""
+        session. Rebinding to a different agent clears the sticky pointer but
+        preserves the chat's verbosity preference (a chat-level setting)."""
         key = self._mapping_key(platform, chat_id)
-        self._mappings[key] = (agent_id, session_id)
+        existing = self._mappings.get(key)
+        self._mappings[key] = ChatBinding(
+            agent_id=agent_id,
+            session_id=session_id,
+            verbose=existing.verbose if existing else False,
+        )
+        # The DB upsert preserves verbose on conflict (see save_bridge_mapping).
         await self.db.save_bridge_mapping(platform, chat_id, agent_id, session_id)
 
     async def set_sticky_session(
@@ -102,8 +135,21 @@ class BridgeManager:
         binding = self._mappings.get(key)
         if binding is None:
             return
-        self._mappings[key] = (binding[0], session_id)
+        binding.session_id = session_id
         await self.db.set_bridge_sticky_session(platform, chat_id, session_id)
+
+    async def set_verbose(
+        self, platform: str, chat_id: str, verbose: bool
+    ) -> bool:
+        """Set the chat's output verbosity. Returns False if the chat isn't
+        bound yet (callers ensure binding first)."""
+        key = self._mapping_key(platform, chat_id)
+        binding = self._mappings.get(key)
+        if binding is None:
+            return False
+        binding.verbose = verbose
+        await self.db.set_bridge_verbose(platform, chat_id, verbose)
+        return True
 
     async def remove_mapping(self, platform: str, chat_id: str) -> None:
         key = self._mapping_key(platform, chat_id)
@@ -116,7 +162,7 @@ class BridgeManager:
         happen — migration always creates the Default Agent)."""
         binding = self._binding(platform, chat_id)
         if binding is not None:
-            return binding[0]
+            return binding.agent_id
         agent = await self.db.get_system_agent()
         if agent is None:
             return None
@@ -186,15 +232,20 @@ class BridgeManager:
     async def _on_broadcast(self, msg: dict[str, Any]) -> None:
         """Handle broadcast events from SessionManager.
 
-        Routes tool_approval_request and status events to all chats
-        mapped to the relevant session.
+        Routes events to every chat whose sticky session is the event's
+        session. A chat in quiet mode (the default) drops tool-activity and
+        bookkeeping events (`QUIET_SUPPRESSED_EVENTS`); octo replies, errors
+        and approval prompts always pass.
         """
         session_id = msg.get("session_id")
         if not session_id:
             return
 
-        for key, (_agent_id, sticky) in self._mappings.items():
-            if sticky != session_id:
+        event_type = msg.get("type")
+        for key, binding in self._mappings.items():
+            if binding.session_id != session_id:
+                continue
+            if not binding.verbose and event_type in QUIET_SUPPRESSED_EVENTS:
                 continue
             platform, chat_id = key.split(":", 1)
             bridge = self._bridges.get(platform)
@@ -209,6 +260,26 @@ class BridgeManager:
 
     async def unregister_broadcast(self) -> None:
         self.session_mgr.remove_broadcast("bridge_manager")
+
+    # --- Session switching ---
+
+    async def switch_session(
+        self, platform: str, chat_id: str, session_id: str
+    ) -> str:
+        """Repoint the chat's sticky session to an existing session of the
+        bound agent. Returns a user-facing status line (shared by the
+        `/switch` command and the `/sessions` inline-button callback)."""
+        agent_id = await self._ensure_bound(platform, chat_id)
+        session = self.session_mgr.get_session(session_id)
+        if session is None:
+            return f"Session '{session_id}' not found."
+        if session.agent_id != agent_id:
+            return (
+                "That session belongs to a different agent. Use /agent to "
+                "rebind this chat first."
+            )
+        await self.set_sticky_session(platform, chat_id, session.id)
+        return f"Switched to session '{session.name}' ({session.id})."
 
     # --- Command handling ---
 
@@ -259,51 +330,53 @@ class BridgeManager:
 
         elif command == "/sessions":
             agent_id = await self._ensure_bound(platform, chat_id)
-            sessions = [
-                s for s in self.session_mgr.list_sessions() if s.agent_id == agent_id
-            ]
+            sessions = sorted(
+                (s for s in self.session_mgr.list_sessions() if s.agent_id == agent_id),
+                key=lambda s: s.created_at,
+                reverse=True,
+            )
             if not sessions:
                 await bridge.send_text(
                     chat_id, "No sessions yet for this agent. Use /new to start one."
                 )
                 return
             current_sid = self.get_session_id(platform, chat_id)
-            lines = []
-            for s in sessions:
-                marker = " (current)" if s.id == current_sid else ""
-                lines.append(
-                    f"  {s.id} - {s.name} [{s.status.value}]{marker}"
+            shown = sessions[: self.SESSION_LIST_LIMIT]
+            items = [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "status": s.status.value,
+                    "current": s.id == current_sid,
+                }
+                for s in shown
+            ]
+            note = None
+            if len(sessions) > self.SESSION_LIST_LIMIT:
+                note = (
+                    f"Showing the {self.SESSION_LIST_LIMIT} most recent of "
+                    f"{len(sessions)}. Use /switch <id> for older ones."
                 )
-            await bridge.send_text(
-                chat_id,
-                "Sessions:\n"
-                + "\n".join(lines)
-                + "\n\nUse /switch <id> to switch.",
-            )
+            await bridge.send_session_list(chat_id, items, note)
 
         elif command == "/switch":
             if not args:
                 await bridge.send_text(chat_id, "Usage: /switch <session_id>")
                 return
-            agent_id = await self._ensure_bound(platform, chat_id)
-            target_id = args.strip()
-            session = self.session_mgr.get_session(target_id)
-            if session is None:
-                await bridge.send_text(
-                    chat_id, f"Session '{target_id}' not found."
-                )
+            msg = await self.switch_session(platform, chat_id, args.strip())
+            await bridge.send_text(chat_id, msg)
+
+        elif command in ("/quiet", "/verbose"):
+            verbose = command == "/verbose"
+            if await self._ensure_bound(platform, chat_id) is None:
+                await bridge.send_text(chat_id, "No agent is configured yet.")
                 return
-            if session.agent_id != agent_id:
-                await bridge.send_text(
-                    chat_id,
-                    "That session belongs to a different agent. Use /agent to "
-                    "rebind this chat first.",
-                )
-                return
-            await self.set_sticky_session(platform, chat_id, session.id)
+            await self.set_verbose(platform, chat_id, verbose)
             await bridge.send_text(
                 chat_id,
-                f"Switched to session '{session.name}' ({session.id}).",
+                "Verbose mode on — I'll also show tool calls, results and cost."
+                if verbose
+                else "Quiet mode on — I'll send only my replies (no tool activity).",
             )
 
         elif command == "/current":

@@ -116,6 +116,9 @@ CREATE TABLE IF NOT EXISTS bridge_mappings (
     chat_id TEXT NOT NULL,
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
     session_id TEXT,
+    -- 0 = quiet (default): only the agent's natural-language replies, errors
+    -- and approval prompts reach the chat. 1 = verbose: tool activity too.
+    verbose INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (platform, chat_id),
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
@@ -367,6 +370,18 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE agents ADD COLUMN backend TEXT NOT NULL "
                 "DEFAULT 'claude-code'"
+            )
+        except Exception:
+            pass
+
+        # bridge_mappings.verbose — per-chat output verbosity (quiet by
+        # default: only octo replies/errors/approvals). DEFAULT 0 backfills
+        # existing chats to quiet. Runs after `_migrate_agents`, which may
+        # rebuild bridge_mappings, so the column survives that rebuild.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE bridge_mappings ADD COLUMN verbose INTEGER "
+                "NOT NULL DEFAULT 0"
             )
         except Exception:
             pass
@@ -766,12 +781,28 @@ class Database:
         session_id: str | None = None,
     ) -> None:
         """Bind (platform, chat_id) to an agent, with an optional sticky
-        session pointer (the currently-open thread for this chat)."""
+        session pointer (the currently-open thread for this chat). Upserts
+        on conflict so a rebind preserves the chat's `verbose` preference
+        (a chat-level setting that outlives any single agent/thread)."""
         await self._ensure_connected()
         await self._conn.execute(
-            "INSERT OR REPLACE INTO bridge_mappings "
-            "(platform, chat_id, agent_id, session_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO bridge_mappings "
+            "(platform, chat_id, agent_id, session_id) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(platform, chat_id) DO UPDATE SET "
+            "agent_id = excluded.agent_id, session_id = excluded.session_id",
             (platform, chat_id, agent_id, session_id),
+        )
+        await self._conn.commit()
+
+    async def set_bridge_verbose(
+        self, platform: str, chat_id: str, verbose: bool
+    ) -> None:
+        """Set a chat's output verbosity (quiet = octo replies only)."""
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE bridge_mappings SET verbose = ? "
+            "WHERE platform = ? AND chat_id = ?",
+            (1 if verbose else 0, platform, chat_id),
         )
         await self._conn.commit()
 
@@ -808,10 +839,11 @@ class Database:
         )
         await self._conn.commit()
 
-    async def load_bridge_mappings(self) -> list[dict[str, str | None]]:
+    async def load_bridge_mappings(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
         cursor = await self._conn.execute(
-            "SELECT platform, chat_id, agent_id, session_id FROM bridge_mappings"
+            "SELECT platform, chat_id, agent_id, session_id, verbose "
+            "FROM bridge_mappings"
         )
         rows = await cursor.fetchall()
         return [
@@ -820,6 +852,7 @@ class Database:
                 "chat_id": row[1],
                 "agent_id": row[2],
                 "session_id": row[3],
+                "verbose": bool(row[4]),
             }
             for row in rows
         ]

@@ -147,19 +147,27 @@ class TelegramBridge(Bridge):
         if ":" not in data:
             return
 
-        action, tool_use_id = data.split(":", 1)
-        approved = action == "approve"
+        action, payload = data.split(":", 1)
 
-        await self.manager.handle_tool_decision(
-            "telegram", chat_id, tool_use_id, approved
-        )
+        if action in ("approve", "deny"):
+            await self.manager.handle_tool_decision(
+                "telegram", chat_id, payload, action == "approve"
+            )
+            await self._clear_keyboard(query)
 
-        # Remove inline keyboard after decision
+        elif action == "switch":
+            # Drop the picker's buttons, then confirm the switch.
+            await self._clear_keyboard(query)
+            msg = await self.manager.switch_session("telegram", chat_id, payload)
+            await self.send_text(chat_id, msg)
+
+    async def _clear_keyboard(self, query: dict) -> None:
+        """Remove a message's inline keyboard (after a button is acted on)."""
         try:
             await self._api_call(
                 "editMessageReplyMarkup",
                 {
-                    "chat_id": int(chat_id),
+                    "chat_id": int(query["message"]["chat"]["id"]),
                     "message_id": query["message"]["message_id"],
                     "reply_markup": {"inline_keyboard": []},
                 },
@@ -210,6 +218,36 @@ class TelegramBridge(Bridge):
                 "text": text,
                 "parse_mode": "Markdown",
                 "reply_markup": keyboard,
+            },
+        )
+
+    async def send_session_list(
+        self,
+        chat_id: str,
+        sessions: list[dict[str, Any]],
+        note: str | None = None,
+    ) -> None:
+        """One tappable button per session; tapping switches to it. The
+        button carries `switch:<id>` as callback_data (well under Telegram's
+        64-byte limit for short hex ids)."""
+        keyboard = []
+        for s in sessions:
+            check = " ✓" if s.get("current") else ""
+            label = f"{s['name']} [{s['status']}]{check}"
+            if len(label) > 60:
+                label = label[:57] + "…"
+            keyboard.append(
+                [{"text": label, "callback_data": f"switch:{s['id']}"}]
+            )
+        text = "Tap a session to switch:"
+        if note:
+            text += f"\n{note}"
+        await self._api_call(
+            "sendMessage",
+            {
+                "chat_id": int(chat_id),
+                "text": text,
+                "reply_markup": {"inline_keyboard": keyboard},
             },
         )
 

@@ -44,6 +44,7 @@ class TestBridgeMappings:
             "chat_id": "12345",
             "agent_id": agent_id,
             "session_id": "sess1",
+            "verbose": False,
         }
 
     async def test_bind_without_sticky_session(self, db: Database):
@@ -143,3 +144,39 @@ class TestBridgeMappings:
     async def test_load_empty(self, db: Database):
         rows = await db.load_bridge_mappings()
         assert rows == []
+
+
+class TestBridgeVerbose:
+    async def test_defaults_to_quiet(self, db: Database):
+        agent_id = await _agent_id(db)
+        await db.save_bridge_mapping("telegram", "12345", agent_id)
+        rows = await db.load_bridge_mappings()
+        assert rows[0]["verbose"] is False
+
+    async def test_set_and_load(self, db: Database):
+        agent_id = await _agent_id(db)
+        await db.save_bridge_mapping("telegram", "12345", agent_id)
+        await db.set_bridge_verbose("telegram", "12345", True)
+        rows = await db.load_bridge_mappings()
+        assert rows[0]["verbose"] is True
+        await db.set_bridge_verbose("telegram", "12345", False)
+        rows = await db.load_bridge_mappings()
+        assert rows[0]["verbose"] is False
+
+    async def test_rebind_preserves_verbose(self, db: Database):
+        """Re-saving a mapping (e.g. /agent rebind) must not reset verbose."""
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        agent_id = await _agent_id(db)
+        await db.save_agent(agent_id="ag2", name="Helper", created_at=now, updated_at=now)
+        await db.save_bridge_mapping("telegram", "12345", agent_id)
+        await db.set_bridge_verbose("telegram", "12345", True)
+
+        # Rebind to a different agent, clearing the sticky session.
+        await db.save_bridge_mapping("telegram", "12345", "ag2", None)
+
+        rows = await db.load_bridge_mappings()
+        assert rows[0]["agent_id"] == "ag2"
+        assert rows[0]["session_id"] is None
+        assert rows[0]["verbose"] is True
