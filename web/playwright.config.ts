@@ -1,8 +1,18 @@
+import os from "node:os";
+import path from "node:path";
+
 import { defineConfig } from "@playwright/test";
+
+// Isolate the e2e backend's per-agent state (canonical memory/ + claude-home/)
+// under a temp dir so runs never litter the developer's real
+// ~/.octopus/agents (and never leave copied Claude credentials there). Removed
+// in global-teardown. Exported so the teardown deletes the exact same path.
+export const E2E_AGENTS_DIR = path.join(os.tmpdir(), "octopus-e2e-agents");
 
 export default defineConfig({
   testDir: "./e2e",
   testIgnore: ["telegram-bridge.spec.ts"],
+  globalTeardown: "./e2e/global-teardown.ts",
   timeout: 30_000,
   retries: 0,
   use: {
@@ -38,6 +48,10 @@ export default defineConfig({
         OCTOPUS_PORT: "8765",
         OCTOPUS_TELEGRAM_BOT_TOKEN: "",
         OCTOPUS_DB_PATH: ":memory:",
+        // Per-agent memory dirs (docs/plans/memory.md) live under here; keep
+        // them out of the developer's real ~/.octopus/agents. Cleaned in
+        // e2e/global-teardown.ts.
+        OCTOPUS_AGENTS_DIR: E2E_AGENTS_DIR,
         // Short auto-answer window so the AskUserQuestion-timeout e2e
         // fires in seconds instead of minutes. Existing interactive
         // real-CLI tests click within a second of the form appearing,
