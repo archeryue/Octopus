@@ -147,7 +147,7 @@ function AuthenticatedApp({
         {/* Scrollable middle: sessions / schedules / harness sections.
          * px-5 on the nav inset + px-3 on each item pill = 32px from
          * sidebar edge to item text. Hover pill itself insets 20px. */}
-        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3 pt-2">
+        <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3">
           <AgentList onCreateAgent={openCreateAgent} />
           <ScheduleList onOpen={() => setSchedulesOpen(true)} />
           <ConnectorList />
