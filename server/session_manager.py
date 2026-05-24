@@ -8,6 +8,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 from .attachments import (
@@ -42,6 +43,27 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_working_dir(working_dir: str | None) -> str:
+    """Freeze a session's working directory to an ABSOLUTE path at creation.
+
+    A session's conversation + memory live under a path Claude derives from
+    its working directory (``projects/<cwd-slug>/``). If we stored the dir
+    relative (``.``, ``Octopus``), the slug would be re-resolved against the
+    *server process's* cwd on every turn — so the storage location would
+    depend on where/how the server happens to be launched. That ambient
+    coupling silently relocates (and orphans) a session's history whenever
+    the server's cwd differs: a manual launch from another dir, an edited
+    systemd unit, or a cloud deployment with a different pwd.
+
+    Resolving to absolute once, here, removes ``os.getcwd()`` from the
+    equation forever after: the slug becomes a pure function of session-owned
+    data. Relative input is interpreted against the server cwd this one time
+    (the natural meaning of a path the caller typed), then frozen.
+    """
+    raw = working_dir or settings.default_working_dir
+    return str(Path(raw).expanduser().resolve())
 
 
 @dataclass
@@ -221,7 +243,7 @@ class SessionManager:
         session = Session(
             id=sid,
             name=name,
-            working_dir=working_dir or settings.default_working_dir,
+            working_dir=resolve_working_dir(working_dir),
             credential_id=credential_id,
             agent_id=agent_id,
             origin=origin,
@@ -257,7 +279,7 @@ class SessionManager:
         session = Session(
             id=sid,
             name=name,
-            working_dir=working_dir or settings.default_working_dir,
+            working_dir=resolve_working_dir(working_dir),
             claude_session_id=claude_session_id,
             credential_id=credential_id,
             agent_id=agent_id,
@@ -1191,17 +1213,18 @@ class SessionManager:
             tool_allow = _split_tool_list(agent.get("tool_allow"))
             tool_deny = _split_tool_list(agent.get("tool_deny"))
 
-        # Per-agent native memory (docs/plans/memory.md): derive the canonical
-        # memory dir + per-agent CLAUDE_CONFIG_DIR from the owning agent and
-        # ensure they exist. None when there's no agent → memory wiring is inert.
+        # Per-agent native memory (docs/plans/memory.md): derive the agent's
+        # canonical memory dir and ensure it exists. None when there's no agent
+        # → memory wiring is inert. Both harnesses point at this one dir —
+        # Claude via CLAUDE_COWORK_MEMORY_PATH_OVERRIDE, Codex via its blurb —
+        # so memory never touches CLAUDE_CONFIG_DIR / CODEX_HOME (auth + resume
+        # stay put).
         memory_dir: str | None = None
-        agent_config_dir: str | None = None
         if session.agent_id:
             from . import agent_memory
 
             agent_memory.ensure_agent_dirs(session.agent_id)
             memory_dir = str(agent_memory.agent_memory_dir(session.agent_id))
-            agent_config_dir = str(agent_memory.agent_claude_home(session.agent_id))
 
         return RunConfig(
             session_id=session.id,
@@ -1212,7 +1235,6 @@ class SessionManager:
             tool_deny=tool_deny,
             connectors=connectors or [],
             memory_dir=memory_dir,
-            agent_config_dir=agent_config_dir,
         )
 
     # Refresh the access_token if it expires within this many seconds. A

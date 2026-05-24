@@ -125,10 +125,9 @@ class RunConfig:
     tool_allow: list[str] | None = None
     tool_deny: list[str] | None = None
     connectors: list[tuple[Any, Any]] = field(default_factory=list)
-    # Per-agent native memory (docs/plans/memory.md). Both None when there's
-    # no owning agent (legacy/tests) → memory wiring is fully inert.
+    # Per-agent native memory (docs/plans/memory.md). None when there's no
+    # owning agent (legacy/tests) → memory wiring is fully inert.
     memory_dir: str | None = None
-    agent_config_dir: str | None = None
 
 
 class HarnessRun:
@@ -188,7 +187,6 @@ class HarnessRun:
             mcp_servers=mcp_servers,
             credential=credential,
             memory_dir=self._config.memory_dir,
-            agent_config_dir=self._config.agent_config_dir,
         )
 
     def build_argv(
@@ -216,13 +214,6 @@ class HarnessRun:
             raise RuntimeError("HarnessRun already started")
 
         ctx = self._make_context(prompt, working_dir, resume_id, credential)
-        # FS prep (per-agent memory symlink + auth seed) happens here, not in
-        # build_argv, so argv inspection stays side-effect free.
-        if self._profile.prepare_workspace is not None:
-            try:
-                self._profile.prepare_workspace(ctx)
-            except Exception:
-                logger.warning("prepare_workspace failed", exc_info=True)
         argv, kwargs = self._profile.build_turn_argv(ctx)
         argv, kwargs = prepare_spawn(argv, kwargs)
 

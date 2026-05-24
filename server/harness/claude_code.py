@@ -185,12 +185,14 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
 
     env = os.environ.copy()
     _apply_env_credential(env, ctx.credential)
-    # Per-agent memory: a per-agent CLAUDE_CONFIG_DIR isolates this agent's
-    # native memory (docs/plans/memory.md §3). Safe because auth comes from
-    # the env token above, which overrides any on-disk login in the config
-    # dir. The memory symlink + auth seed are ensured in `_prepare_workspace`.
-    if ctx.agent_config_dir:
-        env["CLAUDE_CONFIG_DIR"] = ctx.agent_config_dir
+    # Per-agent memory (docs/plans/memory.md §3): point Claude's auto-memory
+    # dir at the agent's canonical store via the dedicated override. We do NOT
+    # touch CLAUDE_CONFIG_DIR — that's the root of Claude's *session transcript*
+    # store, so moving it would orphan every session's `--resume` data. The
+    # override relocates only the memory dir; transcripts and auth stay in the
+    # host config dir untouched.
+    if ctx.memory_dir:
+        env["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = ctx.memory_dir
     return argv, {"cwd": ctx.working_dir, "env": env}
 
 
@@ -376,28 +378,6 @@ class _OAuthLoginDriver:
         return None
 
 
-# ------------------------------------------------------------------ workspace prep
-
-
-def _prepare_workspace(ctx: TurnContext) -> None:
-    """Ensure this agent's native-memory wiring before spawn: point Claude's
-    `projects/<cwd-slug>/memory` at the canonical per-agent memory dir, and —
-    when no env token is present — seed the per-agent config dir with the host
-    login so auth still works under the custom CLAUDE_CONFIG_DIR. Inert when
-    there's no owning agent (memory_dir/agent_config_dir unset)."""
-    if not ctx.agent_config_dir or not ctx.memory_dir:
-        return
-    from .. import agent_memory
-
-    has_env_token = ctx.credential is not None and bool(
-        getattr(ctx.credential, "secret", None)
-    )
-    agent_memory.ensure_claude_auth(ctx.agent_config_dir, has_env_token)
-    agent_memory.ensure_memory_symlink(
-        ctx.agent_config_dir, ctx.working_dir, ctx.memory_dir
-    )
-
-
 # ------------------------------------------------------------------ profile
 
 
@@ -412,10 +392,10 @@ CLAUDE_CODE = RuntimeProfile(
     new_event_parser=ClaudeEventParser,
     build_oneshot_argv=build_oneshot_argv,
     parse_oneshot_stdout=parse_oneshot_stdout,
-    # Claude has native memory (auto-injects MEMORY.md), so no prompt blurb;
-    # we ensure its memory dir points at the canonical per-agent store.
+    # Claude has native memory (auto-injects MEMORY.md); we point it at the
+    # canonical per-agent dir via CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in
+    # build_turn_argv, so no system-prompt blurb is needed.
     injects_memory_prompt=False,
-    prepare_workspace=_prepare_workspace,
     login=_OAuthLoginDriver(),
     transcript_codec=_JsonlTranscriptCodec(),
 )

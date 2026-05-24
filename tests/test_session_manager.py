@@ -1,4 +1,6 @@
 import asyncio
+import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -45,8 +47,34 @@ async def test_create_session(manager):
 
 @pytest.mark.asyncio
 async def test_create_session_default_dir(manager):
-    session = await _new(manager,"Default Dir")
-    assert session.working_dir == "."
+    # working_dir is frozen to an ABSOLUTE path at creation so the session's
+    # storage location never depends on the server's runtime cwd. The default
+    # ("." per settings) resolves to the cwd once, here, then stays fixed.
+    from server.session_manager import resolve_working_dir
+
+    session = await _new(manager, "Default Dir")
+    assert session.working_dir == resolve_working_dir(None)
+    assert os.path.isabs(session.working_dir)
+
+
+@pytest.mark.asyncio
+async def test_resolve_working_dir_is_absolute_and_cwd_independent(monkeypatch):
+    """A relative working_dir is resolved to absolute once; an already-absolute
+    one is returned unchanged regardless of the process cwd — so the derived
+    Claude project slug can't shift when the server runs from a different
+    directory (e.g. a cloud deployment with a different pwd)."""
+    from server.session_manager import resolve_working_dir
+
+    # Absolute input is stable no matter the cwd.
+    monkeypatch.chdir("/tmp")
+    assert resolve_working_dir("/srv/project") == "/srv/project"
+    monkeypatch.chdir("/")
+    assert resolve_working_dir("/srv/project") == "/srv/project"
+
+    # Relative input resolves against the current cwd at call time.
+    monkeypatch.chdir("/tmp")
+    assert resolve_working_dir("proj") == str(Path("/tmp/proj"))
+    assert os.path.isabs(resolve_working_dir("."))
 
 
 @pytest.mark.asyncio

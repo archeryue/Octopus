@@ -53,11 +53,9 @@ class TurnContext:
     tool_deny: list[str] | None
     mcp_servers: list[McpServerEntry]  # selected built-ins + connectors
     credential: HarnessCredential | None
-    # Per-agent native memory (docs/plans/memory.md). `memory_dir` is the
-    # canonical markdown dir both harnesses share; `agent_config_dir` is the
-    # per-agent CLAUDE_CONFIG_DIR. Both None when there's no owning agent.
+    # Per-agent native memory (docs/plans/memory.md): the canonical markdown
+    # dir both harnesses point at. None when there's no owning agent.
     memory_dir: str | None = None
-    agent_config_dir: str | None = None
 
 
 @dataclass
@@ -129,12 +127,8 @@ class RuntimeProfile:
     # Whether the composed system prompt should carry the agent-memory blurb
     # (docs/plans/memory.md §3). Codex: True (no native memory — it reads/
     # writes the canonical dir with file tools by instruction). Claude: False
-    # (its native memory auto-activates and auto-injects MEMORY.md).
+    # (native memory, pointed at the canonical dir via an env override).
     injects_memory_prompt: bool = False
-    # Optional FS prep run once per turn in `HarnessRun.start()` (NOT in
-    # build_turn_argv, so argv inspection has no side effects). Claude uses it
-    # to ensure the per-agent memory symlink + auth seed.
-    prepare_workspace: Callable[[TurnContext], None] | None = None
     # Collaborators (optional features):
     login: LoginDriver | None = None
     transcript_codec: TranscriptCodec | None = None

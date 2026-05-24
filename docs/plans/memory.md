@@ -45,11 +45,16 @@ CLIs headlessly (the same mode Octopus spawns), not against fakes:
 - **Claude writes native memory in `--print`.** Told to remember a
   durable fact, it created a new frontmatter `*.md` and added a
   one-line pointer to `MEMORY.md`, unprompted as to format.
-- **Per-agent `CLAUDE_CONFIG_DIR` + symlink + copied auth works.** With
-  `CLAUDE_CONFIG_DIR=<agent>/claude-home`, a copied `.credentials.json`
-  (no env token), and `claude-home/projects/<cwd-slug>/memory` symlinked
-  to a canonical per-agent dir, Claude both **read** seeded memory and
-  **wrote** new memory *through the symlink* into the canonical dir.
+- **Claude has a dedicated memory-dir override** —
+  `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` (env) / the `autoMemoryDirectory`
+  setting. Verified: with it set to a per-agent dir and `CLAUDE_CONFIG_DIR`
+  left at the host default, `claude --print` read seeded memory from the
+  override dir **and** the session transcript still landed in
+  `~/.claude/projects/<cwd-slug>/` (so `--resume` is unaffected).
+- **Do NOT relocate `CLAUDE_CONFIG_DIR`.** (Lesson learned the hard way: an
+  earlier version moved it per-agent, which orphaned every session's resume
+  transcript — `projects/<cwd-slug>/*.jsonl` lives under the config dir — and
+  killed live sessions. The override relocates *only* the memory dir.)
 - **Codex reads `MEMORY.md` from a persistent `CODEX_HOME`.** With
   `features.memories=true` + a populated `memories/MEMORY.md`, a fresh
   `codex exec` located and read it (it knew the path from `use_memories`)
@@ -70,103 +75,66 @@ CLIs headlessly (the same mode Octopus spawns), not against fakes:
    memory/                 # CANONICAL per-agent memory (markdown)
       MEMORY.md            #   index: "- [Title](file.md) — hook"
       <topic>.md           #   frontmatter fact files
-   claude-home/            # per-agent CLAUDE_CONFIG_DIR
-      .credentials.json    #   (only when no env-token credential; copied from host)
-      projects/<cwd-slug>/memory -> ../../../../memory   # symlink to canonical
 ```
 
 `agents_dir` defaults to `~/.octopus/agents` (new setting). The canonical
-`memory/` dir is the single source of truth; Claude reaches it via the
-symlink, Codex reaches it directly by absolute path.
-
-`<cwd-slug>` is Claude Code's project-path encoding of the session's
-absolute working directory (leading `/` dropped, path separators and
-other special chars → `-`; pinned to the empirically-observed rule —
-see §6). One symlink is ensured per (agent × working-dir); all of an
-agent's working dirs point their Claude memory at the agent's single
-canonical `memory/` dir, so memory does not fragment by project.
+`memory/` dir is the single source of truth; both harnesses point at it by
+absolute path. Nothing else lives under the agent dir — memory is decoupled
+from each harness's config/auth dirs, so `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+are never touched.
 
 ## 3. Per-harness wiring
 
 **Claude (`claude_code.py`):**
-- `build_turn_argv` sets `env["CLAUDE_CONFIG_DIR"] = ctx.agent_config_dir`
-  (pure; testable). Auth still comes from the env token when a credential
-  is attached (`ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` override the
-  config dir), so a per-agent config dir is safe.
-- A `prepare_workspace(ctx)` profile hook (run in `HarnessRun.start()`,
-  *not* in `build_turn_argv`, so argv inspection has no FS side-effects)
-  ensures `claude-home/` exists, ensures the
-  `projects/<cwd-slug>/memory` symlink → canonical `memory/`, and — only
-  when no env token is present — copies the host
-  `~/.claude/.credentials.json` in once (best-effort host-login fallback).
-- No extra system-prompt text: Claude's native memory auto-activates and
-  auto-injects `MEMORY.md`.
+- `build_turn_argv` sets
+  `env["CLAUDE_COWORK_MEMORY_PATH_OVERRIDE"] = ctx.memory_dir` (when an agent
+  owns the session). This relocates *only* Claude's auto-memory dir to the
+  canonical per-agent dir. `CLAUDE_CONFIG_DIR` is **left at the host default**,
+  so session transcripts (`projects/<cwd-slug>/*.jsonl`, what `--resume`
+  reads) and auth stay where they are. No symlink, no auth copy, no cwd-slug.
+- No system-prompt text: Claude's native memory auto-activates and
+  auto-injects `MEMORY.md` from the override dir.
 
 **Codex (`codex.py`):**
-- `CODEX_HOME` is unchanged (stays the per-credential auth dir) — memory
-  is fully decoupled from auth, so there is no per-agent auth-sync hazard.
-- A memory blurb is appended to `developer_instructions` naming the
-  absolute canonical `memory/` path and the read-at-start /
-  write-durable-facts / maintain-`MEMORY.md` protocol, in Claude's
-  format. Codex uses its normal file tools (`--dangerously-bypass-
-  approvals-and-sandbox` already grants out-of-cwd file access).
-- `features.memories` is **not** enabled.
+- `CODEX_HOME` is unchanged (per-credential auth dir).
+- A memory blurb is appended to `developer_instructions` naming the absolute
+  canonical `memory/` path and the read-at-start / write-durable-facts /
+  maintain-`MEMORY.md` protocol, in Claude's format. Codex uses its normal
+  file tools (`--dangerously-bypass-approvals-and-sandbox` grants out-of-cwd
+  access).
+- `features.memories` is **not** enabled (its consolidation doesn't run in
+  short `codex exec` turns — see §1).
 
 ## 4. Plumbing
 
-- `RunConfig` gains `memory_dir: str | None` and
-  `agent_config_dir: str | None`. `TurnContext` gains the same two.
-- `session_manager._run_config` computes both from `session.agent_id`
-  (via `config.agents_dir`) and defensively ensures the canonical dir
-  exists.
-- `RuntimeProfile` gains optional
-  `prepare_workspace: Callable[[TurnContext], None] | None`. Claude sets
-  it; Codex leaves it `None`. `HarnessRun.start()` calls it before spawn.
+- `RunConfig` and `TurnContext` carry one field: `memory_dir: str | None`.
+- `session_manager._run_config` computes it from `session.agent_id` (via
+  `config.agents_dir`) and ensures the dir exists. (Working dirs are frozen to
+  absolute at session creation — `resolve_working_dir` — so a session's
+  storage never shifts with the server's runtime cwd.)
 - The memory blurb is composed in `assembly.py` (single-point, like the
-  connectors blurb), gated by a profile flag (`injects_memory_prompt`) so
-  only Codex receives it; Claude relies on native injection.
-- `agent_manager.create_agent` provisions `<agent>/memory/` +
-  `<agent>/claude-home/`; agent delete removes the tree.
+  connectors blurb), gated by `RuntimeProfile.injects_memory_prompt` so only
+  Codex receives it; Claude relies on native injection.
+- `agent_manager.create_agent` provisions `<agent>/memory/`; agent delete
+  removes the tree.
 
 ## 5. Accepted trade-offs (explicit)
 
-- **Backend switch may mix formats.** Claude's and Codex's edits share
-  one markdown dir; a switch reads the other's prior writes. Low
-  frequency, accepted per the user.
-- **Host-login (no-credential) Claude agents** get a *copied*
-  `.credentials.json`; an OAuth refresh inside the agent dir won't
-  propagate back to the host file. Single-user tool, low frequency,
-  documented. Credentialed agents (the normal case) use the env token
-  and are unaffected.
+- **Backend switch may mix formats.** Claude's and Codex's edits share one
+  markdown dir; a switch reads the other's prior writes. Low frequency,
+  accepted per the user.
 
-## 6. Verification plan
+(No auth or resume trade-offs: memory never touches `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME`, so both harnesses authenticate and resume exactly as before.)
 
-- **Unit:** canonical/claude-home path derivation; `<cwd-slug>` encoding
-  (incl. dots/underscores, pinned to the empirically-observed rule);
-  symlink idempotency; Claude `build_turn_argv` sets `CLAUDE_CONFIG_DIR`;
-  Codex `developer_instructions` contain the memory blurb + path; Codex
-  does **not** enable `features.memories`; agent create provisions dirs,
-  delete removes them.
-- **Real-CLI (gated on `claude`/`codex` on PATH, like the existing
-  real-CLI suites):** write a fact in session A, read it back in a fresh
-  session B against the same agent — once per harness — proving the full
-  agent-written persist→recall cycle end to end.
+## 6. Verification
 
-## 7. Implementation phases
-
-- **Phase A — paths + provisioning core** (`server/agent_memory.py`, new,
-  small): `agents_dir` setting; `agent_dir`/`canonical_memory_dir`/
-  `claude_config_dir` derivation; `cwd_slug(working_dir)`; `ensure_dirs`;
-  `ensure_claude_symlink`; `ensure_claude_auth`. Pure functions + unit
-  tests (incl. `$HOME` override + the encoding rule).
-- **Phase B — plumbing**: `RunConfig`/`TurnContext` fields;
-  `RuntimeProfile.prepare_workspace`; `HarnessRun.start` calls it;
-  `assembly` memory-blurb gated by `injects_memory_prompt`.
-- **Phase C — profiles**: Claude sets `CLAUDE_CONFIG_DIR` +
-  `prepare_workspace`; Codex gets the blurb. Unit tests on both argvs.
-- **Phase D — session/agent wiring**: `_run_config` computes the dirs;
-  `agent_manager` provisions on create, cleans on delete. Real-CLI cycle
-  test.
-- **Phase E — docs + counts**: CLAUDE.md test table + coverage matrix.
-
-Each phase leaves the suite green (CLAUDE.md "After Every Code Change").
+- **Unit:** per-agent path derivation + `$HOME`/settings override; idempotent
+  provisioning; agent create/delete provisions/removes the dir; Claude
+  `build_turn_argv` sets `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` and **never**
+  `CLAUDE_CONFIG_DIR` (resume regression guard); Codex `developer_instructions`
+  carry the blurb + path and **never** enable `features.memories`.
+- **Real-CLI (gated on `claude`/`codex` on PATH):** each harness reads its
+  seeded per-agent memory; **and** a Claude session that `--resume`s across two
+  processes with the memory override on still recalls the prior turn (proving
+  transcripts survived — the regression guard for the original incident).

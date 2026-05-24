@@ -1,16 +1,13 @@
-"""Real-CLI memory read-back (docs/plans/memory.md §6).
+"""Real-CLI memory + resume safety (docs/plans/memory.md §6).
 
-Proves the load-bearing guarantee — *each harness reads its per-agent memory
-through the real wiring* — against the actual `claude` / `codex` binaries:
-seed the canonical per-agent memory dir, then a fresh session must recall the
-fact. (Claude reaches it via the per-agent CLAUDE_CONFIG_DIR + symlink that
-`prepare_workspace` lays down; Codex via the injected blurb naming the dir.)
+Against the actual `claude` / `codex` binaries:
+1. Each harness READS its per-agent memory through the real wiring (Claude via
+   CLAUDE_COWORK_MEMORY_PATH_OVERRIDE, Codex via its blurb).
+2. **Resume regression guard**: pointing Claude's memory at the per-agent dir
+   must NOT relocate CLAUDE_CONFIG_DIR, so `--resume` still finds the session
+   transcript in ~/.claude. (This is the bug that earlier killed sessions.)
 
-We assert the *read* path, not model-driven writes: whether a model chooses to
-call its memory/file tools in a given turn is nondeterministic, but reading an
-injected/instructed memory is reliable. Writes are covered by the unit tests
-(wiring) + Claude's native behavior. Costs real API calls; auto-skipped when
-the binary isn't on PATH, like the other real-CLI suites.
+Costs real API calls; auto-skipped when the binary isn't on PATH.
 """
 
 from __future__ import annotations
@@ -26,7 +23,6 @@ from server import agent_memory
 from server.config import settings
 from server.harness import HarnessEvent, RunConfig, get_harness
 
-# Widen PATH so the CLIs resolve under non-interactive pytest (nvm/.local/bin).
 for _d in [
     os.path.expanduser("~/.local/bin"),
     "/usr/local/bin",
@@ -39,8 +35,6 @@ CODENAME = "BLUEOCTOPUS7723"
 
 
 def _seed(agent_id: str) -> None:
-    """Write a MEMORY.md index + one fact file into the canonical per-agent
-    memory dir (Claude's native format — what both harnesses read)."""
     mem = agent_memory.agent_memory_dir(agent_id)
     mem.mkdir(parents=True, exist_ok=True)
     (mem / "MEMORY.md").write_text(
@@ -97,11 +91,7 @@ async def test_claude_reads_per_agent_memory(tmp_path, monkeypatch):
     _seed(aid)
     wd = str(tmp_path / "ws")
     os.makedirs(wd)
-    cfg = dict(
-        model="haiku",
-        memory_dir=str(agent_memory.agent_memory_dir(aid)),
-        agent_config_dir=str(agent_memory.agent_claude_home(aid)),
-    )
+    cfg = dict(model="haiku", memory_dir=str(agent_memory.agent_memory_dir(aid)))
     out = await _recall("claude-code", cfg, wd)
     assert CODENAME in out.upper()
 
@@ -118,3 +108,40 @@ async def test_codex_reads_per_agent_memory(tmp_path, monkeypatch):
     cfg = dict(memory_dir=str(agent_memory.agent_memory_dir(aid)))
     out = await _recall("codex", cfg, wd)
     assert CODENAME in out.upper()
+
+
+@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not on PATH")
+@pytest.mark.asyncio
+async def test_claude_resume_survives_memory_override(tmp_path, monkeypatch):
+    """With memory pointed at the per-agent dir, --resume must still find the
+    session transcript (it lives under the untouched host CLAUDE_CONFIG_DIR).
+    Turn 1 states a fact; a fresh process RESUMES and recalls it."""
+    monkeypatch.setattr(settings, "agents_dir", str(tmp_path / "agents"))
+    aid = "memtest-resume"
+    agent_memory.ensure_agent_dirs(aid)
+    cfg = dict(model="haiku", memory_dir=str(agent_memory.agent_memory_dir(aid)))
+    wd = str(tmp_path / "ws")
+    os.makedirs(wd)
+
+    run1 = get_harness("claude-code").create_run(RunConfig(**cfg))
+    await run1.start(
+        "Remember for this conversation: my passphrase is ZEPHYR-7. Reply with just OK.",
+        wd, None, None,
+    )
+    try:
+        ev1 = await _drain(run1)
+    finally:
+        await run1.stop()
+    sid = next((e.session_id for e in ev1 if e.session_id), None)
+    assert sid, "no claude session id captured from turn 1"
+
+    run2 = get_harness("claude-code").create_run(RunConfig(**cfg))
+    await run2.start(
+        "What passphrase did I tell you a moment ago? Reply with only the passphrase.",
+        wd, sid, None,
+    )
+    try:
+        ev2 = await _drain(run2)
+    finally:
+        await run2.stop()
+    assert "ZEPHYR-7" in _text(ev2).upper(), "resume lost the conversation transcript"
