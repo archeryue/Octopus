@@ -1,387 +1,172 @@
-# Agent Memory — Tech Plan
+# Agent Memory — Tech Plan (native, agent-written, per-agent)
 
-## 0. Why this exists, and how grounded this is now
+## 0. What we're building, and why this shape
 
-This is the "north star" the Agent refactor was built toward
-(`agent-refactor.md` §0, `future-features.md` "Deferred → Agent
-memory"). The Agent is the durable entity that owns sessions and
-schedules; memory is the durable *knowledge* that entity accrues.
+The Agent is the durable entity that owns sessions and schedules
+(`agent-refactor.md`). **Memory is the durable knowledge that entity
+accrues**, and it must survive across sessions and — as much as
+possible — across a backend switch.
 
-The framing from the user: build a **model- and harness-agnostic**
-memory. The memory is owned by Octopus (not by Claude Code's
-`~/.claude/.../memory/` or Codex's `AGENTS.md`), stored as **Markdown
-files**, and **both Claude Code and Codex can read it**.
+This plan supersedes the earlier "Octopus-owned memory store" design
+(DB rows + a dedicated memory MCP server + injection of the index every
+turn). That approach was built and then **reverted** on the user's
+decision. The reason it was rejected:
 
-Why "agnostic" is the whole point — and why native memory can't deliver
-it: each harness has its own memory mechanism, and they don't share.
-Claude Code auto-injects a per-user, per-*repo* memory dir
-(`~/.claude/projects/<cwd-slug>/memory/`); Codex reads a per-repo
-`AGENTS.md`. Neither is keyed to the Octopus *Agent*, and switching an
-agent's backend from `claude-code` to `codex` (which Octopus now
-supports per agent — `agent-refactor.md` §5.2, `codex-backend.md` §5.5)
-would silently drop everything the agent "knew." An Octopus-owned,
-agent-scoped store fixes both: one memory, keyed to the Agent, injected
-and tool-exposed *identically* to whichever backend runs the turn.
+> If we don't use the native memory, it raises a new risk: the harness
+> will *sometimes* use its own native memory anyway. Claude Code's
+> native memory is always on; running a second, Octopus-owned store next
+> to it means two memory systems fighting. Use the native memory.
+> Changing an agent's harness is a low-frequency operation, so we accept
+> that the memory format may be mixed on a backend switch.
 
-Grounding — confirmed against the code, not assumed:
+So the design is: **use each harness's native, agent-written file
+memory**, persist and scope it **per agent**, and point both harnesses at
+**one shared per-agent markdown directory** so the memory is genuinely
+harness-agnostic on disk.
 
-- **Both backends re-inject a system prompt every turn**, because the
-  CLIs don't persist it across `--resume`. Claude Code:
-  `--append-system-prompt` (`claude_code.py:365–386`). Codex:
-  `-c developer_instructions=...` (`codex.py:208–250`). This is the
-  hook for the *passive* read path (inject the memory index).
-- **Both backends wire MCP servers from one backend-neutral entry**
-  `{command, args, env}` (`connectors/base.py:105–123`), rendered as
-  JSON `--mcp-config` for Claude (`claude_code.py:267–328`) and as
-  `-c mcp_servers.<key>.*` TOML for Codex (`codex.py:142–206`). The
-  three in-app servers (`viewer`, `bg`, `ask`) already ride this path.
-  This is the hook for the *active* read/write path (a `memory` MCP
-  server).
-- **Octopus already owns on-disk state** under `~/.octopus/`
-  (`config.py:14–24`: `attachments/`, `large-prompts/`, `codex/`). A
-  `memory/` root slots in beside them with zero new infrastructure.
-- **`_make_backend` already has the agent row** in hand
-  (`session_manager.py:1150–1198`), so the agent id (hence the memory
-  dir) is trivially available to pass to the backend.
-- **The in-app MCP server template is tiny and file-direct.** `viewer`
-  reads files straight from `OCTOPUS_WORKING_DIR` with a sandbox check
-  (`mcp_servers/viewer.py`); `bg`/`ask` call back over HTTP only because
-  they need host singletons. Memory is file-direct like `viewer`.
+### How the user's "let the agent write the file itself" lands
 
-The proven reference design is *Claude Code's own memory*, which the
-reader is literally seeing in this session's system reminder: a
-`MEMORY.md` index loaded into context each turn + one Markdown file per
-fact (frontmatter `name`/`description`/`metadata.type` + body) + a tool
-to read/write/curate them. We reimplement that, Octopus-side and
-agent-scoped, so it is byte-for-byte identical for Codex.
+Claude Code's native memory *is already* "the agent writes markdown
+files": a `MEMORY.md` index plus frontmatter `*.md` fact files under
+`$CLAUDE_CONFIG_DIR/projects/<cwd-slug>/memory/`, maintained by the agent
+via its built-in memory tool, auto-injected at session start. Codex has
+full file tools, so it can do the *exact same thing* against the *same*
+directory when instructed to. We therefore make Codex match Claude
+rather than the reverse — one model, two harnesses, no second store, no
+async-consolidation dependency.
 
-## 1. Goals
+## 1. Empirical grounding (verified in real CLI runtimes, not assumed)
 
-1. **Octopus-owned, agent-scoped Markdown memory.** One directory per
-   agent under `~/.octopus/memory/<agent_id>/`, holding one `.md` file
-   per fact (frontmatter + body), independent of any harness's native
-   memory.
-2. **Harness-agnostic read.** Every turn, regardless of backend, the
-   agent sees what it knows. Two read paths, both backend-neutral:
-   - **Passive:** the memory *index* is injected into the system prompt
-     each turn (same channel as the tools/connector blurbs).
-   - **Active:** a `memory` in-app MCP server exposes `memory_list` /
-     `memory_read` / `memory_search` so the model can pull full content
-     on demand. Identical tool names (`mcp__memory__*`) for both
-     backends.
-3. **Memory gets created and curated.** The same MCP server exposes
-   `memory_write` / `memory_delete`; the model curates its own memory
-   (model-driven, exactly like the reference design) under system-prompt
-   guidance. Users can also view/edit/delete via the frontend.
-4. **Survives a backend switch.** Flipping an agent claude-code↔codex
-   preserves its memory with no migration — the same files, the same
-   injection, the same tools.
-5. **Per-agent toggle.** Memory is a built-in MCP server in the agent's
-   `mcp_servers` set; an agent can run without it by dropping it, exactly
-   like `viewer`/`bg`/`ask` today.
-6. **No regressions, full test parity** with the rest of the codebase
-   (CLAUDE.md "After Every Code Change").
+Everything below was confirmed by running the real `claude` / `codex`
+CLIs headlessly (the same mode Octopus spawns), not against fakes:
 
-## 2. Non-goals (v1)
+- **Claude reads native memory in `--print`.** Seeded a project's
+  `memory/MEMORY.md` + a fact file; `claude --print` recalled the facts.
+- **Claude writes native memory in `--print`.** Told to remember a
+  durable fact, it created a new frontmatter `*.md` and added a
+  one-line pointer to `MEMORY.md`, unprompted as to format.
+- **Per-agent `CLAUDE_CONFIG_DIR` + symlink + copied auth works.** With
+  `CLAUDE_CONFIG_DIR=<agent>/claude-home`, a copied `.credentials.json`
+  (no env token), and `claude-home/projects/<cwd-slug>/memory` symlinked
+  to a canonical per-agent dir, Claude both **read** seeded memory and
+  **wrote** new memory *through the symlink* into the canonical dir.
+- **Codex reads `MEMORY.md` from a persistent `CODEX_HOME`.** With
+  `features.memories=true` + a populated `memories/MEMORY.md`, a fresh
+  `codex exec` located and read it (it knew the path from `use_memories`)
+  and answered correctly. Codex writing files via its tools is a given.
+- **Codex's *native* auto-memory pipeline is NOT used.** Its Phase-2
+  consolidation is a background agent that needs a long-lived session;
+  it does not complete inside a short `codex exec` (verified: capture
+  works, but `MEMORY.md`/`raw_memories.md` stay empty after seconds-long
+  exec turns even with idle gates zeroed). We sidestep it entirely: Codex
+  memory is a plain directory it reads/writes with file tools, driven by
+  `developer_instructions`. `features.memories` stays **off** — no dual
+  system, no consolidation wait, no format surprises.
 
-- **Automatic memory extraction.** v1 is model-driven + user-driven: the
-  model writes memories via the tool, users edit via the UI. A separate
-  post-turn LLM pass that *mines* transcripts for facts is a distinct
-  feature with its own cost/quality tradeoffs and a real product
-  decision behind it; it is **not** a polish item being deferred — it is
-  a different feature. Recorded in `future-features.md`, not started here.
-- **Cross-agent / global shared memory.** v1 scopes memory to a single
-  agent. A shared "org memory" pool is a deliberate future call
-  (decision #5).
-- **Semantic / vector search.** `memory_search` is substring + frontmatter
-  match over the (small) file set. Embeddings are unwarranted at this
-  scale and add an external dep.
-- **Suppressing Claude Code's native auto-memory.** See open question
-  §10.1 — we decide coexistence policy, we don't build a CLI patch.
-
-## 3. Concepts & on-disk layout
+## 2. On-disk layout
 
 ```
-~/.octopus/memory/<agent_id>/
-    MEMORY.md                  # derived index — one line per fact
-    user-prefers-tabs.md       # one fact per file
-    deploy-runbook.md
-    ...
+<agents_dir>/<agent_id>/
+   memory/                 # CANONICAL per-agent memory (markdown)
+      MEMORY.md            #   index: "- [Title](file.md) — hook"
+      <topic>.md           #   frontmatter fact files
+   claude-home/            # per-agent CLAUDE_CONFIG_DIR
+      .credentials.json    #   (only when no env-token credential; copied from host)
+      projects/<cwd-slug>/memory -> ../../../../memory   # symlink to canonical
 ```
 
-A **memory file** mirrors the reference scheme exactly so the format is
-familiar to the model and human-diffable:
+`agents_dir` defaults to `~/.octopus/agents` (new setting). The canonical
+`memory/` dir is the single source of truth; Claude reaches it via the
+symlink, Codex reaches it directly by absolute path.
 
-```markdown
----
-name: user-prefers-tabs
-description: Indentation preference for this user's projects
-metadata:
-  type: user            # user | feedback | project | reference
----
+`<cwd-slug>` is Claude Code's project-path encoding of the session's
+absolute working directory (leading `/` dropped, path separators and
+other special chars → `-`; pinned to the empirically-observed rule —
+see §6). One symlink is ensured per (agent × working-dir); all of an
+agent's working dirs point their Claude memory at the agent's single
+canonical `memory/` dir, so memory does not fragment by project.
 
-The user wants tabs, not spaces, in all generated code.
-Links to related memories with [[deploy-runbook]].
-```
+## 3. Per-harness wiring
 
-- **`name`** is the slug and the filename stem; kebab-case, validated
-  (`^[a-z0-9][a-z0-9-]*$`, ≤ 64 chars, no separators / `..`). One fact
-  per file.
-- **`MEMORY.md` is derived, not authoritative.** It is regenerated by
-  scanning every fact file's frontmatter (`- [Title](slug.md) — <description>`).
-  Making it derived removes the incremental-edit race entirely: any
-  writer rebuilds the whole index from the current file set, so two
-  concurrent writers to *different* facts converge on a correct index.
-  It is materialized to disk for human/UI viewing and for the harness to
-  open via `memory_read("MEMORY")` if it wants, but the *injected* index
-  is computed live from the same scan (so injection never depends on
-  MEMORY.md being current).
-- **Source of truth = the individual fact files.** Everything else
-  (the injected index, the materialized MEMORY.md, the REST list) is a
-  projection of them.
+**Claude (`claude_code.py`):**
+- `build_turn_argv` sets `env["CLAUDE_CONFIG_DIR"] = ctx.agent_config_dir`
+  (pure; testable). Auth still comes from the env token when a credential
+  is attached (`ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` override the
+  config dir), so a per-agent config dir is safe.
+- A `prepare_workspace(ctx)` profile hook (run in `HarnessRun.start()`,
+  *not* in `build_turn_argv`, so argv inspection has no FS side-effects)
+  ensures `claude-home/` exists, ensures the
+  `projects/<cwd-slug>/memory` symlink → canonical `memory/`, and — only
+  when no env token is present — copies the host
+  `~/.claude/.credentials.json` in once (best-effort host-login fallback).
+- No extra system-prompt text: Claude's native memory auto-activates and
+  auto-injects `MEMORY.md`.
 
-Why files, not a DB table: the user asked for Markdown files explicitly,
-the content is naturally a document, and files give us free
-human-inspectability + git-ability + a zero-migration story. The agent
-id namespace already lives in the `agents` table; memory needs no new
-table. (Considered and rejected: a `memories` table with a markdown
-column — it buys nothing here and adds a migration + a sync surface.)
+**Codex (`codex.py`):**
+- `CODEX_HOME` is unchanged (stays the per-credential auth dir) — memory
+  is fully decoupled from auth, so there is no per-agent auth-sync hazard.
+- A memory blurb is appended to `developer_instructions` naming the
+  absolute canonical `memory/` path and the read-at-start /
+  write-durable-facts / maintain-`MEMORY.md` protocol, in Claude's
+  format. Codex uses its normal file tools (`--dangerously-bypass-
+  approvals-and-sandbox` already grants out-of-cwd file access).
+- `features.memories` is **not** enabled.
 
-## 4. Storage layer — `server/agent_memory.py` (new)
+## 4. Plumbing
 
-A single module owns all file I/O so both the FastAPI process (injection
-+ REST) and the MCP server process call the same code. Pure functions
-over a base dir; no global state.
+- `RunConfig` gains `memory_dir: str | None` and
+  `agent_config_dir: str | None`. `TurnContext` gains the same two.
+- `session_manager._run_config` computes both from `session.agent_id`
+  (via `config.agents_dir`) and defensively ensures the canonical dir
+  exists.
+- `RuntimeProfile` gains optional
+  `prepare_workspace: Callable[[TurnContext], None] | None`. Claude sets
+  it; Codex leaves it `None`. `HarnessRun.start()` calls it before spawn.
+- The memory blurb is composed in `assembly.py` (single-point, like the
+  connectors blurb), gated by a profile flag (`injects_memory_prompt`) so
+  only Codex receives it; Claude relies on native injection.
+- `agent_manager.create_agent` provisions `<agent>/memory/` +
+  `<agent>/claude-home/`; agent delete removes the tree.
 
-```python
-@dataclass(frozen=True)
-class MemoryFact:
-    name: str            # slug / filename stem
-    description: str
-    type: str            # user | feedback | project | reference (free-form ok)
-    body: str
-    updated_at: float    # st_mtime, for sorting/UI
+## 5. Accepted trade-offs (explicit)
 
-def memory_dir(agent_id: str) -> Path             # ~/.octopus/memory/<agent_id>, ~ expanded at call time
-def list_facts(agent_id) -> list[MemoryFact]      # scan + parse frontmatter, sorted
-def read_fact(agent_id, name) -> MemoryFact | None
-def search_facts(agent_id, query) -> list[MemoryFact]   # case-insensitive substring over name/description/body
-def write_fact(agent_id, name, description, type, body) -> MemoryFact   # validate slug, atomic write, rebuild index
-def delete_fact(agent_id, name) -> bool           # unlink + rebuild index
-def render_index(agent_id) -> str                 # the MEMORY.md text (also what we inject)
-def rebuild_index(agent_id) -> None               # write MEMORY.md from current scan
-```
+- **Backend switch may mix formats.** Claude's and Codex's edits share
+  one markdown dir; a switch reads the other's prior writes. Low
+  frequency, accepted per the user.
+- **Host-login (no-credential) Claude agents** get a *copied*
+  `.credentials.json`; an OAuth refresh inside the agent dir won't
+  propagate back to the host file. Single-user tool, low frequency,
+  documented. Credentialed agents (the normal case) use the env token
+  and are unaffected.
 
-Implementation notes (do-it-right details, not deferrals):
+## 6. Verification plan
 
-- **Atomic writes:** write to `name.md.tmp` then `os.replace` — no
-  half-written file is ever readable. `rebuild_index` writes `MEMORY.md`
-  the same way.
-- **Concurrency:** a per-agent `filelock` (or `fcntl.flock` on a
-  `.lock` file in the dir) guards `write_fact`/`delete_fact` so two MCP
-  processes (two sessions of the same agent) serialize their
-  index rebuilds. Reads are lock-free (atomic replace makes torn reads
-  impossible). A single host is the only writer surface, so a file lock
-  suffices — no DB row needed.
-- **Slug safety:** reuse the spirit of `file_viewer.resolve_safe_path`
-  — resolve `memory_dir(agent_id)/<name>.md` and assert it stays inside
-  the agent's memory dir; reject anything that escapes. The MCP write
-  tool is the untrusted caller here, so this is load-bearing.
-- **Frontmatter parsing:** lightweight, dependency-free (split on the
-  leading `---` fence, parse the small known key set). We control the
-  writer, so we don't need a full YAML lib; malformed/hand-edited files
-  degrade gracefully (missing description → empty string, still listed).
-- **`~` expansion at call time**, mirroring `config.py`'s note so tests
-  that monkeypatch `$HOME` see the override.
+- **Unit:** canonical/claude-home path derivation; `<cwd-slug>` encoding
+  (incl. dots/underscores, pinned to the empirically-observed rule);
+  symlink idempotency; Claude `build_turn_argv` sets `CLAUDE_CONFIG_DIR`;
+  Codex `developer_instructions` contain the memory blurb + path; Codex
+  does **not** enable `features.memories`; agent create provisions dirs,
+  delete removes them.
+- **Real-CLI (gated on `claude`/`codex` on PATH, like the existing
+  real-CLI suites):** write a fact in session A, read it back in a fresh
+  session B against the same agent — once per harness — proving the full
+  agent-written persist→recall cycle end to end.
 
-New setting in `config.py`:
+## 7. Implementation phases
 
-```python
-memory_dir: str = "~/.octopus/memory"   # per-agent subdir: <memory_dir>/<agent_id>/
-```
+- **Phase A — paths + provisioning core** (`server/agent_memory.py`, new,
+  small): `agents_dir` setting; `agent_dir`/`canonical_memory_dir`/
+  `claude_config_dir` derivation; `cwd_slug(working_dir)`; `ensure_dirs`;
+  `ensure_claude_symlink`; `ensure_claude_auth`. Pure functions + unit
+  tests (incl. `$HOME` override + the encoding rule).
+- **Phase B — plumbing**: `RunConfig`/`TurnContext` fields;
+  `RuntimeProfile.prepare_workspace`; `HarnessRun.start` calls it;
+  `assembly` memory-blurb gated by `injects_memory_prompt`.
+- **Phase C — profiles**: Claude sets `CLAUDE_CONFIG_DIR` +
+  `prepare_workspace`; Codex gets the blurb. Unit tests on both argvs.
+- **Phase D — session/agent wiring**: `_run_config` computes the dirs;
+  `agent_manager` provisions on create, cleans on delete. Real-CLI cycle
+  test.
+- **Phase E — docs + counts**: CLAUDE.md test table + coverage matrix.
 
-**Agent deletion** must clean up the dir. `agent_manager` delete path
-(and the archive→hard-delete path, if any) `shutil.rmtree`s
-`memory_dir(agent_id)`. Archiving an agent keeps the files (history,
-matching how archived sessions keep messages); only true delete removes
-them.
-
-## 5. Backend changes
-
-### 5.1 Pass the agent id to the backend
-
-Both backends already take `session_id`; add `agent_id` (and nothing
-else — the dir is derived from it). `_make_backend`
-(`session_manager.py:1150–1198`) passes `agent_id=agent["id"] if agent
-else None` to both `ClaudeCodeBackend` and `CodexBackend`. When there is
-no agent (legacy/tests), `agent_id` is `None` and memory is simply off.
-
-### 5.2 The `memory` in-app MCP server (active read/write path)
-
-New `server/mcp_servers/memory.py`, structured exactly like
-`viewer.py` (file-direct, stdio FastMCP, sandboxed), spawned as
-`python -m server.mcp_servers.memory` with env:
-
-```
-OCTOPUS_MEMORY_DIR   = <abs ~/.octopus/memory/<agent_id>>   # already agent-scoped
-```
-
-That single env var is all it needs — the dir *is* the agent scope, so
-the server never trusts an agent id from the model. Tools (all delegate
-straight to `server/agent_memory.py`):
-
-| Tool | Signature | Returns |
-|------|-----------|---------|
-| `memory_list` | `()` | the index (names + descriptions) — the canonical fresh read |
-| `memory_read` | `(name: str)` | full frontmatter + body of one fact (or a not-found message) |
-| `memory_search` | `(query: str)` | matching facts (name + description + snippet) |
-| `memory_write` | `(name, description, type, content)` | confirmation; creates/overwrites the fact + rebuilds index |
-| `memory_delete` | `(name: str)` | confirmation or not-found |
-
-The server is added to both backends' MCP entry-building exactly where
-`viewer`/`bg`/`ask` are selected today (`claude_code.py:267–328`,
-`codex.py:142–206`). It is gated on `agent_id is not None` **and** its
-presence in the agent's `mcp_servers` set (so the per-agent toggle works
-identically to the other three). When `agent_id` is `None`, the server
-isn't wired at all.
-
-### 5.3 Index injection (passive read path)
-
-In each backend's prompt assembly — right where the connector blurb is
-appended (`claude_code.py:354–363`, `codex.py:208–214`) — append a
-**Memory** section built from two parts:
-
-1. A static `_OCTOPUS_MEMORY_PROMPT` (shared by both backends; tool names
-   are identical so no per-harness variant) that explains the file
-   scheme and *when* to remember / recall / update / delete — adapted
-   from the reference design's "# Memory" guidance. This is what makes
-   the model actually curate memory instead of ignoring the tool.
-2. The **live index** for this agent (`agent_memory.render_index`). If
-   the agent has no memories yet, inject only a one-liner ("No memories
-   recorded yet — use `memory_write` to record durable facts") so the
-   model knows the capability exists without noise.
-
-Both are appended to the same string already passed via
-`--append-system-prompt` (Claude) / `developer_instructions` (Codex).
-Because injection reads the files fresh on every turn, a memory the model
-wrote on turn N is visible passively on turn N+1 with no extra plumbing.
-
-Empty/disabled cases: if `memory` is not in the agent's MCP set, inject
-nothing and don't wire the server (the agent opted out).
-
-## 6. REST + WebSocket (host side)
-
-Frontend needs to view/manage memory; the host reads the same files.
-
-New router `server/routers/memory.py`, mounted under the agents tree:
-
-- `GET    /api/agents/{agent_id}/memory` → `[MemoryFact]` (list)
-- `GET    /api/agents/{agent_id}/memory/{name}` → one fact
-- `PUT    /api/agents/{agent_id}/memory/{name}` → create/update
-- `DELETE /api/agents/{agent_id}/memory/{name}` → delete
-
-All four delegate to `server/agent_memory.py` (same code the MCP server
-uses) under the same per-agent lock, so UI edits and model writes can't
-corrupt the index. Auth: the existing bearer-token dependency, like
-every other route.
-
-**Live updates:** when a memory changes *during a session* (model called
-`memory_write`/`memory_delete`), the user watching that session should
-see it. The MCP server is file-direct (no host round-trip), so to emit a
-WebSocket event we either (a) have the host detect the change, or (b)
-give the memory MCP server an optional host-callback like `bg`. Decision
-#4 picks between "no live push in v1 — the Memory panel refetches on
-open / on turn-end" (simplest, fully correct) and "memory server posts a
-tiny `memory_changed` ping to the host → WS broadcast" (live, matches
-`bg`'s pattern). Recommendation: start with refetch-on-turn-end (the
-session already emits a turn-complete event the panel can listen to);
-add the ping only if live mid-turn updates prove worth it.
-
-## 7. Frontend (`web/src/`)
-
-A **Memory** panel in the agent settings/detail surface (where
-`mcp_servers`, connectors, model, etc. already live):
-
-- **List** facts (name, type badge, description, updated-at), sorted
-  most-recent-first.
-- **View/edit** a fact in a Markdown editor (frontmatter fields as form
-  inputs: name, description, type; body as a textarea/markdown editor).
-- **Create** / **delete** with confirm.
-- A clear note that the agent curates this itself and that it's shared by
-  *all* of the agent's sessions and survives a backend switch.
-- The agent's `mcp_servers` toggle for `memory` lives with the existing
-  built-in-server toggles; turning it off hides/disables the panel's
-  "the agent can read this" affordance (files are kept).
-
-Store wiring (zustand) mirrors connectors: a `memory` slice with
-`fetchMemory(agentId)`, `saveMemoryFact`, `deleteMemoryFact`. Use
-`useSessionStore.getState()` inside callbacks per CLAUDE.md conventions.
-
-## 8. Implementation phases
-
-- **Phase A — storage core.** `server/agent_memory.py` + `config.py`
-  setting + unit tests (CRUD, slug validation, atomic write, index
-  rebuild, concurrent-write lock, `$HOME` override). No backend wiring
-  yet. Independently verifiable.
-- **Phase B — MCP server.** `server/mcp_servers/memory.py` + tests
-  driving the tools against a temp dir. Still not wired into a launch.
-- **Phase C — backend wiring.** Pass `agent_id`; add `memory` to MCP
-  selection in both backends; inject `_OCTOPUS_MEMORY_PROMPT` + live
-  index. Tests assert `build_args()` for *both* backends includes the
-  memory server entry and the injected index when the agent has facts,
-  and omits it when the agent opts out / has no id. Add `memory` to the
-  default `mcp_servers` set. A real-CLI test (gated on `claude` / `codex`
-  on PATH, like the existing real-CLI suites) that seeds a fact and
-  confirms the model can recall it.
-- **Phase D — REST + frontend.** Router + agent-delete cleanup + Memory
-  panel + store + unit/e2e tests. WS live-push only if decision #4 says so.
-- **Phase E — docs + counts.** Update CLAUDE.md test-count table and the
-  coverage matrix; move "Agent memory" out of `future-features.md`
-  "Deferred"; note the native-memory coexistence decision (§10.1).
-
-Phases A→B→C are the agnostic-read/write spine and are independently
-testable; D is the human surface; each leaves the suite green.
-
-## 9. Tests
-
-Mirror the existing layout (CLAUDE.md "Test Coverage"):
-
-- **Backend unit (pytest):** `agent_memory` CRUD + index + locking +
-  slug safety; the `memory` MCP tools; `build_args()` injection &
-  server-wiring for **both** backends (present/absent/opted-out/no-agent);
-  REST routes (list/get/put/delete, 404s, auth); agent-delete rmtree;
-  real-CLI recall test (gated on PATH).
-- **Frontend unit (vitest):** memory store slice; Memory panel render.
-- **E2E (Playwright):** open an agent's Memory panel, create/edit/delete
-  a fact, confirm it lists; (optional, real-CLI) a turn where the model
-  reads an injected memory.
-
-All suites green before commit — zero failures, no skips dressed as
-"flaky" (CLAUDE.md).
-
-## 10. Open questions / decisions to confirm before Phase A
-
-1. **Coexistence with Claude Code's native auto-memory.** When Octopus
-   runs `claude --print` in a repo, the CLI also injects its own
-   per-repo memory dir (this session's system reminder *is* that). For a
-   claude-code agent we'd then have two stores. Options: (a) leave it —
-   they're separate dirs and don't corrupt each other, Octopus memory is
-   simply the cross-harness one; (b) investigate a CLI flag/setting/env
-   to disable native auto-memory so Octopus's is authoritative. We should
-   **investigate (b)'s feasibility** before deciding; default to (a) if
-   no clean switch exists. (We do *not* hand-patch the CLI.)
-2. **Scope: per-agent (recommended) vs per-session vs global.** Plan
-   assumes per-agent — it's the durable entity and the refactor's stated
-   north star. Confirm.
-3. **Who writes, v1: model-driven (recommended) vs auto-extraction.**
-   Plan assumes model-driven via the tool + user via UI (matches the
-   reference design, no second LLM pass). Auto-extraction is a separate
-   future feature, not a deferral of this one. Confirm.
-4. **Live mid-turn UI updates.** Refetch-on-turn-end (simple, correct)
-   vs a `bg`-style host-callback ping for live push. Recommendation:
-   refetch first, add ping only if needed.
-5. **Shared/global memory pool** across an org's agents — future call;
-   confirm it's out of v1.
-6. **Memory in the default agent's MCP set.** Plan adds `memory` to the
-   default `["ask","bg","viewer"]`. Confirm we want it on by default
-   (recommended — it's the headline feature) vs opt-in per agent.
+Each phase leaves the suite green (CLAUDE.md "After Every Code Change").

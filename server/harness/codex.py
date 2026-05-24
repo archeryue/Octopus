@@ -442,6 +442,11 @@ CODEX = RuntimeProfile(
     new_event_parser=CodexEventParser,
     build_oneshot_argv=build_oneshot_argv,
     parse_oneshot_stdout=parse_oneshot_stdout,
+    # Codex has no usable native memory in exec, so it reads/writes the shared
+    # per-agent markdown dir with file tools, driven by the injected blurb
+    # (docs/plans/memory.md §3). No prepare_workspace: memory is decoupled from
+    # CODEX_HOME, and the canonical dir is ensured by session_manager.
+    injects_memory_prompt=True,
     login=_DeviceLoginDriver(),
     transcript_codec=None,  # Codex has no handoff/pull transcript format
 )

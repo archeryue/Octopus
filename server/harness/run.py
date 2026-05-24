@@ -125,6 +125,10 @@ class RunConfig:
     tool_allow: list[str] | None = None
     tool_deny: list[str] | None = None
     connectors: list[tuple[Any, Any]] = field(default_factory=list)
+    # Per-agent native memory (docs/plans/memory.md). Both None when there's
+    # no owning agent (legacy/tests) → memory wiring is fully inert.
+    memory_dir: str | None = None
+    agent_config_dir: str | None = None
 
 
 class HarnessRun:
@@ -148,18 +152,16 @@ class HarnessRun:
 
     # ------------------------------------------------------------------ lifecycle
 
-    def build_argv(
+    def _make_context(
         self,
         prompt: str,
         working_dir: str,
-        resume_id: str | None = None,
-        credential: HarnessCredential | None = None,
-    ) -> tuple[list[str], dict[str, Any]]:
-        """The pre-spawn half of a turn: run the shared assembly (MCP
-        selection, system-prompt composition, working-dir absolutization) and
-        let the profile render the argv. Returns `(argv, kwargs)` without
-        spawning — `start()` calls this then spawns; tests call it to inspect
-        the command/env a turn would use."""
+        resume_id: str | None,
+        credential: HarnessCredential | None,
+    ) -> TurnContext:
+        """Run the shared assembly (MCP selection, system-prompt composition,
+        working-dir absolutization) into a neutral TurnContext. Side-effect
+        free, so both `build_argv` (argv inspection) and `start()` use it."""
         # Resolve working_dir to ABSOLUTE before handing it anywhere: MCP
         # servers are grandchildren (FastAPI → CLI → mcp_*) inheriting cwd,
         # so a relative path would be double-resolved by the viewer.
@@ -169,9 +171,13 @@ class HarnessRun:
             self._config.mcp_servers, self._config.connectors, abs_wd, callback_env
         )
         system_prompt = assembly.compose_system_prompt(
-            self._config.system_prompt, self._profile.tools_prompt, self._config.connectors
+            self._config.system_prompt,
+            self._profile.tools_prompt,
+            self._config.connectors,
+            memory_dir=self._config.memory_dir,
+            inject_memory=self._profile.injects_memory_prompt,
         )
-        ctx = TurnContext(
+        return TurnContext(
             prompt=prompt,
             working_dir=abs_wd,
             resume_id=resume_id,
@@ -181,7 +187,22 @@ class HarnessRun:
             tool_deny=self._config.tool_deny,
             mcp_servers=mcp_servers,
             credential=credential,
+            memory_dir=self._config.memory_dir,
+            agent_config_dir=self._config.agent_config_dir,
         )
+
+    def build_argv(
+        self,
+        prompt: str,
+        working_dir: str,
+        resume_id: str | None = None,
+        credential: HarnessCredential | None = None,
+    ) -> tuple[list[str], dict[str, Any]]:
+        """The pre-spawn half of a turn: assemble the context and let the
+        profile render the argv. Returns `(argv, kwargs)` without spawning and
+        without FS side effects — `start()` calls this then spawns; tests call
+        it to inspect the command/env a turn would use."""
+        ctx = self._make_context(prompt, working_dir, resume_id, credential)
         return self._profile.build_turn_argv(ctx)
 
     async def start(
@@ -194,7 +215,15 @@ class HarnessRun:
         if self._process is not None:
             raise RuntimeError("HarnessRun already started")
 
-        argv, kwargs = self.build_argv(prompt, working_dir, resume_id, credential)
+        ctx = self._make_context(prompt, working_dir, resume_id, credential)
+        # FS prep (per-agent memory symlink + auth seed) happens here, not in
+        # build_argv, so argv inspection stays side-effect free.
+        if self._profile.prepare_workspace is not None:
+            try:
+                self._profile.prepare_workspace(ctx)
+            except Exception:
+                logger.warning("prepare_workspace failed", exc_info=True)
+        argv, kwargs = self._profile.build_turn_argv(ctx)
         argv, kwargs = prepare_spawn(argv, kwargs)
 
         logger.info("Spawning harness %s: %s (cwd=%s)", self._profile.backend, argv, kwargs.get("cwd"))

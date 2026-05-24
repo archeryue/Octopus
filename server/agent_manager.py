@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from . import agent_memory
 from .database import Database
 
 
@@ -76,6 +77,9 @@ class AgentManager:
         )
         agent = await self.db.get_agent(agent_id)
         assert agent is not None
+        # Provision the agent's durable state dirs (canonical memory/ +
+        # claude-home/) up front; also ensured lazily per turn.
+        agent_memory.ensure_agent_dirs(agent_id)
         return agent
 
     async def update_agent(self, agent_id: str, **fields: Any) -> dict[str, Any]:
@@ -114,3 +118,6 @@ class AgentManager:
                 "Agent still has sessions; archive it instead of deleting"
             )
         await self.db.delete_agent(agent_id)
+        # Hard delete also removes the agent's durable state (memory +
+        # claude-home). Archiving keeps it, mirroring archived-session history.
+        agent_memory.remove_agent_dir(agent_id)

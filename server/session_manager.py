@@ -1191,6 +1191,18 @@ class SessionManager:
             tool_allow = _split_tool_list(agent.get("tool_allow"))
             tool_deny = _split_tool_list(agent.get("tool_deny"))
 
+        # Per-agent native memory (docs/plans/memory.md): derive the canonical
+        # memory dir + per-agent CLAUDE_CONFIG_DIR from the owning agent and
+        # ensure they exist. None when there's no agent → memory wiring is inert.
+        memory_dir: str | None = None
+        agent_config_dir: str | None = None
+        if session.agent_id:
+            from . import agent_memory
+
+            agent_memory.ensure_agent_dirs(session.agent_id)
+            memory_dir = str(agent_memory.agent_memory_dir(session.agent_id))
+            agent_config_dir = str(agent_memory.agent_claude_home(session.agent_id))
+
         return RunConfig(
             session_id=session.id,
             system_prompt=system_prompt,
@@ -1199,6 +1211,8 @@ class SessionManager:
             tool_allow=tool_allow,
             tool_deny=tool_deny,
             connectors=connectors or [],
+            memory_dir=memory_dir,
+            agent_config_dir=agent_config_dir,
         )
 
     # Refresh the access_token if it expires within this many seconds. A

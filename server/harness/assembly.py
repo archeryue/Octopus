@@ -103,14 +103,45 @@ def select_mcp_servers(
     return entries
 
 
+def render_memory_blurb(memory_dir: str) -> str:
+    """Instructions for an agent's durable, cross-session markdown memory
+    (docs/plans/memory.md §3). Injected only for harnesses without native
+    memory (Codex); Claude relies on its own auto-injected MEMORY.md. The
+    format mirrors Claude's native memory (frontmatter facts + a MEMORY.md
+    index) so the two are interchangeable on a backend switch."""
+    return f"""\
+== Long-term memory ==
+
+You have a durable, cross-session memory for this agent, stored as Markdown \
+files at:
+  {memory_dir}
+
+At the START of a task, read `{memory_dir}/MEMORY.md` (if it exists) to recall \
+what you already know about this user and their projects. When you learn a \
+durable fact worth keeping for future sessions — a stable preference, a \
+project constraint, how the user wants things done — record it:
+  - write/update a focused file `{memory_dir}/<slug>.md` with YAML frontmatter \
+(`name`, `description`, `metadata.type` = user|feedback|project|reference) \
+followed by the fact in prose;
+  - add/update a one-line pointer in `{memory_dir}/MEMORY.md`: \
+`- [Title](<slug>.md) — short hook`.
+Keep entries durable and de-duplicated: update an existing file rather than \
+adding a near-duplicate, and delete a file (and its MEMORY.md line) when it \
+becomes wrong. Don't record secrets, throwaway details, or this session's \
+transient state. Use your normal file-read/-write tools for these files."""
+
+
 def compose_system_prompt(
     persona: str | None,
     tools_prompt: str,
     connectors: list[tuple[Any, Any]],
+    memory_dir: str | None = None,
+    inject_memory: bool = False,
 ) -> str:
     """persona (if any) ahead of the harness's in-app-tools blurb, then the
-    connectors blurb (if any). Re-sent every turn — the CLIs don't persist
-    system prompts across resume."""
+    connectors blurb (if any), then the memory blurb (when the harness has no
+    native memory and an agent memory dir exists). Re-sent every turn — the
+    CLIs don't persist system prompts across resume."""
     from ..connectors.base import render_connectors_blurb
 
     out = tools_prompt
@@ -118,4 +149,6 @@ def compose_system_prompt(
         out = f"{persona}\n\n{tools_prompt}"
     if connectors:
         out = f"{out}\n\n{render_connectors_blurb(connectors)}"
+    if inject_memory and memory_dir:
+        out = f"{out}\n\n{render_memory_blurb(memory_dir)}"
     return out

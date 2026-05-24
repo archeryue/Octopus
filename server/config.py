@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # in-app Codex login gets `<codex_home_dir>/<credential_id>/`, which holds
     # the `auth.json` Codex writes + manages. `~` expanded at use time.
     codex_home_dir: str = "~/.octopus/codex"
+    # Per-agent durable state root (docs/plans/memory.md §2). Each agent gets
+    # `<agents_dir>/<agent_id>/` holding the canonical `memory/` dir (native,
+    # agent-written markdown, shared by both harnesses) and `claude-home/`
+    # (per-agent CLAUDE_CONFIG_DIR). `~` expanded at use time.
+    agents_dir: str = "~/.octopus/agents"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False
