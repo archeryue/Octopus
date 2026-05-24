@@ -41,6 +41,8 @@ const OWNED_NAMES = new Set([
   "Q Interrupt Recovery",
   "Q Auto Answer",
   "Reset Slash Cmd",
+  "Agent Label Probe",
+  "Slash Menu Probe",
   "Bg Run E2E",
   "Bg Spill Pipeline",
   "Bg Idle Watchdog",
@@ -690,10 +692,11 @@ test.describe("AskUserQuestion rendering", () => {
       .click();
     await expect(page.locator(".chat-header h3")).toHaveText("Asked Question");
 
-    // The historical question renders as the dashed-border summary
+    // The historical question renders as the dashed-border summary,
+    // attributed to the owning agent (default "Octo"), not "Claude".
     const summary = page.locator(".msg-question-done");
     await expect(summary).toBeVisible();
-    await expect(summary).toContainText("Claude asked");
+    await expect(summary).toContainText("Octo asked");
     await expect(summary).toContainText("Which database should we use?");
 
     // The user's answer renders as a user bubble with italic body
@@ -1122,6 +1125,91 @@ test.describe("/reset slash command", () => {
       .locator(".msg-user .msg-content")
       .allInnerTexts();
     expect(userBubbles.join(" ")).not.toContain("/reset");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Assistant messages are labeled with the owning agent's name (not "Claude")
+// ---------------------------------------------------------------------------
+
+test.describe("agent-name message labels", () => {
+  test("assistant turns are attributed to the owning agent", async ({
+    page,
+    request,
+  }) => {
+    // Imported sessions fall back to the system agent (default "Octo"),
+    // so the assistant label should read "Octo", never the old "Claude".
+    await importSessionApi(request, "Agent Label Probe", [
+      { role: "user", type: "text", content: "hi there" },
+      { role: "assistant", type: "text", content: "hello back" },
+    ]);
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Agent Label Probe" })
+      .click();
+
+    await expect(page.locator(".msg-assistant .msg-content")).toContainText(
+      "hello back"
+    );
+    const label = page.locator(".msg-assistant .msg-label");
+    await expect(label).toContainText("Octo");
+    await expect(label).not.toContainText("Claude");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Slash-command autocomplete in the composer
+// ---------------------------------------------------------------------------
+
+test.describe("slash-command autocomplete", () => {
+  test("/ opens the menu; filter, complete on Enter, dismiss on Esc", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Slash Menu Probe");
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Slash Menu Probe" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Slash Menu Probe");
+
+    const input = page.locator(".chat-input-bar textarea");
+    const menu = page.locator(".slash-menu");
+
+    // Bare "/" lists every command.
+    await input.fill("/");
+    await expect(menu).toBeVisible();
+    await expect(menu.locator(".slash-item")).toHaveCount(4);
+
+    // A prefix narrows to the single match.
+    await input.fill("/sch");
+    await expect(menu.locator(".slash-item")).toHaveCount(1);
+    await expect(menu.locator(".slash-item")).toContainText("/schedule");
+
+    // Enter completes the highlighted command into the composer (with a
+    // trailing space) and closes the menu — it does NOT send the message.
+    await input.press("Enter");
+    await expect(input).toHaveValue("/schedule ");
+    await expect(menu).toBeHidden();
+    await expect(page.locator(".msg-user .msg-content")).toHaveCount(0);
+
+    // /remember is offered and completes the same way.
+    await input.fill("/rem");
+    await expect(menu.locator(".slash-item")).toHaveCount(1);
+    await expect(menu.locator(".slash-item")).toContainText("/remember");
+    await input.press("Enter");
+    await expect(input).toHaveValue("/remember ");
+    await expect(menu).toBeHidden();
+
+    // Re-open with a different prefix, then Escape dismisses the menu while
+    // leaving the typed text untouched.
+    await input.fill("/re");
+    await expect(menu).toBeVisible();
+    await input.press("Escape");
+    await expect(menu).toBeHidden();
+    await expect(input).toHaveValue("/re");
   });
 });
 

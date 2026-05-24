@@ -17,6 +17,12 @@ import {
 import { MessageBubble } from "./MessageBubble";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
+import {
+  SlashCommandMenu,
+  buildRememberPrompt,
+  filterSlashCommands,
+  type SlashCommand,
+} from "./SlashCommandMenu";
 import { Button } from "./ui/button";
 
 const EMPTY_MESSAGES: Message[] = [];
@@ -77,6 +83,11 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  // Slash-command autocomplete: which item is highlighted, and whether the
+  // user dismissed the menu with Esc (re-opens as soon as they type again).
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Counter for nested dragenter/dragleave events — without this the
   // overlay flickers as the cursor crosses child elements (textarea,
   // chips, etc.) because each crossing fires a leave on the parent.
@@ -98,6 +109,9 @@ export function ChatView({
     () => agents.find((a) => a.id === activeSession?.agent_id),
     [agents, activeSession?.agent_id]
   );
+  // Display name for assistant attribution throughout the chat. Harness-
+  // neutral fallback when the session has no owning agent.
+  const agentLabel = activeAgent?.name || "Assistant";
   const isArchived = !!activeSession?.archived;
   const pendingQueueMap = useSessionStore((s) => s.pendingQueue);
   const pendingQueue = activeSessionId
@@ -166,7 +180,7 @@ export function ChatView({
           <div className="msg msg-question msg-question-done rounded-lg border-[0.7px] border-dashed border-border bg-muted/30 overflow-hidden opacity-75">
             <div className="question-header flex items-center gap-2 px-3 py-2 text-sm text-muted-foreground">
               <span aria-hidden className="text-xs">?</span>
-              <strong>Claude asked</strong>
+              <strong>{agentLabel} asked</strong>
             </div>
             <div className="question-body px-3 pb-3 space-y-1">
               {questions.map((q, i) => (
@@ -180,9 +194,25 @@ export function ChatView({
           </div>
         );
       }
-      return <MessageBubble message={msg} sessionId={activeSessionId ?? ""} />;
+      return (
+        <MessageBubble
+          message={msg}
+          sessionId={activeSessionId ?? ""}
+          agentName={activeAgent?.name}
+          agentAvatar={activeAgent?.avatar}
+        />
+      );
     },
-    [activeSessionId, approveTool, denyTool, answerQuestion, pendingQuestions]
+    [
+      activeSessionId,
+      approveTool,
+      denyTool,
+      answerQuestion,
+      pendingQuestions,
+      activeAgent?.name,
+      activeAgent?.avatar,
+      agentLabel,
+    ]
   );
 
   // ---- attachments: upload, paste, drop, picker, chips ------------------
@@ -327,6 +357,35 @@ export function ChatView({
     [isRunning]
   );
 
+  // Slash-command autocomplete state, derived from the current input.
+  const slashCommands = useMemo(() => filterSlashCommands(input), [input]);
+  const showSlashMenu = slashCommands.length > 0 && !slashDismissed;
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInput(e.target.value);
+    // Any edit re-arms the menu and resets the highlight to the top match.
+    setSlashIndex(0);
+    setSlashDismissed(false);
+  };
+
+  // Complete a slash command into the composer: name + trailing space so the
+  // caret lands in the args position and the menu hides (whitespace ends the
+  // command-typing state). For no-arg commands the trailing space is trimmed
+  // away by handleSend's matching.
+  const completeSlash = (cmd: SlashCommand) => {
+    setInput(`${cmd.name} `);
+    setSlashIndex(0);
+    setSlashDismissed(false);
+    // Keep editing in the textarea with the caret at the end.
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      const end = ta.value.length;
+      ta.setSelectionRange(end, end);
+    });
+  };
+
   const handleSend = async () => {
     if (!activeSessionId) return;
     const trimmed = input.trim();
@@ -467,6 +526,27 @@ export function ChatView({
       return;
     }
 
+    // /remember command — persist a note to the agent's long-term memory.
+    // Harness-agnostic: we send a memory-writing instruction as a normal
+    // turn, and the session's agent (Claude or Codex) writes it using its
+    // own file tools against the per-agent memory dir both harnesses share.
+    if (lower === "/remember" || lower.startsWith("/remember ")) {
+      const note = trimmed.slice("/remember".length).trim();
+      if (!note) {
+        useSessionStore.getState().addMessage(activeSessionId, {
+          role: "system",
+          type: "notice",
+          content: "Usage: /remember <something to save to memory>",
+          is_error: true,
+        });
+        setInput("");
+        return;
+      }
+      sendMessage(activeSessionId, buildRememberPrompt(note));
+      setInput("");
+      return;
+    }
+
     sendMessage(
       activeSessionId,
       trimmed,
@@ -481,6 +561,35 @@ export function ChatView({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // When the slash-command menu is open it captures navigation keys:
+    // arrows move the highlight, Enter/Tab complete, Esc dismisses (without
+    // bubbling to the global Esc-to-interrupt handler).
+    if (showSlashMenu) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashIndex((i) => (i + 1) % slashCommands.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashIndex(
+          (i) => (i - 1 + slashCommands.length) % slashCommands.length
+        );
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        const cmd = slashCommands[Math.min(slashIndex, slashCommands.length - 1)];
+        if (cmd) completeSlash(cmd);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSlashDismissed(true);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
@@ -637,7 +746,7 @@ export function ChatView({
 
       {isWaitingForResponse && (
         <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
-          Claude is waiting for your response
+          {agentLabel} is waiting for your response
         </div>
       )}
 
@@ -671,6 +780,18 @@ export function ChatView({
         </div>
       ) : (
         <div className="chat-input-bar px-4 py-1.5 bg-background shrink-0">
+          {/* `relative` anchors the slash-command menu, which floats just
+              above the composer (bottom-full) like the Claude Code CLI. */}
+          <div className="relative">
+          {showSlashMenu && (
+            <SlashCommandMenu
+              commands={slashCommands}
+              activeIndex={slashIndex}
+              onSelect={completeSlash}
+              onHoverIndex={setSlashIndex}
+              className="absolute inset-x-0 bottom-full mb-2"
+            />
+          )}
           {/* Rounded card containing chips + textarea + bottom action row.
               Layout copied from VM0 (zero-composer) but tuned shorter
               for Octopus' chat panel: the textarea auto-grows with
@@ -737,8 +858,9 @@ export function ChatView({
             )}
 
             <textarea
+              ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               placeholder={
@@ -801,6 +923,7 @@ export function ChatView({
                 </Button>
               </div>
             </div>
+          </div>
           </div>
         </div>
       )}

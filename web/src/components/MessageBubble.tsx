@@ -18,6 +18,11 @@ const BG_TASK_RESULT_PREFIX = "[bg-task-result]";
 interface MessageBubbleProps {
   message: Message;
   sessionId: string;
+  // Name + avatar of the agent that owns this session, used to label
+  // assistant turns. Falls back to a harness-neutral "Assistant" when the
+  // session has no owning agent.
+  agentName?: string;
+  agentAvatar?: string | null;
 }
 
 function formatBytes(n: number): string {
@@ -81,7 +86,16 @@ function AttachmentList({
   );
 }
 
-export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
+export function MessageBubble({
+  message,
+  sessionId,
+  agentName,
+  agentAvatar,
+}: MessageBubbleProps) {
+  const assistantLabel = agentName || "Assistant";
+  // Mirror the header's avatar treatment: show the agent's emoji, falling
+  // back to the default octopus when an agent exists but set no avatar.
+  const assistantAvatar = agentName ? agentAvatar || "🐙" : null;
   switch (message.type) {
     case "text":
       if (message.role === "user") {
@@ -117,8 +131,13 @@ export function MessageBubble({ message, sessionId }: MessageBubbleProps) {
       }
       return (
         <div className="msg msg-assistant space-y-1">
-          <div className="msg-label text-xs font-semibold text-muted-foreground">
-            Claude
+          <div className="msg-label flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+            {assistantAvatar && (
+              <span aria-hidden className="text-sm leading-none">
+                {assistantAvatar}
+              </span>
+            )}
+            <span>{assistantLabel}</span>
           </div>
           <div className="msg-content markdown rounded-lg border border-border bg-card px-4 py-3 text-sm leading-relaxed">
             <Markdown remarkPlugins={[remarkGfm]}>

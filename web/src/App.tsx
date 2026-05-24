@@ -125,7 +125,7 @@ function AuthenticatedApp({
         aria-label="Sidebar"
       >
         {/* Wordmark — vm0 has an org switcher here; we just brand it. */}
-        <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-1 pb-2">
+        <div className="shrink-0 flex items-center justify-between gap-2 px-3 pt-3 pb-2">
           <div className="flex items-center gap-2 min-w-0">
             <OctopusLogo size={22} className="text-primary shrink-0" />
             <span className="truncate text-base font-bold text-sidebar-foreground">
