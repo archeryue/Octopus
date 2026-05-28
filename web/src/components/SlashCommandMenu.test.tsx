@@ -62,6 +62,17 @@ describe("filterSlashCommands", () => {
     ]);
   });
 
+  it("includes /showme and disambiguates against /schedule on the /s prefix", () => {
+    expect(filterSlashCommands("/sho").map((c) => c.name)).toEqual([
+      "/showme",
+    ]);
+    // Both /schedule and /showme share the /s prefix; list order is preserved.
+    expect(filterSlashCommands("/s").map((c) => c.name)).toEqual([
+      "/schedule",
+      "/showme",
+    ]);
+  });
+
   it("returns nothing for unknown prefixes or non-command input", () => {
     expect(filterSlashCommands("/xyz")).toEqual([]);
     expect(filterSlashCommands("hi")).toEqual([]);

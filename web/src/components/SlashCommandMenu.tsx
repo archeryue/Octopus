@@ -2,6 +2,7 @@ import {
   IconArchive,
   IconBrain,
   IconCalendarClock,
+  IconFile,
   IconRefresh,
 } from "@tabler/icons-react";
 import { cn } from "../lib/utils";
@@ -31,6 +32,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     hint: "<text>",
     description: "Save a note to the agent's long-term memory",
     Icon: IconBrain,
+  },
+  {
+    name: "/showme",
+    hint: "<path>",
+    description: "Open a file in the in-app viewer",
+    Icon: IconFile,
   },
   {
     name: "/archive",
