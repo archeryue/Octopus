@@ -1,7 +1,7 @@
 """The harness layer — the single boundary for all model/runtime interaction.
 
 One `Harness` class configured by a `RuntimeProfile` value per backend
-kind (no per-framework subclasses). See docs/plan/harness-layer.md.
+kind (no per-framework subclasses). See docs/plans/harness-layer.md.
 
 Profiles self-register on import; importing this package wires them up
 (the claude_code/codex imports below run their `register(...)` calls).

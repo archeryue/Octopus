@@ -4,6 +4,12 @@ Four interlocking bugs were hitting the `mcp__bg__run` →
 `deliver_bg_result` → `claude` CLI path. All four are now fixed.
 This doc is the post-mortem and the map to the code.
 
+> **Path note (post-refactor):** this is a dated record. The `server/backends/*`
+> modules it cites (e.g. `subprocess_jsonl.py`) were later folded into the
+> harness layer and now live under `server/harness/` (`run.py`); the other
+> modules named here — `large_prompts.py`, `bg_tasks.py`, `session_manager.py` —
+> are unchanged. The fixes and rationale still stand.
+
 ## 1. E2BIG on bg-task-result delivery
 
 **Symptom.** A `bun run test:e2e` bg task produced ~140 KB of

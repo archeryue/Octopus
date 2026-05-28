@@ -1,51 +1,76 @@
 # Octopus Architecture
 
-Remote Claude Code controller — interact with Claude Code from any device via Web UI or messaging platforms.
+**Octopus is a personal agent platform.** It turns the local **Claude Code**
+and **Codex** CLIs into durable, always-on agents you reach from a browser,
+your phone, or Telegram. It drives the `claude` / `codex` CLIs directly via
+their stream-JSON protocols — there is **no `claude-code-sdk` dependency** and
+no extra per-token API cost beyond the CLI's own auth (your subscription or an
+attached API key).
+
+This doc describes the *current* system design. Per-initiative design history
+lives in [`plans/`](plans/); CLI/stream-protocol research notes live in the
+`*-notes.md` files. `server/database.py` (`_SCHEMA`) is the source of truth for
+the data model — this doc describes it conceptually rather than pasting SQL.
 
 ## System Overview
 
 ```
-                    ┌──────────────┐
-                    │   Web UI     │  React / Vite / TypeScript
-                    │  (built SPA  │  zustand state, WebSocket client
-                    │   or dev)    │
-                    └──────┬───────┘
-                           │ same-origin (production)
-                           │ or Vite proxy (development)
-                    ┌──────▼───────┐
-                    │  Octopus     │  FastAPI + uvicorn
-                    │  Server      │  Serves API + static frontend
-                    │  :8000       │
-                    ├──────────────┤
-                    │  Bridge      │  Messaging platform integrations
-                    │  Manager     │  (Telegram, extensible to others)
-                    └──────┬───────┘
-                           │ claude-code-sdk
-              ┌────────────▼────────────────┐
-              │     Session Manager          │
-              │  (multiple concurrent        │
-              │   Claude Code sessions)      │
-              └────────────┬────────────────┘
-                           │ subprocess (via SDK)
-                    ┌──────▼───────┐
-                    │  Claude Code │
-                    │  CLI         │
-                    └──────────────┘
-                           │
-               ┌───────────┴───────────┐
-               │ Cloudflare Tunnel     │  (optional)
-               │ cloudflared subprocess│  public HTTPS via trycloudflare.com
-               └───────────────────────┘
+        Phone / Browser / Telegram
+              │  REST + WebSocket  │  bot long-poll
+              ▼                    ▼
+        ┌──────────────────────────────────┐
+        │  FastAPI server (uvicorn) :8000   │  serves API + built SPA on one port
+        │  ┌────────────┐  ┌──────────────┐ │
+        │  │ REST routers│  │ BridgeManager│ │  Telegram (extensible ABC)
+        │  │  + /ws      │  │              │ │
+        │  └─────┬───────┘  └──────┬───────┘ │
+        │        └──────┬──────────┘         │
+        │        ┌──────▼───────┐            │
+        │        │SessionManager│            │  one in-process turn engine
+        │        └──────┬───────┘            │
+        │        ┌──────▼───────┐            │
+        │        │   Harness    │            │  RuntimeProfile per backend kind
+        │        └──────┬───────┘            │
+        └───────────────┼────────────────────┘
+                        │ subprocess (stream-JSON over stdout)
+            ┌───────────┴────────────┐
+            │  claude --print …      │   or   codex exec --json …
+            │  + injected MCP servers│        (viewer · bg · ask · connectors)
+            └────────────────────────┘
+                        │
+            ┌───────────┴───────────┐
+            │ Cloudflare Tunnel      │  (optional) public HTTPS via trycloudflare.com
+            └────────────────────────┘
 ```
 
-### Single-Port Architecture
+### Single-port serving
 
-In production, `octopus serve` serves everything from port 8000:
-- API routes (`/api/*`, `/ws`, `/health`) are handled by FastAPI routers
-- All other paths serve the built frontend from `web/dist/` via `StaticFiles(html=True)`
-- The frontend uses `window.location.origin` for API calls and derives `ws://`/`wss://` from `window.location.protocol`, so it works behind any proxy, tunnel, or HTTPS terminator
+In production `octopus serve` serves everything from one port (default 8000):
 
-In development, the Vite dev server runs on port 5173 with hot-reload and proxies `/api`, `/ws`, `/health` to the backend on port 8000.
+- API routes (`/api/*`, `/ws`, `/health`) are FastAPI routers, registered first.
+- Every other path serves the built SPA from `web/dist/` via
+  `StaticFiles(html=True)` mounted at `/`.
+- The frontend uses `window.location.origin` for REST and derives `ws://`/`wss://`
+  from `window.location.protocol`, so it works behind any proxy, tunnel, or
+  HTTPS terminator with no config.
+
+In development, Vite serves the SPA on port 5173 with HMR and proxies `/api`,
+`/ws`, `/health` to the backend on 8000.
+
+## The agent model
+
+An **Agent** is the durable definition of an assistant: name/avatar, system
+prompt, model, default backend (`claude-code` | `codex`), an attached credential,
+its MCP/tool set, tool allow/deny policy, and enabled connectors. Agents **own**
+their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
+("Octo", `is_system=1`) always exists.
+
+- A **Session** is one conversation thread (an instance of talking to an agent).
+  It carries the backend resume id, working dir, origin (`user` | `schedule` |
+  `bridge`), and an `archived` flag.
+- `SessionManager` reads the owning agent's config *directly each turn*, so
+  editing an agent is picked up by its open sessions on their next turn (no
+  restart, no re-bind).
 
 ## Components
 
@@ -53,352 +78,347 @@ In development, the Vite dev server runs on port 5173 with hot-reload and proxie
 
 | File | Purpose |
 |---|---|
-| `main.py` | FastAPI app, CORS middleware, route registration, static file serving for built frontend. Clears `CLAUDECODE` env var to allow nested subprocess spawning. Initializes BridgeManager and CloudflareTunnel in the lifespan context. |
-| `config.py` | Pydantic settings loaded from `.env` — auth token, host, port, CORS origins, default working directory, Cloudflare Tunnel toggle, Telegram bot config (token, allowed chat IDs, API base URL). |
-| `auth.py` | Token verification for REST (`Authorization: Bearer <token>`) and WebSocket (`?token=<token>` query param). |
-| `models.py` | Pydantic models for API requests/responses (`CreateSessionRequest`, `ImportSessionRequest`, `SessionInfo`, `SessionDetail`, `MessageContent`, `WsSendMessage`, `WsToolDecision`, `WsInterrupt`, `ScheduleInfo`, `CreateScheduleRequest`, `UpdateScheduleRequest`) and enums (`SessionStatus`, `MessageRole`). |
-| `session_manager.py` | Core component. Manages multiple Claude Code sessions via `claude-code-sdk`. Handles message streaming, tool result forwarding, broadcast to connected WebSocket clients and bridges. Supports interactive tool approval via `PendingApproval` futures, mid-turn interrupt via `interrupt()`, and a per-session pending-message queue that drains after the current turn. Uses `_receive_safe()` to skip unparseable SDK messages. |
-| `scheduler.py` | `ScheduleRunner` — APScheduler-based recurring task runner. Loads enabled schedules from SQLite at startup, fires `session_manager.send_message()` on interval, skips ticks when the target session is busy, updates `last_run_at`. CRUD methods (`add`, `remove`, `set_enabled`) keep the in-memory `AsyncIOScheduler` in sync with DB writes. |
-| `database.py` | SQLite persistence layer (`aiosqlite`), WAL mode, FK cascade. Tables include `agents`, `sessions`, `messages`, `bridge_mappings`, `backend_credentials`/`credential_secrets`, `connector_installations`/`connector_installation_secrets`/`agent_connectors`/`connector_oauth_clients`/`custom_connectors`, `schedules`, `notifiers`, `bg_tasks`. New tables go in `_SCHEMA`; additive column changes go through idempotent `_apply_migrations`. |
-| `jsonl_parser.py` | Parses Claude Code JSONL session files — extracts metadata (session ID, cwd, first user message), converts message formats, consolidates multi-block messages (merges consecutive text, folds tool_result into tool_use). Filters by primary session ID (hint from filename or most-common count). |
-| `jsonl_writer.py` | Writes Octopus sessions back to Claude Code JSONL format (with uuid chain, parentUuid links, version `2.1.62`, timestamps) for local resumption via `claude --resume`. |
-| `tunnel.py` | CloudflareTunnel subprocess manager — starts `cloudflared tunnel --url`, parses the `trycloudflare.com` URL from stderr, monitors the process, and provides graceful stop (terminate with kill fallback). |
-| `cli.py` | CLI entry point — `octopus serve` (default, checks for built frontend; `--tunnel` enables Cloudflare Tunnel), `octopus handoff` (import local session), `octopus pull` (export to local JSONL). |
-| `routers/sessions.py` | REST CRUD — `GET/POST /api/sessions`, `GET/DELETE /api/sessions/{id}`, `POST /api/sessions/import`, `POST /api/sessions/{id}/reset` (clears stuck-busy state). |
-| `routers/schedules.py` | REST CRUD for scheduled tasks — `GET/POST /api/schedules`, `GET/PATCH/DELETE /api/schedules/{id}`. PATCH supports toggling `enabled` and editing name/prompt/interval (triggers reschedule). |
-| `routers/ws.py` | WebSocket endpoint at `/ws`. Receives client commands (`send_message`, `interrupt`, `approve_tool`, `deny_tool`), streams responses back. Each message send runs as a background `asyncio.Task` so the receive loop stays responsive. |
+| `main.py` | FastAPI app + lifespan. Clears the `CLAUDECODE` env var so a nested `claude` subprocess behaves normally. Wires DB, SessionManager, BridgeManager, ScheduleRunner, ConnectorManager, AgentManager, optional CloudflareTunnel. Registers routers, `GET /api/backends`, `GET /health`, and the SPA static mount. |
+| `config.py` | Pydantic settings from `.env` (prefix `OCTOPUS_`) — see **Configuration** below. |
+| `auth.py` | Bearer-token check for REST (`Authorization`) and WebSocket (`?token=`). |
+| `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
+| `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
+| `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
+| `harness/` | The single boundary for all model/runtime interaction (see below). |
+| `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
+| `agent_memory.py` | Per-agent native memory provisioning (`<agents_dir>/<id>/memory/`). |
+| `scheduler.py` | `ScheduleRunner` — APScheduler runner for recurring prompts, **interval and cron**, fired per agent into fresh auto-archiving sessions. |
+| `schedule_ai.py` | Natural-language `/schedule` parsing — turns "every weekday at 9am" into a cron/interval spec via the agent's own harness (backend-agnostic). |
+| `database.py` | SQLite (`aiosqlite`, WAL, FK cascade). `_SCHEMA` defines all tables; idempotent `_apply_migrations` / `_migrate_*` evolve existing DBs additively. |
+| `jsonl_parser.py` / `jsonl_writer.py` | Read/write Claude Code JSONL session files for `octopus handoff` (import) and `octopus pull` (export → local `claude --resume`). |
+| `bg_tasks.py` | Cross-turn background shell tasks: spawn, stream capture (bounded), idle watchdog, cancel, persistence in `bg_tasks`. |
+| `large_prompts.py` | Spills any synthesized prompt over ~100 KB to a file and hands the model a small `Read` pointer (avoids `E2BIG` on argv). |
+| `attachments.py` / `file_viewer.py` | Per-session upload cache; working-dir-scoped file reads for the viewer. |
+| `connector_manager.py` + `connectors/` | Connector framework (see below). |
+| `credentials` (`oauth_login.py`, `oauth_providers.py`, `oauth_errors.py`, `codex_login.py`) | Stored backend credentials: API keys, OAuth logins, and Codex device-auth in-app login. |
+| `tunnel.py` | `cloudflared tunnel --url` subprocess manager; parses the public URL, monitors, stops gracefully. |
+| `notifiers.py` | Notification destinations (webhook), pluggable. |
+| `cli.py` | `octopus serve` (`--tunnel`), `octopus handoff`, `octopus pull`. |
 
-### Bridge System (`server/bridges/`)
+### Harness layer (`server/harness/`)
 
-The bridge system provides messaging platform integrations, allowing users to interact with Claude Code sessions via external chat platforms.
-
-| File | Purpose |
-|---|---|
-| `base.py` | Abstract `Bridge` base class and `TextBuffer`. Defines the interface all bridges must implement: `start`, `stop`, `send_text`, `send_tool_approval_request`, `send_tool_use`, `send_tool_result`, `send_status`, `send_result`, `send_error`. Includes event dispatcher (`handle_event`) that routes SessionManager events to the appropriate send method. TextBuffer aggregates streaming `assistant_text` chunks and flushes based on size (default 4096) or time (default 0.5s). |
-| `manager.py` | `BridgeManager` — routes messages between messaging platforms and SessionManager. Maintains `platform:chat_id` → `session_id` mappings (persisted in SQLite). Handles slash commands (`/new`, `/sessions`, `/switch`, `/current`, `/help`). Forwards user messages to `SessionManager.send_message()` and routes session events back to the correct bridge and chat via broadcast subscription. Manages active stream tasks per chat. |
-| `telegram.py` | `TelegramBridge` — Telegram Bot integration via long-polling (`getUpdates`). Sends messages with Markdown formatting, splits long text at 4096-char boundaries (preferring newline splits), sends inline keyboards for tool approval (Allow/Deny buttons with `approve:<id>`/`deny:<id>` callback data), typing indicators for running status, rate limit retry (429 with `retry_after`). Access control via `allowed_chat_ids`. |
-
-### Connector System (`server/connectors/` + `server/connector_manager.py`)
-
-Connectors give an agent OAuth-authorized access to third-party APIs (GitHub,
-Gmail, or user-defined "custom" kinds) as MCP tools. Enablement is **agent-scoped**;
-setup is **browser-only** (in-app OAuth-client config, no server env/restart).
-See `docs/connectors-setup.md` and `docs/plans/connectors.md`.
+The harness is the **only** place that talks to a model runtime. There is one
+`Harness` class and one `HarnessRun` subprocess engine, configured by a
+`RuntimeProfile` **value** per backend kind — *no per-framework subclasses*
+(design: [`plans/harness-layer.md`](plans/harness-layer.md)).
 
 | File | Purpose |
 |---|---|
-| `connectors/base.py` | `ConnectorBase` ABC + `ConnectorInstallation`. Backend-neutral `mcp_entry` → `{command, args, env}` merged into both backends' MCP config; system-prompt blurb; in-app `setup_url`/`setup_steps`. |
-| `connectors/oauth.py` | `ConnectorOAuthProvider` protocol + `ConnectorLoginManager` (redirect-URI OAuth; composite `login_id:state` CSRF; TTL/GC). |
-| `connectors/registry.py` | `KIND_REGISTRY` of built-in connector instances (self-registered on import). |
-| `connectors/github.py`, `gmail.py` | Built-in connectors: OAuth provider config + identity lookup + tool list. |
-| `connectors/custom.py` | User-defined connectors: `GenericOAuthProvider` (standard OAuth2 from stored URLs/scopes/PKCE), `CustomConnector` (from a DB row), `resolve_connector(db, kind)` (built-in code kind, else custom DB kind — used everywhere a connector is looked up). |
-| `connector_manager.py` | Install upsert-on-account; in-app OAuth-client config (DB-first, env fallback); server-side token refresh-on-near-expiry behind a per-installation lock; `needs_reconnect` lifecycle; custom-connector CRUD; catalog. |
-| `mcp_servers/connectors/` | Per-installation stdio MCP servers: `github.py`, `gmail.py` (typed tools), `custom.py` (generic `request(method, path, …)` tool), `_shared.py` (token fetch + cache, 32 KB truncation, 401→reconnect). |
-| `routers/connectors.py` | REST: catalog; OAuth start/callback(HTML)/status/cancel; install PATCH/DELETE; internal `/token` + `/mark-needs-reconnect`; in-app `/{kind}/oauth-client`; custom `POST /custom` + `DELETE /custom/{kind}`; agent-scoped `/api/agents/{id}/connectors`. Redirect URI derived from the request (tunnel-safe). |
+| `harness.py` | The `Harness` front door (one per backend kind). |
+| `profile.py` | `RuntimeProfile` — the per-backend data record + small collaborators (argv builder, event parser, capability flags). Capabilities (e.g. native memory, premature-exit recovery) are derived from the profile. |
+| `run.py` | `HarnessRun` — universal subprocess + JSONL stream engine (4 MiB line limit, graceful shutdown, PATH discovery incl. nvm). |
+| `assembly.py` | Shared per-turn assembly: MCP server selection, system-prompt composition (in-app tools blurb, connectors blurb, memory blurb), working-dir absolutization. |
+| `events.py` | Backend-neutral `HarnessEvent` DTOs (`text`, `thinking`, `tool_use`, `tool_result`, `question_request`, `result`, `error`, `session_started`). |
+| `claude_code.py` | Claude profile — `claude --print --output-format=stream-json` argv, event normalization, JSONL transcript codec, `run_oneshot`. |
+| `codex.py` | Codex profile — `codex exec --json` argv (per-turn `-c` TOML overrides for MCP), event normalization, `run_oneshot`. Runs exactly once per turn. |
+| `registry.py` | `get_harness(backend)` / `available_backends()` (a kind appears only when its CLI resolves on PATH; `claude-code` is always listed). |
+| `login.py` | `LoginDriver` protocol for in-app credential login flows. |
+
+### In-app MCP servers (`server/mcp_servers/`)
+
+Every turn injects a small set of stdio MCP servers into the CLI's
+`--mcp-config`. The built-ins are configurable per agent (default
+`["ask", "bg", "viewer"]`); each enabled connector adds one more.
+
+| Server | Tool(s) | Purpose |
+|---|---|---|
+| `viewer.py` | `mcp__viewer__show_file(path)` | Opens a working-dir file in the in-app viewer modal (`/showme`). |
+| `bg.py` | `mcp__bg__run` / `cancel` / `list` | Fire-and-forget shell commands that run **across turns**; the result arrives as a follow-up turn. |
+| `ask.py` | `mcp__ask__user(questions)` | Structured multiple-choice question rendered as a form in the UI; long-polls for the answer. Replaces the old permission-prompt hack. |
+| `connectors/github.py`, `gmail.py` | typed API tools | Built-in connector tools (see Connectors). |
+| `connectors/custom.py` | generic `request(method, path, …)` | One tool for any user-defined OAuth2 API. |
+| `connectors/_shared.py` | — | Token fetch+cache, 401→reconnect, 32 KB truncation. |
+
+### Connector system (`server/connectors/` + `connector_manager.py`)
+
+Connectors give an agent OAuth-authorized access to third-party APIs as MCP
+tools. Enablement is **agent-scoped**; setup is **browser-only** (paste the
+OAuth client id/secret in the UI — no env edit, no restart). The OAuth redirect
+URI is derived from the incoming request, so it's correct behind a tunnel.
+Built-ins: **GitHub**, **Gmail**. **Custom** kinds (authorize/token URLs, scopes,
+PKCE, API base) are defined entirely from the browser and backed by a generic
+OAuth provider + the generic `request` tool. See
+[`connectors-setup.md`](connectors-setup.md) and [`plans/connectors.md`](plans/connectors.md).
+
+Per-kind OAuth client creds live in `connector_oauth_clients`; installations in
+`connector_installations` (+ split-secret `connector_installation_secrets`);
+the agent↔installation join is `agent_connectors`; custom kinds in
+`custom_connectors`. The manager handles install upsert, DB→env client-config
+resolution, and server-side token refresh-on-near-expiry behind a per-install lock.
+
+### Bridge system (`server/bridges/`)
+
+Messaging-platform integrations behind an extensible `Bridge` ABC. Today:
+Telegram (long-polling `getUpdates` — no webhook/SSL needed).
+
+| File | Purpose |
+|---|---|
+| `base.py` | `Bridge` ABC + `TextBuffer` (aggregates streamed `assistant_text`, flushes on size/time) + the `handle_event` dispatcher and `QUIET_SUPPRESSED_EVENTS` policy. |
+| `manager.py` | `BridgeManager` — routes inbound messages and slash commands, binds each chat to an **agent** with a sticky session + per-chat `verbose` flag, and fans SessionManager broadcasts back to the right chat. |
+| `telegram.py` | `TelegramBridge` — long-poll loop, Markdown send + 4096-char splitting, inline keyboards (tool approval + the `/sessions` switch picker), rate-limit retry, `allowed_chat_ids` access control. |
+
+A chat binds to an agent on first contact (Default Agent) with a sticky session
+that rolls as threads come and go. **Quiet by default**: only the agent's
+natural-language replies, errors, and approval prompts reach the chat;
+`QUIET_SUPPRESSED_EVENTS` (`tool_use`, `tool_result`, `result`, `status`) are
+hidden. `/verbose` and `/quiet` toggle this per chat (persisted in
+`bridge_mappings.verbose`, preserved across `/agent` rebinds).
+
+**Slash commands:** `/new [name]`, `/agent <name|id>`, `/sessions` (tappable
+switch buttons), `/switch <id>`, `/current`, `/quiet`, `/verbose`, `/help`.
 
 ### Frontend (`web/src/`)
 
-| File | Purpose |
-|---|---|
-| `App.tsx` | Root component. Token login screen, then layout with sidebar + main chat area. Hamburger menu for mobile sidebar toggle with overlay. Logout button. |
-| `stores/sessionStore.ts` | Zustand store — token (persisted to localStorage), sessions list, active session, messages per session, connection status, schedules list. |
-| `hooks/useWebSocket.ts` | WebSocket connection with auto-reconnect (3s interval). Derives WS URL from `window.location` (supports `ws://` and `wss://`). Uses `getState()` directly for store mutations to avoid React re-render loops. Exposes `sendMessage`, `interrupt`, `approveTool`, `denyTool`. Handles all event types: `assistant_text`, `tool_use`, `tool_result`, `tool_approval_request`, `status`, `result`, `error`. |
-| `components/SessionList.tsx` | Sidebar — lists sessions with status dots, create (name + optional working dir), delete, select active, copy session ID to clipboard. Uses `window.location.origin` for API calls. |
-| `components/ScheduleList.tsx` | Sidebar section under the active session — list of schedules for the active session with enable/disable toggle and delete button, "+" form to create a new schedule (name, prompt, interval in minutes). Hidden when no session is selected. |
-| `components/ChatView.tsx` | Main chat view — virtualized message list via `react-virtuoso` (constant DOM nodes regardless of history length, auto-pins to bottom on new messages), text input with Enter-to-send and Esc-to-interrupt, "waiting for your response" hint when last assistant message ends with a question, queued-message badge while a turn is in flight (Send queues; the queued message fires after the current turn ends). |
-| `components/MessageBubble.tsx` | Renders a single message: user text, assistant markdown (via react-markdown), collapsible tool use/result blocks with preview (command or file_path), cost badges, errors. |
-| `components/ToolApproval.tsx` | Renders Allow/Deny buttons when Claude requests tool permission. Shows tool name and JSON-formatted input. |
+React 19 + TypeScript (strict) + Vite + zustand + Tailwind v4 + Radix.
 
-### Build & Dev Config (`web/`)
-
-| File | Purpose |
+| Area | Files |
 |---|---|
-| `vite.config.ts` | Vite build config + dev server proxy (`/api`, `/ws`, `/health` → `localhost:8000`). Also configures vitest with jsdom environment. |
-| `playwright.config.ts` | E2E test config — starts both backend and frontend dev servers, runs Chromium tests. Ignores `telegram-bridge.spec.ts` (separate config). |
-| `playwright.bridge.config.ts` | Separate Playwright config for Telegram bridge E2E tests. Starts a fake Telegram API server on port 9999, then the backend with `OCTOPUS_TELEGRAM_BOT_TOKEN` and `OCTOPUS_TELEGRAM_API_BASE_URL` pointed at the fake server. |
+| Shell | `App.tsx`, `components/AccountDropdown.tsx`, `OctopusLogo.tsx`, `SettingsDialog.tsx` |
+| Agents | `AgentList.tsx` (two-pane sidebar: pick agent → see its sessions), `AgentSettings.tsx` (prompt/model/backend/credential/tools/connectors) |
+| Sessions & chat | `SessionList.tsx`, `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint), `MessageBubble.tsx`, `SlashCommandMenu.tsx`, `ArchivedSessionsDialog.tsx` |
+| In-app tools | `FileViewerDialog.tsx` (viewer), `BgTaskChip.tsx` (bg task status), `QuestionPrompt.tsx` (ask form), `ToolApproval.tsx` (approval prompt) |
+| Schedules | `ScheduleList.tsx`, `SchedulesDialog.tsx` (all-agents overview) |
+| Connectors / creds | `ConnectorList.tsx`, `CredentialList.tsx` |
+| State | `stores/sessionStore.ts`, `hooks/useWebSocket.ts`, `hooks/useViewportHeight.ts` |
 
 ## Data Flow
 
 ### Sending a message (Web UI)
 
 ```
-User types "ls" → ChatView
-  → useWebSocket.sendMessage()
-    → adds user message to store (optimistic)
-    → sends via WebSocket: {"type": "send_message", "session_id": "xxx", "content": "ls"}
+ChatView → useWebSocket.sendMessage()
+  → optimistic user message in store
+  → ws: {"type":"send_message","session_id","content","attachment_ids":[]}
 
-Server receives in ws.py
-  → asyncio.create_task(_stream_response(...))
-    → session_manager.send_message(session_id, "ls")
-      → yields user_message event
-      → broadcasts status: running
-      → _run_claude():
-        → ClaudeSDKClient(options) as client
-        → client.query("ls")
-        → iterates _receive_safe(client):
-            AssistantMessage → assistant_text / tool_use
-            UserMessage (tool results) → tool_result events
-            ResultMessage → result (with cost, session_id, duration_ms, is_error)
-            SystemMessage → skipped
-      → broadcasts status: idle
-
-Each yielded event sent to client via ws.send_json()
-  → frontend handleWsMessage() dispatches to store
-  → React re-renders ChatView with new messages
+ws.py receives → asyncio.create_task(stream)
+  → SessionManager.start_message(session_id, content)
+    → large_prompts.spill_if_large(...)        (only if huge)
+    → broadcast status: running
+    → Harness.run() spawns the agent's backend CLI with injected MCP servers
+      → streams HarnessEvents: assistant_text / tool_use / tool_result /
+        question_request / result
+      → each event is persisted (messages) and broadcast to clients + bridges
+    → broadcast status: idle
 ```
 
-### Sending a message (Telegram Bridge)
+### Sending a message (Telegram, quiet by default)
 
 ```
-User sends "ls" in Telegram chat
-  → TelegramBridge._poll_loop() receives update via getUpdates
-  → _handle_update() extracts chat_id and text
-  → checks allowed_chat_ids access control
-  → BridgeManager.handle_incoming("telegram", chat_id, "ls", bridge)
-    → checks for slash commands (none here)
-    → looks up session_id from platform:chat_id mapping
-    → asyncio.create_task(_stream_to_bridge(...))
-      → session_manager.send_message(session_id, "ls")
-      → for each event: bridge.handle_event(chat_id, event)
-        → TextBuffer aggregates assistant_text chunks
-        → flushes before tool_use/result/error events
-        → sends tool_use as "*ToolName*: `preview`"
-        → sends result as "*Done* ($0.0300)"
-        → sends typing action for "running" status
+TelegramBridge poll → _handle_update → BridgeManager.handle_incoming
+  → slash command? handle it (/new, /sessions buttons, /switch, /quiet, …)
+  → else: ensure chat is bound to an agent + sticky session, then start_message
+SessionManager broadcasts events → BridgeManager._on_broadcast
+  → drop QUIET_SUPPRESSED_EVENTS unless the chat is /verbose
+  → bridge.handle_event → TextBuffer-batched replies, errors, approval prompts
 ```
 
-### Tool Approval Flow
+### Questions & tool approval
 
-```
-SessionManager._run_claude() encounters permission request
-  → _make_permission_handler() creates PendingApproval with asyncio.Future
-  → session status → waiting_approval
-  → broadcasts tool_approval_request event
-    → Web UI: ToolApproval component renders Allow/Deny buttons
-    → Telegram: inline keyboard with approve/deny callback buttons
-  → awaits future
+The `mcp__ask__user` MCP tool POSTs questions to
+`/api/sessions/{id}/questions`; SessionManager broadcasts a `question_request`
+(Web UI renders `QuestionPrompt`; Telegram surfaces it) and long-polls for the
+answer, which is delivered back to the model. An unanswered question
+auto-answers after `ask_user_question_timeout_seconds` so headless
+bridge/scheduled sessions never wedge. (Native CLI tool-approval also exists via
+`PendingApproval` futures + inline keyboards, but agents run with skip-permissions
+by default and gate sensitive actions through `ask`/connector confirms instead.)
 
-User clicks Allow/Deny
-  → Web UI: ws sends approve_tool/deny_tool → session_manager.approve_tool()
-  → Telegram: callback_query → manager.handle_tool_decision()
-  → future.set_result(PermissionResultAllow/Deny)
-  → Claude continues or aborts tool execution
-```
+### Cross-turn background work
 
-### WebSocket Protocol
+`mcp__bg__run` spawns a detached shell task (`bg_tasks.py`) that survives across
+turns; when it exits, Octopus injects a follow-up turn carrying the captured
+output (spilled to a file first if large). An idle watchdog SIGTERMs tasks that
+go silent after producing output. Details: [`2026-05-18-bg-pipeline-hardening.md`](2026-05-18-bg-pipeline-hardening.md).
 
-**Client → Server:**
+## WebSocket protocol (`/ws`)
+
+**Client → Server**
+
 ```json
-{"type": "send_message", "session_id": "xxx", "content": "..."}
-{"type": "interrupt", "session_id": "xxx"}
-{"type": "approve_tool", "session_id": "xxx", "tool_use_id": "yyy"}
-{"type": "deny_tool", "session_id": "xxx", "tool_use_id": "yyy", "reason": "..."}
+{"type":"send_message","session_id":"…","content":"…","attachment_ids":[]}
+{"type":"interrupt","session_id":"…"}
+{"type":"answer_question","session_id":"…","question_id":"…","answers":[…]}
+{"type":"approve_tool","session_id":"…","tool_use_id":"…"}
+{"type":"deny_tool","session_id":"…","tool_use_id":"…","reason":"…"}
 ```
 
-**Server → Client:**
+**Server → Client**
+
 ```json
-{"type": "user_message", "session_id": "xxx", "content": "..."}
-{"type": "assistant_text", "session_id": "xxx", "content": "..."}
-{"type": "tool_use", "session_id": "xxx", "tool": "Bash", "input": {...}, "tool_use_id": "yyy"}
-{"type": "tool_result", "session_id": "xxx", "tool_use_id": "yyy", "output": "...", "is_error": false}
-{"type": "tool_approval_request", "session_id": "xxx", "tool_use_id": "yyy", "tool_name": "...", "tool_input": {...}}
-{"type": "result", "session_id": "xxx", "claude_session_id": "...", "cost": 0.03, "turns": 2, "duration_ms": 5000, "is_error": false}
-{"type": "status", "session_id": "xxx", "status": "idle|running|waiting_approval"}
-{"type": "error", "session_id": "xxx", "message": "..."}
+{"type":"user_message","session_id":"…","content":"…","attachments":[…]}
+{"type":"assistant_text","session_id":"…","content":"…"}
+{"type":"tool_use","session_id":"…","tool":"Bash","input":{…},"tool_use_id":"…"}
+{"type":"tool_result","session_id":"…","tool_use_id":"…","output":"…","is_error":false}
+{"type":"question_request","session_id":"…","question_id":"…","questions":[…]}
+{"type":"result","session_id":"…","cost":0.03,"turns":2,"duration_ms":5000,"is_error":false}
+{"type":"status","session_id":"…","status":"idle|running|waiting_approval"}
+{"type":"error","session_id":"…","message":"…"}
+{"type":"queued|dequeued","session_id":"…"}
+{"type":"session_archived|session_unarchived","session_id":"…"}
 ```
 
-### REST API
+## REST API
+
+All endpoints require `Authorization: Bearer <token>`.
 
 ```
-GET    /api/sessions              List all sessions
-POST   /api/sessions              Create session {name, working_dir}
-GET    /api/sessions/{id}         Session details + message history
-DELETE /api/sessions/{id}         Delete session
-POST   /api/sessions/import       Import a session with messages
-POST   /api/sessions/{id}/reset   Force-clear a session's busy/lock state
+# Agents — durable assistant definitions that own sessions/schedules/bridges
+GET/POST           /api/agents
+GET/PATCH/DELETE   /api/agents/{id}
+POST               /api/agents/{id}/archive
+GET                /api/agents/{id}/sessions
+GET                /api/agents/{id}/schedules
+GET/POST/.../DELETE/api/agents/{id}/connectors        # per-agent enablement
 
-GET    /api/schedules             List all scheduled tasks
-POST   /api/schedules             Create {session_id, name, prompt, interval_seconds}
-GET    /api/schedules/{id}        Schedule details
-PATCH  /api/schedules/{id}        Toggle enabled / edit name/prompt/interval
-DELETE /api/schedules/{id}        Delete schedule
+# Sessions + per-session sub-resources
+GET/POST           /api/sessions
+GET/DELETE         /api/sessions/{id}
+POST               /api/sessions/import
+POST               /api/sessions/{id}/reset            # clear stuck-busy state
+POST               /api/sessions/{id}/archive | /unarchive
+POST/GET           /api/sessions/{id}/attachments[/{aid}]
+GET                /api/sessions/{id}/files[/meta]
+POST/GET           /api/sessions/{id}/bg-tasks[/{tid}][/cancel]
+POST/GET           /api/sessions/{id}/questions[/{qid}/answer]
 
-GET    /health                    Health check
+# Schedules (interval + cron), credentials, connectors, notifiers
+GET/POST           /api/schedules
+GET/PATCH/DELETE   /api/schedules/{id}
+GET/POST/PATCH/DELETE  /api/credentials/...            # + OAuth + Codex login
+GET                /api/connectors/catalog
+PUT/DELETE         /api/connectors/{kind}/oauth-client
+POST/GET/PATCH/DELETE /api/connectors[/{id}]
+POST/DELETE        /api/connectors/custom[/{kind}]
+GET/POST/PATCH/DELETE  /api/notifiers[/{id}]
+
+GET                /api/backends                        # harnesses usable here
+GET                /health                              # + per-bridge health
 ```
 
-All REST endpoints require `Authorization: Bearer <token>`.
+## Data model
 
-## Session Lifecycle
+`server/database.py` `_SCHEMA` is authoritative; this is the conceptual map.
+SQLite, WAL, foreign-key cascade; additive `ALTER`s go through idempotent
+migrations (never re-create or duplicate the schema in docs).
 
-1. **Create** — `POST /api/sessions` creates a `Session` object with a UUID, name, and working directory. Persisted to SQLite. No Claude subprocess yet.
-2. **First message** — `send_message` via WebSocket or bridge triggers `_run_claude()`, which creates a `ClaudeSDKClient`, connects, sends the prompt, and streams the response. The SDK spawns `claude` CLI as a subprocess.
-3. **Conversation continuity** — After the first turn, `ResultMessage.session_id` is saved as `claude_session_id`. Subsequent messages pass this as `resume` in `ClaudeCodeOptions`, so Claude maintains conversation context.
-4. **Concurrent sessions** — Each session gets its own `ClaudeSDKClient` instance (and thus its own CLI subprocess). Multiple sessions can run in parallel. A per-session `asyncio.Lock` prevents concurrent sends to the same session.
-5. **Import/Export** — `octopus handoff` imports a local Claude Code session; `octopus pull` exports an Octopus session as JSONL (with uuid chain, version metadata) for local resumption. Sessions without a `claude_session_id` get a generated UUID on pull.
-6. **Delete** — Disconnects the SDK client (kills subprocess), removes from memory, and deletes from SQLite (cascade removes messages and bridge mappings).
+- **`agents`** — durable assistant definition (prompt, model, backend,
+  credential, `mcp_servers`, tool allow/deny, `is_system`, `archived`). Owns the rest.
+- **`sessions`** — one thread: `working_dir`, `claude_session_id` (backend
+  resume id, name kept for back-compat), `agent_id`, `origin`
+  (`user`|`schedule`|`bridge`), `backend`, `credential_id`, `archived`.
+- **`messages`** — ordered history per session (`role`, `type`, `content`, tool
+  fields, `cost`, `attachments`).
+- **`schedules`** — recurring prompts owned by an agent: `interval_seconds` **or**
+  `cron`+`timezone`, `recurrence_label`, `origin_session_id`, `enabled`.
+- **`bridge_mappings`** — `(platform, chat_id)` → `agent_id` + sticky `session_id`
+  (nullable) + `verbose`.
+- **`backend_credentials`** + **`credential_secrets`** — credential metadata and
+  its Fernet-encrypted secret, stored split; refresh/`needs_reconnect` lifecycle.
+- **`connector_installations`** + **`connector_installation_secrets`**,
+  **`agent_connectors`**, **`connector_oauth_clients`**, **`custom_connectors`** —
+  the connector tables (see Connector system).
+- **`notifiers`** — notification destinations.
+- **`bg_tasks`** — cross-turn background task state (`status`, `exit_code`,
+  captured stdio, timestamps).
 
-## Bridge System
+## Memory
 
-The bridge system enables interaction with Claude Code sessions via external messaging platforms.
+Each agent gets one canonical markdown dir, `<agents_dir>/<id>/memory/`, shared
+by both backends (design: [`plans/memory.md`](plans/memory.md)):
 
-### Architecture
+- **Claude Code** points its auto-memory there via the
+  `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` env var — **not** `CLAUDE_CONFIG_DIR`, so
+  auth and `--resume` transcripts are untouched.
+- **Codex** has no usable native memory in headless `exec`, so the dir is named
+  in an injected `developer_instructions` blurb and the model reads/writes it
+  with ordinary file tools. `CODEX_HOME` is untouched.
 
-```
-BridgeManager (router + command handler)
-  ├── maintains platform:chat_id → session_id mappings (SQLite-backed)
-  ├── handles slash commands (/new, /sessions, /switch, /current, /help)
-  ├── subscribes to SessionManager broadcasts
-  └── registered bridges:
-      └── TelegramBridge
-          ├── long-polling via getUpdates (no webhook/SSL needed)
-          ├── TextBuffer (4096 char limit, 0.5s flush delay)
-          ├── inline keyboards for tool approval
-          └── access control via allowed_chat_ids
-```
+Memory is decoupled from both harnesses' config/auth dirs. The dir is
+provisioned on agent create, kept on archive, removed on hard delete.
 
-### Slash Commands
+## Configuration (`OCTOPUS_*`)
 
-| Command | Description |
-|---|---|
-| `/new [name]` | Create a new session (default name: "Bridge Session") |
-| `/sessions` | List all sessions with status and current marker |
-| `/switch <id>` | Switch to a different session |
-| `/current` | Show current session info (name, status, messages, working dir) |
-| `/help` | Show available commands |
+| Setting | Default | Purpose |
+|---|---|---|
+| `auth_token` | — | Bearer token for all API/WS calls + Fernet key. |
+| `host` / `port` | `0.0.0.0` / `8000` | Bind address. |
+| `default_working_dir` | `.` | Working dir for new sessions. |
+| `db_path` | `octopus.db` | SQLite file. |
+| `attachments_dir` / `large_prompts_dir` / `agents_dir` / `codex_home_dir` | under `~/.octopus/` | Upload cache · large-prompt spill · agent memory roots · per-credential Codex auth. |
+| `enable_tunnel` | `false` | Start a Cloudflare Tunnel. |
+| `telegram_bot_token` / `telegram_allowed_chat_ids` / `telegram_api_base_url` | — | Telegram bridge (enabled when token set). |
+| `ask_user_question_timeout_seconds` | `1800` | Auto-answer an unanswered question (so headless sessions don't wedge). |
+| `public_base_url` | computed | Stable public host for connector OAuth redirect URIs (tunnel). |
+| `gmail_/github_oauth_client_id`/`_secret` | — | Optional env fallback for connector OAuth clients (in-app config takes precedence). |
 
-### Configuration
+## Key design decisions
 
-Bridge configuration is via environment variables (prefixed `OCTOPUS_`):
-
-| Variable | Purpose |
-|---|---|
-| `OCTOPUS_TELEGRAM_BOT_TOKEN` | Telegram Bot API token (enables bridge when set) |
-| `OCTOPUS_TELEGRAM_ALLOWED_CHAT_IDS` | Comma-separated list of allowed Telegram chat IDs |
-| `OCTOPUS_TELEGRAM_API_BASE_URL` | Override API URL (default: `https://api.telegram.org`, useful for testing) |
-
-## Database Schema
-
-```sql
--- Core session storage
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    working_dir TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    claude_session_id TEXT
-);
-
--- Message history (ordered per session)
-CREATE TABLE messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    seq INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    type TEXT NOT NULL,
-    content TEXT,
-    tool_name TEXT, tool_input TEXT, tool_use_id TEXT,
-    is_error INTEGER,
-    session_id_ref TEXT,
-    cost REAL
-);
-CREATE INDEX idx_messages_session ON messages(session_id, seq);
-
--- Bridge platform:chat → session mappings
-CREATE TABLE bridge_mappings (
-    platform TEXT NOT NULL,
-    chat_id TEXT NOT NULL,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    PRIMARY KEY (platform, chat_id)
-);
-
--- Recurring scheduled tasks (interval-based)
-CREATE TABLE schedules (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    prompt TEXT NOT NULL,
-    interval_seconds INTEGER NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    last_run_at TEXT
-);
-```
-
-## Key Design Decisions
-
-**Single-port serving**: The FastAPI backend serves the built React frontend as static files via `StaticFiles(html=True)` mounted at `/`. API routes are registered before the static mount, so `/api/*`, `/ws`, and `/health` take priority. This means `octopus serve` is the only command needed — no separate frontend process.
-
-**Same-origin URLs**: The frontend uses `window.location.origin` for REST and derives WebSocket protocol from `window.location.protocol`. This means the app works behind any proxy, tunnel, or HTTPS terminator without configuration. In dev mode, Vite's proxy config forwards API/WS requests to the backend.
-
-**SDK message parser resilience**: The `claude-code-sdk` may throw `MessageParseError` on unknown message types (e.g. `rate_limit_event`), which would kill the response stream since Python generators are exhausted after an unhandled exception. `_receive_safe()` catches these and continues iteration, logging warnings for unparseable messages and errors.
-
-**`CLAUDECODE` env var**: The Claude CLI refuses to start inside another Claude Code session. `main.py` clears this env var at import time so the SDK subprocess can launch.
-
-**`bypassPermissions` mode**: Currently tools execute without approval prompts by default. The `ToolApproval` component (Web UI) and `PendingApproval` / `_make_permission_handler` infrastructure exist for interactive approval. The Telegram bridge supports approval via inline keyboard buttons.
-
-**`getState()` in WebSocket hook**: The `useWebSocket` hook uses `useSessionStore.getState()` directly instead of React selectors for store mutations. This avoids infinite re-render loops caused by zustand selector references changing on every render in React 19.
-
-**Broadcast + direct send**: The server sends messages to the frontend via two channels — direct `ws.send_json()` in `_stream_response` for per-message events, and `session_manager._broadcast()` for status updates and tool approval requests that go to all connected clients and bridges.
-
-**Bridge text buffering**: Messaging platforms have rate limits and message length constraints. The `TextBuffer` aggregates streaming `assistant_text` events and flushes either when the buffer reaches `max_size` (4096 for Telegram) or after `flush_delay` (0.5s) of inactivity. Non-text events (tool_use, result, error) force an immediate flush to maintain ordering.
-
-**Long-polling for Telegram**: The Telegram bridge uses `getUpdates` long-polling instead of webhooks. This avoids the need for a public URL or SSL certificate, making it work behind NAT/firewalls. The 30-second poll timeout balances responsiveness with resource usage.
-
-**Bridge mapping persistence**: Platform chat-to-session mappings are stored in SQLite with foreign key cascade delete, so deleting a session automatically cleans up bridge mappings. Stale mappings (pointing to deleted sessions) are detected at message time and cleaned up with a user notification.
+- **One harness, profiles not subclasses.** All model interaction goes through a
+  single `Harness` + `HarnessRun` engine parameterized by a `RuntimeProfile`
+  value per backend. Adding a backend is a new profile, not a new class tree.
+- **CLIs, not an SDK.** Octopus spawns `claude --print` / `codex exec --json`
+  and parses their stream-JSON itself (`harness/run.py`), so there's no
+  `claude-code-sdk` dependency and behavior tracks the CLIs directly.
+- **Agent-centric data model.** Sessions, schedules, and bridge bindings all
+  hang off an agent; `SessionManager` reads agent config live each turn, so edits
+  take effect on the next turn without restart.
+- **Single-port, same-origin.** API + SPA on one port; the client derives all
+  URLs from `window.location`, so tunnels/proxies/HTTPS work with zero config.
+- **`ask` MCP over permission prompts.** Structured questions are an MCP tool
+  with a UI form + long-poll + auto-answer timeout — robust for headless
+  bridge/scheduled sessions where no human may be watching.
+- **Quiet bridges.** Telegram chats see only the agent's replies by default;
+  tool chatter is opt-in via `/verbose` (persisted per chat).
+- **Hardened bg pipeline.** Large prompts spill to a file (`E2BIG` guard),
+  premature CLI exit after a tool use auto-respawns once, and an idle watchdog
+  reaps silent bg tasks. See [`2026-05-18-bg-pipeline-hardening.md`](2026-05-18-bg-pipeline-hardening.md).
+- **Secrets split + encrypted.** Credential/connector secrets live in dedicated
+  `*_secrets` tables, Fernet-encrypted with the auth token, read only by the
+  MCP subprocess at tool-call time.
+- **Schema evolves additively.** New tables go in `_SCHEMA`; column changes go
+  through idempotent migrations — never an in-place destructive change.
 
 ## Running
 
-### Production (single command)
-
 ```bash
-cd web && bun run build && cd ..   # build frontend (once)
-octopus serve                       # serves everything on :8000
-octopus serve --tunnel              # same, with Cloudflare Tunnel for public HTTPS
+# Production (single command)
+cd web && bun run build && cd ..    # build the SPA (once)
+octopus serve                       # API + UI on :8000
+octopus serve --tunnel              # + public HTTPS via Cloudflare Tunnel
+
+# With the Telegram bridge — add to .env, then `octopus serve`:
+#   OCTOPUS_TELEGRAM_BOT_TOKEN=...
+#   OCTOPUS_TELEGRAM_ALLOWED_CHAT_IDS=123,456     # optional access control
+
+# Development (hot reload)
+.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload   # backend
+cd web && bun dev                                                        # frontend :5173
+
+# CLI
+octopus handoff [--session-id ID] [--name N]   # import a local Claude Code session
+octopus pull SESSION_ID [--cwd DIR]            # export a session to local JSONL
 ```
 
-Open `http://localhost:8000`, enter the token from `.env` (`OCTOPUS_AUTH_TOKEN`), create a session, send a message.
+## Tech stack
 
-### With Telegram Bridge
+- **Backend**: Python 3.12 · FastAPI · uvicorn · pydantic-settings · aiosqlite
+  (WAL) · APScheduler · cryptography (Fernet) · MCP stdio servers · httpx.
+- **Model runtime**: `claude` + `codex` CLI subprocesses (stream-JSON) via the
+  harness layer — no `claude-code-sdk`.
+- **Frontend**: React 19 · TypeScript (strict) · Vite · zustand · Tailwind v4 ·
+  Radix · react-markdown · react-virtuoso.
+- **Tunnel**: Cloudflare Tunnel (optional, `cloudflared`).
 
-```bash
-# Add to .env:
-OCTOPUS_TELEGRAM_BOT_TOKEN=your-bot-token
-OCTOPUS_TELEGRAM_ALLOWED_CHAT_IDS=123456789,987654321  # optional access control
-
-octopus serve
-```
-
-Message your bot on Telegram: `/new My Session` then start chatting.
-
-### Development (hot-reload)
+## Tests
 
 ```bash
-# Terminal 1 — Backend
-.venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload
-
-# Terminal 2 — Frontend (Vite proxies /api, /ws, /health → :8000)
-cd web && bun dev
+.venv/bin/pytest tests/ -v        # 668 backend (real-CLI tests run when claude/codex on PATH)
+cd web && bun run test            # 45 frontend unit (vitest)
+cd web && npx tsc --noEmit        # TypeScript check
+cd web && bun run test:e2e        # 61 Playwright e2e (app · handoff/pull · telegram · agents · connectors · real-CLI)
 ```
-
-Open `http://localhost:5173` for the dev server with hot-reload.
-
-### CLI Commands
-
-```bash
-octopus serve [--tunnel]                     # Start server (default command)
-octopus handoff [--session-id ID] [--name N] # Import local Claude Code session
-octopus pull SESSION_ID [--cwd DIR]          # Export session to local JSONL
-```
-
-## Tech Stack
-
-- **Backend**: Python 3.12, FastAPI, uvicorn, pydantic-settings, aiosqlite
-- **Claude integration**: `claude-code-sdk` 0.25+ (wraps Claude Code CLI subprocess)
-- **Frontend**: React 19, TypeScript, Vite, zustand, react-markdown
-- **Auth**: Token-based (`.env` config)
-- **Persistence**: SQLite via aiosqlite (WAL mode, write-through caching)
-- **Communication**: WebSocket (streaming) + REST (CRUD)
-- **Bridges**: Telegram (long-polling via httpx), extensible Bridge ABC
-- **Tunnel**: Cloudflare Tunnel (optional, via `cloudflared` subprocess)
-- **Scheduling**: APScheduler (`AsyncIOScheduler`) for interval-based recurring tasks, integrated with FastAPI lifespan
-- **Testing**: pytest (179 backend), vitest (8 frontend unit), Playwright (24 E2E across 4 specs)

@@ -41,9 +41,11 @@ Phone / Browser / Telegram
   port; reach it from any browser or phone. `octopus serve --tunnel` gives
   instant public HTTPS via Cloudflare Tunnel. Token auth; HTTPS/WSS behind
   tunnels and reverse proxies.
-- **Telegram** — Drive agents from a Telegram bot (`/new`, `/sessions`,
-  `/switch`), with Allow/Deny tool-approval buttons and per-bridge status in
-  `/health`.
+- **Telegram** — Drive agents from a Telegram bot: each chat binds to an agent
+  with a sticky session, `/sessions` lists threads as tappable switch buttons,
+  and chats are **quiet by default** (only the agent's replies reach you —
+  `/verbose` to also see tool activity). Allow/Deny tool-approval buttons;
+  per-bridge status in `/health`.
 - **Background & scheduled work** — Agents fire off shell commands that run in
   the background **across turns** (the result arrives as a follow-up turn), and
   recurring scheduled prompts run per agent into fresh, auto-archiving sessions.
@@ -113,10 +115,10 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 569 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
-cd web && bun run test            # 34 frontend unit tests (vitest)
+.venv/bin/pytest tests/ -v        # 668 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
+cd web && bun run test            # 45 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 57 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · real-CLI)
+cd web && bun run test:e2e        # 61 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · real-CLI)
 ```
 
 ### Pre-commit hooks (optional)
@@ -128,6 +130,8 @@ relevant files are staged, so doc-only commits stay fast.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for system design, data flow,
-and the WebSocket protocol, and [docs/future-features.md](docs/future-features.md)
-for the roadmap.
+See [docs/](docs/) for all documentation — start with
+[docs/architecture.md](docs/architecture.md) for system design, data flow, and
+the WebSocket protocol; [docs/plans/](docs/plans/) holds the per-initiative
+design records, and [docs/future-features.md](docs/future-features.md) tracks
+deliberately-deferred work.
