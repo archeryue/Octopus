@@ -989,8 +989,7 @@ export interface components {
              * Mcp Servers
              * @default [
              *       "ask",
-             *       "bg",
-             *       "viewer"
+             *       "bg"
              *     ]
              */
             mcp_servers: string[];

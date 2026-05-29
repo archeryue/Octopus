@@ -547,6 +547,75 @@ export function ChatView({
       return;
     }
 
+    if (lower === "/showme" || lower.startsWith("/showme ")) {
+      const text = trimmed.slice("/showme".length).trim();
+      if (!text) {
+        useSessionStore.getState().addMessage(activeSessionId, {
+          role: "system",
+          type: "notice",
+          content: "Usage: /showme <file reference>",
+          is_error: true,
+        });
+        setInput("");
+        return;
+      }
+
+      try {
+        const token = useSessionStore.getState().token;
+        const res = await fetch(
+          `${window.location.origin}/api/sessions/${activeSessionId}/showme/resolve`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ text }),
+          }
+        );
+        if (!res.ok) {
+          let detail = `Couldn't resolve file reference (HTTP ${res.status}).`;
+          try {
+            const body = await res.json();
+            if (typeof body?.detail === "string") detail = body.detail;
+          } catch {
+            // keep the generic message
+          }
+          useSessionStore.getState().addMessage(activeSessionId, {
+            role: "system",
+            type: "notice",
+            content: detail,
+            is_error: true,
+          });
+          setInput("");
+          return;
+        }
+        const data = await res.json();
+        if (typeof data?.path === "string" && data.path) {
+          useSessionStore.getState().openViewer(activeSessionId, data.path);
+        } else {
+          useSessionStore.getState().addMessage(activeSessionId, {
+            role: "system",
+            type: "notice",
+            content:
+              typeof data?.message === "string" && data.message
+                ? data.message
+                : "Couldn't resolve that file reference.",
+            is_error: true,
+          });
+        }
+      } catch {
+        useSessionStore.getState().addMessage(activeSessionId, {
+          role: "system",
+          type: "notice",
+          content: "Couldn't resolve file reference — network error.",
+          is_error: true,
+        });
+      }
+      setInput("");
+      return;
+    }
+
     sendMessage(
       activeSessionId,
       trimmed,

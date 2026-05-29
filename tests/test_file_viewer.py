@@ -7,14 +7,10 @@ Covers:
   * `GET /api/sessions/{id}/files{,/meta}` — wired endpoint, including
     auth (header + query-token both accepted) and proper status codes
     for each FileViewerError subclass.
-  * `server.mcp_servers.viewer.show_file` — the model-facing tool. We
-    invoke its underlying callable directly so we don't have to spin
-    up a real MCP stdio server for unit tests.
 """
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -339,133 +335,95 @@ async def test_get_file_session_not_found(client):
 
 
 # ---------------------------------------------------------------------------
-# MCP show_file tool (call the underlying function, no stdio loop needed)
+# POST /api/sessions/{id}/showme/resolve — credential normalization
 # ---------------------------------------------------------------------------
+#
+# Pins the fix for the credential-shape bug: an attached credential must
+# reach the harness as a resolved `HarnessCredential`, never a raw DB row
+# (which is encrypted, missing home_dir for Codex, and crashes attribute
+# access in `_apply_env_credential` / `_apply_home_dir`). The route goes
+# through `session_manager.resolve_credential_by_id`, which normalizes for
+# us.
 
 
-def _call_show_file(working_dir: Path, path: str) -> str:
-    """Invoke the show_file tool function with OCTOPUS_WORKING_DIR set.
+async def _patch_showme(monkeypatch):
+    """Capture the credential argument the resolver was called with."""
+    captured: dict = {}
 
-    We grab the underlying callable off the FastMCP instance so we
-    don't have to spin up a real MCP stdio server for a unit test.
-    """
-    from server.mcp_servers.viewer import show_file as tool_fn
+    async def _fake_resolve(text, *, harness, model, credential, working_dir, messages, session_name=None):
+        captured["credential"] = credential
+        captured["model"] = model
+        captured["working_dir"] = working_dir
+        from server.showme_ai import ShowMeResolution
 
-    prev = os.environ.get("OCTOPUS_WORKING_DIR")
-    os.environ["OCTOPUS_WORKING_DIR"] = str(working_dir)
-    try:
-        # FastMCP wraps the function; on older versions it's exposed as
-        # the function directly. Try calling it; if that fails, drill
-        # into .fn (FastMCP's wrapper attribute).
-        if callable(tool_fn):
-            try:
-                return tool_fn(path)  # type: ignore[arg-type]
-            except TypeError:
-                pass
-        return tool_fn.fn(path)  # type: ignore[attr-defined]
-    finally:
-        if prev is None:
-            os.environ.pop("OCTOPUS_WORKING_DIR", None)
-        else:
-            os.environ["OCTOPUS_WORKING_DIR"] = prev
+        return ShowMeResolution(path="answer.md")
+
+    monkeypatch.setattr("server.routers.files.resolve_showme_reference", _fake_resolve)
+    return captured
 
 
-def test_mcp_show_file_success(tmp_path):
-    (tmp_path / "ok.md").write_text("# ok")
-    out = _call_show_file(tmp_path, "ok.md")
-    assert "Opened ok.md" in out
-    assert "markdown" in out
+async def test_showme_resolve_no_credential_passes_none(
+    client, session_with_files, monkeypatch
+):
+    captured = await _patch_showme(monkeypatch)
+    sid, _ = session_with_files
 
-
-def test_mcp_show_file_escape_path(tmp_path):
-    out = _call_show_file(tmp_path, "../etc/passwd")
-    assert "Could not open" in out
-    assert "escapes" in out.lower()
-
-
-def test_mcp_show_file_missing(tmp_path):
-    out = _call_show_file(tmp_path, "nope.md")
-    assert "Could not open" in out
-    assert "not found" in out.lower()
-
-
-def test_mcp_show_file_no_working_dir(tmp_path, monkeypatch):
-    monkeypatch.delenv("OCTOPUS_WORKING_DIR", raising=False)
-    from server.mcp_servers.viewer import show_file as tool_fn
-
-    try:
-        out = tool_fn("anything.md")  # type: ignore[arg-type]
-    except TypeError:
-        out = tool_fn.fn("anything.md")  # type: ignore[attr-defined]
-    assert "misconfigured" in out.lower()
-
-
-# ---------------------------------------------------------------------------
-# ClaudeCodeBackend.build_args registers the viewer MCP server
-# ---------------------------------------------------------------------------
-
-
-def test_rewrite_slash_commands_translates_showme():
-    """The `claude` CLI eats anything starting with /<word> before it
-    reaches the model. The rewrite must remove the leading slash so
-    the model actually sees the request and calls show_file."""
-    from server.session_manager import _rewrite_slash_commands
-
-    out = _rewrite_slash_commands("/showme docs/plan.md")
-    assert not out.startswith("/")
-    assert "mcp__viewer__show_file" in out
-    assert "'docs/plan.md'" in out
-
-
-def test_rewrite_slash_commands_handles_leading_whitespace():
-    from server.session_manager import _rewrite_slash_commands
-
-    out = _rewrite_slash_commands("  /showme README\n")
-    assert "mcp__viewer__show_file" in out
-    assert "'README'" in out
-
-
-def test_rewrite_slash_commands_bare_showme_asks_for_arg():
-    from server.session_manager import _rewrite_slash_commands
-
-    out = _rewrite_slash_commands("/showme")
-    assert not out.startswith("/")
-    assert "which file" in out.lower()
-
-
-def test_rewrite_slash_commands_passes_through_plain_text():
-    from server.session_manager import _rewrite_slash_commands
-
-    text = "Please open the file plan.md for me"
-    assert _rewrite_slash_commands(text) == text
-
-
-def test_rewrite_slash_commands_ignores_unrelated_slash_command():
-    """We only rewrite /showme. Other slash commands fall through and
-    the CLI handles them (or rejects them, which is fine)."""
-    from server.session_manager import _rewrite_slash_commands
-
-    assert _rewrite_slash_commands("/help") == "/help"
-
-
-def test_build_args_injects_viewer_mcp_config(tmp_path):
-    """The viewer is the whole point of the change; make sure we don't
-    silently lose the flag on a future refactor."""
-    import json as _json
-
-    from server.harness import RunConfig, get_harness
-
-    run = get_harness("claude-code").create_run(RunConfig())
-    argv, spawn = run.build_argv(
-        prompt="hi", working_dir=str(tmp_path), resume_id=None, credential=None
+    r = await client.post(
+        f"/api/sessions/{sid}/showme/resolve",
+        json={"text": "the plan"},
+        headers=HEADERS,
     )
-    assert "--mcp-config" in argv
-    cfg_idx = argv.index("--mcp-config") + 1
-    cfg = _json.loads(argv[cfg_idx])
-    assert "viewer" in cfg["mcpServers"]
-    assert cfg["mcpServers"]["viewer"]["env"]["OCTOPUS_WORKING_DIR"] == str(tmp_path)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"path": "answer.md", "message": None}
+    # No credential on the agent → resolver should receive None (the CLI
+    # falls back to whatever host auth it finds).
+    assert captured["credential"] is None
 
-    assert "--append-system-prompt" in argv
-    sp_idx = argv.index("--append-system-prompt") + 1
-    assert "show_file" in argv[sp_idx]
-    assert "/showme" in argv[sp_idx]
+
+async def test_showme_resolve_attached_credential_is_normalized(
+    client, session_with_files, monkeypatch
+):
+    """Regression guard: a session whose effective agent has an attached
+    credential must trigger the credential resolver, so the harness receives
+    a `HarnessCredential` (decrypted, right shape) rather than the raw DB row.
+    """
+    from datetime import datetime, timezone
+
+    from server.crypto import encrypt
+    from server.harness.events import HarnessCredential
+
+    sid, _ = session_with_files
+    db = session_manager.db
+    now = datetime.now(timezone.utc).isoformat()
+    secret = encrypt("sk-ant-test", TOKEN)
+    await db.save_credential(
+        credential_id="cred-1",
+        backend="claude-code",
+        label="test key",
+        auth_type="api_key",
+        secret_encrypted=secret,
+        created_at=now,
+    )
+    # Attach the credential at the agent level — matches the production path
+    # the bug was filed against.
+    agent = await db.get_system_agent()
+    await db.update_agent(agent["id"], credential_id="cred-1")
+
+    captured = await _patch_showme(monkeypatch)
+    r = await client.post(
+        f"/api/sessions/{sid}/showme/resolve",
+        json={"text": "the plan"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 200, r.text
+
+    cred = captured["credential"]
+    assert isinstance(cred, HarnessCredential), (
+        f"resolver got {type(cred).__name__} — bug: raw DB row reaches the harness"
+    )
+    assert cred.backend == "claude-code"
+    assert cred.auth_type == "api_key"
+    # Secret must be the decrypted plaintext, not the on-disk ciphertext.
+    assert cred.secret == "sk-ant-test"
+
+

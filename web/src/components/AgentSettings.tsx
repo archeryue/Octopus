@@ -15,7 +15,7 @@ import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 
 const API = `${window.location.origin}/api/agents`;
-const BUILTIN_MCP = ["ask", "bg", "viewer"] as const;
+const BUILTIN_MCP = ["ask", "bg"] as const;
 // A small role-themed palette to pick an agent icon from (the field still
 // accepts any custom emoji). 🐙 is the Octopus default.
 const AVATAR_CHOICES = ["🐙", "🤖", "🧠", "🔬", "🛠️", "✍️", "📊", "🦉"] as const;

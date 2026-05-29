@@ -115,7 +115,7 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 668 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
+.venv/bin/pytest tests/ -v        # 669 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
 cd web && bun run test            # 46 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
 cd web && bun run test:e2e        # 61 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · real-CLI)

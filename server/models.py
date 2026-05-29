@@ -187,6 +187,20 @@ class ScheduleFromTextRequest(BaseModel):
     session_id: str | None = None
 
 
+class ShowMeResolveRequest(BaseModel):
+    # The user's natural reference after `/showme`, e.g. "this file" or
+    # "README.md". The backend asks the session's model to resolve it to a
+    # concrete file path, then the client opens the viewer.
+    text: str = Field(min_length=1)
+
+
+class ShowMeResolveResponse(BaseModel):
+    # Resolved path relative to the session working directory. When null,
+    # `message` explains why the model couldn't resolve it cleanly.
+    path: str | None = None
+    message: str | None = None
+
+
 class UpdateScheduleRequest(BaseModel):
     name: str | None = None
     prompt: str | None = None
@@ -235,7 +249,7 @@ class AgentCreate(BaseModel):
     model: str | None = None
     credential_id: str | None = None
     backend: BackendKind = BackendKind.claude_code
-    mcp_servers: list[str] = ["ask", "bg", "viewer"]
+    mcp_servers: list[str] = ["ask", "bg"]
     tool_allow: str = ""
     tool_deny: str = ""
 

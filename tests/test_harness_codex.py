@@ -23,7 +23,7 @@ from server.harness.profile import OneShotContext, TurnContext
 def _assemble_ctx(*, prompt, wd, resume, credential, model=None, mcp_servers=None, persona=None, session_id=None):
     abs_wd = str(Path(wd).resolve())
     cb = assembly.build_callback_env(session_id)
-    entries = assembly.select_mcp_servers(mcp_servers, [], abs_wd, cb)
+    entries = assembly.select_mcp_servers(mcp_servers, [], cb)
     sysp = assembly.compose_system_prompt(persona, _OCTOPUS_SYSTEM_PROMPT_CODEX, [])
     return TurnContext(
         prompt=prompt, working_dir=abs_wd, resume_id=resume, system_prompt=sysp,
@@ -39,7 +39,7 @@ def test_turn_argv_full_config(tmp_path):
     ctx = _assemble_ctx(
         prompt="hello", wd=str(tmp_path), resume="resume-1",
         credential=HarnessCredential(backend="codex", auth_type="oauth", home_dir=home),
-        model="gpt-5.5", mcp_servers=["viewer", "ask"], persona="PERSONA", session_id="s1",
+        model="gpt-5.5", mcp_servers=["ask"], persona="PERSONA", session_id="s1",
     )
     argv, kw = build_turn_argv(ctx)
     joined = " ".join(argv)
@@ -50,7 +50,7 @@ def test_turn_argv_full_config(tmp_path):
     di = next(a for a in argv if a.startswith("developer_instructions="))
     assert "PERSONA" in di and "Octopus in-app tools" in di
     # Only the selected built-ins are rendered as -c overrides.
-    assert "mcp_servers.viewer.command=" in joined and "mcp_servers.ask.command=" in joined
+    assert "mcp_servers.ask.command=" in joined
     assert "mcp_servers.bg.command=" not in joined
     assert argv[argv.index("-m") + 1] == "gpt-5.5"
     assert argv[argv.index("resume") + 1] == "resume-1"
@@ -89,9 +89,9 @@ def test_parser_thread_items_and_completion():
 
     out = p.parse({
         "type": "item.started",
-        "item": {"type": "mcp_tool_call", "id": "i1", "server": "viewer", "tool": "show_file", "arguments": {"path": "x"}},
+        "item": {"type": "mcp_tool_call", "id": "i1", "server": "bg", "tool": "run", "arguments": {"command": "ls"}},
     })
-    assert out.events[0].type == "tool_use" and out.events[0].tool_name == "mcp__viewer__show_file"
+    assert out.events[0].type == "tool_use" and out.events[0].tool_name == "mcp__bg__run"
 
     out = p.parse({"type": "turn.completed", "usage": {"input_tokens": 5}})
     assert out.end_of_stream is True

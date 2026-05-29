@@ -27,7 +27,7 @@ def _assemble_ctx(
 ) -> TurnContext:
     abs_wd = str(Path(wd).resolve())
     cb = assembly.build_callback_env(session_id)
-    entries = assembly.select_mcp_servers(mcp_servers, list(connectors), abs_wd, cb)
+    entries = assembly.select_mcp_servers(mcp_servers, list(connectors), cb)
     sysp = assembly.compose_system_prompt(persona, _OCTOPUS_SYSTEM_PROMPT, list(connectors))
     return TurnContext(
         prompt=prompt, working_dir=abs_wd, resume_id=resume, system_prompt=sysp,
@@ -45,7 +45,7 @@ def test_turn_argv_full_config(tmp_path):
     ctx = _assemble_ctx(
         prompt="hello", wd=str(tmp_path), resume="resume-1",
         credential=HarnessCredential(backend="claude-code", auth_type="oauth", secret="tok-xyz"),
-        model="claude-opus-4-7", mcp_servers=["viewer", "ask"],
+        model="claude-opus-4-7", mcp_servers=["bg", "ask"],
         tool_allow=["Read", "Glob"], tool_deny=["Write"], persona="PERSONA", session_id="s1",
     )
     argv, kw = build_turn_argv(ctx)
@@ -58,7 +58,7 @@ def test_turn_argv_full_config(tmp_path):
     assert argv[argv.index("--resume") + 1] == "resume-1"
     assert argv[-2:] == ["--", "hello"]
     cfg = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
-    assert set(cfg) == {"viewer", "ask"}  # only the selected built-ins
+    assert set(cfg) == {"bg", "ask"}  # only the selected built-ins
     ap = argv[argv.index("--append-system-prompt") + 1]
     assert ap.startswith("PERSONA") and "Octopus in-app tools" in ap
     assert kw["cwd"] == str(tmp_path)

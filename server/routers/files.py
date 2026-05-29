@@ -1,10 +1,11 @@
-"""In-app file viewer endpoint.
+"""In-app file viewer endpoint + `/showme` reference resolver.
 
 Streams a file from the session's working_dir to the browser modal.
-Paired with the mcp__viewer__show_file tool (server/mcp_servers/viewer.py)
-and the FileViewerDialog React component — both call here to fetch
-bytes. All security checks live in server/file_viewer.py so the two
-entry points (this endpoint and the MCP tool) can't drift.
+`/showme` is a client-only flow: the browser sends the user's reference to
+the resolver below (a one-shot model call interprets it in conversation
+context), receives a concrete path, then fetches bytes through the
+endpoints here. Security gates live in `server/file_viewer.py` so the read
+paths can't drift.
 
 Auth: bearer header OR `?token=`. The query-param path exists because
 the dialog renders images/PDFs via `<img src>` / `<iframe src>`, and
@@ -14,10 +15,14 @@ no second weaker token to leak.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..config import settings
+
+logger = logging.getLogger(__name__)
 from ..file_viewer import (
     FileNotFound,
     FileTooLarge,
@@ -26,7 +31,10 @@ from ..file_viewer import (
     UnsupportedType,
     resolve_safe_path,
 )
+from ..harness import get_harness
+from ..models import ShowMeResolveRequest, ShowMeResolveResponse
 from ..session_manager import session_manager
+from ..showme_ai import resolve_showme_reference
 
 router = APIRouter(prefix="/api/sessions", tags=["files"])
 
@@ -66,6 +74,55 @@ def _resolve_or_raise(working_dir: str, path: str) -> ResolvedFile:
         raise HTTPException(status.HTTP_413_CONTENT_TOO_LARGE, str(e))
     except UnsupportedType as e:
         raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, str(e))
+
+
+@router.post("/{session_id}/showme/resolve", response_model=ShowMeResolveResponse)
+async def resolve_showme(
+    session_id: str,
+    req: ShowMeResolveRequest,
+    _: str = Depends(_verify_token),
+) -> ShowMeResolveResponse:
+    """Resolve a human file reference into a concrete viewer path."""
+    session = session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    if session.agent_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+
+    agent = await session_manager.db.get_agent(session.agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+
+    harness = get_harness(session.backend)
+    # Resolve through the same path the turn engine uses so the harness gets a
+    # proper HarnessCredential (decrypted, OAuth-refreshed for Claude, or
+    # `home_dir` for Codex), not a raw DB row. Effective id: session override
+    # wins over the agent's default (agent-refactor.md §5.2 / decision #2).
+    cred_id = session.credential_id or agent.get("credential_id")
+    try:
+        credential = await session_manager.resolve_credential_by_id(
+            cred_id,
+            style=harness.profile.credential_style,
+            context=f"showme resolver for session {session_id}",
+        )
+        result = await resolve_showme_reference(
+            req.text,
+            harness=harness,
+            model=agent.get("model"),
+            credential=credential,
+            working_dir=session.working_dir,
+            messages=await session_manager.db.load_messages(session_id),
+            session_name=session.name,
+        )
+    except Exception:
+        # Don't leak raw model/harness errors (paths, credential labels,
+        # tracebacks) to the client; log them for the operator.
+        logger.exception("showme resolve failed for session %s", session_id)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Couldn't resolve the file reference.",
+        )
+    return ShowMeResolveResponse(path=result.path, message=result.message)
 
 
 @router.get("/{session_id}/files/meta")

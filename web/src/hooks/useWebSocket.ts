@@ -87,20 +87,6 @@ function handleWsMessage(data: Record<string, unknown>) {
         tool_input: toolInput,
         tool_use_id: data.tool_use_id as string,
       });
-      // The viewer MCP tool double-signals: the model's "I called
-      // show_file" is also the UI's cue to open the modal. We trigger
-      // off the live WS event (not snapshot rehydration), which is
-      // the right scope — a reconnect-refetch shouldn't pop the modal
-      // for files the model showed in a previous browser session.
-      if (toolName === "mcp__viewer__show_file" && sessionId) {
-        const path =
-          toolInput && typeof toolInput.path === "string"
-            ? (toolInput.path as string)
-            : null;
-        if (path) {
-          getState().openViewer(sessionId, path);
-        }
-      }
       break;
     }
 

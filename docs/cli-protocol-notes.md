@@ -54,11 +54,11 @@ Notes per flag:
 - `--disallowedTools AskUserQuestion`: prevents the model from
   calling the built-in AUQ. We provide `mcp__ask__user` (see below)
   as the replacement.
-- `--mcp-config <JSON>`: registers our three in-process MCP servers
-  (`viewer`, `bg`, `ask`). The CLI accepts either a file path or an
-  inline JSON string; we use inline.
+- `--mcp-config <JSON>`: registers our in-process MCP servers
+  (`bg`, `ask`). The CLI accepts either a file path or an inline JSON
+  string; we use inline.
 - `--append-system-prompt <text>`: short addendum teaching the model
-  about `/showme`, `bg_run`, and `ask_user`. The full text lives in
+  about `bg_run` and `ask_user`. The full text lives in
   `claude_code.py:_OCTOPUS_SYSTEM_PROMPT`.
 - `--resume <session-id>`: continue an existing conversation.
 - `--`: terminator for option parsing. The single positional
@@ -130,16 +130,20 @@ itself — no host involvement. We only see the `tool_use` and
 
 ## MCP tools we register
 
-`--mcp-config` registers three in-process MCP servers, each launched
-by the CLI as its own subprocess (children of `claude`, grandchildren
-of the FastAPI process). The model sees them as
-`mcp__<server-key>__<tool-fn>`:
+`--mcp-config` registers our in-process MCP servers, each launched by the
+CLI as its own subprocess (children of `claude`, grandchildren of the
+FastAPI process). The model sees them as `mcp__<server-key>__<tool-fn>`:
 
 | MCP tool | Purpose | How it talks to Octopus |
 |---|---|---|
-| `mcp__viewer__show_file(path)` | Opens a file from `working_dir` in the in-app viewer modal | Validates path against `OCTOPUS_WORKING_DIR` (env). Frontend fetches bytes via `GET /api/sessions/{id}/files`. |
 | `mcp__bg__run(command, description?)` / `cancel` / `list` | Fire-and-forget shell commands that outlive the per-turn `claude --print` | POSTs to `/api/sessions/{id}/bg-tasks`; FastAPI's `BgTaskManager` owns the subprocess and injects a follow-up turn on completion. |
 | `mcp__ask__user(questions)` | Replaces the built-in `AskUserQuestion` | POSTs to `/api/sessions/{id}/questions` and HTTP-long-polls the answer. Frontend renders the QuestionPrompt form; user's submit sets an `asyncio.Event` that unblocks the long-poll. |
+
+The in-app file viewer used to be a third MCP server (`mcp__viewer__show_file`)
+that the model could call. It was dropped: the agent doesn't know whether a
+human is at the screen, so popping a modal proactively is presumptuous.
+`/showme` is now intercepted client-side and resolved through a dedicated REST
+endpoint (`server/showme_ai.py`).
 
 Each MCP subprocess gets these env vars from `build_args`:
 
@@ -149,10 +153,6 @@ OCTOPUS_AUTH_TOKEN   the bearer the rest of the API uses
 OCTOPUS_SESSION_ID   so callbacks attribute to the right session
 PYTHONPATH           = repo root, so the MCP server's `from server.…` imports resolve
 ```
-
-The viewer also gets `OCTOPUS_WORKING_DIR=<absolute>`. The path is
-resolved to absolute in `build_args` (see commit `04630e8`) so the MCP
-server doesn't accidentally double-resolve against its inherited cwd.
 
 ## Resume
 

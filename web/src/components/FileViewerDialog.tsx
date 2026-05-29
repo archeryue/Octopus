@@ -2,11 +2,9 @@
  * Modal lightbox that renders a file from a session's working_dir.
  *
  * Mounted once at the App level; opens when sessionStore.viewer is
- * non-null. Triggered either by the user typing `/showme <path>` (the
- * model interprets that and calls the show_file MCP tool, which
- * surfaces as a tool_use event we listen for in ChatView) or by the
- * model deciding on its own that showing a file would be clearer
- * than quoting it.
+ * non-null. Triggered either by the `/showme` resolver returning a
+ * concrete path or by the model deciding on its own that showing a
+ * file would be clearer than quoting it.
  *
  * Renderer dispatch (kind from /files/meta):
  *   markdown → react-markdown + remark-gfm + rehype-highlight

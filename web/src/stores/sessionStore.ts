@@ -144,8 +144,7 @@ interface SessionStore {
 
   // FileViewerDialog is mounted at the App level and reads this slot.
   // null = closed; non-null = open and fetching the named file. Set
-  // by ChatView when it sees an `mcp__viewer__show_file` tool call
-  // (model-driven) or by /showme command handling.
+  // by ChatView when the `/showme` resolver returns a concrete path.
   viewer: { sessionId: string; path: string } | null;
   openViewer: (sessionId: string, path: string) => void;
   closeViewer: () => void;

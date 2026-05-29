@@ -102,37 +102,6 @@ async def test_real_command_execution(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_real_mcp_tool_call_viewer(tmp_path):
-    """Register the real viewer MCP server via -c overrides and have codex
-    call it — proves MCP injection works and the normalizer maps the
-    mcp_tool_call item to mcp__viewer__show_file."""
-    (tmp_path / "hello.txt").write_text("hello content\n")
-    backend = _codex_run(session_id="rm", mcp_servers=["viewer"])
-    await backend.start(
-        "You have an MCP tool whose name starts with `mcp__viewer` for opening "
-        "a file in a viewer. Call it to open `hello.txt`. Then reply: done.",
-        str(tmp_path),
-    )
-    try:
-        events = await _drain(backend)
-    finally:
-        await backend.stop()
-
-    tu = next(
-        (e for e in events if e.type == "tool_use" and (e.tool_name or "").startswith("mcp__viewer")),
-        None,
-    )
-    assert tu is not None, f"no mcp__viewer tool_use; saw {[(e.type, e.tool_name) for e in events]}"
-    assert tu.tool_name == "mcp__viewer__show_file"
-    tr = next(
-        (e for e in events if e.type == "tool_result" and e.tool_use_id == tu.tool_use_id),
-        None,
-    )
-    assert tr is not None and tr.is_error is False
-    assert "Opened" in (tr.content or "")
-
-
-@pytest.mark.asyncio
 async def test_real_resume_across_two_subprocesses(tmp_path):
     b1 = _codex_run(session_id="r1", mcp_servers=[])
     await b1.start(

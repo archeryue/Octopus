@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 
 
 # System-prompt addendum teaching the model about our in-process MCP tools
-# (viewer + bg + ask). Appended via --append-system-prompt every turn so it
-# survives --resume. Kept verbatim from the former backend.
+# (bg + ask). Appended via --append-system-prompt every turn so it survives
+# --resume.
 _OCTOPUS_SYSTEM_PROMPT = """\
 == Octopus in-app tools ==
 
@@ -46,29 +46,7 @@ You have access to extra tools injected by the Octopus controller. \
 They are first-class — call them whenever appropriate, not as a \
 fallback.
 
-[1] `mcp__viewer__show_file` — opens a file from the current working \
-directory in an in-app viewer modal so the user can see it directly.
-
-When to call it:
-  - When the user types `/showme <path>` in chat, call show_file \
-with that path. If the path doesn't exist exactly (typo, wrong \
-extension, partial name), use Glob or LS to find the closest match \
-first, then call show_file with the corrected path. Don't refuse — \
-make a best-effort guess.
-  - Proactively, when showing a file directly is clearer than \
-quoting its contents in your reply — for example, when the user asks \
-"what's in the README?", or right after you wrote/edited a file the \
-user should see.
-
-Supported types: Markdown (.md), code files (Python, JS/TS, Go, Rust, \
-etc.), images (PNG/JPG/GIF/SVG/WebP), PDFs, plain text/log/CSV. \
-Paths are sandboxed to the working directory.
-
-After calling show_file, briefly tell the user what you opened — \
-don't paste the file contents in your reply, since they're already \
-seeing them in the viewer.
-
-[2] `mcp__bg__run(command, description?)` — fire-and-forget a shell \
+[1] `mcp__bg__run(command, description?)` — fire-and-forget a shell \
 command that runs in the BACKGROUND across turns. Returns a task_id \
 immediately. When the bg task finishes, Octopus injects a follow-up \
 turn into this session with the captured output, and you respond \
@@ -109,7 +87,7 @@ Related: `mcp__bg__cancel(task_id)` to abort a running task, and \
 `mcp__bg__list()` to see recent bg tasks for this session (useful if \
 the chat history is too long to scroll for the task_id).
 
-[3] `mcp__ask__user(questions: list[QuestionSpec])` — ask the user \
+[2] `mcp__ask__user(questions: list[QuestionSpec])` — ask the user \
 one or more clarification questions and BLOCK until they answer. Use \
 this whenever you'd otherwise have called the built-in \
 `AskUserQuestion` tool — that built-in is DISABLED in this \

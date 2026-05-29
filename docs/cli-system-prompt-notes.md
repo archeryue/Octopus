@@ -7,16 +7,16 @@ the model, with different scopes and reload semantics:
 
 | Layer | How it reaches the model | Scope | When to use |
 |---|---|---|---|
-| `--append-system-prompt` (CLI argv) | Octopus's `claude_code.py` sets it on every spawn (`_OCTOPUS_SYSTEM_PROMPT`) | Every CLI invocation Octopus makes, for every user, every session | Rules about how to use Octopus's *own* tools (`mcp__bg__run`, `mcp__viewer__show_file`, `mcp__ask__user`); behaviors the agent must follow regardless of which human is driving |
+| `--append-system-prompt` (CLI argv) | Octopus's `harness/claude_code.py` sets it on every spawn (`_OCTOPUS_SYSTEM_PROMPT`) | Every CLI invocation Octopus makes, for every user, every session | Rules about how to use Octopus's *own* tools (`mcp__bg__run`, `mcp__ask__user`); behaviors the agent must follow regardless of which human is driving |
 | Auto-memory (`~/.claude/projects/<repo>/memory/`) | Loaded by the harness as conversation context | Per-user, per-repo. A teammate cloning the repo starts with empty memory | Personal preferences, feedback corrections, things the *user* discovered they want the agent to remember |
 | `CLAUDE.md` (in the repo) | Loaded by the harness, checked into git | Per-repo, per-clone | Project conventions: commands, test layout, conventions everyone working on this repo should know |
 
 ## How `--append-system-prompt` is wired
 
-`server/backends/claude_code.py` builds a long Python string
-(`_OCTOPUS_SYSTEM_PROMPT`) describing the three MCP tools Octopus
-injects (`viewer`, `bg`, `ask`), and how to use each. The string is
-then passed as a positional argv element on every CLI spawn:
+`server/harness/claude_code.py` builds a long Python string
+(`_OCTOPUS_SYSTEM_PROMPT`) describing the MCP tools Octopus injects
+(`bg`, `ask`), and how to use each. The string is then passed as a
+positional argv element on every CLI spawn:
 
 ```python
 argv = [

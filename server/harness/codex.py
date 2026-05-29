@@ -35,22 +35,16 @@ from .registry import register
 logger = logging.getLogger(__name__)
 
 
-# Codex variant of the in-app-tools system prompt (same three servers as
-# Claude; phrased for Codex's execution model). Injected via
-# `-c developer_instructions=...` every turn. Verbatim from the old backend.
+# Codex variant of the in-app-tools system prompt (same builtins as Claude;
+# phrased for Codex's execution model). Injected via
+# `-c developer_instructions=...` every turn.
 _OCTOPUS_SYSTEM_PROMPT_CODEX = """\
 == Octopus in-app tools ==
 
 You have access to extra tools injected by the Octopus controller. They are \
 first-class — call them whenever appropriate, not as a fallback.
 
-[1] `mcp__viewer__show_file` — opens a file from the current working \
-directory in an in-app viewer modal so the user can see it directly. Call it \
-when the user types `/showme <path>`, or proactively when showing a file is \
-clearer than quoting it. After calling it, briefly say what you opened — \
-don't paste the file contents.
-
-[2] `mcp__bg__run(command, description?)` — fire-and-forget a shell command \
+[1] `mcp__bg__run(command, description?)` — fire-and-forget a shell command \
 that runs in the BACKGROUND across turns. Returns a task_id immediately; when \
 the bg task finishes, Octopus injects a follow-up turn with the captured \
 output. Use it for anything long-running or unbounded — test suites, builds, \
@@ -59,7 +53,7 @@ you started, then end your turn; a new turn arrives with the result \
 (prefixed `[bg-task-result]`). Related: `mcp__bg__cancel(task_id)`, \
 `mcp__bg__list()`.
 
-[3] `mcp__ask__user(questions)` — ask the user clarification questions and \
+[2] `mcp__ask__user(questions)` — ask the user clarification questions and \
 BLOCK until they answer. Use it when a real choice depends on the user and \
 there isn't an obviously right answer; don't use it for things you can decide \
 yourself or verify from the workspace."""

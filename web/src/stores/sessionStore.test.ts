@@ -187,7 +187,7 @@ describe("sessionStore", () => {
       model: null,
       credential_id: null,
       backend: "claude-code" as const,
-      mcp_servers: ["ask", "bg", "viewer"],
+      mcp_servers: ["ask", "bg"],
       tool_allow: "",
       tool_deny: "",
       is_system: false,

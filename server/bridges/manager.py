@@ -21,6 +21,7 @@ BRIDGE_COMMANDS = {
     "/current": "Show current session info",
     "/quiet": "Show only the agent's replies (hide tool activity)",
     "/verbose": "Also show tool activity (tool calls, results, cost)",
+    "/showme": "Browser-only — opens a file in the in-app viewer",
     "/help": "Show available commands",
 }
 
@@ -394,6 +395,17 @@ class BridgeManager:
                 f"Status: {session.status.value}\n"
                 f"Messages: {session._message_count}\n"
                 f"Working dir: {session.working_dir}",
+            )
+
+        elif command == "/showme":
+            # The viewer modal lives only in the browser; intercept here so a
+            # Telegram user doesn't get a baffling "Unknown command" from the
+            # CLI (which eats `/<word>` messages before the model sees them).
+            await bridge.send_text(
+                chat_id,
+                "/showme only works in the browser — the in-app file viewer "
+                "can't render in Telegram. Open Octopus in a web session to "
+                "use it.",
             )
 
         elif command == "/help":

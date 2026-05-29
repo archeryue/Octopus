@@ -841,12 +841,11 @@ class SessionManager:
                 {"type": "status", "session_id": session_id, "status": "running"}
             )
 
-            # Slash-command rewrite runs on the user's raw prompt; the
-            # attachment wrapper goes around the rewritten text so the
-            # `<attachments>` block stays at the top regardless.
-            backend_prompt = _rewrite_slash_commands(prompt)
+            # Attachments wrap the raw prompt; the `/showme` viewer flow now
+            # resolves on the client + dedicated resolution endpoint instead of
+            # being rewritten into a backend command.
             augmented_prompt = _augment_prompt_with_attachments(
-                backend_prompt, attachment_paths
+                prompt, attachment_paths
             )
 
             # Spill prompts that would blow Linux's MAX_ARG_STRLEN
@@ -1856,48 +1855,6 @@ def _split_tool_list(raw: str | None) -> list[str] | None:
         return None
     items = [line.strip() for line in raw.splitlines() if line.strip()]
     return items or None
-
-
-def _rewrite_slash_commands(prompt: str) -> str:
-    """Translate user-facing slash commands into natural instructions.
-
-    The `claude` CLI intercepts any message that begins with `/<word>`
-    as a built-in or user-defined slash command — it never reaches the
-    model and returns "Unknown command: /…". To make `/showme <path>`
-    actually route to our viewer MCP tool, we rewrite it server-side
-    *before* handing the prompt to the backend. The user's literal
-    text is still preserved in chat history (this only changes what
-    Claude sees, not what we persist or broadcast).
-
-    Keep this list explicit, not regex-magic — the model only needs
-    clear instructions, and an over-eager rewrite would silently
-    mangle prompts that happen to start with `/`.
-    """
-    stripped = prompt.lstrip()
-    # Match `/showme` (bare) OR `/showme <args>`. We accept any
-    # whitespace after the command and trim, so `/showme  file.md `
-    # works the same as `/showme file.md`.
-    if stripped == "/showme" or stripped.startswith("/showme "):
-        arg = stripped[len("/showme"):].strip()
-        if arg:
-            return (
-                f"The user typed `/showme {arg}` in the chat. "
-                f"Call the `show_file` tool (registered as "
-                f"`mcp__viewer__show_file`) with path={arg!r} to open "
-                "it in the in-app viewer. If that exact path doesn't "
-                "exist (typo, wrong extension, partial name), use Glob "
-                "or LS to find the closest match first, then call "
-                "show_file with the corrected path. Don't refuse — make "
-                "a best-effort guess. After the tool call succeeds, "
-                "briefly confirm in one sentence what you opened."
-            )
-        # Bare /showme with no arg — ask the user what file.
-        return (
-            "The user typed `/showme` with no argument. Ask them which "
-            "file in the working directory they'd like to open in the "
-            "viewer."
-        )
-    return prompt
 
 
 def _augment_prompt_with_attachments(prompt: str, paths: list[str]) -> str:

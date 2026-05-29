@@ -35,7 +35,7 @@ the data model — this doc describes it conceptually rather than pasting SQL.
                         │ subprocess (stream-JSON over stdout)
             ┌───────────┴────────────┐
             │  claude --print …      │   or   codex exec --json …
-            │  + injected MCP servers│        (viewer · bg · ask · connectors)
+            │  + injected MCP servers│        (bg · ask · connectors)
             └────────────────────────┘
                         │
             ┌───────────┴───────────┐
@@ -123,11 +123,10 @@ The harness is the **only** place that talks to a model runtime. There is one
 
 Every turn injects a small set of stdio MCP servers into the CLI's
 `--mcp-config`. The built-ins are configurable per agent (default
-`["ask", "bg", "viewer"]`); each enabled connector adds one more.
+`["ask", "bg"]`); each enabled connector adds one more.
 
 | Server | Tool(s) | Purpose |
 |---|---|---|
-| `viewer.py` | `mcp__viewer__show_file(path)` | Opens a working-dir file in the in-app viewer modal (`/showme`). |
 | `bg.py` | `mcp__bg__run` / `cancel` / `list` | Fire-and-forget shell commands that run **across turns**; the result arrives as a follow-up turn. |
 | `ask.py` | `mcp__ask__user(questions)` | Structured multiple-choice question rendered as a form in the UI; long-polls for the answer. Replaces the old permission-prompt hack. |
 | `connectors/github.py`, `gmail.py` | typed API tools | Built-in connector tools (see Connectors). |
@@ -170,7 +169,9 @@ hidden. `/verbose` and `/quiet` toggle this per chat (persisted in
 `bridge_mappings.verbose`, preserved across `/agent` rebinds).
 
 **Slash commands:** `/new [name]`, `/agent <name|id>`, `/sessions` (tappable
-switch buttons), `/switch <id>`, `/current`, `/quiet`, `/verbose`, `/help`.
+switch buttons), `/switch <id>`, `/current`, `/quiet`, `/verbose`, `/showme`
+(intercepted with a "browser-only" notice — the viewer modal can't render in
+Telegram), `/help`.
 
 ### Frontend (`web/src/`)
 
@@ -216,6 +217,19 @@ SessionManager broadcasts events → BridgeManager._on_broadcast
   → drop QUIET_SUPPRESSED_EVENTS unless the chat is /verbose
   → bridge.handle_event → TextBuffer-batched replies, errors, approval prompts
 ```
+
+### `/showme` — the in-app file viewer (browser only)
+
+`/showme <reference>` is an **explicit user gesture** for opening a file in
+the in-app viewer modal. ChatView intercepts it client-side, POSTs the raw
+reference to `/api/sessions/{id}/showme/resolve`, and the resolver
+(`server/showme_ai.py`) runs a one-shot model call (via the session's own
+harness) that sees the last few messages of the conversation, returning JSON
+with either `{"path"}` or `{"message"}`. On `path`, the client opens
+`FileViewerDialog` directly — no model turn appears in the chat, no MCP tool
+fires. Telegram intercepts `/showme` with a "browser-only" notice (the modal
+can't render there). The agent is **never** instructed to open the viewer on
+its own: it can't tell whether anyone is at the screen.
 
 ### Questions & tool approval
 
@@ -283,6 +297,7 @@ POST               /api/sessions/{id}/reset            # clear stuck-busy state
 POST               /api/sessions/{id}/archive | /unarchive
 POST/GET           /api/sessions/{id}/attachments[/{aid}]
 GET                /api/sessions/{id}/files[/meta]
+POST               /api/sessions/{id}/showme/resolve      # /showme reference → path
 POST/GET           /api/sessions/{id}/bg-tasks[/{tid}][/cancel]
 POST/GET           /api/sessions/{id}/questions[/{qid}/answer]
 

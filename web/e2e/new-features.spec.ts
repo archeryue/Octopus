@@ -1181,7 +1181,8 @@ test.describe("slash-command autocomplete", () => {
     // Bare "/" lists every command.
     await input.fill("/");
     await expect(menu).toBeVisible();
-    await expect(menu.locator(".slash-item")).toHaveCount(4);
+    await expect(menu.locator(".slash-item")).toHaveCount(5);
+    await expect(menu).toContainText("/showme");
 
     // A prefix narrows to the single match.
     await input.fill("/sch");
@@ -1741,22 +1742,21 @@ test.describe("File attachments", () => {
 });
 
 // ---------------------------------------------------------------------------
-// In-app file viewer (/showme + show_file MCP tool)
+// In-app file viewer (/showme — client-resolved, no MCP tool)
 // ---------------------------------------------------------------------------
 //
-// Full-chain test: user types `/showme <path>` → the system prompt addendum
-// teaches the model to call the viewer MCP tool → ClaudeCodeBackend.build_args
-// registered that MCP server via --mcp-config → claude spawns the stdio
-// server → tool_use event flows back over WS → useWebSocket detects the
-// mcp__viewer__show_file tool name and opens FileViewerDialog → the dialog
-// fetches /api/sessions/{id}/files/meta then the bytes, dispatches to the
+// Full-chain test: user types `/showme <reference>` → ChatView intercepts
+// client-side → POST /api/sessions/{id}/showme/resolve → a one-shot model
+// call interprets the reference in conversation context and returns a
+// concrete path → ChatView calls openViewer(path) → FileViewerDialog fetches
+// /api/sessions/{id}/files/meta then the bytes and dispatches to the
 // markdown renderer.
 //
-// Real Claude is required for this test (same as the other "Real CLI" tests
-// below). One scenario (markdown) is enough to validate the chain — the
-// per-renderer dispatch logic is covered by vitest in
-// src/components/FileViewerDialog.test.tsx, and per-extension classification
-// is covered by tests/test_file_viewer.py. We don't need to triple-cover.
+// Real Claude is required (the resolver makes a one-shot model call). One
+// scenario (markdown) is enough to validate the chain — per-renderer
+// dispatch is covered by vitest in src/components/FileViewerDialog.test.tsx,
+// per-extension classification by tests/test_file_viewer.py, and resolver
+// failure modes by tests/test_showme_ai.py.
 
 // ---------------------------------------------------------------------------
 // Cross-turn background tasks (mcp__bg__run)
@@ -2058,14 +2058,15 @@ test.describe("File viewer (/showme)", () => {
         "Viewer Showme Test"
       );
 
-      // Send the slash command. The model is taught (via
-      // --append-system-prompt) to recognize this and call show_file.
+      // Send the slash command. ChatView intercepts /showme client-side
+      // and POSTs to the resolver, which runs a one-shot model call.
+      // No model turn appears in the chat — the dialog opens directly.
       await page
         .locator(".chat-input-bar textarea")
         .fill("/showme intro.md");
       await page.locator("button.btn-send").click();
 
-      // Dialog opens once the model calls the viewer tool. Radix
+      // Dialog opens once the resolver returns the concrete path. Radix
       // Dialog renders role=dialog on the content node; the data-state
       // attribute flips to "open" when mounted.
       const dialog = page.locator('[role="dialog"][data-state="open"]');

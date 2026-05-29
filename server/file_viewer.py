@@ -1,10 +1,8 @@
 """Shared sandboxing + mime detection for the in-app file viewer.
 
-The viewer lets the user (via /showme) or the model (via the
-mcp__viewer__show_file tool) open a file from the session's
-working_dir in a browser modal. Every read path — REST endpoint and
-MCP tool — funnels through `resolve_safe_path` so the security model
-is single-sourced.
+The viewer lets the user open a file from the session's working_dir in a
+browser modal via `/showme`. The endpoint funnels through
+`resolve_safe_path` so the security model is single-sourced.
 
 Threats addressed:
   - Path traversal (../../etc/passwd): realpath + commonpath gate.

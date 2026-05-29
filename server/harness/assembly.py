@@ -25,7 +25,6 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 
 # In-app MCP servers the agent can enable (subset of these; None = all).
 _BUILTIN_MODULES = {
-    "viewer": "server.mcp_servers.viewer",
     "bg": "server.mcp_servers.bg",
     "ask": "server.mcp_servers.ask",
 }
@@ -36,9 +35,7 @@ def repo_root() -> str:
 
 
 def build_callback_env(session_id: str | None) -> dict[str, str]:
-    """The env our bg/ask MCP servers use to call back into FastAPI. The
-    viewer doesn't call back (it validates paths against OCTOPUS_WORKING_DIR),
-    so it gets a narrower env in `select_mcp_servers`."""
+    """The env our bg/ask MCP servers use to call back into FastAPI."""
     from ..config import settings as _settings  # local import: avoid cycle at load
 
     env: dict[str, str] = {
@@ -54,18 +51,14 @@ def build_callback_env(session_id: str | None) -> dict[str, str]:
 def select_mcp_servers(
     mcp_servers: list[str] | None,
     connectors: list[tuple[Any, Any]],
-    working_dir_abs: str,
     callback_env: dict[str, str],
 ) -> list[McpServerEntry]:
-    """The built-in servers the agent enabled (None = all three) plus one
-    entry per enabled connector installation. Order is stable: viewer, bg,
-    ask, then connectors — so rendered argv is deterministic for tests."""
+    """The built-in servers the agent enabled (None = all builtins) plus one
+    entry per enabled connector installation. Order is stable: bg, ask, then
+    connectors — so rendered argv is deterministic for tests. Unknown names in
+    `mcp_servers` (e.g. a legacy `"viewer"` from before the viewer became a
+    client-only flow) are silently filtered."""
     builtin_specs: dict[str, dict[str, Any]] = {
-        "viewer": {
-            "command": sys.executable,
-            "args": ["-m", _BUILTIN_MODULES["viewer"]],
-            "env": {"OCTOPUS_WORKING_DIR": working_dir_abs, "PYTHONPATH": _REPO_ROOT},
-        },
         "bg": {
             "command": sys.executable,
             "args": ["-m", _BUILTIN_MODULES["bg"]],

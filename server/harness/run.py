@@ -161,13 +161,12 @@ class HarnessRun:
         """Run the shared assembly (MCP selection, system-prompt composition,
         working-dir absolutization) into a neutral TurnContext. Side-effect
         free, so both `build_argv` (argv inspection) and `start()` use it."""
-        # Resolve working_dir to ABSOLUTE before handing it anywhere: MCP
-        # servers are grandchildren (FastAPI → CLI → mcp_*) inheriting cwd,
-        # so a relative path would be double-resolved by the viewer.
+        # Resolve working_dir to ABSOLUTE before handing it to the CLI: MCP
+        # grandchildren inherit cwd, so a relative path would be double-resolved.
         abs_wd = str(Path(working_dir).resolve())
         callback_env = assembly.build_callback_env(self._config.session_id)
         mcp_servers = assembly.select_mcp_servers(
-            self._config.mcp_servers, self._config.connectors, abs_wd, callback_env
+            self._config.mcp_servers, self._config.connectors, callback_env
         )
         system_prompt = assembly.compose_system_prompt(
             self._config.system_prompt,

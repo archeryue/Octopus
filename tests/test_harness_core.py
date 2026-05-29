@@ -200,20 +200,25 @@ def test_callback_env_has_session_id_when_present():
 
 def test_select_mcp_servers_all_by_default():
     env = assembly.build_callback_env("s")
-    entries = assembly.select_mcp_servers(None, [], "/abs/wd", env)
-    assert [e.key for e in entries] == ["viewer", "bg", "ask"]
-    viewer = next(e for e in entries if e.key == "viewer")
-    assert viewer.env["OCTOPUS_WORKING_DIR"] == "/abs/wd"
-    # bg/ask get the callback env; viewer does not call back.
+    entries = assembly.select_mcp_servers(None, [], env)
+    assert [e.key for e in entries] == ["bg", "ask"]
     bg = next(e for e in entries if e.key == "bg")
     assert bg.env["OCTOPUS_SESSION_ID"] == "s"
-    assert "OCTOPUS_SESSION_ID" not in viewer.env
 
 
 def test_select_mcp_servers_subset():
     env = assembly.build_callback_env("s")
-    entries = assembly.select_mcp_servers(["ask"], [], "/abs/wd", env)
+    entries = assembly.select_mcp_servers(["ask"], [], env)
     assert [e.key for e in entries] == ["ask"]
+
+
+def test_select_mcp_servers_silently_drops_unknown_legacy_names():
+    # Existing agents may still carry "viewer" in their stored mcp_servers list
+    # from before it became a client-only flow. Assembly should treat unknown
+    # names as no-ops rather than failing, so old rows keep working.
+    env = assembly.build_callback_env("s")
+    entries = assembly.select_mcp_servers(["viewer", "bg"], [], env)
+    assert [e.key for e in entries] == ["bg"]
 
 
 def test_select_mcp_servers_merges_connectors():
@@ -225,7 +230,7 @@ def test_select_mcp_servers_merges_connectors():
             return {"command": "py", "args": ["-m", "x"], "env": {**callback_env, "OCTOPUS_INSTALLATION_ID": inst}}
 
     env = assembly.build_callback_env("s")
-    entries = assembly.select_mcp_servers(["bg"], [(_FakeConnector(), "abc123")], "/abs/wd", env)
+    entries = assembly.select_mcp_servers(["bg"], [(_FakeConnector(), "abc123")], env)
     assert [e.key for e in entries] == ["bg", "github_abc123"]
     assert entries[1].env["OCTOPUS_INSTALLATION_ID"] == "abc123"
 

@@ -54,7 +54,7 @@ async def test_default_agent_present(client):
     system = [a for a in agents if a["is_system"]]
     assert len(system) == 1
     assert system[0]["name"] == "Octo"
-    assert system[0]["mcp_servers"] == ["ask", "bg", "viewer"]
+    assert system[0]["mcp_servers"] == ["ask", "bg"]
 
 
 @pytest.mark.asyncio

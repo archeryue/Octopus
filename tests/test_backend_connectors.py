@@ -59,7 +59,7 @@ def test_claude_merges_connector_mcp_entry():
     assert cfg[key]["env"]["OCTOPUS_API_BASE"].startswith("http://127.0.0.1:")
     assert cfg[key]["env"]["OCTOPUS_SESSION_ID"] == "s1"
     # Built-ins still present.
-    assert {"viewer", "bg", "ask"} <= set(cfg)
+    assert {"bg", "ask"} <= set(cfg)
 
 
 def test_claude_appends_connector_blurb():
@@ -77,7 +77,7 @@ def test_claude_no_connectors_unchanged():
     run = get_harness("claude-code").create_run(RunConfig(session_id="s1"))
     argv, _ = run.build_argv("hi", "/tmp", None)
     cfg = json.loads(_arg_after(argv, "--mcp-config"))["mcpServers"]
-    assert set(cfg) == {"viewer", "bg", "ask"}
+    assert set(cfg) == {"bg", "ask"}
     assert "== Connectors ==" not in _arg_after(argv, "--append-system-prompt")
 
 
