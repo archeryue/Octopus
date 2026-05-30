@@ -130,6 +130,53 @@ describe("AgentDelegationEventCard", () => {
     expect(screen.getByText(/Line two\./)).toBeInTheDocument();
   });
 
+  it("offers 'Open child session' when the child is in archivedSessions only (post-auto-archive)", () => {
+    // After DelegationManager.auto_archive_scheduled_session fires on
+    // terminal delivery, the child row lives in archivedSessions, not
+    // sessions. Vera caught a version of the code where the open
+    // button gated on `sessions.find(...)` only — archived children
+    // were unopenable from the terminal event card. Now the lookup
+    // resolves from BOTH stores.
+    useSessionStore.setState({
+      sessions: [],
+      archivedSessions: [
+        {
+          id: "ab12cd34ef56",
+          name: "Vera ← Octo",
+          working_dir: "/tmp",
+          status: "idle",
+          created_at: "2026-05-29T00:00:00Z",
+          message_count: 0,
+          claude_session_id: null,
+          credential_id: null,
+          agent_id: "vera-id",
+          origin: "delegation",
+          parent_session_id: "parent",
+          delegation_request: "review the readme",
+          backend: "claude-code",
+          archived: true,
+        },
+      ],
+    });
+    const ev = parseDelegationEvent(
+      "[agent-reply:Vera delegation=ab12cd34ef56]\nDone."
+    )!;
+    render(<AgentDelegationEventCard event={ev} />);
+    // Reply variant is collapsed by default — expand to expose the
+    // footer, then assert the button is present and the click
+    // navigates into the archived child.
+    fireEvent.click(screen.getAllByRole("button")[0]);
+    const openBtn = screen.getByRole("button", {
+      name: /open vera's session/i,
+    });
+    expect(openBtn).toBeInTheDocument();
+    fireEvent.click(openBtn);
+    expect(useSessionStore.getState().activeSessionId).toBe(
+      "ab12cd34ef56"
+    );
+    expect(useSessionStore.getState().activeAgentId).toBe("vera-id");
+  });
+
   it("offers an 'Open child session' link when the child session is in the store", () => {
     useSessionStore.setState({
       sessions: [

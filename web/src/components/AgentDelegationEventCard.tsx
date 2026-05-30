@@ -122,13 +122,20 @@ export function AgentDelegationEventCard({
 }) {
   const [expanded, setExpanded] = useState(event.kind !== "reply");
   const sessions = useSessionStore((s) => s.sessions);
+  const archivedSessions = useSessionStore((s) => s.archivedSessions);
   const setSessions = useSessionStore((s) => s.setSessions);
+  const setArchivedSessions = useSessionStore((s) => s.setArchivedSessions);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
   const token = useSessionStore((s) => s.token);
-  const childSession = sessions.find(
-    (sess) => sess.id === event.delegationId
-  );
+  // Resolve from BOTH stores: after DelegationManager auto-archives
+  // the child on terminal delivery, the row lives in archivedSessions
+  // (not sessions). The "Open session" button must render in either
+  // case so the user can navigate into a read-only view of the
+  // delegated child.
+  const childSession =
+    sessions.find((sess) => sess.id === event.delegationId) ??
+    archivedSessions.find((sess) => sess.id === event.delegationId);
 
   // Delegation child sessions are created server-side without going
   // through the frontend's POST /api/sessions path, so the store
@@ -138,15 +145,9 @@ export function AgentDelegationEventCard({
   // based on the row's `archived` flag — the
   // DelegationManager auto-archives children once their terminal
   // turn has been injected).
-  const archivedSessions = useSessionStore((s) => s.archivedSessions);
-  const setArchivedSessions = useSessionStore((s) => s.setArchivedSessions);
   useEffect(() => {
     if (!event.delegationId) return;
-    if (
-      childSession ||
-      archivedSessions.some((s) => s.id === event.delegationId)
-    )
-      return;
+    if (childSession) return;
     let cancelled = false;
     fetch(
       `${window.location.origin}/api/sessions/${encodeURIComponent(

@@ -371,6 +371,17 @@ async def test_nested_chain_intermediate_stays_alive_while_grandchild_runs(
     # Vera is now waiting for Pete; she has no active work of her own.
     vera_sess._active_task = None
 
+    # Drive session_manager's actual idle hook for Vera (mirror of
+    # _consume_message's post-queue-drain block). With the round-2
+    # fix in place, "delegation" is NOT in _AUTO_ARCHIVE_ORIGINS so
+    # this is a no-op; if a future change re-adds it (the original
+    # bug), Vera gets archived here and Pete's reply below fails.
+    # Vera flagged that the test relied on an adjacent test to catch
+    # this directly; this in-place hook makes the nested-chain test
+    # self-sufficient at proving the whole bug.
+    if vera_sess.origin in mgr._AUTO_ARCHIVE_ORIGINS:
+        await mgr.auto_archive_scheduled_session(vera_sess.id)
+
     # Drive Pete to terminal. If Vera was archived too early,
     # faithful_start_message raises and capture_logger_exception
     # records it — the assertions below fail.
