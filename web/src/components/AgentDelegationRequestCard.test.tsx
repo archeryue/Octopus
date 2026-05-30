@@ -83,6 +83,70 @@ describe("AgentDelegationRequestCard", () => {
     expect(screen.queryByTitle(/cancel delegation/i)).toBeNull();
   });
 
+  it("matches by delegation_id parsed from the sibling tool_result (server truth)", () => {
+    // Two delegations to the same target with DIFFERENT requests:
+    // by-id matching must pick the one the tool_result names, NOT
+    // the one whose request happens to equal the tool_input.request.
+    // This is the fan-out invariant Vera flagged: matching by name
+    // alone (or even by name+request after a model round-trip
+    // mismatch) can bind the card to the wrong delegation.
+    // Production delegation_ids are 12-char hex strings (matching the
+    // `[A-Za-z0-9]+` regex the card uses to parse the tool_result).
+    // Test ids mirror that shape so the regex actually accepts them.
+    useSessionStore.getState().upsertDelegation(
+      "parent",
+      makeDelegation({
+        delegation_id: "aaaaaaaaaaaa",
+        request: "review the dashboard",
+      })
+    );
+    useSessionStore.getState().upsertDelegation(
+      "parent",
+      makeDelegation({
+        delegation_id: "bbbbbbbbbbbb",
+        request: "review the sidebar",
+        state: "completed",
+        finished_at: "x",
+      })
+    );
+    // Seed the message history: the model's tool_input.request differs
+    // from BOTH stored requests (post-round-trip drift), but the
+    // tool_result for our toolUseId names the right delegation_id.
+    useSessionStore.getState().setMessages("parent", [
+      {
+        role: "assistant",
+        type: "tool_use",
+        tool_name: "mcp__ask_agent__ask",
+        tool_use_id: "tu-1",
+        tool_input: {
+          name: "Vera",
+          request: "review the sidebar — the EXACT round-trip text differs",
+        },
+      },
+      {
+        role: "user",
+        type: "tool_result",
+        tool_use_id: "tu-1",
+        content: "Started delegation `bbbbbbbbbbbb` to Vera. …",
+      },
+    ]);
+
+    render(
+      <AgentDelegationRequestCard
+        sessionId="parent"
+        toolUseId="tu-1"
+        agentName="Vera"
+        request="review the sidebar — the EXACT round-trip text differs"
+        files={undefined}
+      />
+    );
+    // State of the RIGHT delegation surfaces; the wrong-one is
+    // ignored entirely.
+    expect(screen.getByText("replied")).toBeInTheDocument();
+    // No cancel button — the matched record is `completed`.
+    expect(screen.queryByTitle(/cancel delegation/i)).toBeNull();
+  });
+
   it("matches by lowercase name (so 'vera' tool_input finds 'Vera' record)", () => {
     useSessionStore.getState().upsertDelegation("parent", makeDelegation());
     render(

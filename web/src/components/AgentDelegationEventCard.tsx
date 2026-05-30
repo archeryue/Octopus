@@ -223,9 +223,10 @@ export function AgentDelegationEventCard({
           {event.kind === "question" && expanded && (
             <div className="mt-2 ml-6 text-[11px] italic text-muted-foreground">
               The other agent is waiting. Decide whether to answer
-              directly via <code>answer_agent_question</code>, escalate
-              to the user with your own <code>ask</code>, or cancel
-              the delegation.
+              directly via <code>mcp__ask_agent__answer</code>,
+              escalate to the user with your own{" "}
+              <code>mcp__ask__user</code>, or cancel via{" "}
+              <code>mcp__ask_agent__cancel</code>.
             </div>
           )}
           <div className="mt-2 ml-6 flex items-center gap-3 text-[11px]">

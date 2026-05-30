@@ -692,6 +692,23 @@ class DelegationManager:
                 rec.delegation_id,
                 rec.parent_session_id,
             )
+        # Now that the parent has been notified, the delegation child
+        # is fully done with the chain and can be archived (plan §5.2).
+        # We deliberately archive HERE, not from session_manager's idle
+        # hook, because an intermediate delegation parent (Vera in
+        # Octo→Vera→Pete) is "idle" while waiting for its own child's
+        # reply — archiving on idle would break the nested chain (Vera
+        # would vanish before Pete's reply could reach her).
+        try:
+            await self.session_mgr.auto_archive_scheduled_session(
+                rec.delegation_id
+            )
+        except Exception:
+            logger.exception(
+                "Failed to auto-archive delegation child %s after "
+                "terminal injection",
+                rec.delegation_id,
+            )
 
 
 # Module-level singleton (mirrors the session_manager / bg_tasks

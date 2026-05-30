@@ -411,14 +411,22 @@ class SessionManager:
         return new
 
     # Session origins whose sessions should be archived once they go
-    # fully idle, so they don't pile up the active list.
-    # - 'schedule': agent-refactor.md §5.6 (each fire materializes its
-    #   own fresh session; the archived rows are still browsable).
-    # - 'delegation': agent-collaboration.md §5.2 (delegation children
-    #   are transient by design; the parent reads what it needs from
-    #   the injected reply turn and the child is browsable from the
-    #   sidebar's "show delegations" toggle).
-    _AUTO_ARCHIVE_ORIGINS = ("schedule", "delegation")
+    # fully idle from the generic idle hook, so they don't pile up the
+    # active list. Only 'schedule' is auto-archived from idle —
+    # delegation children must NOT be, because a delegation parent
+    # that has fired an outbound `ask_agent` is idle while waiting
+    # for its child to reply (see agent-collaboration.md §5.2 nested
+    # chain). If we archive it here, the child's terminal injection
+    # later targets a missing parent and is silently dropped. Instead,
+    # delegation children are archived by DelegationManager
+    # ._inject_terminal once their own terminal turn has actually been
+    # delivered — that's when the chain work is genuinely done.
+    _AUTO_ARCHIVE_ORIGINS = ("schedule",)
+    # The widened set the auto_archive helper itself accepts. Callers
+    # outside the idle hook (e.g. DelegationManager._inject_terminal)
+    # can still archive delegation sessions — but only at the right
+    # moment, not on every idle transition.
+    _AUTO_ARCHIVE_ELIGIBLE = ("schedule", "delegation")
 
     async def auto_archive_scheduled_session(self, session_id: str) -> bool:
         """Hide a finished transient session (schedule or delegation
@@ -438,7 +446,7 @@ class SessionManager:
         session = self.sessions.get(session_id)
         if (
             session is None
-            or session.origin not in self._AUTO_ARCHIVE_ORIGINS
+            or session.origin not in self._AUTO_ARCHIVE_ELIGIBLE
         ):
             return False
         if session._active_task and not session._active_task.done():
@@ -589,6 +597,12 @@ class SessionManager:
             agent_id=match.get("agent_id"),
             origin=match.get("origin") or "user",
             backend=match.get("backend") or "claude-code",
+            # Preserve the delegation chain fields when unarchiving —
+            # without these, an unarchived delegation child would lose
+            # its parent_session_id pointer and the "Delegated from"
+            # banner / cycle walk would break.
+            parent_session_id=match.get("parent_session_id"),
+            delegation_request=match.get("delegation_request"),
         )
         session._message_count = await self.db.count_messages(session.id)
         self.sessions[session.id] = session

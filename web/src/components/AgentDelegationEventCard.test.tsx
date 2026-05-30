@@ -100,9 +100,12 @@ describe("AgentDelegationEventCard", () => {
     expect(
       screen.queryByRole("button", { name: /Dashboard\.tsx/ })
     ).toBeNull();
-    // The "decide" hint to the parent agent surfaces.
+    // The "decide" hint to the parent agent surfaces with the
+    // actual MCP tool name (`mcp__ask_agent__answer`) — was
+    // `answer_agent_question` for one release; Vera caught the
+    // mismatch with the real exported tool name.
     expect(
-      screen.getByText(/answer_agent_question/i)
+      screen.getByText(/mcp__ask_agent__answer/i)
     ).toBeInTheDocument();
   });
 

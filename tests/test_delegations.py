@@ -222,13 +222,16 @@ async def test_files_resolved_against_working_dir(
 
 
 @pytest.mark.asyncio
-async def test_delegation_session_auto_archives_on_idle(
+async def test_delegation_session_archived_after_terminal_inject(
     dm, mgr, db, monkeypatch
 ):
-    """Plan §5.2: delegation children auto-archive on idle, like
-    schedule-origin sessions. Without the fix, only
-    origin=='schedule' was being archived; delegation children
-    accumulated in the live sessions map."""
+    """Plan §5.2 with Vera's round-2 nuance: a delegation child is
+    archived when its OWN terminal turn has been injected into its
+    parent — NOT on generic idle (which would prematurely archive an
+    intermediate parent that's waiting for its own child to reply).
+    Verifies _inject_terminal drives auto_archive_scheduled_session
+    itself, so the chain work is genuinely complete by the time the
+    archive runs."""
     monkeypatch.setattr(mgr, "start_message", _noop_start_message)
     octo = await db.get_system_agent()
     await _make_agent(db, "Vera")
@@ -238,26 +241,118 @@ async def test_delegation_session_auto_archives_on_idle(
     )
     child = mgr.get_session(rec.delegation_id)
     assert child is not None
-    # auto_archive_scheduled_session no-ops if the session is still
-    # "running" via _active_task; the test bypass that by clearing it.
+    child._active_task = None
+    # Drive the terminal event. _inject_terminal should both inject
+    # into the parent AND archive the child.
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    assert rec.state == "completed"
+    assert mgr.get_session(rec.delegation_id) is None
+
+
+@pytest.mark.asyncio
+async def test_idle_handler_does_not_archive_delegation_child(
+    dm, mgr, db, monkeypatch
+):
+    """Vera's round-2 BLOCKING finding: the generic idle hook used to
+    archive delegation children, breaking nested chains. The
+    intermediate parent (Vera in Octo→Vera→Pete) is idle while
+    waiting for its grandchild's reply; archiving it from the idle
+    path would orphan the grandchild's terminal turn.
+
+    _AUTO_ARCHIVE_ORIGINS no longer includes 'delegation' — only
+    'schedule'. The auto_archive_scheduled_session helper itself
+    still ACCEPTS delegation origin (it's how DelegationManager
+    archives after terminal inject), but the idle path no longer
+    calls it for delegation children."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    child = mgr.get_session(rec.delegation_id)
+    assert child is not None
+    # The session is still alive; the auto-archive idle-origins set
+    # does NOT include "delegation", so a generic idle wouldn't fire
+    # the helper for it.
+    assert "delegation" not in mgr._AUTO_ARCHIVE_ORIGINS
+    # Confirm: even with the child quiesced, the auto-archive helper
+    # archives it when called directly (the DelegationManager path),
+    # but it's never called from the idle hook for a delegation child.
     child._active_task = None
     ok = await mgr.auto_archive_scheduled_session(rec.delegation_id)
-    assert ok is True
-    # The session is no longer in the live map.
+    assert ok is True  # helper still accepts delegation origin
     assert mgr.get_session(rec.delegation_id) is None
 
 
 @pytest.mark.asyncio
 async def test_auto_archive_skips_user_origin_sessions(mgr, db, monkeypatch):
-    """Sanity check the widened auto-archive still respects origin —
-    user-origin sessions must NOT be auto-archived even after going
-    idle."""
+    """Sanity check: the auto-archive helper still respects origin —
+    user-origin sessions must NOT be auto-archived even when the
+    helper is called directly."""
     octo = await db.get_system_agent()
     sess = await _make_session(mgr, octo["id"], origin="user")
     sess._active_task = None
     ok = await mgr.auto_archive_scheduled_session(sess.id)
     assert ok is False
     assert mgr.get_session(sess.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_nested_chain_intermediate_stays_alive_while_grandchild_runs(
+    dm, mgr, db, monkeypatch
+):
+    """The full Vera scenario: Octo asks Vera, Vera asks Pete and
+    ends her turn. Vera is now idle waiting for Pete. With the
+    pre-fix behaviour, Vera would be archived on idle and Pete's
+    reply would land on a missing session. With the fix, Vera stays
+    alive until her OWN terminal event fires."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    await _make_agent(db, "Pete")
+    octo_sess = await _make_session(mgr, octo["id"], name="octo-user")
+    # Octo → Vera.
+    vera_rec = await dm.start_delegation(
+        parent_session_id=octo_sess.id, agent_name="vera", request="r1",
+    )
+    vera_sess = mgr.get_session(vera_rec.delegation_id)
+    assert vera_sess is not None
+    # Vera → Pete. Vera's session is now an active delegation parent
+    # for Pete's delegation, and "idle" from her own POV (no queued
+    # work).
+    pete_rec = await dm.start_delegation(
+        parent_session_id=vera_sess.id, agent_name="pete", request="r2",
+    )
+    vera_sess._active_task = None  # Vera is "idle"
+    # Even if something called the auto-archive helper out of band
+    # (e.g. a stale idle hook), the function still archives — but
+    # nothing in the codebase wires the idle path to fire it for
+    # delegation children any more.
+    # Verify Pete's reply can reach Vera while Vera is still alive.
+    await dm._on_broadcast({
+        "type": "result",
+        "session_id": pete_rec.delegation_id,
+        "is_error": False,
+    })
+    # Pete's terminal injection landed on Vera (no exception);
+    # Pete's session is archived; Vera is STILL alive waiting for
+    # her own work to finish.
+    assert mgr.get_session(pete_rec.delegation_id) is None
+    assert mgr.get_session(vera_rec.delegation_id) is not None
+    # Now Vera finishes her own turn.
+    await dm._on_broadcast({
+        "type": "result",
+        "session_id": vera_rec.delegation_id,
+        "is_error": False,
+    })
+    # Both children are now archived; Octo (root user session) is
+    # left untouched.
+    assert mgr.get_session(vera_rec.delegation_id) is None
+    assert mgr.get_session(octo_sess.id) is octo_sess
 
 
 @pytest.mark.asyncio

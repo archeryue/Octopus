@@ -1,5 +1,23 @@
 # Agent Collaboration — Tech Plan (agent-to-agent delegation)
 
+> **Implementation drift note (post-merge).** While building this we
+> renamed the underlying Python helpers (`ask_agent`,
+> `answer_agent_question`, `cancel_agent_task`, `list_agent_tasks`) to
+> the shorter MCP names the model actually sees: **`ask`**,
+> **`answer`**, **`cancel`**, **`list`** — full forms
+> `mcp__ask_agent__ask` / `…__answer` / `…__cancel` / `…__list`.
+> Wherever the prose below uses the longer names, treat them as
+> referring to those four MCP tools. Likewise, `mcp__bg__run`-style
+> references in this doc match the actual surface.
+>
+> Also: §5.2 below says delegation children "auto-archive on idle".
+> The implementation refines that: a delegation child is archived
+> **once its own terminal `[agent-…]` turn has been injected into the
+> parent**, not on every idle transition. That distinction is
+> load-bearing for nested chains — an intermediate parent (Vera in
+> Octo→Vera→Pete) is idle while waiting for its grandchild's reply
+> and must NOT vanish in that window.
+
 ## 0. What we're building, and the mental model
 
 Today an Octopus session has one human on the outside and one agent on
