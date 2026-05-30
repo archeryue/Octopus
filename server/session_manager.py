@@ -122,11 +122,22 @@ class Session:
     # created post-refactor; left optional on the dataclass so legacy
     # in-memory construction paths don't break mid-migration.
     agent_id: str | None = None
-    # Who created this session: 'user' | 'schedule' | 'bridge'. Scheduler
-    # fires auto-archive on idle (§5.6); bridge/user sessions persist.
+    # Who created this session: 'user' | 'schedule' | 'bridge' | 'delegation'.
+    # Scheduler fires auto-archive on idle (§5.6); bridge/user sessions
+    # persist. 'delegation' sessions auto-archive on idle too — they're a
+    # transient child spawned by an agent-to-agent ask_agent call
+    # (agent-collaboration.md §5.2).
     origin: str = "user"
     # Which AI backend drives this session ('claude-code' | 'codex').
     backend: str = "claude-code"
+    # Agent-to-agent: parent session that spawned this delegation, or None
+    # for every non-delegation session. Used by the delegation listener to
+    # route replies/questions/errors back to the parent and by guards to
+    # walk the caller chain (cycle + depth). (agent-collaboration.md §4.1)
+    parent_session_id: str | None = None
+    # The original delegation prompt, kept verbatim for UI display on
+    # delegation sessions. NULL elsewhere.
+    delegation_request: str | None = None
     _message_count: int = field(default=0, repr=False)
     _active_task: asyncio.Task | None = field(default=None, repr=False)
     # Per-prompt task that interrupt() targets; the outer _active_task is
@@ -188,6 +199,8 @@ class SessionManager:
                 agent_id=row.get("agent_id"),
                 origin=row.get("origin") or "user",
                 backend=row.get("backend") or "claude-code",
+                parent_session_id=row.get("parent_session_id"),
+                delegation_request=row.get("delegation_request"),
             )
             session._message_count = await db.count_messages(session.id)
             self.sessions[session.id] = session
@@ -220,6 +233,8 @@ class SessionManager:
         credential_id: str | None = None,
         origin: str = "user",
         backend: str = "claude-code",
+        parent_session_id: str | None = None,
+        delegation_request: str | None = None,
     ) -> Session:
         """Create a conversation thread owned by `agent_id`.
 
@@ -227,6 +242,11 @@ class SessionManager:
         §5.2). Refuses a missing/unknown agent. `working_dir` defaults to
         `settings.default_working_dir` — agents are not path-aware. `name`
         defaults to a generated "{agent} — {timestamp}" label.
+
+        `parent_session_id` + `delegation_request` are set together for
+        agent-to-agent delegation children (agent-collaboration.md §4.1):
+        the child carries a pointer back to the parent session and a
+        verbatim copy of the original delegation prompt for UI display.
         """
         if not agent_id:
             raise ValueError("agent_id is required to create a session")
@@ -248,6 +268,8 @@ class SessionManager:
             agent_id=agent_id,
             origin=origin,
             backend=backend,
+            parent_session_id=parent_session_id,
+            delegation_request=delegation_request,
         )
         self.sessions[sid] = session
         if self.db:
@@ -261,6 +283,8 @@ class SessionManager:
                 agent_id=session.agent_id,
                 origin=session.origin,
                 backend=session.backend,
+                parent_session_id=session.parent_session_id,
+                delegation_request=session.delegation_request,
             )
         return session
 
@@ -475,6 +499,8 @@ class SessionManager:
                     "agent_id": row.get("agent_id"),
                     "origin": row.get("origin") or "user",
                     "backend": row.get("backend") or "claude-code",
+                    "parent_session_id": row.get("parent_session_id"),
+                    "delegation_request": row.get("delegation_request"),
                     "archived": True,
                 }
             )
@@ -508,6 +534,8 @@ class SessionManager:
             agent_id=match.get("agent_id"),
             origin=match.get("origin") or "user",
             backend=match.get("backend") or "claude-code",
+            parent_session_id=match.get("parent_session_id"),
+            delegation_request=match.get("delegation_request"),
             archived=True,
             messages=messages,
             pending_queue=[],

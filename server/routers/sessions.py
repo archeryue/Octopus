@@ -22,6 +22,8 @@ def _to_session_info(
         agent_id=s.agent_id,
         origin=s.origin,
         backend=s.backend,
+        parent_session_id=s.parent_session_id,
+        delegation_request=s.delegation_request,
         archived=archived,
     )
 
@@ -118,6 +120,8 @@ async def import_session(
         agent_id=s.agent_id,
         origin=s.origin,
         backend=s.backend,
+        parent_session_id=s.parent_session_id,
+        delegation_request=s.delegation_request,
         messages=messages,
         pending_queue=[qp.prompt for qp in s._pending_queue],
         pending_questions=[
@@ -151,6 +155,8 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
             agent_id=s.agent_id,
             origin=s.origin,
             backend=s.backend,
+            parent_session_id=s.parent_session_id,
+            delegation_request=s.delegation_request,
             messages=messages,
             pending_queue=[qp.prompt for qp in s._pending_queue],
             pending_questions=[

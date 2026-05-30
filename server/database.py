@@ -52,8 +52,17 @@ CREATE TABLE IF NOT EXISTS sessions (
                                            -- name kept for back-compat — codex-backend.md §4.3)
     archived INTEGER NOT NULL DEFAULT 0,   -- hidden from default list; row kept for history
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,  -- owner; nullable in SQLite, required by API
-    origin TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'schedule' | 'bridge'
-    backend TEXT NOT NULL DEFAULT 'claude-code'  -- 'claude-code' | 'codex' (codex-backend.md §4.1)
+    origin TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'schedule' | 'bridge' | 'delegation'
+    backend TEXT NOT NULL DEFAULT 'claude-code',  -- 'claude-code' | 'codex' (codex-backend.md §4.1)
+    -- Agent-to-agent: a delegation child session points at the parent
+    -- session it was spawned from. SET NULL on parent delete (orphan beats
+    -- mass-delete; sessions are precious). NULL on every non-delegation
+    -- session. (agent-collaboration.md §4.1)
+    parent_session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    -- The original prompt for a delegation, stored verbatim so the UI can
+    -- render "Octo asked: «…»" without rummaging through the first message.
+    -- NULL on every non-delegation session.
+    delegation_request TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -386,6 +395,23 @@ class Database:
         except Exception:
             pass
 
+        # Agent-to-agent collaboration (agent-collaboration.md §4.1). A
+        # delegation child session points at the parent session via
+        # parent_session_id (SET NULL on parent delete — orphaning beats
+        # mass-delete) and carries the original delegation prompt in
+        # delegation_request for the UI header. Both columns NULL on
+        # non-delegation sessions. origin gains a 'delegation' value
+        # (TEXT column — no DDL change, only callers).
+        for ddl in (
+            "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT "
+            "REFERENCES sessions(id) ON DELETE SET NULL",
+            "ALTER TABLE sessions ADD COLUMN delegation_request TEXT",
+        ):
+            try:
+                await self._conn.execute(ddl)
+            except Exception:
+                pass
+
     async def _migrate_schedule_recurrence(self) -> None:
         """Schedules gained cron/timezone/recurrence_label and `interval_seconds`
         became nullable (natural-language + time-of-day scheduling), then later
@@ -625,13 +651,16 @@ class Database:
         agent_id: str | None = None,
         origin: str = "user",
         backend: str = "claude-code",
+        parent_session_id: str | None = None,
+        delegation_request: str | None = None,
     ) -> None:
         await self._ensure_connected()
         await self._conn.execute(
             "INSERT INTO sessions "
             "(id, name, working_dir, created_at, claude_session_id, "
-            " credential_id, agent_id, origin, backend) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " credential_id, agent_id, origin, backend, "
+            " parent_session_id, delegation_request) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 name,
@@ -642,6 +671,8 @@ class Database:
                 agent_id,
                 origin,
                 backend,
+                parent_session_id,
+                delegation_request,
             ),
         )
         await self._conn.commit()
@@ -657,7 +688,8 @@ class Database:
         await self._ensure_connected()
         query = (
             "SELECT id, name, working_dir, created_at, claude_session_id, "
-            "credential_id, archived, agent_id, origin, backend FROM sessions"
+            "credential_id, archived, agent_id, origin, backend, "
+            "parent_session_id, delegation_request FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -675,6 +707,8 @@ class Database:
                 "agent_id": row[7],
                 "origin": row[8] or "user",
                 "backend": row[9] or "claude-code",
+                "parent_session_id": row[10],
+                "delegation_request": row[11],
             }
             for row in rows
         ]

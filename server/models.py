@@ -50,11 +50,18 @@ class SessionInfo(BaseModel):
     message_count: int = 0
     claude_session_id: str | None = None
     credential_id: str | None = None
-    # Owning agent + who created the session ('user' | 'schedule' | 'bridge').
+    # Owning agent + who created the session ('user' | 'schedule' |
+    # 'bridge' | 'delegation').
     agent_id: str | None = None
     origin: str = "user"
     # Which AI backend drives this session.
     backend: BackendKind = BackendKind.claude_code
+    # Agent-to-agent: set on delegation sessions to point at the parent
+    # session that spawned them; NULL elsewhere. The verbatim original
+    # delegation prompt is kept alongside for UI display.
+    # (agent-collaboration.md §4.1)
+    parent_session_id: str | None = None
+    delegation_request: str | None = None
     # Hidden from the default `GET /api/sessions` list; surfaced only
     # when the caller passes `?include_archived=true` (or for individual
     # GETs by id, which always work). The `/archive` flow sets this;
