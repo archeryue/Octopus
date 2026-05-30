@@ -38,7 +38,14 @@ Reference design: vm0 (`/home/start-up/vm0`), which cleanly splits **Agent (defi
 - No multi-tenant / org model. Octopus stays single-user.
 - No content-addressed agent versioning (vm0's `agentComposeVersions`). Track agent edits in-place; revisit later.
 - No separate `Run` table. A "send_message turn" stays implicit inside a session; lift it only if/when we need per-turn billing, snapshots, or A2A triggers.
-- No multi-agent orchestration (A2A). Single agent per session.
+- ~~No multi-agent orchestration (A2A). Single agent per session.~~ —
+  **superseded** by [`agent-collaboration.md`](agent-collaboration.md): A2A
+  shipped as the `mcp__ask_agent__*` MCP tools without needing a Run
+  table. A delegation is a normal `Session` row with `parent_session_id`
+  set + `origin='delegation'`; the trigger is the MCP tool call. The
+  Run-table prerequisite suggested in §9 below turned out to be wrong —
+  we got there without one. A delegation child is still a single-agent
+  session; the multi-agent shape is built from the chain of sessions.
 
 ## 3. Reference mapping vm0 → Octopus
 
@@ -301,7 +308,7 @@ P2 needs P1; P3 needs P2.
 ## 10. What we are *not* doing (and why)
 
 - **No memory in this refactor.** It is the goal, but it's a harder design (storage shape, injection strategy, growth/eviction) that deserves its own spec. The durable Agent built here — owning config, schedules, and bridges — is its foundation.
-- **No `Run` table.** Per-turn execution is well-contained in `SessionManager`; a Run table would force every turn into a DB lifecycle. Add it when we actually need per-turn billing, A2A triggers, or persistent execution logs separate from messages.
+- **No `Run` table.** Per-turn execution is well-contained in `SessionManager`; a Run table would force every turn into a DB lifecycle. Add it when we actually need per-turn billing, A2A triggers (turned out we *didn't* need it — A2A shipped via [`agent-collaboration.md`](agent-collaboration.md) without a Run table), or persistent execution logs separate from messages.
 - **No compose versioning.** Editing an agent changes its row. vm0's "snapshot at run time" guarantee is valuable for reproducibility but irrelevant until Octopus has scheduled fleets or external triggers that race with edits.
 - **No firewall/proxy.** Octopus runs `claude` as a local subprocess on the user's machine. There is no untrusted egress to police. vm0's mitmproxy story doesn't translate.
 - **No org/visibility model.** Single user.

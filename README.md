@@ -17,7 +17,7 @@ Phone / Browser / Telegram
   → REST + WebSocket / bridge → FastAPI (web UI + API on one port)
       → Agent  (durable: prompt · model · credential · tool policy · connectors)
           → backend:  Claude Code   or   Codex      (local CLI subprocess, stream-json)
-          → MCP tools: viewer · bg · ask · connectors (GitHub / Gmail / custom)
+          → MCP tools: bg · ask · ask_agent · connectors (GitHub / Gmail / custom)
 ```
 
 ## Features
@@ -49,9 +49,21 @@ Phone / Browser / Telegram
 - **Background & scheduled work** — Agents fire off shell commands that run in
   the background **across turns** (the result arrives as a follow-up turn), and
   recurring scheduled prompts run per agent into fresh, auto-archiving sessions.
-- **In-app tools** — Every agent gets MCP tools Octopus injects: a file
-  **viewer** (`/showme`), a **background runner**, and a structured
-  **ask-the-user** prompt rendered as a multiple-choice form in the UI.
+- **In-app tools** — Every agent gets MCP tools Octopus injects: a
+  **background runner**, a structured **ask-the-user** prompt rendered as
+  a multiple-choice form in the UI, and **agent-to-agent delegation**
+  (`mcp__ask_agent__ask`) so one agent can hand work to another by name
+  ("ask Vera to review this") and resume when the other replies.
+  Cross-turn round-trips work the same as the background runner —
+  replies arrive as injected follow-up turns.
+- **In-app file viewer** — `/showme <reference>` opens a file from the
+  session's working directory in a browser modal — markdown rendered,
+  images/PDFs inline, code highlighted. Exact paths short-circuit (no
+  model call); fuzzy references like `the readme` are resolved by a
+  one-shot model call that reads recent conversation. Browser-only by
+  design — the agent never opens files on its own, since it can't tell
+  whether anyone is at the screen. Telegram intercepts `/showme` with a
+  "browser-only" notice.
 - **Built for long sessions** — Real-time WebSocket streaming with collapsible
   tool blocks; work keeps running if the browser disconnects and re-syncs on
   reconnect (with a `POST /api/sessions/{id}/reset` escape hatch); mid-turn
@@ -115,10 +127,10 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 669 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
-cd web && bun run test            # 46 frontend unit tests (vitest)
+.venv/bin/pytest tests/ -v        # 754 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
+cd web && bun run test            # 64 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 61 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · real-CLI)
+cd web && bun run test:e2e        # 62 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI). Split into `:fast` (UI-only, ~16s) and `:llm` (real Claude/Codex, ~3min) for dev iteration.
 ```
 
 ### Pre-commit hooks (optional)

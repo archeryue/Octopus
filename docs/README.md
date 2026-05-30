@@ -25,6 +25,9 @@ design rationale. **Code comments cite these by filename + section** (e.g.
 - **[plans/memory.md](plans/memory.md)** — per-agent native memory.
 - **[plans/harness-layer.md](plans/harness-layer.md)** — the one-harness,
   profile-per-backend runtime boundary.
+- **[plans/agent-collaboration.md](plans/agent-collaboration.md)** —
+  agent-to-agent delegation (the `mcp__ask_agent__*` tools). Reverses
+  the explicit "no A2A" carve-out in `agent-refactor.md` §40-41.
 
 ## Reference notes
 

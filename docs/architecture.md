@@ -67,7 +67,10 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 
 - A **Session** is one conversation thread (an instance of talking to an agent).
   It carries the backend resume id, working dir, origin (`user` | `schedule` |
-  `bridge`), and an `archived` flag.
+  `bridge` | `delegation`), an optional `parent_session_id` (set when the
+  session was spawned by another agent via `mcp__ask_agent__ask` — see
+  [`plans/agent-collaboration.md`](plans/agent-collaboration.md)), and an
+  `archived` flag.
 - `SessionManager` reads the owning agent's config *directly each turn*, so
   editing an agent is picked up by its open sessions on their next turn (no
   restart, no re-bind).
@@ -87,6 +90,7 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `harness/` | The single boundary for all model/runtime interaction (see below). |
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
 | `agent_memory.py` | Per-agent native memory provisioning (`<agents_dir>/<id>/memory/`). |
+| `delegations.py` | Agent-to-agent delegation manager ([`plans/agent-collaboration.md`](plans/agent-collaboration.md)) — `mcp__ask_agent__ask` lets one agent spawn a child session under another agent. Subscribes to the session-manager broadcast bus; on the child's terminal event (`result` / `error` / `question_request`) injects an `[agent-reply:…]` / `[agent-error:…]` / `[agent-question:…]` turn back into the parent. Owns cycle + depth-3 guards (with DB fallback for archived ancestors), single-inject idempotency, cascade-cancel of descendants, and child auto-archive after terminal delivery. |
 | `scheduler.py` | `ScheduleRunner` — APScheduler runner for recurring prompts, **interval and cron**, fired per agent into fresh auto-archiving sessions. |
 | `schedule_ai.py` | Natural-language `/schedule` parsing — turns "every weekday at 9am" into a cron/interval spec via the agent's own harness (backend-agnostic). |
 | `database.py` | SQLite (`aiosqlite`, WAL, FK cascade). `_SCHEMA` defines all tables; idempotent `_apply_migrations` / `_migrate_*` evolve existing DBs additively. |
@@ -123,12 +127,13 @@ The harness is the **only** place that talks to a model runtime. There is one
 
 Every turn injects a small set of stdio MCP servers into the CLI's
 `--mcp-config`. The built-ins are configurable per agent (default
-`["ask", "bg"]`); each enabled connector adds one more.
+`["ask", "bg", "ask_agent"]`); each enabled connector adds one more.
 
 | Server | Tool(s) | Purpose |
 |---|---|---|
 | `bg.py` | `mcp__bg__run` / `cancel` / `list` | Fire-and-forget shell commands that run **across turns**; the result arrives as a follow-up turn. |
-| `ask.py` | `mcp__ask__user(questions)` | Structured multiple-choice question rendered as a form in the UI; long-polls for the answer. Replaces the old permission-prompt hack. |
+| `ask.py` | `mcp__ask__user(questions)` | Structured multiple-choice question rendered as a form in the UI; long-polls for the answer. Caller-aware: when invoked from a delegation-origin session the question is also injected as an `[agent-question:…]` turn into the parent agent's session — same pending queue, two answer producers. Replaces the old permission-prompt hack. |
+| `ask_agent.py` | `mcp__ask_agent__ask` / `cancel` / `answer` / `list` | Agent-to-agent delegation. `ask` spawns a child session under the named agent and returns a delegation id; `answer` drains a child's pending question with the parent's chosen label; `cancel` stops a delegation (cascade-cancels descendants); `list` enumerates this session's delegations. Same env-injection + bg-task-style follow-up-turn pattern as `bg`. Design: [`plans/agent-collaboration.md`](plans/agent-collaboration.md). |
 | `connectors/github.py`, `gmail.py` | typed API tools | Built-in connector tools (see Connectors). |
 | `connectors/custom.py` | generic `request(method, path, …)` | One tool for any user-defined OAuth2 API. |
 | `connectors/_shared.py` | — | Token fetch+cache, 401→reconnect, 32 KB truncation. |
@@ -182,7 +187,7 @@ React 19 + TypeScript (strict) + Vite + zustand + Tailwind v4 + Radix.
 | Shell | `App.tsx`, `components/AccountDropdown.tsx`, `OctopusLogo.tsx`, `SettingsDialog.tsx` |
 | Agents | `AgentList.tsx` (two-pane sidebar: pick agent → see its sessions), `AgentSettings.tsx` (prompt/model/backend/credential/tools/connectors) |
 | Sessions & chat | `SessionList.tsx`, `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint), `MessageBubble.tsx`, `SlashCommandMenu.tsx`, `ArchivedSessionsDialog.tsx` |
-| In-app tools | `FileViewerDialog.tsx` (viewer), `BgTaskChip.tsx` (bg task status), `QuestionPrompt.tsx` (ask form), `ToolApproval.tsx` (approval prompt) |
+| In-app tools | `FileViewerDialog.tsx` (viewer), `BgTaskChip.tsx` (bg task status), `QuestionPrompt.tsx` (ask form), `ToolApproval.tsx` (approval prompt), `AgentDelegationRequestCard.tsx` (live status next to a `mcp__ask_agent__ask` tool_use), `AgentDelegationEventCard.tsx` (renders the `[agent-reply|question|error:…]` injected turns as collapsible cards with deep-links into the child session) |
 | Schedules | `ScheduleList.tsx`, `SchedulesDialog.tsx` (all-agents overview) |
 | Connectors / creds | `ConnectorList.tsx`, `CredentialList.tsx` |
 | State | `stores/sessionStore.ts`, `hooks/useWebSocket.ts`, `hooks/useViewportHeight.ts` |
@@ -300,6 +305,9 @@ GET                /api/sessions/{id}/files[/meta]
 POST               /api/sessions/{id}/showme/resolve      # /showme reference → path
 POST/GET           /api/sessions/{id}/bg-tasks[/{tid}][/cancel]
 POST/GET           /api/sessions/{id}/questions[/{qid}/answer]
+POST/GET           /api/sessions/{id}/delegations           # ask_agent: start, list
+POST               /api/sessions/{id}/delegations/{did}/cancel  # stop a delegation (cascades to descendants)
+POST               /api/sessions/{id}/delegations/{did}/answer   # answer a child's question
 
 # Schedules (interval + cron), credentials, connectors, notifiers
 GET/POST           /api/schedules
@@ -325,7 +333,11 @@ migrations (never re-create or duplicate the schema in docs).
   credential, `mcp_servers`, tool allow/deny, `is_system`, `archived`). Owns the rest.
 - **`sessions`** — one thread: `working_dir`, `claude_session_id` (backend
   resume id, name kept for back-compat), `agent_id`, `origin`
-  (`user`|`schedule`|`bridge`), `backend`, `credential_id`, `archived`.
+  (`user`|`schedule`|`bridge`|`delegation`), `backend`, `credential_id`,
+  `archived`. Delegation rows additionally carry `parent_session_id`
+  (the caller session, `ON DELETE SET NULL` — orphaning beats
+  mass-delete) and `delegation_request` (the verbatim original prompt
+  for UI display) — see [`plans/agent-collaboration.md`](plans/agent-collaboration.md) §4.
 - **`messages`** — ordered history per session (`role`, `type`, `content`, tool
   fields, `cost`, `attachments`).
 - **`schedules`** — recurring prompts owned by an agent: `interval_seconds` **or**
