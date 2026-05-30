@@ -54,7 +54,12 @@ async def test_default_agent_present(client):
     system = [a for a in agents if a["is_system"]]
     assert len(system) == 1
     assert system[0]["name"] == "Octo"
-    assert system[0]["mcp_servers"] == ["ask", "bg"]
+    # Default built-in MCP set: ask (user questions) + bg (cross-turn
+    # shell) + ask_agent (delegate to another agent —
+    # agent-collaboration.md §5.1). ask_agent landed alongside the
+    # collaboration feature; the migration backfills it into any
+    # pre-existing agent rows too.
+    assert system[0]["mcp_servers"] == ["ask", "bg", "ask_agent"]
 
 
 @pytest.mark.asyncio

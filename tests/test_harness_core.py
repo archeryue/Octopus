@@ -201,9 +201,12 @@ def test_callback_env_has_session_id_when_present():
 def test_select_mcp_servers_all_by_default():
     env = assembly.build_callback_env("s")
     entries = assembly.select_mcp_servers(None, [], env)
-    assert [e.key for e in entries] == ["bg", "ask"]
+    assert [e.key for e in entries] == ["bg", "ask", "ask_agent"]
     bg = next(e for e in entries if e.key == "bg")
     assert bg.env["OCTOPUS_SESSION_ID"] == "s"
+    ask_agent_entry = next(e for e in entries if e.key == "ask_agent")
+    assert ask_agent_entry.env["OCTOPUS_SESSION_ID"] == "s"
+    assert ask_agent_entry.args[-1] == "server.mcp_servers.ask_agent"
 
 
 def test_select_mcp_servers_subset():

@@ -27,6 +27,10 @@ _REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 _BUILTIN_MODULES = {
     "bg": "server.mcp_servers.bg",
     "ask": "server.mcp_servers.ask",
+    # Agent-to-agent delegation (agent-collaboration.md §5.1). Same
+    # callback-env shape as ask/bg — talks to the FastAPI delegations
+    # routes which sit in front of DelegationManager.
+    "ask_agent": "server.mcp_servers.ask_agent",
 }
 
 
@@ -67,6 +71,11 @@ def select_mcp_servers(
         "ask": {
             "command": sys.executable,
             "args": ["-m", _BUILTIN_MODULES["ask"]],
+            "env": dict(callback_env),
+        },
+        "ask_agent": {
+            "command": sys.executable,
+            "args": ["-m", _BUILTIN_MODULES["ask_agent"]],
             "env": dict(callback_env),
         },
     }

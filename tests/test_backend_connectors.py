@@ -77,7 +77,9 @@ def test_claude_no_connectors_unchanged():
     run = get_harness("claude-code").create_run(RunConfig(session_id="s1"))
     argv, _ = run.build_argv("hi", "/tmp", None)
     cfg = json.loads(_arg_after(argv, "--mcp-config"))["mcpServers"]
-    assert set(cfg) == {"bg", "ask"}
+    # Default built-in MCP set: bg + ask + ask_agent
+    # (agent-collaboration.md §5.1).
+    assert set(cfg) == {"bg", "ask", "ask_agent"}
     assert "== Connectors ==" not in _arg_after(argv, "--append-system-prompt")
 
 

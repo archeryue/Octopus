@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Built-in MCP servers attached to the Default Agent (and the default for
 # any newly-created agent). Kept here so the migration backfill and the
 # CREATE TABLE default stay in lock-step.
-_DEFAULT_MCP_SERVERS = ["ask", "bg"]
+_DEFAULT_MCP_SERVERS = ["ask", "bg", "ask_agent"]
 _DEFAULT_MCP_SERVERS_JSON = json.dumps(_DEFAULT_MCP_SERVERS)
 
 _SCHEMA = """
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS agents (
     model TEXT,                             -- e.g. "claude-opus-4-7"; null = backend default
     credential_id TEXT REFERENCES backend_credentials(id) ON DELETE SET NULL,
     backend TEXT NOT NULL DEFAULT 'claude-code',  -- default harness for new sessions
-    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg"]',
+    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","ask_agent"]',
                                             -- JSON array of built-in Octopus MCP server ids.
     tool_allow TEXT NOT NULL DEFAULT '',    -- newline-separated tool/MCP names; empty = allow all
     tool_deny  TEXT NOT NULL DEFAULT '',    -- newline-separated; deny takes precedence over allow
@@ -411,6 +411,37 @@ class Database:
                 await self._conn.execute(ddl)
             except Exception:
                 pass
+
+        # Backfill `ask_agent` into every existing agent's mcp_servers
+        # list (agent-collaboration.md §5.1). The default list was
+        # ["ask","bg"] before this landed; now it's
+        # ["ask","bg","ask_agent"]. The CREATE TABLE default applies
+        # only to brand-new rows on fresh databases — pre-existing rows
+        # already have a stored value and need this catch-up. Idempotent:
+        # parsing + set-membership means re-running is a no-op.
+        await self._backfill_ask_agent_into_mcp_servers()
+
+    async def _backfill_ask_agent_into_mcp_servers(self) -> None:
+        cursor = await self._conn.execute(
+            "SELECT id, mcp_servers FROM agents"
+        )
+        rows = list(await cursor.fetchall())
+        for agent_id, raw in rows:
+            try:
+                current = json.loads(raw) if raw else []
+            except json.JSONDecodeError:
+                # A corrupted blob is left alone — manual rescue from
+                # SQLite is safer than guessing what the user meant.
+                continue
+            if not isinstance(current, list):
+                continue
+            if "ask_agent" in current:
+                continue
+            current.append("ask_agent")
+            await self._conn.execute(
+                "UPDATE agents SET mcp_servers = ? WHERE id = ?",
+                (json.dumps(current), agent_id),
+            )
 
     async def _migrate_schedule_recurrence(self) -> None:
         """Schedules gained cron/timezone/recurrence_label and `interval_seconds`
