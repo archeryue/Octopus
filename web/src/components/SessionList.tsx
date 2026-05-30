@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { IconCheck, IconCopy, IconX } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconCopy,
+  IconEye,
+  IconEyeOff,
+  IconSubtask,
+  IconX,
+} from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -53,9 +60,23 @@ export function SessionList({
     }
   }, [formOpen, agentBackend]);
 
+  const showDelegations = useSessionStore((s) => s.showDelegations);
+  const setShowDelegations = useSessionStore((s) => s.setShowDelegations);
+
   // This list shows exactly its agent's sessions (bucketed by agent_id).
   // Archived sessions live in the account-menu manage page, not here.
-  const agentSessions = sessions.filter((s) => s.agent_id === agentId);
+  // Delegation sessions (origin === "delegation") are hidden by default
+  // to keep the sidebar clean under heavy fan-out — the user can flip
+  // the global showDelegations toggle to see them. The hidden-count
+  // pill at the bottom of this list surfaces what's been filtered.
+  // (agent-collaboration.md §6)
+  const allAgentSessions = sessions.filter((s) => s.agent_id === agentId);
+  const hiddenDelegationCount = showDelegations
+    ? 0
+    : allAgentSessions.filter((s) => s.origin === "delegation").length;
+  const agentSessions = showDelegations
+    ? allAgentSessions
+    : allAgentSessions.filter((s) => s.origin !== "delegation");
 
   const headers = {
     "Content-Type": "application/json",
@@ -141,6 +162,33 @@ export function SessionList({
             No sessions yet.
           </div>
         )}
+        {hiddenDelegationCount > 0 && !formOpen && (
+          <button
+            type="button"
+            className="delegation-toggle group flex items-center gap-1.5 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground rounded transition-colors"
+            onClick={() => setShowDelegations(true)}
+            title="Show delegation sessions"
+          >
+            <IconEye size={11} />
+            <span>
+              +{hiddenDelegationCount} delegation
+              {hiddenDelegationCount === 1 ? "" : "s"} hidden
+            </span>
+          </button>
+        )}
+        {showDelegations &&
+          allAgentSessions.some((s) => s.origin === "delegation") &&
+          !formOpen && (
+            <button
+              type="button"
+              className="delegation-toggle flex items-center gap-1.5 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground rounded transition-colors"
+              onClick={() => setShowDelegations(false)}
+              title="Hide delegation sessions"
+            >
+              <IconEyeOff size={11} />
+              <span>Hide delegations</span>
+            </button>
+          )}
         {agentSessions.map((s) => (
           <div
             key={s.id}
@@ -167,6 +215,15 @@ export function SessionList({
             >
               {s.name}
             </span>
+            {s.origin === "delegation" && (
+              <span
+                className="delegation-marker inline-flex items-center text-muted-foreground/80"
+                title="Delegation session"
+                aria-label="Delegation session"
+              >
+                <IconSubtask size={12} />
+              </span>
+            )}
             <div className="session-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
                 className="btn-copy-id inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"

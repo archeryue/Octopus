@@ -110,9 +110,9 @@ export interface paths {
         /**
          * Create Agent Schedule From Text
          * @description Natural-language schedule creation. Parses `text` (rigid `<interval>
-         *     <prompt>` fast-path, else a one-shot AI parse using the agent's Claude) into
-         *     a recurrence + prompt, then creates the schedule. Parse failures surface as
-         *     422 with a user-facing detail.
+         *     <prompt>` fast-path, else a one-shot AI parse on the agent's own harness)
+         *     into a recurrence + prompt, then creates the schedule. Parse failures
+         *     surface as 422 with a user-facing detail.
          */
         post: operations["create_agent_schedule_from_text_api_agents__agent_id__schedules_from_text_post"];
         delete?: never;
@@ -273,6 +273,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/showme/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Showme
+         * @description Resolve a human file reference into a concrete viewer path.
+         */
+        post: operations["resolve_showme_api_sessions__session_id__showme_resolve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/files/meta": {
         parameters: {
             query?: never;
@@ -378,6 +398,91 @@ export interface paths {
          *     server restarted and lost the in-memory handle).
          */
         post: operations["cancel_bg_task_api_sessions__session_id__bg_tasks__task_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Delegations
+         * @description Recent delegations spawned by this session, newest first. The
+         *     list includes finished ones so the model can see what it's
+         *     asked recently. Currently capped at 25 inside the manager.
+         */
+        get: operations["list_delegations_api_sessions__session_id__delegations_get"];
+        put?: never;
+        /**
+         * Start Delegation
+         * @description Spawn a child session under the named agent and start its first
+         *     turn. Returns immediately — the reply arrives later as a turn
+         *     injected into the parent session.
+         *
+         *     Status codes:
+         *     - 201 Created with the delegation record on success
+         *     - 404 if the parent session is gone or the target agent name
+         *       doesn't resolve
+         *     - 409 on cycle, depth, self-delegation, or ambiguous name
+         */
+        post: operations["start_delegation_api_sessions__session_id__delegations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Delegation
+         * @description Best-effort cancel. Idempotent — cancelling a finished
+         *     delegation returns the existing terminal record without touching
+         *     anything. The parent gets an `[agent-error:…]` injection on the
+         *     transition from running → cancelled.
+         */
+        post: operations["cancel_delegation_api_sessions__session_id__delegations__delegation_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer Delegation Question
+         * @description Parent-side answer to a question the child agent raised via
+         *     its own `ask` MCP tool. The child's pending question is drained
+         *     with the parent's chosen label, the child's long-poll wakes, and
+         *     the child resumes (agent-collaboration.md §5.5).
+         *
+         *     Status codes:
+         *     - 200 OK on successful answer
+         *     - 404 if the delegation isn't ours
+         *     - 409 if there's no pending question, or the human UI raced us
+         */
+        post: operations["answer_delegation_question_api_sessions__session_id__delegations__delegation_id__answer_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -925,8 +1030,9 @@ export interface paths {
         /**
          * List Backends
          * @description Which AI backends are usable on this host (codex-backend.md §6.1).
-         *     `claude-code` is always listed; `codex` appears only when its binary
-         *     resolves on PATH.
+         *     A harness kind appears only when its CLI resolves on PATH. `claude-code`
+         *     is always listed (the default) even if not yet installed, matching the
+         *     historical contract.
          */
         get: operations["list_backends_api_backends_get"];
         put?: never;
@@ -1086,6 +1192,20 @@ export interface components {
             tool_deny?: string | null;
         };
         /**
+         * AnswerDelegationQuestionRequest
+         * @description Body for the parent's `answer_agent_question` tool call.
+         *
+         *     `choice` is the label the parent's model picked from the option
+         *     list rendered in the `[agent-question:…]` injection. We deliberately
+         *     don't expose `question_id` at the MCP boundary: a child rarely
+         *     has more than one pending question, and the manager picks the
+         *     oldest if it does.
+         */
+        AnswerDelegationQuestionRequest: {
+            /** Choice */
+            choice: string;
+        };
+        /**
          * AnswerItem
          * @description One entry in the frontend's answer submission. Mirrors the
          *     legacy WS answer_question payload so existing UI code keeps
@@ -1129,6 +1249,11 @@ export interface components {
         Body_upload_attachment_api_sessions__session_id__attachments_post: {
             /** File */
             file: string;
+        };
+        /** CancelDelegationRequest */
+        CancelDelegationRequest: {
+            /** Reason */
+            reason?: string | null;
         };
         /** CodexLoginCancelRequest */
         CodexLoginCancelRequest: {
@@ -1606,6 +1731,10 @@ export interface components {
             origin: string;
             /** @default claude-code */
             backend: components["schemas"]["BackendKind"];
+            /** Parent Session Id */
+            parent_session_id?: string | null;
+            /** Delegation Request */
+            delegation_request?: string | null;
             /**
              * Archived
              * @default false
@@ -1661,6 +1790,10 @@ export interface components {
             origin: string;
             /** @default claude-code */
             backend: components["schemas"]["BackendKind"];
+            /** Parent Session Id */
+            parent_session_id?: string | null;
+            /** Delegation Request */
+            delegation_request?: string | null;
             /**
              * Archived
              * @default false
@@ -1684,12 +1817,33 @@ export interface components {
             /** Client Secret */
             client_secret: string;
         };
+        /** ShowMeResolveRequest */
+        ShowMeResolveRequest: {
+            /** Text */
+            text: string;
+        };
+        /** ShowMeResolveResponse */
+        ShowMeResolveResponse: {
+            /** Path */
+            path?: string | null;
+            /** Message */
+            message?: string | null;
+        };
         /** StartBgTaskRequest */
         StartBgTaskRequest: {
             /** Command */
             command: string;
             /** Description */
             description?: string | null;
+        };
+        /** StartDelegationRequest */
+        StartDelegationRequest: {
+            /** Agent Name */
+            agent_name: string;
+            /** Request */
+            request: string;
+            /** Files */
+            files?: string[] | null;
         };
         /** SubmitAnswerRequest */
         SubmitAnswerRequest: {
@@ -2435,6 +2589,43 @@ export interface operations {
             };
         };
     };
+    resolve_showme_api_sessions__session_id__showme_resolve_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShowMeResolveRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShowMeResolveResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     file_meta_api_sessions__session_id__files_meta_get: {
         parameters: {
             query: {
@@ -2618,6 +2809,152 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_delegations_api_sessions__session_id__delegations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_delegation_api_sessions__session_id__delegations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartDelegationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_delegation_api_sessions__session_id__delegations__delegation_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CancelDelegationRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    answer_delegation_question_api_sessions__session_id__delegations__delegation_id__answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnswerDelegationQuestionRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

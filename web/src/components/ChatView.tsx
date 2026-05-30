@@ -481,6 +481,11 @@ export function ChatView({
         onOpenSchedules();
         return;
       }
+      // Echo the command and post a loading notice — the natural-language
+      // parse is a one-shot model call and can take a second or two.
+      store.addMessage(sid, { role: "user", type: "text", content: trimmed });
+      addNotice(`📅 Scheduling “${args}”…`);
+
       const agentId = activeSession?.agent_id;
       if (!agentId) {
         addNotice("Couldn't schedule: this session has no owning agent.", true);
@@ -560,15 +565,31 @@ export function ChatView({
         return;
       }
 
+      // Immediate UX feedback: clear the composer, echo the command into
+      // the transcript (so it doesn't look like Enter was missed), and
+      // post a loading notice (the resolver call can take a second or two
+      // when the model has to interpret a fuzzy reference).
+      setInput("");
+      const store = useSessionStore.getState();
+      store.addMessage(activeSessionId, {
+        role: "user",
+        type: "text",
+        content: trimmed,
+      });
+      store.addMessage(activeSessionId, {
+        role: "system",
+        type: "notice",
+        content: `Looking for “${text}”…`,
+      });
+
       try {
-        const token = useSessionStore.getState().token;
         const res = await fetch(
           `${window.location.origin}/api/sessions/${activeSessionId}/showme/resolve`,
           {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
+              Authorization: `Bearer ${store.token}`,
             },
             body: JSON.stringify({ text }),
           }
@@ -587,7 +608,6 @@ export function ChatView({
             content: detail,
             is_error: true,
           });
-          setInput("");
           return;
         }
         const data = await res.json();
@@ -612,7 +632,6 @@ export function ChatView({
           is_error: true,
         });
       }
-      setInput("");
       return;
     }
 
@@ -713,6 +732,32 @@ export function ChatView({
     );
   };
 
+  // Delegation child sessions get a small banner under the header that
+  // names the parent agent + session and offers a "Open parent" link.
+  // The parent_session_id field is set by DelegationManager when the
+  // child Session row is created (agent-collaboration.md §4.1).
+  const parentSession = useMemo(
+    () =>
+      activeSession?.parent_session_id
+        ? sessions.find((s) => s.id === activeSession.parent_session_id) ??
+          archivedSessions.find(
+            (s) => s.id === activeSession.parent_session_id
+          )
+        : undefined,
+    [activeSession?.parent_session_id, sessions, archivedSessions]
+  );
+  const parentAgent = useMemo(
+    () => agents.find((a) => a.id === parentSession?.agent_id),
+    [agents, parentSession?.agent_id]
+  );
+  const openParent = () => {
+    if (!parentSession) return;
+    const store = useSessionStore.getState();
+    if (parentSession.agent_id)
+      store.setActiveAgentId(parentSession.agent_id);
+    store.setActiveSessionId(parentSession.id);
+  };
+
   const header = (
     <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-sidebar">
       <button
@@ -762,10 +807,45 @@ export function ChatView({
     </div>
   );
 
+  const delegationBanner =
+    activeSession?.parent_session_id ? (
+      <div
+        className="chat-delegation-banner flex items-center gap-2 px-4 py-1.5 shrink-0 border-b border-border bg-primary/5 text-xs text-muted-foreground"
+        data-testid="delegation-banner"
+      >
+        <span className="text-primary">↑</span>
+        <span>
+          Delegated from{" "}
+          <span className="font-medium text-foreground">
+            {parentAgent?.name || "another agent"}
+          </span>
+          {parentSession && (
+            <>
+              {" "}(session{" "}
+              <code className="font-mono text-[10px]">
+                {parentSession.id.slice(0, 8)}
+              </code>
+              )
+            </>
+          )}
+        </span>
+        {parentSession && (
+          <button
+            type="button"
+            onClick={openParent}
+            className="btn-open-parent ml-auto text-primary hover:underline"
+          >
+            Open parent →
+          </button>
+        )}
+      </div>
+    ) : null;
+
   if (!activeSessionId) {
     return (
       <div className="chat-view flex-1 flex flex-col min-h-0">
         {header}
+        {delegationBanner}
         <div className="chat-empty flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
           <h2 className="text-3xl font-bold text-primary tracking-tight">Octopus</h2>
           <p className="text-sm leading-relaxed">Create or select a session to start.</p>
@@ -783,6 +863,7 @@ export function ChatView({
       onDrop={isArchived ? undefined : handleDrop}
     >
       {header}
+      {delegationBanner}
 
       {isDragOver && !isArchived && (
         <div className="chat-drop-overlay absolute inset-0 z-20 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary/60 pointer-events-none">

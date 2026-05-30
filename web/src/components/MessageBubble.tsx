@@ -8,6 +8,11 @@ import {
   type Message,
 } from "../stores/sessionStore";
 import { BgTaskChip } from "./BgTaskChip";
+import {
+  AgentDelegationEventCard,
+  parseDelegationEvent,
+} from "./AgentDelegationEventCard";
+import { AgentDelegationRequestCard } from "./AgentDelegationRequestCard";
 
 // Marker the backend prepends to the synthesized user message it
 // injects when a bg task completes. Used to render those messages
@@ -109,6 +114,15 @@ export function MessageBubble({
               sessionId={sessionId}
             />
           );
+        }
+        // Agent-to-agent delegation injection (reply / question /
+        // error). The DelegationManager injects these as user-message
+        // turns starting with a `[agent-…:<name> delegation=…]` prefix.
+        const delegationEvent = parseDelegationEvent(
+          typeof message.content === "string" ? message.content : undefined
+        );
+        if (delegationEvent) {
+          return <AgentDelegationEventCard event={delegationEvent} />;
         }
         return (
           <div className="msg msg-user flex justify-end">
@@ -246,6 +260,30 @@ function ToolUseBlock({
   // matching by command — the bg MCP server returns text like
   // "Started bg task `<id>`" which the tool_result will contain.
   const isBgRun = message.tool_name === "mcp__bg__run";
+  // Agent-to-agent delegation kick-off (agent-collaboration.md §6).
+  // The MCP tool's full name is `mcp__<config-key>__<tool-name>`; the
+  // ask_agent server is config-key `ask_agent` and exposes its start
+  // tool as `ask`, so this matches `mcp__ask_agent__ask`.
+  const isAskAgent = message.tool_name === "mcp__ask_agent__ask";
+  const askAgentInput = isAskAgent
+    ? (message.tool_input as
+        | { name?: unknown; request?: unknown; files?: unknown }
+        | undefined)
+    : undefined;
+  const askAgentName =
+    askAgentInput && typeof askAgentInput.name === "string"
+      ? askAgentInput.name
+      : "";
+  const askAgentRequest =
+    askAgentInput && typeof askAgentInput.request === "string"
+      ? askAgentInput.request
+      : "";
+  const askAgentFiles =
+    askAgentInput && Array.isArray(askAgentInput.files)
+      ? (askAgentInput.files as unknown[]).filter(
+          (f): f is string => typeof f === "string"
+        )
+      : undefined;
 
   return (
     <div className="space-y-1.5">
@@ -275,6 +313,14 @@ function ToolUseBlock({
         )}
       </div>
       {isBgRun && <BgChipForToolUse sessionId={sessionId} message={message} />}
+      {isAskAgent && askAgentName && askAgentRequest && (
+        <AgentDelegationRequestCard
+          sessionId={sessionId}
+          agentName={askAgentName}
+          request={askAgentRequest}
+          files={askAgentFiles}
+        />
+      )}
     </div>
   );
 }

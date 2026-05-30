@@ -156,6 +156,22 @@ interface SessionStore {
   bgTasks: Record<string, BgTask[]>;
   upsertBgTask: (sessionId: string, task: BgTask) => void;
   setBgTasks: (sessionId: string, tasks: BgTask[]) => void;
+
+  // Agent-to-agent delegations spawned by a parent session.
+  // Keyed by parent sessionId → list of delegation records. The
+  // request and event cards in chat resolve their live state by
+  // looking up the delegation_id in this map.
+  // (agent-collaboration.md §6)
+  delegations: Record<string, Delegation[]>;
+  upsertDelegation: (parentSessionId: string, d: Delegation) => void;
+  setDelegations: (parentSessionId: string, ds: Delegation[]) => void;
+
+  // Sidebar visibility toggle for `origin === "delegation"` sessions.
+  // Hidden by default so heavy fan-out doesn't flood the agent list;
+  // toggle persists in localStorage so the user's preference sticks
+  // across reloads.
+  showDelegations: boolean;
+  setShowDelegations: (v: boolean) => void;
 }
 
 export interface BgTask {
@@ -177,6 +193,23 @@ export interface BgTask {
   truncated: boolean;
   started_at: string;
   completed_at: string | null;
+}
+
+// Live record of an agent-to-agent delegation, mirrored from
+// `GET /api/sessions/{parent}/delegations`. Used by the delegation
+// request/event cards in chat and by the sidebar inbound badge.
+// (agent-collaboration.md §6)
+export interface Delegation {
+  delegation_id: string;
+  sub_session_id: string;
+  parent_session_id: string;
+  target_agent_id: string;
+  target_agent_name: string;
+  request: string;
+  state: "running" | "completed" | "failed" | "cancelled";
+  created_at: string;
+  finished_at: string | null;
+  error: string | null;
 }
 
 export const useSessionStore = create<SessionStore>((set) => ({
@@ -358,4 +391,33 @@ export const useSessionStore = create<SessionStore>((set) => ({
     }),
   setBgTasks: (sessionId, tasks) =>
     set((s) => ({ bgTasks: { ...s.bgTasks, [sessionId]: tasks } })),
+
+  delegations: {},
+  upsertDelegation: (parentSessionId, d) =>
+    set((s) => {
+      const current = s.delegations[parentSessionId] || [];
+      const idx = current.findIndex((x) => x.delegation_id === d.delegation_id);
+      const next =
+        idx >= 0
+          ? [
+              ...current.slice(0, idx),
+              { ...current[idx], ...d },
+              ...current.slice(idx + 1),
+            ]
+          : [...current, d];
+      return {
+        delegations: { ...s.delegations, [parentSessionId]: next },
+      };
+    }),
+  setDelegations: (parentSessionId, ds) =>
+    set((s) => ({
+      delegations: { ...s.delegations, [parentSessionId]: ds },
+    })),
+
+  showDelegations: localStorage.getItem("octopus_show_delegations") === "true",
+  setShowDelegations: (v) => {
+    if (v) localStorage.setItem("octopus_show_delegations", "true");
+    else localStorage.removeItem("octopus_show_delegations");
+    set({ showDelegations: v });
+  },
 }));
