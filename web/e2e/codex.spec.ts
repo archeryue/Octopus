@@ -38,7 +38,7 @@ test.afterAll(async ({ request }) => {
   }
 });
 
-test("create a Codex session via the UI and get a real response", async ({
+test("create a Codex session via the UI and get a real response @llm", async ({
   page,
   request,
 }) => {

@@ -121,7 +121,7 @@ test.describe("Session Management", () => {
   });
 });
 
-test.describe("Chat", () => {
+test.describe("Chat @llm", () => {
   // Claude SDK initialization can take >60s; the global 30s timeout is too short.
   test.describe.configure({ timeout: 120_000 });
 

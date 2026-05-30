@@ -108,7 +108,7 @@ async function ensureAgent(
   return res.json();
 }
 
-test.describe("Agent-to-agent delegation", () => {
+test.describe("Agent-to-agent delegation @llm", () => {
   // Three real LLM hops can take ~45-90 s; allow plenty of headroom
   // so the test never flakes on transient latency.
   test.setTimeout(240_000);

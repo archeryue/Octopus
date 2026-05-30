@@ -44,7 +44,16 @@ You MUST verify your changes before considering them done:
    run with the nvm bin prepended, see Conventions)
 2. **Frontend unit tests**: `cd web && bun run test` (62 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (61 tests, Playwright auto-starts servers)
+4. **E2E tests**: `cd web && bun run test:e2e` (62 tests, ~3.5 min, Playwright
+   auto-starts servers). Split into two buckets for dev iteration —
+   `bun run test:e2e:fast` (31 pure-UI tests, ~16 s — login / sessions /
+   dialogs / sidebar / virtualized chat / attachments / etc.) and
+   `bun run test:e2e:llm` (31 real-LLM tests, ~3 min — chat, /schedule,
+   /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
+   notifier, codex sign-in, handoff/pull). Anything that drives a real
+   `claude` / `codex` turn carries `@llm` in its describe title; the
+   `:fast` script uses `--grep-invert @llm`. Telegram bridge tests have
+   their own config and run via `test:e2e:bridge`.
 
 **Zero test failures are acceptable.** All tests must pass before committing. If a test fails, investigate and fix it — do not ignore, skip, or dismiss any failure as "flaky" or "pre-existing".
 

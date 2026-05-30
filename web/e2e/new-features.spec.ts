@@ -107,7 +107,7 @@ async function importSessionApi(
 // Scheduled Tasks UI
 // ---------------------------------------------------------------------------
 
-test.describe("Scheduled Tasks UI", () => {
+test.describe("Scheduled Tasks UI @llm", () => {
   test("the Schedules section opens the all-agents overview", async ({
     page,
   }) => {
@@ -245,7 +245,7 @@ test.describe("Interactive Input Hint", () => {
 // Message queue + interrupt
 // ---------------------------------------------------------------------------
 
-test.describe("Message Queue & Interrupt", () => {
+test.describe("Message Queue & Interrupt @llm", () => {
   // Real Claude turns — give them time. Queue scenarios run two turns.
   test.describe.configure({ timeout: 180_000 });
 
@@ -659,7 +659,7 @@ test.describe("Credentials Panel", () => {
   });
 });
 
-test.describe("AskUserQuestion rendering", () => {
+test.describe("AskUserQuestion rendering @llm", () => {
   test("imported question_request renders the asked-question summary", async ({
     page,
     request,
@@ -722,7 +722,7 @@ test.describe("AskUserQuestion rendering", () => {
 // below catches that). Both also have generous timeouts since real API
 // latency varies.
 
-test.describe("Real CLI end-to-end", () => {
+test.describe("Real CLI end-to-end @llm", () => {
   test.setTimeout(120_000);
 
   test("AskUserQuestion (via mcp__ask__user): real model → form → answer → reply", async ({
@@ -931,7 +931,7 @@ const ASK_QUESTION_PROMPT =
   "]}]. " +
   "Do not write any text before the tool call.";
 
-test.describe("AskUserQuestion edge cases (real CLI)", () => {
+test.describe("AskUserQuestion edge cases (real CLI) @llm", () => {
   test.setTimeout(180_000);
 
   test("pending question form re-renders after switching sessions and back", async ({
@@ -1139,7 +1139,7 @@ test.describe("/reset slash command", () => {
 // Assistant messages are labeled with the owning agent's name (not "Claude")
 // ---------------------------------------------------------------------------
 
-test.describe("agent-name message labels", () => {
+test.describe("agent-name message labels @llm", () => {
   test("assistant turns are attributed to the owning agent", async ({
     page,
     request,
@@ -1268,7 +1268,7 @@ test.describe("Settings dialog", () => {
 // /archive command — fresh empty session under the same sidebar entry
 // ---------------------------------------------------------------------------
 
-test.describe("/archive command", () => {
+test.describe("/archive command @llm", () => {
   test("clears history client-side, keeps the same sidebar name", async ({
     page,
     request,
@@ -1424,7 +1424,7 @@ async function clearAllNotifiers(request: APIRequestContext): Promise<void> {
   }
 }
 
-test.describe("Notifier framework", () => {
+test.describe("Notifier framework @llm", () => {
   test.beforeEach(async ({ request }) => {
     await clearAllNotifiers(request);
   });
@@ -1779,7 +1779,7 @@ test.describe("File attachments", () => {
 // Validates the load-bearing claim of this feature: bg state survives a
 // per-turn `claude --print` death and the agent gets a follow-up turn.
 
-test.describe("Cross-turn bg tasks", () => {
+test.describe("Cross-turn bg tasks @llm", () => {
   test.setTimeout(180_000);
 
   test("mcp__bg__run: chip + auto follow-up turn round-trips", async ({
@@ -1953,7 +1953,7 @@ test.describe("Cross-turn bg tasks", () => {
 // real CLI within a test's wall-clock budget.
 // ---------------------------------------------------------------------------
 
-test.describe("Bg-task pipeline hardening", () => {
+test.describe("Bg-task pipeline hardening @llm", () => {
   test.setTimeout(180_000);
 
   test("large bg output is delivered to the model via spill pointer", async ({
@@ -2027,7 +2027,7 @@ test.describe("Bg-task pipeline hardening", () => {
   });
 });
 
-test.describe("File viewer (/showme)", () => {
+test.describe("File viewer (/showme) @llm", () => {
   test.setTimeout(180_000);
 
   test("/showme on a markdown file opens the viewer with rendered content", async ({

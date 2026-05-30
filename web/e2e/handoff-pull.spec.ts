@@ -185,7 +185,7 @@ test.afterAll(async ({ request }) => {
 // Tests
 // ---------------------------------------------------------------------------
 
-test.describe("Handoff & Pull CLI", () => {
+test.describe("Handoff & Pull CLI @llm", () => {
   test("handoff — imports a local JSONL session into the web UI", async ({
     page,
     request,
