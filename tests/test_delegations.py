@@ -309,48 +309,101 @@ async def test_nested_chain_intermediate_stays_alive_while_grandchild_runs(
     ends her turn. Vera is now idle waiting for Pete. With the
     pre-fix behaviour, Vera would be archived on idle and Pete's
     reply would land on a missing session. With the fix, Vera stays
-    alive until her OWN terminal event fires."""
-    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    alive until her OWN terminal event fires.
+
+    Vera caught the round-2 version of this test using
+    ``_noop_start_message``, which silently absorbed missing-parent
+    injections and therefore couldn't observe the original bug. This
+    revision uses a fake that mirrors the real ``start_message``'s
+    failure mode: it raises when the target session id is no longer
+    in the in-memory map. So if anything regresses to archiving Vera
+    while Pete is still running, Pete's `_inject_terminal` will fail
+    the assertion via the captured exception list, not silently
+    succeed.
+    """
     octo = await db.get_system_agent()
     await _make_agent(db, "Vera")
     await _make_agent(db, "Pete")
     octo_sess = await _make_session(mgr, octo["id"], name="octo-user")
+
+    from server import delegations as _delegations_module
+
+    delivered: list[tuple[str, str]] = []
+    inject_errors: list[str] = []
+
+    async def faithful_start_message(sid, prompt, attachment_ids=None):
+        # Mirror SessionManager.start_message: ValueError when the
+        # target session id is no longer in the in-memory map. Any
+        # archival-too-early bug surfaces here as an exception that
+        # the DelegationManager's logger absorbs — we capture it via
+        # monkeypatching logger.exception below so the test fails
+        # rather than passing under the bug.
+        if sid not in mgr.sessions:
+            raise ValueError(f"Session {sid} not found")
+        delivered.append((sid, prompt))
+
+    def capture_logger_exception(msg, *args, **kwargs):
+        # When DelegationManager._inject_terminal catches a missing-
+        # parent error, it logs via logger.exception. We capture that
+        # so a regression to the original bug becomes a hard failure.
+        try:
+            inject_errors.append(msg % args if args else msg)
+        except Exception:
+            inject_errors.append(str(msg))
+
+    monkeypatch.setattr(mgr, "start_message", faithful_start_message)
+    monkeypatch.setattr(
+        _delegations_module.logger,
+        "exception",
+        capture_logger_exception,
+    )
+
     # Octo → Vera.
     vera_rec = await dm.start_delegation(
         parent_session_id=octo_sess.id, agent_name="vera", request="r1",
     )
     vera_sess = mgr.get_session(vera_rec.delegation_id)
     assert vera_sess is not None
-    # Vera → Pete. Vera's session is now an active delegation parent
-    # for Pete's delegation, and "idle" from her own POV (no queued
-    # work).
+    # Vera → Pete.
     pete_rec = await dm.start_delegation(
         parent_session_id=vera_sess.id, agent_name="pete", request="r2",
     )
-    vera_sess._active_task = None  # Vera is "idle"
-    # Even if something called the auto-archive helper out of band
-    # (e.g. a stale idle hook), the function still archives — but
-    # nothing in the codebase wires the idle path to fire it for
-    # delegation children any more.
-    # Verify Pete's reply can reach Vera while Vera is still alive.
+    # Vera is now waiting for Pete; she has no active work of her own.
+    vera_sess._active_task = None
+
+    # Drive Pete to terminal. If Vera was archived too early,
+    # faithful_start_message raises and capture_logger_exception
+    # records it — the assertions below fail.
     await dm._on_broadcast({
         "type": "result",
         "session_id": pete_rec.delegation_id,
         "is_error": False,
     })
-    # Pete's terminal injection landed on Vera (no exception);
-    # Pete's session is archived; Vera is STILL alive waiting for
-    # her own work to finish.
+    assert not inject_errors, (
+        f"Pete's reply failed to reach Vera — Vera was archived "
+        f"too early. Captured errors: {inject_errors!r}"
+    )
+    # Pete's reply actually landed on Vera's session id.
+    assert any(sid == vera_rec.delegation_id for sid, _ in delivered), (
+        f"Pete's terminal injection didn't target Vera. "
+        f"delivered={delivered!r}"
+    )
+    # Pete's session is archived now that his chain work is done.
     assert mgr.get_session(pete_rec.delegation_id) is None
+    # Vera is STILL alive — she hasn't fired her own terminal yet.
     assert mgr.get_session(vera_rec.delegation_id) is not None
-    # Now Vera finishes her own turn.
+
+    # Now Vera fires her own terminal. Pete-style.
     await dm._on_broadcast({
         "type": "result",
         "session_id": vera_rec.delegation_id,
         "is_error": False,
     })
-    # Both children are now archived; Octo (root user session) is
-    # left untouched.
+    assert not inject_errors, (
+        f"Vera's reply failed to reach Octo. Captured errors: "
+        f"{inject_errors!r}"
+    )
+    # Vera is archived now. Octo (root user session) is untouched.
     assert mgr.get_session(vera_rec.delegation_id) is None
     assert mgr.get_session(octo_sess.id) is octo_sess
 
@@ -514,31 +567,66 @@ async def test_chain_walk_rejects_session_id_cycle(dm, mgr, db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chain_walk_rejects_missing_ancestor(dm, mgr, db, monkeypatch):
-    """If a non-null parent_session_id points at a session that's
-    been hard-deleted from memory, the cycle/depth check can't make
-    a sound decision — fail closed instead of silently treating it
-    as a chain terminator."""
+async def test_chain_walk_falls_back_to_db_for_archived_ancestor(
+    dm, mgr, db, monkeypatch
+):
+    """Vera's round-3 finding: after the auto-archive-after-terminal
+    fix, a delegation child can legitimately have its parent archived
+    in the DB. If the user then unarchives the child, ``ask_agent``
+    from it must still succeed — the walk consults the DB for any
+    ancestor missing from the in-memory map. Without this fallback,
+    every fresh delegation from an unarchived child would 409 with
+    "no longer exists"."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    vera = await _make_agent(db, "Vera")
+    pete = await _make_agent(db, "Pete")
+    # Build a valid chain Octo (root) → Vera-child (delegation).
+    octo_sess = await _make_session(mgr, octo["id"], name="octo")
+    vera_child = await mgr.create_session(
+        agent_id=vera["id"], name="vera-child", working_dir="/tmp",
+        origin="delegation", parent_session_id=octo_sess.id,
+        delegation_request="r",
+    )
+    # Evict octo_sess from the in-memory map as if it had been
+    # archived. The DB row is still there.
+    mgr.sessions.pop(octo_sess.id, None)
+    # ask_agent from Vera-child to Pete should still work — the DB
+    # fallback finds the archived ancestor and the walk completes
+    # cleanly. With Vera + Pete + Octo's archived agent in the
+    # chain, we still satisfy the depth+cycle checks.
+    rec = await dm.start_delegation(
+        parent_session_id=vera_child.id, agent_name="pete", request="r",
+    )
+    assert rec.state == "running"
+
+
+@pytest.mark.asyncio
+async def test_chain_walk_rejects_truly_missing_ancestor(
+    dm, mgr, db, monkeypatch
+):
+    """Only fail-closed when the ancestor is gone from BOTH memory
+    AND the DB. A stale parent_session_id pointing at a hard-deleted
+    row still produces a 409 — that's actual corruption, not a
+    legitimate archived state."""
     monkeypatch.setattr(mgr, "start_message", _noop_start_message)
     octo = await db.get_system_agent()
     await _make_agent(db, "Vera")
-    # Build the chain validly then evict the ancestor from the
-    # in-memory map. The remaining session still carries the now-
-    # stale parent_session_id; _check_chain walks via get_session
-    # which won't find it.
     ancestor = await _make_session(mgr, octo["id"], name="ancestor")
     child = await mgr.create_session(
         agent_id=octo["id"], name="orphan", working_dir="/tmp",
         origin="delegation", parent_session_id=ancestor.id,
         delegation_request="r",
     )
+    # Evict from memory AND from the DB so the fallback also misses.
     mgr.sessions.pop(ancestor.id, None)
+    await db.delete_session(ancestor.id)
     with pytest.raises(DelegationError) as ex:
         await dm.start_delegation(
             parent_session_id=child.id, agent_name="vera", request="r",
         )
     assert ex.value.status_code == 409
-    assert "no longer exists" in str(ex.value)
+    assert "neither memory nor the database" in str(ex.value)
 
 
 @pytest.mark.asyncio
@@ -742,6 +830,62 @@ async def test_cancel_delegation(dm, mgr, db, monkeypatch):
     # Idempotent.
     again = await dm.cancel_delegation(rec.delegation_id)
     assert again.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_cascades_to_descendants(dm, mgr, db, monkeypatch):
+    """Vera's round-3 finding: cancelling a delegation must cascade
+    to its descendants, otherwise a grandchild keeps burning tokens
+    and its eventual reply lands on a cancelled parent.
+
+    Scenario: Octo→Vera→Pete. Cancel Vera. Pete should also be
+    cancelled with a reason naming the parent cancel."""
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    async def fake_interrupt(sid):
+        return True
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    monkeypatch.setattr(mgr, "interrupt", fake_interrupt)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    await _make_agent(db, "Pete")
+    octo_sess = await _make_session(mgr, octo["id"], name="octo")
+    vera_rec = await dm.start_delegation(
+        parent_session_id=octo_sess.id, agent_name="vera", request="r1",
+    )
+    pete_rec = await dm.start_delegation(
+        parent_session_id=vera_rec.delegation_id,
+        agent_name="pete",
+        request="r2",
+    )
+    assert pete_rec.state == "running"
+    injected.clear()
+
+    await dm.cancel_delegation(
+        vera_rec.delegation_id, reason="user stop"
+    )
+
+    assert dm.get_delegation(vera_rec.delegation_id).state == "cancelled"
+    # Pete cascade-cancelled too.
+    assert dm.get_delegation(pete_rec.delegation_id).state == "cancelled"
+    assert "parent delegation cancelled" in (
+        dm.get_delegation(pete_rec.delegation_id).error or ""
+    )
+    # Two terminal injections: one into Vera's session for Pete's
+    # cancel, one into Octo's session for Vera's cancel. Pete's
+    # injection fires BEFORE Vera's so the cascade unwinds bottom-up.
+    pete_injects = [p for s, p in injected if s == vera_rec.delegation_id]
+    vera_injects = [p for s, p in injected if s == octo_sess.id]
+    assert len(pete_injects) == 1
+    assert "agent-error:Pete" in pete_injects[0]
+    assert "user stop" in pete_injects[0]
+    assert len(vera_injects) == 1
+    assert "agent-error:Vera" in vera_injects[0]
+    assert "user stop" in vera_injects[0]
 
 
 @pytest.mark.asyncio

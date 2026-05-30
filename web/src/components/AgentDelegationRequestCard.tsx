@@ -139,9 +139,43 @@ export function AgentDelegationRequestCard({
     };
   }, [match?.state, sessionId, token, setDelegations]);
 
-  const openChild = () => {
+  const openChild = async () => {
     if (!match) return;
-    const child = sessions.find((s) => s.id === match.delegation_id);
+    let child = sessions.find((s) => s.id === match.delegation_id);
+    if (!child) {
+      // After DelegationManager auto-archives the child on terminal
+      // delivery, the child is no longer in the live `sessions`
+      // list. Fetch it (the GET /sessions/{id} route returns
+      // archived rows too) and slot it into the right store map so
+      // the chat view can render either as live or read-only.
+      const url = `${window.location.origin}/api/sessions/${encodeURIComponent(
+        match.delegation_id
+      )}`;
+      try {
+        const r = await fetch(url, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (r.ok) {
+          const detail = await r.json();
+          const store = useSessionStore.getState();
+          if (detail.archived) {
+            const existing = store.archivedSessions;
+            if (!existing.some((s) => s.id === detail.id)) {
+              store.setArchivedSessions([...existing, detail]);
+            }
+          } else {
+            const existing = store.sessions;
+            if (!existing.some((s) => s.id === detail.id)) {
+              store.setSessions([...existing, detail]);
+            }
+          }
+          child = detail;
+        }
+      } catch {
+        // Best-effort — fall through to the navigation, which will
+        // land on the chat-empty state if the session really is gone.
+      }
+    }
     if (child?.agent_id) setActiveAgentId(child.agent_id);
     setActiveSessionId(match.delegation_id);
   };

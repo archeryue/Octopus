@@ -193,7 +193,7 @@ class DelegationManager:
                 status_code=409,
             )
 
-        self._check_chain(parent, target_agent_id=target["id"])
+        await self._check_chain(parent, target_agent_id=target["id"])
 
         # Parent name is informational only (used in the child's first
         # message and in the injection prefix). A missing parent agent
@@ -257,7 +257,16 @@ class DelegationManager:
         self, delegation_id: str, *, reason: str | None = None
     ) -> DelegationRunState:
         """Stop a running delegation. Idempotent — cancelling a finished
-        delegation is a no-op that returns the existing record."""
+        delegation is a no-op that returns the existing record.
+
+        Also CASCADE-CANCELS any running descendants whose
+        ``parent_session_id`` chain leads to this delegation. Without
+        the cascade, an Octo-cancels-Vera while Vera-asked-Pete
+        scenario would leak Pete: Pete keeps burning tokens and his
+        eventual reply lands on a missing/cancelled parent and is
+        silently dropped. Cascade unwinds the chain top-down so the
+        terminal injections to each parent stay meaningful.
+        """
         if self.session_mgr is None:
             raise DelegationError(
                 "DelegationManager not bound", status_code=500
@@ -287,8 +296,65 @@ class DelegationManager:
             logger.exception(
                 "interrupt(%s) raised during cancellation", delegation_id
             )
+        # Cascade BEFORE injecting our own terminal turn into the
+        # parent: child terminal injections target our own session
+        # id (which is still alive — auto-archive runs after the
+        # parent inject), so cancelling them now keeps the chain's
+        # invariant that a parent always learns its child's outcome.
+        await self._cascade_cancel_descendants(
+            delegation_id, root_reason=rec.error or "cancelled by caller"
+        )
         await self._inject_terminal(rec)
         return rec
+
+    async def _cascade_cancel_descendants(
+        self, parent_delegation_id: str, *, root_reason: str
+    ) -> None:
+        """Cancel every running delegation that descends from this one
+        via ``parent_session_id``. Walks breadth-first; each
+        descendant is cancelled with a reason that names the
+        originating root cancel so the parent's `[agent-error]`
+        injection is informative."""
+        # Snapshot the running records up front; we'll mutate state
+        # as we walk.
+        running = [
+            r
+            for r in self._records.values()
+            if r.state == "running"
+            and r.delegation_id != parent_delegation_id
+        ]
+        # Build adjacency: parent_session_id → child delegation_ids.
+        children_of: dict[str, list[DelegationRunState]] = {}
+        for r in running:
+            children_of.setdefault(r.parent_session_id, []).append(r)
+        # BFS from the cancelled delegation downward.
+        frontier: list[str] = [parent_delegation_id]
+        while frontier:
+            next_frontier: list[str] = []
+            for sid in frontier:
+                for child_rec in children_of.get(sid, []):
+                    if child_rec.state != "running":
+                        continue
+                    cancel_reason = (
+                        f"parent delegation cancelled "
+                        f"({root_reason})"
+                    )
+                    try:
+                        # Recurse via the public cancel path so each
+                        # descendant gets the same state-flip-first,
+                        # interrupt, terminal-inject treatment — and
+                        # in turn cascades to its own children.
+                        await self.cancel_delegation(
+                            child_rec.delegation_id,
+                            reason=cancel_reason,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "cascade-cancel of %s failed",
+                            child_rec.delegation_id,
+                        )
+                    next_frontier.append(child_rec.delegation_id)
+            frontier = next_frontier
 
     def list_delegations(
         self, parent_session_id: str, *, limit: int = 25
@@ -330,7 +396,7 @@ class DelegationManager:
             )
         return matches[0]
 
-    def _check_chain(self, parent, *, target_agent_id: str) -> None:
+    async def _check_chain(self, parent, *, target_agent_id: str) -> None:
         """Walk the parent chain upward from the given parent session.
 
         Enforces two rules (agent-collaboration.md §5.9):
@@ -347,20 +413,36 @@ class DelegationManager:
         Fail-closed semantics: a corrupted parent_session_id chain
         (loop in the session-id pointers, or a chain longer than the
         safety cap, or a non-null ``parent_session_id`` whose target
-        isn't live) is rejected as a 409 rather than silently treated
-        as a valid (short) chain. The cycle guard is what stands
-        between "Vera asks Octo" and an infinite delegation tower —
-        it must never be skipped.
+        the DB also can't find) is rejected as a 409 rather than
+        silently treated as a valid (short) chain. The cycle guard is
+        what stands between "Vera asks Octo" and an infinite
+        delegation tower — it must never be skipped.
+
+        Archived ancestors are allowed: when ``session_mgr.get_session``
+        returns None for a non-null ancestor id, we fall back to the
+        DB (``include_archived=True``) so that a legitimately archived
+        delegation parent still contributes its agent_id / origin to
+        the walk. This matters after the round-2 fix that archives
+        delegation children once their terminal turn is delivered:
+        without the DB fallback, an unarchived child whose parent
+        remains archived would over-reject every subsequent
+        ``ask_agent``.
         """
         assert self.session_mgr is not None
         chain_agent_ids: set[str] = set()
         visited_session_ids: set[str] = set()
         existing_hops = 0
-        # Generous walk cap — much larger than DEPTH_CAP — chosen to
-        # cover the future where we relax depth without re-tuning this
-        # constant. Cap exhaustion is treated as corruption (see below)
-        # so a runaway loop can't camp the route forever.
-        _SAFETY_CAP = 64
+        # Lazy DB cache: load all rows (live + archived) at most once
+        # per call, keyed by id. Most chains are short; on a fan-out
+        # this saves O(n) round-trips.
+        archived_rows_by_id: dict[str, dict[str, Any]] | None = None
+
+        async def _load_archived_index() -> dict[str, dict[str, Any]]:
+            assert self.db is not None
+            rows = await self.db.load_sessions(include_archived=True)
+            return {r["id"]: r for r in rows}
+
+        _SAFETY_CAP = 64  # see for/else clause below
         sid: str | None = parent.id
         for _ in range(_SAFETY_CAP):
             if sid is None:
@@ -376,22 +458,33 @@ class DelegationManager:
                 )
             visited_session_ids.add(sid)
             session = self.session_mgr.get_session(sid)
-            if session is None:
-                # The chain references a session we can't see in
-                # memory. For the root walk-back this is normal (sid
-                # was None already, handled above) — but if sid was
-                # non-null and lookup failed, the chain is incomplete
-                # and we can't make a sound depth/cycle decision.
-                raise DelegationError(
-                    "Caller chain references a session that no "
-                    "longer exists; refuse rather than guess",
-                    status_code=409,
-                )
-            if session.agent_id:
-                chain_agent_ids.add(session.agent_id)
-            if session.origin == "delegation":
+            if session is not None:
+                agent_id = session.agent_id
+                origin = session.origin
+                next_sid: str | None = session.parent_session_id
+            else:
+                # Memory miss — consult the DB (live + archived) for
+                # the row before failing closed. An archived
+                # delegation parent is legitimate state after the
+                # auto-archive fix.
+                if archived_rows_by_id is None:
+                    archived_rows_by_id = await _load_archived_index()
+                row = archived_rows_by_id.get(sid)
+                if row is None:
+                    raise DelegationError(
+                        "Caller chain references a session that "
+                        "exists in neither memory nor the database; "
+                        "refuse rather than guess",
+                        status_code=409,
+                    )
+                agent_id = row.get("agent_id")
+                origin = row.get("origin") or "user"
+                next_sid = row.get("parent_session_id")
+            if agent_id:
+                chain_agent_ids.add(agent_id)
+            if origin == "delegation":
                 existing_hops += 1
-            sid = session.parent_session_id
+            sid = next_sid
         else:
             # for/else: loop exhausted the safety cap without
             # encountering a None terminator. That's a chain longer
@@ -692,13 +785,16 @@ class DelegationManager:
                 rec.delegation_id,
                 rec.parent_session_id,
             )
-        # Now that the parent has been notified, the delegation child
-        # is fully done with the chain and can be archived (plan §5.2).
-        # We deliberately archive HERE, not from session_manager's idle
-        # hook, because an intermediate delegation parent (Vera in
-        # Octo→Vera→Pete) is "idle" while waiting for its own child's
-        # reply — archiving on idle would break the nested chain (Vera
-        # would vanish before Pete's reply could reach her).
+        # Regardless of whether the parent notification above
+        # succeeded (it may not, if the parent itself was deleted
+        # while the child was running — in which case we already
+        # logged), the delegation child is now done with the chain
+        # and can be archived (plan §5.2). We deliberately archive
+        # HERE, not from session_manager's idle hook, because an
+        # intermediate delegation parent (Vera in Octo→Vera→Pete) is
+        # "idle" while waiting for its own child's reply — archiving
+        # on idle would break the nested chain (Vera would vanish
+        # before Pete's reply could reach her).
         try:
             await self.session_mgr.auto_archive_scheduled_session(
                 rec.delegation_id

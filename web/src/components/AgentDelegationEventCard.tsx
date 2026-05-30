@@ -133,11 +133,20 @@ export function AgentDelegationEventCard({
   // Delegation child sessions are created server-side without going
   // through the frontend's POST /api/sessions path, so the store
   // doesn't learn about them automatically. If our delegation_id
-  // isn't in the sessions list, fetch the child by id once and
-  // splice it in — that makes the "Open child" button + the
-  // "Delegated from" banner work without a full refresh.
+  // isn't in either sessions list, fetch the child by id once and
+  // route it to the right store slot (sessions vs archivedSessions
+  // based on the row's `archived` flag — the
+  // DelegationManager auto-archives children once their terminal
+  // turn has been injected).
+  const archivedSessions = useSessionStore((s) => s.archivedSessions);
+  const setArchivedSessions = useSessionStore((s) => s.setArchivedSessions);
   useEffect(() => {
-    if (!event.delegationId || childSession) return;
+    if (!event.delegationId) return;
+    if (
+      childSession ||
+      archivedSessions.some((s) => s.id === event.delegationId)
+    )
+      return;
     let cancelled = false;
     fetch(
       `${window.location.origin}/api/sessions/${encodeURIComponent(
@@ -148,15 +157,31 @@ export function AgentDelegationEventCard({
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data) return;
-        const current = useSessionStore.getState().sessions;
-        if (current.some((s) => s.id === data.id)) return;
-        setSessions([...current, data]);
+        const store = useSessionStore.getState();
+        if (data.archived) {
+          const existing = store.archivedSessions;
+          if (!existing.some((s) => s.id === data.id)) {
+            store.setArchivedSessions([...existing, data]);
+          }
+        } else {
+          const existing = store.sessions;
+          if (!existing.some((s) => s.id === data.id)) {
+            store.setSessions([...existing, data]);
+          }
+        }
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [event.delegationId, childSession, token, setSessions]);
+  }, [
+    event.delegationId,
+    childSession,
+    archivedSessions,
+    token,
+    setSessions,
+    setArchivedSessions,
+  ]);
 
   const openChild = () => {
     if (!childSession) return;
