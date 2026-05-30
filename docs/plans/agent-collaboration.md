@@ -1,22 +1,8 @@
 # Agent Collaboration — Tech Plan (agent-to-agent delegation)
 
-> **Implementation drift note (post-merge).** While building this we
-> renamed the underlying Python helpers (`ask_agent`,
-> `answer_agent_question`, `cancel_agent_task`, `list_agent_tasks`) to
-> the shorter MCP names the model actually sees: **`ask`**,
-> **`answer`**, **`cancel`**, **`list`** — full forms
-> `mcp__ask_agent__ask` / `…__answer` / `…__cancel` / `…__list`.
-> Wherever the prose below uses the longer names, treat them as
-> referring to those four MCP tools. Likewise, `mcp__bg__run`-style
-> references in this doc match the actual surface.
->
-> Also: §5.2 below says delegation children "auto-archive on idle".
-> The implementation refines that: a delegation child is archived
-> **once its own terminal `[agent-…]` turn has been injected into the
-> parent**, not on every idle transition. That distinction is
-> load-bearing for nested chains — an intermediate parent (Vera in
-> Octo→Vera→Pete) is idle while waiting for its grandchild's reply
-> and must NOT vanish in that window.
+> **Post-implementation refresh.** This document now describes the
+> shipped feature; see commit history for the review-driven fixes that
+> closed the plan/implementation drift.
 
 ## 0. What we're building, and the mental model
 
@@ -45,19 +31,20 @@ That's the whole feature. It means:
 - The existing `ask` MCP tool ("ask the human") generalises to "ask my
   caller". For root sessions the caller happens to be the human; for
   delegation sessions the caller is the parent agent's model.
-- A new `ask_agent` MCP tool is the inverse: "become a caller — spawn
-  a child session under another agent and wait for it to talk back".
+- The `ask_agent` MCP server's `ask` tool is the inverse: "become a
+  caller — spawn a child session under another agent and wait for it
+  to talk back".
 - A parent agent that receives a delegated question decides, in plain
   language, whether to answer it directly, ask its *own* caller
   (recursing one hop up), or fail the delegation. No special-case
   cross-session UX; it's just the model's normal tool-use loop.
 
 We piggy-back on Octopus's existing **bg-task pattern** for the
-async plumbing. `ask_agent` returns a delegation id immediately, the
-agent's turn ends, and when the child session produces a reply (or
-question, or terminal error) Octopus injects a follow-up turn into the
-parent session. No new long-poll infrastructure, no blocking
-subprocesses, parallel fan-out for free.
+async plumbing. `mcp__ask_agent__ask` returns a delegation id
+immediately, the agent's turn ends, and when the child session
+produces a reply (or question, or terminal error) Octopus injects a
+follow-up turn into the parent session. No new long-poll
+infrastructure, no blocking subprocesses, parallel fan-out for free.
 
 This plan reverses the explicit "no A2A" carve-out from
 `agent-refactor.md` §40-41 / §304. That carve-out conditioned A2A on
@@ -67,9 +54,11 @@ needed: a delegation is a normal `Session` row with a
 
 ## 1. Goals
 
-- A built-in MCP tool `ask_agent(name, request, files?)` available to
-  every agent by default, by which an agent can delegate a request to
-  another named agent.
+- A built-in MCP tool `mcp__ask_agent__ask(name, request, files?)`
+  available to every agent by default, by which an agent can delegate
+  a request to another named agent. The Python function that backs it
+  is still named `ask_agent`; the exported MCP tool name is `ask`
+  via `@mcp.tool(name="ask")`.
 - Delegations are **async, bg-task-style**: tool returns immediately
   with a `delegation_id`; the parent agent's turn ends; the child's
   reply arrives later as an injected follow-up turn.
@@ -105,9 +94,9 @@ needed: a delegation is a normal `Session` row with a
   Per-agent allow/deny lists ("Vera is askable by: [Octo, Pete]") are
   a future feature; the schema is forward-compatible.
 - **No special multi-agent UI dashboard.** The chat view renders
-  delegations inline as a new message type; that's it. The user can
-  always click through into the child session for the full
-  transcript.
+  delegations inline as request/event cards over the existing message
+  stream; that's it. The user can always click through into the child
+  session for the full transcript.
 
 ## 3. Reference: the bg-task pattern as template
 
@@ -116,21 +105,22 @@ to mimic its shape almost exactly:
 
 | bg-task | agent-delegation |
 |---|---|
-| `bg_run(command, description?)` | `ask_agent(name, request, files?)` |
+| `mcp__bg__run(command, description?)` | `mcp__ask_agent__ask(name, request, files?)` |
 | Returns `task_id` immediately | Returns `delegation_id` immediately |
 | Parent turn ends | Parent turn ends |
 | Subprocess runs in background | Child Session runs in background |
 | Captured stdout/stderr | Captured `assistant_text` events |
 | On completion: inject follow-up turn `[bg-task-result …]` | On completion: inject follow-up turn `[agent-reply:<name> …]` |
-| `bg_cancel(task_id)` SIGTERM | `cancel_agent_task(delegation_id)` stops the child session |
-| `bg_list()` recent tasks | `list_agent_tasks()` recent delegations |
+| `mcp__bg__cancel(task_id)` SIGTERM | `mcp__ask_agent__cancel(delegation_id)` stops the child session and its running descendants |
+| `mcp__bg__list()` recent tasks | `mcp__ask_agent__list()` recent delegations |
 
-The follow-up-turn injection mechanism (`server/session_manager.py`
-'inject system turn' path used by bg) is the load-bearing piece we
-reuse for **three** kinds of inbound events from the child:
+The follow-up-turn injection mechanism (`SessionManager.start_message`
+with structured `[agent-…]` content, the same queued wakeup property
+bg relies on) is the load-bearing piece we reuse for **three** kinds
+of inbound events from the child:
 
 - `[agent-reply:<name> delegation=<id>] <text>` — terminal success
-- `[agent-question:<name> delegation=<id> options=…] <text>` — child
+- `[agent-question:<name> delegation=<id> question_id=<qid>] <text>` — child
   needs an answer to proceed
 - `[agent-error:<name> delegation=<id> reason=…] <text>` — terminal
   failure (cancelled, hit error, exceeded budget)
@@ -163,7 +153,7 @@ The existing `ask` MCP server already maintains an in-process
 "session has a pending question" queue (per `Session._pending_questions`
 in the inventory). We add **no new table**: a question from a child
 session is stored in that same in-memory queue *and* routed to the
-parent. The parent's `answer_agent_question` tool call posts the
+parent. The parent's `mcp__ask_agent__answer` tool call posts the
 answer back into that queue, identical to how a human UI click does.
 
 What changes is the *delivery side*, not the storage: when an `ask`
@@ -188,14 +178,21 @@ first user-message in the child's transcript.
 
 ## 5. Behavior
 
-### 5.1 `ask_agent(name, request, files?)` — invocation
+### 5.1 `mcp__ask_agent__ask(name, request, files?)` — invocation
 
 A new built-in MCP stdio server, `server/mcp_servers/ask_agent.py`,
-shaped exactly like `bg.py`. Three tools: `ask_agent` (start),
-`cancel_agent_task` (stop), `list_agent_tasks` (introspect). Env
-injection (`OCTOPUS_API_BASE`, `OCTOPUS_AUTH_TOKEN`,
-`OCTOPUS_SESSION_ID`) matches the existing pattern; the server is a
-thin HTTP shim to FastAPI routes.
+shaped exactly like `bg.py`. Four MCP-exposed tools: `ask` (start),
+`answer` (answer a child question), `cancel` (stop), and `list`
+(introspect). Their full mounted names are
+`mcp__ask_agent__ask`, `mcp__ask_agent__answer`,
+`mcp__ask_agent__cancel`, and `mcp__ask_agent__list`. The underlying
+Python functions keep the longer names
+`ask_agent` / `answer_agent_question` / `cancel_agent_task` /
+`list_agent_tasks`; the decorators expose the short MCP names
+(`server/mcp_servers/ask_agent.py:3`). Env injection
+(`OCTOPUS_API_BASE`, `OCTOPUS_AUTH_TOKEN`, `OCTOPUS_SESSION_ID`)
+matches the existing pattern; the server is a thin HTTP shim to
+FastAPI routes.
 
 The server is added to the **default built-in set** in
 `server/agent_manager.py` next to `ask`, `bg`. Existing agents created
@@ -248,8 +245,9 @@ Server-side flow:
    — no custom message type, no special framing the model has to
    learn.
 5. **Kick off the child's first turn** via the normal
-   `SessionManager.start_message(...)` path. Subscribe an internal
-   delegation listener (see 5.3) to the child's event stream.
+   `SessionManager.start_message(...)` path. The already-registered
+   delegation broadcast listener (see 5.3) observes the child's
+   events.
 6. **Return immediately** `{delegation_id: child_session.id, status:
    "started"}`. The MCP shim translates this to a short text the
    model can quote: "Started delegation `<id>` to Vera. I'll receive
@@ -260,10 +258,16 @@ Server-side flow:
 A delegation child session is an ordinary session for every purpose
 except two:
 
-- **Auto-archive on idle.** When the child's session goes idle after
-  the terminal event (reply / error / cancellation) it is archived
-  the same way `origin='schedule'` sessions are (per `agent-refactor.md`
-  §5.6). It is not auto-deleted — the user can still browse it from
+- **Auto-archive after terminal delivery.** Delegation sessions are
+  eligible for auto-archive, but the generic idle hook does not
+  archive them. Archival happens in
+  `DelegationManager._inject_terminal` after the terminal
+  `[agent-reply:…]` or `[agent-error:…]` turn has been delivered (or
+  attempted) to the parent (`server/delegations.py:739`,
+  `server/delegations.py:788`). This is load-bearing for nested
+  chains: Vera in Octo → Vera → Pete is idle while waiting for Pete,
+  but must remain live so Pete's terminal turn can reach her. The
+  session is not auto-deleted — the user can still browse it from
   Vera's archived-sessions list.
 - **No bridge fan-out.** Bridges only broadcast to `origin='user'` (and
   maybe `bridge`) sessions; a delegation must not also notify the
@@ -272,7 +276,10 @@ except two:
 Otherwise: same harness, same MCP set, same credentials, same memory
 dir as Vera's other sessions. Memory writes from concurrent
 delegations to the same agent share the agent's memory dir — see 5.8
-on concurrency.
+on concurrency. The split is reflected in `SessionManager`:
+`_AUTO_ARCHIVE_ORIGINS` is only `("schedule",)`, while
+`_AUTO_ARCHIVE_ELIGIBLE` includes `"delegation"` for explicit
+post-terminal archival (`server/session_manager.py:416`).
 
 ### 5.3 Reply delivery: the delegation listener
 
@@ -283,14 +290,18 @@ record `DelegationRunState` keyed by child session id:
 - `target_agent_name` (cached so we can format the injection prefix)
 - `captured_text: list[str]`
 - `state: "running" | "completed" | "failed" | "cancelled"`
-- `task: asyncio.Task` — the subscription coroutine
+- `_terminal_injected: bool` — idempotency guard for terminal delivery
 
-The subscription coroutine drinks the child's `SessionManager` event
-stream with the **same filter as bridge quiet-mode** (per the
-inventory: `assistant_text` + `error` + `tool_approval_request`, drop
-`tool_use`/`tool_result`/`result`/`status`). Behavior per event kind:
+The manager subscribes once to the `SessionManager` broadcast bus and
+filters for tracked child session ids. It captures the same
+high-signal stream the bridge cares about, with delegation-specific
+terminal and question handling: `assistant_text`, `question_request`,
+`result`, and `error` (`server/delegations.py:571`). Behavior per
+event kind:
 
 - `assistant_text` → append chunk to `captured_text`.
+- `question_request` → inject `[agent-question:…]` into the parent;
+  see 5.4.
 - `result` (terminal) → finalise. Build the injection string:
 
   ```
@@ -298,20 +309,20 @@ inventory: `assistant_text` + `error` + `tool_approval_request`, drop
   <joined captured_text>
   ```
 
-  Call `SessionManager.inject_system_turn(parent_session_id, text)`
-  (the same hook bg uses). Mark `state="completed"`, drop the record
-  from the registry after a short retention window (so
-  `list_agent_tasks` can still see recent ones).
+  Call `SessionManager.start_message(parent_session_id, text)` so the
+  parent receives a fresh turn through the same queued path bg-task
+  delivery uses. Mark `state="completed"` and keep the record in the
+  in-memory registry so `mcp__ask_agent__list` can still see recent
+  terminal delegations.
 - `error` → finalise with `[agent-error:…]`, same injection path.
-- `tool_approval_request` → if it's the `ask` MCP server requesting
-  an answer, this is a delegated question; see 5.4. Other tool
-  approval requests (e.g. dangerous shell command) **stay in the
-  child session** — they're the *agent's* policy, not the user's.
-  This means the delegation can stall waiting on Vera's own approval
-  policy; we surface that via a UI dot but do not bubble it. (If
-  Vera's tool policy needs a yes/no the user has to open Vera's
-  session and decide. Bubbling tool approvals would obliterate the
-  "questions go through the model" rule.)
+  `_terminal_injected` ensures that races between `result`, `error`,
+  and cancellation still yield one parent turn.
+
+Other tool approval requests (e.g. dangerous shell command) stay in
+the child session — they're the *agent's* policy, not the user's. If
+Vera's tool policy needs a yes/no the user has to open Vera's session
+and decide. Bubbling tool approvals would obliterate the "questions go
+through the model" rule.
 
 ### 5.4 Question delivery: caller-aware `ask`
 
@@ -325,72 +336,92 @@ ask.tool(question, options) -- HTTP --> POST /sessions/{sid}/questions
                                          return answer to model
 ```
 
-We change one thing in the FastAPI handler: **after** putting the
-question on `pending_questions` and broadcasting to the websocket,
-check `session.parent_session_id`:
+The design intent was one extra caller-aware step after putting the
+question on `pending_questions` and broadcasting to the websocket:
 
 ```python
 if session.parent_session_id is not None:
     parent_agent = ...
     injection = (
         f"[agent-question:{this_agent.name} "
-        f"delegation={session.id} options={json.dumps(option_labels)}]\n"
+        f"delegation={session.id} question_id={question_id}]\n"
         f"{question}"
     )
-    SessionManager.inject_system_turn(session.parent_session_id, injection)
+    SessionManager.start_message(session.parent_session_id, injection)
 ```
 
 The pending question already has a unique id; nothing else changes.
-The parent's model sees the injected turn and is expected to call
-`answer_agent_question(delegation_id, choice)`.
+The shipped implementation keeps that behavior but performs the parent
+injection from
+`DelegationManager._inject_question` after the child's
+`question_request` broadcast is observed. The pending question remains
+on the child session; the injected prompt names the actual exported
+tool, `mcp__ask_agent__answer(delegation_id, choice)`, and also points
+to `mcp__ask__user` and `mcp__ask_agent__cancel` as the escalation and
+failure paths (`server/delegations.py:610`).
 
-### 5.5 `answer_agent_question(delegation_id, choice)` — closing the loop
+### 5.5 `mcp__ask_agent__answer(delegation_id, choice)` — closing the loop
 
 A new MCP tool on the `ask_agent` server. Body posts to
-`POST /api/sessions/{child_sid}/questions/answer` with the chosen
-option label (or freeform text if the question allowed it).
+`POST /api/sessions/{parent_sid}/delegations/{child_sid}/answer` with
+the chosen option label (or freeform text if the question allowed it).
 
-Server-side: identical to the existing path that fires when a human
-clicks an option in the UI — it drains the same pending entry and
-returns the answer to the child's `ask` MCP call. The model is the
+Server-side: `DelegationManager.answer_pending_question` drains the
+oldest pending entry on the child by calling the same
+`SessionManager.answer_question` path used by the UI. The model is the
 parent agent; the websocket UI is unaware. Both producers (human
 click, parent tool call) compete to drain the same queue; first one
-wins. If both happen, the second one 409s.
+wins. If both happen, the second one 409s. Multi-question batches are
+rare; as shipped, the parent's `choice` applies to the first question
+and the remainder are padded with empty selections
+(`server/delegations.py:675`).
 
 If the parent's model decides it can't answer, it has three options
 expressible in its normal language/tool loop:
 
 - Call its **own** `ask` tool to ask its caller (recursing one hop
-  up). When the answer comes back, call `answer_agent_question` with
+  up). When the answer comes back, call `mcp__ask_agent__answer` with
   it. This is the "I don't know — let me ask the user" path.
-- Call `cancel_agent_task(delegation_id, reason="…")`. The child gets
+- Call `mcp__ask_agent__cancel(delegation_id, reason="…")`. The child gets
   an exception in its `ask` call and finalises via the error path.
 - Do nothing. The child stays waiting indefinitely. The user can
   open the child session and answer in the UI as the manual fallback.
 
-### 5.6 `cancel_agent_task` and `list_agent_tasks`
+### 5.6 `mcp__ask_agent__cancel` and `mcp__ask_agent__list`
 
-`cancel_agent_task(delegation_id, reason?)` →
-`POST /api/sessions/{child_sid}/delegations/cancel`. Server stops the
-child's running turn (the existing session-stop path), if a pending
-question is open it gets a "cancelled" answer, the
-`DelegationRunState` is finalised with `state="cancelled"` and the
-parent gets an injected `[agent-error:vera delegation=… reason=cancelled]`.
+`mcp__ask_agent__cancel(delegation_id, reason?)` →
+`POST /api/sessions/{parent_sid}/delegations/{child_sid}/cancel`.
+Server flips the record to `state="cancelled"` before interrupting the
+child so the interrupt's own `error` broadcast cannot produce a second
+terminal injection. Then it cascade-cancels running descendants whose
+`parent_session_id` chain leads to the cancelled delegation, walking
+`DelegationManager._records` breadth-first and recursing through the
+same public cancel path for each descendant. Each cancelled record gets
+the same state-flip-before-interrupt + terminal-inject treatment; the
+`_terminal_injected` flag preserves single-inject idempotency across
+races (`server/delegations.py:256`, `server/delegations.py:310`,
+`server/delegations.py:749`).
 
-`list_agent_tasks()` → `GET /api/sessions/{parent_sid}/delegations`,
+The parent gets an injected
+`[agent-error:vera delegation=… reason=cancelled]`. Descendant
+terminal turns are delivered to their immediate parents before the
+root cancellation is injected upward, so the one-hop invariant remains
+true while the chain unwinds.
+
+`mcp__ask_agent__list()` → `GET /api/sessions/{parent_sid}/delegations`,
 returns the live + recently-finished `DelegationRunState` records for
 this parent, capped at 25, most recent first. Symmetric with
-`bg_list`.
+`mcp__bg__list`.
 
 ### 5.7 Working dir and `files` argument
 
 `working_dir` for the child inherits from the parent by default —
 "review the code" only makes sense in a directory context. The
 optional `files=[…]` argument lets the parent name specific files;
-they're resolved against the parent's `working_dir`, validated to
-exist, and rendered into the first user message as a path list. We
-do not stream file contents — Vera reads them with her own tools,
-just like a human would.
+they're resolved against the parent's `working_dir` and rendered into
+the first user message as a path list. Missing paths are flagged as
+`(not found)` rather than rejected; Vera reads files with her own
+tools, just like a human would.
 
 We do **not** automatically include any of the parent's transcript.
 If Octo needs to give Vera context, it paraphrases.
@@ -423,6 +454,18 @@ Two consequences worth surfacing:
   (walk the parent chain, count) and is a constant in code.
 - **Cycle check.** During the walk, fail if any ancestor session
   belongs to the target agent. Octo → Vera → Octo is rejected.
+  The walk also tracks visited session ids, so a corrupted pointer
+  loop like A.parent=B / B.parent=A is rejected as a session-id cycle
+  rather than mistaken for a valid short chain.
+- **Fail-closed ancestor lookup.** The walk starts in memory and falls
+  back to `db.load_sessions(include_archived=True)` when an ancestor
+  is not live in `SessionManager`. That fallback is legitimate state:
+  a delegation parent can be archived after its own terminal delivery,
+  and an unarchived descendant must still be able to count that
+  ancestor for depth and cycle checks. If neither memory nor DB has
+  the ancestor row, reject; if the loop exhausts the safety cap, the
+  `for/else` path rejects as pointer corruption (`server/delegations.py:399`,
+  `server/delegations.py:470`, `server/delegations.py:488`).
 - **Self-delegation rejected.** Octo cannot ask Octo. (If we ever
   want "give yourself a fresh scratch session", that's a separate
   feature with a different tool name.)
@@ -440,12 +483,12 @@ Both fall out of the existing per-agent wiring:
 
 ## 6. Frontend rendering
 
-Two new message types in the chat stream (`web/src/types.ts` and
-`MessageBubble.tsx`):
+The shipped UI renders delegation artifacts directly from the existing
+chat stream plus delegation store state:
 
-- `agent_delegation_request` — rendered in the **parent's** transcript
-  at the point of the `ask_agent` tool call. A collapsible card,
-  shape similar to `ToolUseBlock`:
+- **Delegation request card** — rendered in the **parent's**
+  transcript next to the `mcp__ask_agent__ask` tool call. A compact
+  card, shape similar to `ToolUseBlock`:
 
   ```
   ┌──────────────────────────────────────────────────┐
@@ -458,21 +501,36 @@ Two new message types in the chat stream (`web/src/types.ts` and
   └──────────────────────────────────────────────────┘
   ```
 
-  Updates to `replied`, `cancelled`, `failed`, `awaiting answer`
-  in-place by listening to the same WS event stream the chat uses
-  today.
+  It first matches the live `DelegationRunState` by parsing the
+  sibling `tool_result` for `Started delegation \`<id>\`` and using
+  that `delegation_id` as server truth. It only falls back to
+  `(target_agent_name, request)` during the brief pre-result window,
+  and deliberately avoids "by name only" matching because fan-out to
+  the same agent would wire Cancel to the wrong child
+  (`web/src/components/AgentDelegationRequestCard.tsx:71`). The card
+  polls `GET /api/sessions/{sid}/delegations` until it sees the
+  record terminate; no dedicated delegation-state WS event exists yet.
 
-- `agent_delegation_event` — rendered in the parent's transcript
+- **Delegation event card** — rendered in the parent's transcript
   whenever one of the three injected turns lands (`agent-reply`,
-  `agent-question`, `agent-error`). Card with Vera's avatar on the
-  left edge (visually distinct from "Vera is the user" — she's
-  speaking from *outside* into Octo's session).
+  `agent-question`, `agent-error`). Card with Vera's identity in the
+  header (visually distinct from "Vera is the user" — she's speaking
+  from *outside* into Octo's session).
 
   For `agent-question` cards specifically: the options are *not*
   shown as clickable buttons in Octo's UI (the human is not supposed
   to answer them — Octo is). They render as plain text inside the
   card. This is a deliberate UX choice that enforces the principal
   chain rule.
+
+  The event card resolves the child session from `sessions ??
+  archivedSessions`. If neither store contains the id, it fetches
+  `/api/sessions/{delegation_id}` and inserts the response into the
+  live or archived bucket based on the row's `archived` flag
+  (`web/src/components/AgentDelegationEventCard.tsx:131`). The request
+  card uses the same fetch-and-bucket logic before navigating, because
+  terminal delegation children are usually archived by the time the
+  user clicks through (`web/src/components/AgentDelegationRequestCard.tsx:142`).
 
 - **Child session view.** Vera's session renders normally, with a
   header banner:
@@ -493,7 +551,12 @@ Two new message types in the chat stream (`web/src/types.ts` and
 ## 7. Implementation phases
 
 Phased so each phase is independently shippable, testable, and gives
-a usable demo at its end.
+a usable demo at its end. All five phases have shipped. The review
+rounds after the original plan added the important polish called out
+above: short MCP tool names, cancel single-inject idempotency,
+terminal-delivery auto-archive timing for nested chains,
+cascade-cancel, archived-ancestor DB fallback in the chain walk, and
+archived-child UI navigation.
 
 **Phase 1 — Data model + delegation creation, no LLM yet.**
 
@@ -501,103 +564,111 @@ a usable demo at its end.
   `origin` validator.
 - API: `POST /sessions/{sid}/delegations`, `GET /sessions/{sid}/delegations`,
   `POST /sessions/{sid}/delegations/cancel`.
-- `DelegationRunState` registry + subscription coroutine.
+- `DelegationRunState` registry + broadcast listener.
 - Hand-test by creating a child session directly via the API (no
-  `ask_agent` MCP server yet); confirm reply injection works
+  `mcp__ask_agent__ask` MCP server yet); confirm reply injection works
   end-to-end by faking `assistant_text` events.
+  **Status: shipped.**
 
 **Phase 2 — `ask_agent` MCP server (replies only).**
 
-- `server/mcp_servers/ask_agent.py` with `ask_agent` /
-  `cancel_agent_task` / `list_agent_tasks` tools.
+- `server/mcp_servers/ask_agent.py` with exported
+  `ask` / `cancel` / `list` tools.
 - Add to the default built-in set.
 - Cycle and depth guards.
 - Real end-to-end: a user tells Octo "ask Vera to summarise the
   README"; Vera summarises; Octo gets the reply and relays.
+  **Status: shipped.**
 
-**Phase 3 — Caller-aware `ask`, plus `answer_agent_question`.**
+**Phase 3 — Caller-aware `ask`, plus `mcp__ask_agent__answer`.**
 
-- One-line change in the `ask` FastAPI handler to also inject into
-  the parent session when one exists.
-- `answer_agent_question` tool on the `ask_agent` server.
+- Caller-aware question routing via the delegation broadcast listener.
+- `answer` tool on the `ask_agent` server.
 - Real end-to-end: Vera asks a clarifying question ("which file?"),
   Octo answers from its own context, Vera finishes.
+  **Status: shipped.**
 
 **Phase 4 — Frontend.**
 
-- New message types + cards in `MessageBubble.tsx`.
+- Request/event cards in `MessageBubble.tsx` over existing
+  `tool_use` / injected-message shapes.
 - Child-session "Delegated from" header.
 - Sidebar badge + filter toggle.
+  **Status: shipped.**
 
 **Phase 5 — Polish + nested delegation in anger.**
 
 - Pete-under-Vera tests (3 hops).
 - The "Octo asks the user when it doesn't know" loop is exercised in
-  e2e.
+  real-CLI/backend coverage.
 - Memory write-race observation under heavy fan-out (no fix in v1
   unless we actually see corruption).
+  **Status: shipped; memory write-lock remains deferred.**
 
 ## 8. Tests
 
-Mirror the existing test taxonomy in `CLAUDE.md`. All counts here are
-*added* tests; the existing 685 backend / 46 frontend / 61 e2e
-numbers should grow accordingly.
+Coverage landed across backend unit tests, real-CLI tests, frontend
+component tests, and a browser e2e. The old "added counts" from the
+pre-merge plan are intentionally not repeated here; the useful thing
+now is the behavioral surface under test.
 
 **Backend unit (pytest)** — new file `tests/test_delegations.py`:
 
-- Schema: `parent_session_id` column exists, FK behaviour
-  (SET NULL on parent delete), `origin='delegation'` accepted.
-- `POST /sessions/{sid}/delegations` resolves target by name
-  (case-insensitive, ambiguous → 409, missing → 404, self → 409).
-- Cycle guard: Octo → Vera → Octo rejected.
-- Depth guard: 4-hop chain rejected at creation.
-- Reply injection: fake `assistant_text` + `result` events on a child
-  session land as a properly-formatted `[agent-reply:…]` turn on the
-  parent (via the registry's subscription coroutine).
-- Error/cancel injection: same, with the appropriate prefix.
-- Caller-aware `ask`: a child session calling `ask` with no human
-  attached produces an `[agent-question:…]` injection on the parent
-  AND a pending question on the child; `answer_agent_question` from
-  the parent drains it and returns the answer to the child's tool
-  call.
-- Concurrency: two delegations to the same target agent run
-  simultaneously without deadlock; both reply.
-- Bridge fan-out: `origin='delegation'` does NOT trigger the
-  Telegram bridge.
+Schema and routes are covered: `parent_session_id`,
+`delegation_request`, `origin='delegation'`, target resolution
+(case-insensitive, ambiguous → 409, missing → 404, self → 409), route
+list/cancel/answer behavior, and `ON DELETE SET NULL` semantics.
+
+Manager behavior is covered for reply/error/cancel injection,
+question routing, `mcp__ask_agent__answer` draining the child's
+pending question, empty/malformed question events, terminated
+delegations ignoring late questions, concurrent same-target
+delegations, bridge non-fan-out, and depth/cycle guards. The review
+fixes have direct regression tests: terminal auto-archive happens from
+`_inject_terminal`, the idle hook does not archive delegation parents
+too early, nested Pete-under-Vera delivery survives Vera's idle
+window, archived ancestors are found through the DB fallback,
+session-id pointer cycles fail closed, cancellation cascade-cancels
+descendants, and cancellation injects exactly one terminal turn even
+when interrupt emits an error broadcast.
 
 **Backend real-CLI** — new file `tests/test_delegations_real.py`,
 auto-skips when CLIs not on PATH. Two agents, both running the
 real harness:
 
-- Octo (claude-code) `ask_agent` to Vera (claude-code), 2-turn
+- Octo (claude-code) `mcp__ask_agent__ask` to Vera (claude-code), 2-turn
   exchange. Vera's reply lands as a follow-up turn; Octo's next
   output references it.
-- Octo (claude-code) `ask_agent` to Vera (codex), same shape — proves
+- Octo (claude-code) `mcp__ask_agent__ask` to Vera (codex), same shape — proves
   the design is harness-agnostic.
-- Vera asks one question via `ask` → injected to Octo → Octo answers
-  via `answer_agent_question` → Vera completes.
+- Vera asks one question via `ask` → injected to Octo → the same
+  manager answer path used by `mcp__ask_agent__answer` drains the
+  pending question → Vera completes.
 - 3-hop chain: user → Octo → Vera → Pete. Pete replies, Vera relays,
   Octo summarises. Verifies depth-allowed-up-to-3 works.
 
 **Frontend unit (vitest)**:
 
-- `MessageBubble` renders both new message types.
-- Delegation card status transitions on WS events.
-- `agent-question` cards render options as text, not buttons.
+- `AgentDelegationRequestCard` renders running/completed states,
+  matches by `delegation_id` parsed from the sibling tool result,
+  avoids unsafe name-only matching, opens archived children by fetching
+  `/api/sessions/{delegation_id}`, and POSTs cancellation to the
+  scoped cancel route.
+- `AgentDelegationEventCard` parses reply/question/error prefixes,
+  renders question options as text, displays the real
+  `mcp__ask_agent__answer` tool name, and can open children that live
+  only in `archivedSessions`.
 
 **E2E (Playwright)** — new spec `web/e2e/agent-collaboration.spec.ts`:
 
-- Two-agent fixture (Octo + Vera) with the fake harness used by the
-  existing e2e suite.
-- Golden path: user says "ask Vera to write a poem"; Vera's reply
-  card appears in Octo's chat within a few seconds; user can click
-  through to Vera's session.
-- Question loop: Vera asks "what topic?"; an `agent-question` card
-  appears in Octo's chat; Octo (driven by the fake harness)
-  answers; Vera completes.
-- Cancel: user-triggered cancel button on the delegation card
-  produces an error card in Octo's chat.
-- Sidebar filter: delegations hidden by default, toggle shows them.
+The browser spec runs against Playwright's auto-started backend with a
+real `claude` binary. It covers `mcp__ask_agent__ask` spawning Vera's
+child session, the inline request card rendering and transitioning to
+`completed`, the injected `[agent-reply:…]` event card, click-through
+into the child session, the "Delegated from Octo" header, return to
+the parent, and the sidebar's hidden-delegation pill/toggle. The
+question loop and 3-hop chain remain in backend real-CLI coverage,
+where they are cheaper and less flaky.
 
 ## 9. Decisions baked in
 
@@ -624,10 +695,16 @@ real harness:
   decision, not the caller's.
 - **Bridges don't fan out delegation sessions.** Telegram (and any
   future bridge) ignores `origin='delegation'`.
-- **Tool names**: `ask_agent`, `answer_agent_question`,
-  `cancel_agent_task`, `list_agent_tasks` — `ask_agent` chosen to
-  mirror the existing `ask` (ask the caller) vs `ask_agent` (ask
-  another agent).
+- **Cascade-cancel is part of v1.** Cancelling Vera also cancels
+  Pete if Vera asked Pete and Pete is still running. Each hop still
+  receives its own terminal turn; the cascade only prevents orphaned
+  descendant work.
+- **Tool names.** The MCP server is mounted as `ask_agent`; the
+  exported tools are short: `mcp__ask_agent__ask`,
+  `mcp__ask_agent__answer`, `mcp__ask_agent__cancel`,
+  `mcp__ask_agent__list`. The longer names remain Python function
+  names inside `server/mcp_servers/ask_agent.py` and are not the names
+  the model should call.
 
 ## 10. What this defers, on purpose
 
@@ -639,7 +716,7 @@ real harness:
   of need.
 - **Question forwarding shortcut UI.** Today: if Octo's model decides
   it can't answer, it manually invokes its own `ask` tool and then
-  feeds the human's answer back via `answer_agent_question`. A
+  feeds the human's answer back via `mcp__ask_agent__answer`. A
   future `forward_agent_question(delegation_id)` shortcut tool could
   collapse this into one call, but only if the model proves bad at
   the two-step.

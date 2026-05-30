@@ -8,10 +8,10 @@
  *
  * State source: `delegations[sessionId]` in the zustand store,
  * populated by either the snapshot fetch (on session load) or the
- * REST round-trip the tool_use kicked off. We match the live record
- * to this tool_use by (target_agent_name, request) — the most-recent
- * matching record wins, which gives the right answer in the common
- * case of one delegation per (target, request) tuple.
+ * REST round-trip the tool_use kicked off. Once the sibling
+ * tool_result arrives, we match the live record by the
+ * `delegation_id` parsed from "Started delegation `<id>`". Before
+ * that, we briefly fall back to (target_agent_name, request).
  */
 
 import { useEffect, useMemo, useState } from "react";
