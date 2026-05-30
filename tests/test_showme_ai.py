@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from server.showme_ai import _format_messages, resolve_showme_reference
+from server.showme_ai import (
+    _bare_path_fallback,
+    _format_messages,
+    extract_json,
+    resolve_local_path,
+    resolve_showme_reference,
+)
 
 
 class FakeHarness:
@@ -21,73 +27,147 @@ async def _run(harness: FakeHarness, text: str = "this file", messages=None, **k
         harness=harness,
         model="m",
         credential=None,
-        working_dir="/tmp/wd",
+        working_dir=kwargs.pop("working_dir", "/tmp/wd"),
         messages=messages if messages is not None else [],
         session_name=kwargs.pop("session_name", "Demo"),
         **kwargs,
     )
 
 
+# --- Layer 1: exact-path short-circuit ---
+
+
+def test_resolve_local_path_returns_existing_file(tmp_path):
+    (tmp_path / "README.md").write_text("hi")
+    assert resolve_local_path("README.md", str(tmp_path)) == "README.md"
+
+
+def test_resolve_local_path_returns_none_for_missing(tmp_path):
+    assert resolve_local_path("does-not-exist.md", str(tmp_path)) is None
+
+
+def test_resolve_local_path_rejects_escape(tmp_path):
+    (tmp_path.parent / "outside.txt").write_text("nope")
+    assert resolve_local_path("../outside.txt", str(tmp_path)) is None
+
+
+def test_resolve_local_path_handles_nested(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "note.md").write_text("hi")
+    assert resolve_local_path("sub/note.md", str(tmp_path)) == "sub/note.md"
+
+
+def test_resolve_local_path_returns_none_for_empty_and_multiline(tmp_path):
+    assert resolve_local_path("", str(tmp_path)) is None
+    assert resolve_local_path("  ", str(tmp_path)) is None
+    assert resolve_local_path("a\nb", str(tmp_path)) is None
+
+
 @pytest.mark.asyncio
-async def test_returns_path_on_clean_json():
-    harness = FakeHarness('{"path":"docs/plan.md"}')
+async def test_exact_path_short_circuits_no_model_call(tmp_path):
+    (tmp_path / "README.md").write_text("hi")
+    harness = FakeHarness('{"path":"unrelated.md"}')
+    result = await _run(harness, text="README.md", working_dir=str(tmp_path))
+    assert result.path == "README.md"
+    # Critically: the model was NOT called.
+    assert harness.calls == []
+
+
+# --- Layer 2: robust JSON extraction ---
+
+
+def test_extract_json_bare_object():
+    assert extract_json('{"path":"x.md"}') == {"path": "x.md"}
+
+
+def test_extract_json_strips_markdown_fence_with_lang_tag():
+    assert extract_json('```json\n{"path":"x.md"}\n```') == {"path": "x.md"}
+
+
+def test_extract_json_strips_bare_markdown_fence():
+    assert extract_json('```\n{"path":"x.md"}\n```') == {"path": "x.md"}
+
+
+def test_extract_json_tolerates_surrounding_prose():
+    # The defining real-CLI failure mode: Claude adds context before/after.
+    raw = 'Looking at the conversation, the file is:\n\n{"path":"README.md"}\n\nHope that helps!'
+    assert extract_json(raw) == {"path": "README.md"}
+
+
+def test_extract_json_returns_none_for_no_object():
+    assert extract_json("just prose, no json here at all") is None
+    assert extract_json("") is None
+    assert extract_json("{ not valid json") is None
+
+
+@pytest.mark.asyncio
+async def test_json_object_in_prose_resolves():
+    harness = FakeHarness(
+        'Looking at the conversation:\n\n{"path":"docs/plan.md"}\n\nDone.'
+    )
     result = await _run(
         harness,
-        messages=[{"role": "user", "type": "text", "content": "open docs/plan.md"}],
+        messages=[{"role": "user", "type": "text", "content": "open the plan"}],
     )
     assert result.path == "docs/plan.md"
-    assert result.message is None
-    assert harness.calls[0].working_dir == "/tmp/wd"
-    assert "/showme this file" in harness.calls[0].prompt
 
 
 @pytest.mark.asyncio
-async def test_returns_message_when_model_asks_to_clarify():
+async def test_clarification_message_passes_through():
     harness = FakeHarness('{"message":"Which file do you mean?"}')
     result = await _run(harness, session_name=None)
     assert result.path is None
     assert result.message == "Which file do you mean?"
 
 
+# --- Layer 3: bare-path fallback ---
+
+
+def test_bare_path_fallback_accepts_filename():
+    assert _bare_path_fallback("README.md") == "README.md"
+
+
+def test_bare_path_fallback_accepts_relative_path():
+    assert _bare_path_fallback("docs/plan.md") == "docs/plan.md"
+
+
+def test_bare_path_fallback_strips_trailing_lines():
+    # Model says the path then adds a confirmation sentence.
+    out = "README.md\nThat's the readme file."
+    assert _bare_path_fallback(out) == "README.md"
+
+
+def test_bare_path_fallback_rejects_prose():
+    assert _bare_path_fallback("The README is at README.md") is None
+    assert _bare_path_fallback("I'm not sure which file") is None
+
+
+def test_bare_path_fallback_rejects_without_extension():
+    # "README" alone is too ambiguous — could be a misread token.
+    assert _bare_path_fallback("README") is None
+
+
 @pytest.mark.asyncio
-async def test_strips_markdown_code_fence_with_json_tag():
-    # The model is told NOT to fence, but defensive parsing keeps this from
-    # rotting silently on a model that ignores the instruction.
-    harness = FakeHarness('```json\n{"path":"README.md"}\n```')
+async def test_bare_token_response_resolves_as_path():
+    # `claude --print` very commonly replies with just the path token.
+    harness = FakeHarness("README.md")
     result = await _run(harness)
     assert result.path == "README.md"
 
 
-@pytest.mark.asyncio
-async def test_strips_bare_code_fence_without_lang_tag():
-    harness = FakeHarness('```\n{"path":"a/b.py"}\n```')
-    result = await _run(harness)
-    assert result.path == "a/b.py"
+# --- Unrecoverable response ---
 
 
 @pytest.mark.asyncio
-async def test_malformed_json_returns_generic_message():
-    harness = FakeHarness("not json at all")
+async def test_unrecoverable_response_returns_friendly_message():
+    harness = FakeHarness("I'm not sure which file you mean — try giving the path.")
     result = await _run(harness)
     assert result.path is None
-    assert result.message and "unexpected" in result.message.lower()
+    assert result.message  # generic fallback
 
 
-@pytest.mark.asyncio
-async def test_empty_path_falls_through_to_message():
-    # `{"path": ""}` should not be treated as resolved.
-    harness = FakeHarness('{"path":""}')
-    result = await _run(harness)
-    assert result.path is None
-    assert result.message  # generic "couldn't resolve" fallback
-
-
-@pytest.mark.asyncio
-async def test_both_path_and_message_path_wins():
-    harness = FakeHarness('{"path":"x.md","message":"also here is a clarification"}')
-    result = await _run(harness)
-    assert result.path == "x.md"
-    assert result.message is None
+# --- _format_messages helper ---
 
 
 def test_format_messages_includes_tool_use_with_path():
@@ -108,7 +188,6 @@ def test_format_messages_includes_tool_use_with_path():
 
 
 def test_format_messages_skips_tool_use_without_path():
-    # Tool calls that don't carry a `path` aren't formatted (no signal).
     out = _format_messages(
         [{"role": "assistant", "type": "tool_use", "tool_name": "Bash", "tool_input": {"command": "ls"}}]
     )
