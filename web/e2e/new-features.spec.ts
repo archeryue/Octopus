@@ -147,7 +147,14 @@ test.describe("Scheduled Tasks UI", () => {
     await page.locator("button.btn-send").click();
 
     // A confirmation notice renders in chat (not attributed to You/Claude).
-    await expect(page.locator(".msg-notice")).toContainText("Scheduled");
+    // The /schedule command flows through schedule_ai's parse — even the
+    // rigid fast-path takes a moment under load, and the UI transitions
+    // "📅 Scheduling…" → "📅 Scheduled …" once parsed. Default 5s expect
+    // timeout caught that mid-transition under heavy parallel load; 15s
+    // is comfortably above the observed worst case.
+    await expect(page.locator(".msg-notice")).toContainText("Scheduled", {
+      timeout: 15000,
+    });
 
     // Open the overview and find our schedule (scope by its unique prompt).
     await page.locator(".schedule-header").click();
