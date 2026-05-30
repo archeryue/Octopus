@@ -52,6 +52,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="Vera"
         request="review the readme"
         files={undefined}
@@ -72,6 +73,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="Vera"
         request="review the readme"
         files={undefined}
@@ -86,6 +88,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="vera"
         request="review the readme"
         files={undefined}
@@ -101,6 +104,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="Vera"
         request="review the readme"
         files={undefined}
@@ -117,6 +121,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="Vera"
         request="review"
         files={["a.tsx", "b.tsx"]}
@@ -150,6 +155,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="Vera"
         request="review the readme"
         files={undefined}
@@ -169,6 +175,7 @@ describe("AgentDelegationRequestCard", () => {
     render(
       <AgentDelegationRequestCard
         sessionId="parent"
+        toolUseId={undefined}
         agentName="Vera"
         request="review the readme"
         files={undefined}
@@ -177,9 +184,11 @@ describe("AgentDelegationRequestCard", () => {
     await act(async () => {
       fireEvent.click(screen.getByTitle(/cancel delegation/i));
     });
-    const url = String(fetchMock.mock.calls[0][0]);
-    expect(url).toContain(
-      "/api/sessions/parent/delegations/deleg-001/cancel"
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "/api/sessions/parent/delegations/deleg-001/cancel"
+      ),
+      expect.anything()
     );
   });
 });

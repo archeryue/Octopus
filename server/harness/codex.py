@@ -56,7 +56,19 @@ you started, then end your turn; a new turn arrives with the result \
 [2] `mcp__ask__user(questions)` — ask the user clarification questions and \
 BLOCK until they answer. Use it when a real choice depends on the user and \
 there isn't an obviously right answer; don't use it for things you can decide \
-yourself or verify from the workspace."""
+yourself or verify from the workspace.
+
+[3] `mcp__ask_agent__ask(name, request, files?)` — delegate to another \
+Octopus agent by display name. When the user says "ask <name> to …", \
+"delegate this to <name>", or "have <name> review …", that is a direct \
+call to invoke this tool — don't paraphrase, just call it with a \
+self-contained `request` (the other agent never sees this transcript). \
+Returns immediately; the other agent's reply arrives later as a follow-up \
+turn prefixed `[agent-reply:<name> delegation=<id>]` (or `[agent-question:…]` \
+/ `[agent-error:…]`). If a question arrives, answer it via \
+`mcp__ask_agent__answer_agent_question(delegation_id, choice)` when you \
+can, or ask the user via `mcp__ask__user` if you can't. Related: \
+`mcp__ask_agent__cancel_agent_task`, `mcp__ask_agent__list_agent_tasks`."""
 
 
 def _toml_basic_string(value: str) -> str:

@@ -14,7 +14,7 @@
  * case of one delegation per (target, request) tuple.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   IconCheck,
   IconExclamationCircle,
@@ -49,11 +49,13 @@ function StatusIcon({ state }: { state: Delegation["state"] }) {
 
 export function AgentDelegationRequestCard({
   sessionId,
+  toolUseId,
   agentName,
   request,
   files,
 }: {
   sessionId: string;
+  toolUseId: string | undefined;
   agentName: string;
   request: string;
   files: string[] | undefined;
@@ -63,38 +65,84 @@ export function AgentDelegationRequestCard({
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
   const sessions = useSessionStore((s) => s.sessions);
+  const messages = useSessionStore((s) => s.messages[sessionId]);
   const wantName = (agentName || "").toLowerCase();
-  // Pick the most recent delegation that matches the tool_use's
-  // (target agent name, request) tuple. Most-recent-first because two
-  // delegations with the same payload would be a deliberate retry,
-  // and the user looking at the chip wants the latest state.
+
+  // Server-truth path: the tool_result for THIS tool_use carries
+  // "Started delegation `<id>`" — that id is the canonical identity
+  // of the delegation. We match by it whenever the tool_result has
+  // already arrived; that's robust to any request-string round-trip
+  // differences between what the model wrote and what the server
+  // stored (which was tripping the (name,request) match in real
+  // browser runs).
+  const delegationIdFromResult = useMemo(() => {
+    if (!toolUseId || !messages) return null;
+    const tr = messages.find(
+      (m) => m.type === "tool_result" && m.tool_use_id === toolUseId
+    );
+    if (!tr || typeof tr.content !== "string") return null;
+    const m = tr.content.match(/Started delegation `([A-Za-z0-9]+)`/);
+    return m ? m[1] : null;
+  }, [messages, toolUseId]);
+
+  // Fall back to (name, request) match when the tool_result hasn't
+  // arrived yet — that's the brief window between the tool_use
+  // rendering and the MCP shim's HTTP round-trip completing. Last
+  // resort: match by target_agent_name alone, most-recent first — so
+  // request-string round-trip differences between the model's tool
+  // input and the server's stored value can't strand the card with
+  // no live record to read state from.
   const match = useSessionStore((s) => {
     const list = s.delegations[sessionId] || [];
-    return [...list]
+    if (delegationIdFromResult) {
+      return list.find((d) => d.delegation_id === delegationIdFromResult);
+    }
+    const exact = [...list]
       .reverse()
       .find(
         (d) =>
           (d.target_agent_name || "").toLowerCase() === wantName &&
           d.request === request
       );
+    if (exact) return exact;
+    return [...list]
+      .reverse()
+      .find(
+        (d) => (d.target_agent_name || "").toLowerCase() === wantName
+      );
   });
   const [cancelling, setCancelling] = useState(false);
 
-  // Lazy snapshot fetch: if the store has no delegations for this
-  // session yet (e.g. user just navigated in from another session),
-  // fetch the list once so the card finds its match.
+  // Poll the delegations list until we have a record AND it's in a
+  // terminal state. The card mounts when the tool_use is emitted,
+  // but the server-side delegation may not yet exist (the MCP shim's
+  // HTTP POST is still in flight); we can't rely on a single
+  // on-mount fetch. The poll fires an immediate request then every
+  // 2 s and stops automatically once the record terminates. No WS
+  // event for delegation state changes exists yet; this is the
+  // right shape for v1.
   useEffect(() => {
-    if (match) return;
+    if (match && match.state !== "running") return;
     const url = `${window.location.origin}/api/sessions/${encodeURIComponent(
       sessionId
     )}/delegations`;
-    fetch(url, { headers: { Authorization: `Bearer ${token}` } })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (Array.isArray(data)) setDelegations(sessionId, data as Delegation[]);
-      })
-      .catch(() => {});
-  }, [match, sessionId, token, setDelegations]);
+    let cancelled = false;
+    const fire = () => {
+      fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && Array.isArray(data))
+            setDelegations(sessionId, data as Delegation[]);
+        })
+        .catch(() => {});
+    };
+    fire();
+    const id = window.setInterval(fire, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [match?.state, sessionId, token, setDelegations]);
 
   const openChild = () => {
     if (!match) return;

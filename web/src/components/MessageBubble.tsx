@@ -316,6 +316,7 @@ function ToolUseBlock({
       {isAskAgent && askAgentName && askAgentRequest && (
         <AgentDelegationRequestCard
           sessionId={sessionId}
+          toolUseId={message.tool_use_id}
           agentName={askAgentName}
           request={askAgentRequest}
           files={askAgentFiles}

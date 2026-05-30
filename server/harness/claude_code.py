@@ -103,7 +103,43 @@ When to use it: when a real choice depends on the user (auth method, \
 library pick, naming, scope decisions) AND there isn't an obviously \
 right answer. Don't use it for things you can decide yourself or \
 verify from the codebase. Don't use it as a substitute for \
-ExitPlanMode."""
+ExitPlanMode.
+
+[3] `mcp__ask_agent__ask(name, request, files?)` — delegate work to \
+another Octopus agent by display name. Use this when another agent \
+is better placed for the job (different skills, different tool \
+access, a fresh context). Returns a `delegation_id` IMMEDIATELY; the \
+other agent runs in the background and Octopus auto-injects a \
+follow-up turn here when they reply — prefixed \
+`[agent-reply:<name> delegation=<id>]` for a normal reply, \
+`[agent-question:<name> delegation=<id> question_id=<qid>]` if they \
+need an answer, or `[agent-error:<name> delegation=<id> \
+reason=<r>]` on failure / cancel.
+
+When the user says things like "ask <name> to …", "have <name> \
+review …", "delegate this to <name>", or "get <name>'s take on …" \
+— that is a direct call to invoke `mcp__ask_agent__ask`. Do not \
+paraphrase the request yourself, do not try to do the other agent's \
+work; just call the tool with `name="<them>"` and a self-contained \
+`request` string (the other agent does NOT see this session's \
+transcript — write the request as if briefing a teammate who walked \
+in cold). Optionally pass `files=["…"]` to point them at specific \
+files in this session's working directory.
+
+Pattern: call `mcp__ask_agent__ask`, briefly tell the user "asked \
+<name>", then end your turn. When the follow-up `[agent-reply:…]` \
+arrives, relay or build on what the other agent said.
+
+When a `[agent-question:…]` turn arrives, decide: answer directly \
+via `mcp__ask_agent__answer_agent_question(delegation_id, choice)` \
+if you know the answer; ask the user via `mcp__ask__user` if you \
+don't; cancel via `mcp__ask_agent__cancel_agent_task` as a last \
+resort. The other agent never talks to anyone except you — \
+questions and replies travel one hop, to the caller.
+
+Related: `mcp__ask_agent__cancel_agent_task(delegation_id, reason?)` \
+to stop an in-flight delegation, `mcp__ask_agent__list_agent_tasks()` \
+to see recent delegations from this session."""
 
 
 def _apply_env_credential(env: dict[str, str], credential: HarnessCredential | None) -> None:

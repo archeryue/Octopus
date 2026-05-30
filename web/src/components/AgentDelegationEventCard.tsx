@@ -15,7 +15,7 @@
  * answer a delegated agent's question; the parent agent's model is.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   IconArrowBackUp,
   IconChevronDown,
@@ -39,14 +39,16 @@ export interface ParsedDelegationEvent {
   body: string;
 }
 
-// Conservative regexes: agent name + ids are simple identifiers and
-// won't contain whitespace or `]`. The error reason is the only field
-// that may have spaces, so we let it match anything up to `]`.
-const REPLY_RE = /^\[agent-reply:(\S+)\s+delegation=([^\]\s]+)\]\n?/;
+// Agent names can have spaces ("Code Reviewer", "E2E DelegTarget").
+// Match the name non-greedily up to the literal " delegation=" or
+// " question_id=" / " reason=" separator. The id is a simple
+// identifier with no whitespace or `]`. The error reason may contain
+// spaces, so we let it match anything up to the closing `]`.
+const REPLY_RE = /^\[agent-reply:(.+?)\s+delegation=([^\]\s]+)\]\n?/;
 const QUESTION_RE =
-  /^\[agent-question:(\S+)\s+delegation=(\S+)\s+question_id=([^\]\s]+)\]\n?/;
+  /^\[agent-question:(.+?)\s+delegation=(\S+)\s+question_id=([^\]\s]+)\]\n?/;
 const ERROR_RE =
-  /^\[agent-error:(\S+)\s+delegation=(\S+)\s+reason=([^\]]+)\]\n?/;
+  /^\[agent-error:(.+?)\s+delegation=(\S+)\s+reason=([^\]]+)\]\n?/;
 
 /**
  * Try to parse a user-message content string as a delegation event.
@@ -120,11 +122,41 @@ export function AgentDelegationEventCard({
 }) {
   const [expanded, setExpanded] = useState(event.kind !== "reply");
   const sessions = useSessionStore((s) => s.sessions);
+  const setSessions = useSessionStore((s) => s.setSessions);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
+  const token = useSessionStore((s) => s.token);
   const childSession = sessions.find(
     (sess) => sess.id === event.delegationId
   );
+
+  // Delegation child sessions are created server-side without going
+  // through the frontend's POST /api/sessions path, so the store
+  // doesn't learn about them automatically. If our delegation_id
+  // isn't in the sessions list, fetch the child by id once and
+  // splice it in — that makes the "Open child" button + the
+  // "Delegated from" banner work without a full refresh.
+  useEffect(() => {
+    if (!event.delegationId || childSession) return;
+    let cancelled = false;
+    fetch(
+      `${window.location.origin}/api/sessions/${encodeURIComponent(
+        event.delegationId
+      )}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data) return;
+        const current = useSessionStore.getState().sessions;
+        if (current.some((s) => s.id === data.id)) return;
+        setSessions([...current, data]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [event.delegationId, childSession, token, setSessions]);
 
   const openChild = () => {
     if (!childSession) return;
