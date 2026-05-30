@@ -775,3 +775,375 @@ async def test_route_self_delegation_409(client, monkeypatch):
         headers=HEADERS,
     )
     assert r.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# Caller-aware ask: child question → parent injection (Phase 3)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_question_request_routed_to_parent(dm, mgr, db, monkeypatch):
+    """A child raises a question; the manager injects
+    `[agent-question:…]` into the parent. The pending question itself
+    stays on the child's queue, intact — the parent's `answer` route
+    drains it later."""
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    injected.clear()
+
+    await dm._on_broadcast({
+        "type": "question_request",
+        "session_id": rec.delegation_id,
+        "question_id": "q-abc",
+        "questions": [
+            {
+                "question": "Which file should I focus on?",
+                "multiSelect": False,
+                "options": [
+                    {"label": "Dashboard.tsx", "description": "main UI"},
+                    {"label": "Sidebar.tsx"},
+                ],
+            }
+        ],
+    })
+
+    assert len(injected) == 1
+    target_sid, prompt = injected[0]
+    assert target_sid == parent.id
+    # Prefix carries enough id-disambiguation for parallel delegations.
+    assert "[agent-question:Vera" in prompt
+    assert f"delegation={rec.delegation_id}" in prompt
+    assert "question_id=q-abc" in prompt
+    assert "Which file should I focus on?" in prompt
+    assert "Dashboard.tsx" in prompt
+    assert "Sidebar.tsx" in prompt
+    assert "main UI" in prompt
+    assert "single-choice" in prompt
+    # The mention of the answer tool nudges the parent's model.
+    assert "answer_agent_question" in prompt
+    # Delegation state stays running — question isn't a terminal event.
+    assert rec.state == "running"
+
+
+@pytest.mark.asyncio
+async def test_question_with_empty_questions_does_not_crash(
+    dm, mgr, db, monkeypatch
+):
+    """An edge case: the child emits a malformed question_request with
+    no questions. We still inject a sensible placeholder so the parent
+    can decide to cancel."""
+    captured: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        captured.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    captured.clear()
+    await dm._on_broadcast({
+        "type": "question_request",
+        "session_id": rec.delegation_id,
+        "question_id": "q-x",
+        "questions": [],
+    })
+    assert len(captured) == 1
+    assert "empty payload" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_terminated_delegations_ignore_questions(
+    dm, mgr, db, monkeypatch
+):
+    """A late question event after a child finished is dropped — the
+    parent's reply has already been injected."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    # Drive to terminal.
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    # Now a stray question_request should be a no-op.
+    captured = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        captured.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    await dm._on_broadcast({
+        "type": "question_request",
+        "session_id": rec.delegation_id,
+        "question_id": "q-stray",
+        "questions": [{"question": "huh?", "options": []}],
+    })
+    assert captured == []
+
+
+# ---------------------------------------------------------------------------
+# answer_pending_question on the manager
+# ---------------------------------------------------------------------------
+
+
+def _seed_pending_question(
+    child_session, question_id: str, questions: list[dict]
+) -> None:
+    """Wire a fake pending question onto a child session without going
+    through the full create_pending_question flow (which would need a
+    persistence path)."""
+    from server.session_manager import PendingQuestion
+    import asyncio as _asyncio
+
+    child_session._pending_questions[question_id] = PendingQuestion(
+        question_id=question_id, questions=questions
+    )
+    child_session._pending_question_events[question_id] = _asyncio.Event()
+
+
+@pytest.mark.asyncio
+async def test_answer_pending_question_happy(dm, mgr, db, monkeypatch):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    child = mgr.get_session(rec.delegation_id)
+    _seed_pending_question(
+        child, "q-1", [{"question": "X?", "options": [{"label": "A"}, {"label": "B"}]}]
+    )
+
+    # Capture answer_question call shape.
+    called: dict = {}
+
+    async def fake_answer(sid, qid, answers):
+        called["sid"] = sid
+        called["qid"] = qid
+        called["answers"] = answers
+        return True
+
+    monkeypatch.setattr(mgr, "answer_question", fake_answer)
+
+    out = await dm.answer_pending_question(rec.delegation_id, "A")
+    assert out["ok"] is True
+    assert out["question_id"] == "q-1"
+    assert called["sid"] == rec.delegation_id
+    assert called["qid"] == "q-1"
+    assert called["answers"] == [{"selected": ["A"], "text": None}]
+
+
+@pytest.mark.asyncio
+async def test_answer_pending_question_pads_multi_question_batch(
+    dm, mgr, db, monkeypatch
+):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    child = mgr.get_session(rec.delegation_id)
+    _seed_pending_question(
+        child,
+        "q-1",
+        [
+            {"question": "first?", "options": [{"label": "A"}]},
+            {"question": "second?", "options": [{"label": "B"}]},
+            {"question": "third?", "options": [{"label": "C"}]},
+        ],
+    )
+
+    seen: dict = {}
+
+    async def fake_answer(sid, qid, answers):
+        seen["answers"] = answers
+        return True
+
+    monkeypatch.setattr(mgr, "answer_question", fake_answer)
+
+    await dm.answer_pending_question(rec.delegation_id, "A")
+    # First question gets the parent's choice; the rest get blank
+    # selected, same shape the human UI sends when entries are skipped.
+    assert seen["answers"][0] == {"selected": ["A"], "text": None}
+    assert seen["answers"][1] == {"selected": [], "text": None}
+    assert seen["answers"][2] == {"selected": [], "text": None}
+
+
+@pytest.mark.asyncio
+async def test_answer_pending_question_rejects_empty_choice(
+    dm, mgr, db, monkeypatch
+):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    child = mgr.get_session(rec.delegation_id)
+    _seed_pending_question(child, "q-1", [{"question": "?", "options": []}])
+    with pytest.raises(DelegationError) as ex:
+        await dm.answer_pending_question(rec.delegation_id, "   ")
+    assert ex.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_answer_pending_question_when_no_pending(
+    dm, mgr, db, monkeypatch
+):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    with pytest.raises(DelegationError) as ex:
+        await dm.answer_pending_question(rec.delegation_id, "A")
+    assert ex.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_answer_pending_question_after_terminal(
+    dm, mgr, db, monkeypatch
+):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    with pytest.raises(DelegationError) as ex:
+        await dm.answer_pending_question(rec.delegation_id, "A")
+    assert ex.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_answer_pending_question_human_race_409(
+    dm, mgr, db, monkeypatch
+):
+    """If session_manager.answer_question returns False (the human UI
+    drained the queue first) we surface 409."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    child = mgr.get_session(rec.delegation_id)
+    _seed_pending_question(child, "q-1", [{"question": "?", "options": []}])
+
+    async def fake_answer(*a, **k):
+        return False
+
+    monkeypatch.setattr(mgr, "answer_question", fake_answer)
+    with pytest.raises(DelegationError) as ex:
+        await dm.answer_pending_question(rec.delegation_id, "A")
+    assert ex.value.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# HTTP: answer route
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_route_answer_happy(client, monkeypatch):
+    monkeypatch.setattr(session_manager, "start_message", _noop_start_message)
+
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    octo = next(a for a in agents if a["is_system"])
+    await _post_agent(client, "Vera")
+    parent = await _post_session(client, octo["id"])
+
+    create = await client.post(
+        f"/api/sessions/{parent['id']}/delegations",
+        json={"agent_name": "vera", "request": "go"},
+        headers=HEADERS,
+    )
+    did = create.json()["delegation_id"]
+
+    # Seed the child's pending-question queue directly + patch the
+    # underlying answer_question to capture.
+    child = session_manager.get_session(did)
+    _seed_pending_question(
+        child, "q-route", [{"question": "?", "options": [{"label": "Yes"}]}]
+    )
+
+    async def fake_answer(sid, qid, answers):
+        assert sid == did and qid == "q-route"
+        assert answers == [{"selected": ["Yes"], "text": None}]
+        return True
+
+    monkeypatch.setattr(session_manager, "answer_question", fake_answer)
+
+    r = await client.post(
+        f"/api/sessions/{parent['id']}/delegations/{did}/answer",
+        json={"choice": "Yes"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["question_id"] == "q-route"
+
+
+@pytest.mark.asyncio
+async def test_route_answer_404_for_unknown_delegation(client, monkeypatch):
+    monkeypatch.setattr(session_manager, "start_message", _noop_start_message)
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    octo = next(a for a in agents if a["is_system"])
+    parent = await _post_session(client, octo["id"])
+    r = await client.post(
+        f"/api/sessions/{parent['id']}/delegations/nope/answer",
+        json={"choice": "X"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_route_answer_409_when_no_pending(client, monkeypatch):
+    monkeypatch.setattr(session_manager, "start_message", _noop_start_message)
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    octo = next(a for a in agents if a["is_system"])
+    await _post_agent(client, "Vera")
+    parent = await _post_session(client, octo["id"])
+    create = await client.post(
+        f"/api/sessions/{parent['id']}/delegations",
+        json={"agent_name": "vera", "request": "go"},
+        headers=HEADERS,
+    )
+    did = create.json()["delegation_id"]
+    r = await client.post(
+        f"/api/sessions/{parent['id']}/delegations/{did}/answer",
+        json={"choice": "X"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 409

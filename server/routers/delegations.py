@@ -40,6 +40,17 @@ class CancelDelegationRequest(BaseModel):
     reason: str | None = None
 
 
+class AnswerDelegationQuestionRequest(BaseModel):
+    """Body for the parent's `answer_agent_question` tool call.
+
+    `choice` is the label the parent's model picked from the option
+    list rendered in the `[agent-question:…]` injection. We deliberately
+    don't expose `question_id` at the MCP boundary: a child rarely
+    has more than one pending question, and the manager picks the
+    oldest if it does."""
+    choice: str
+
+
 def _require_session(session_id: str) -> None:
     """Live sessions only — delegations attach to in-memory sessions so
     the broadcast listener has a target. Archived sessions are
@@ -121,3 +132,33 @@ async def cancel_delegation(
     except DelegationError as e:
         raise HTTPException(e.status_code, str(e))
     return updated.to_public_dict()
+
+
+@router.post("/{session_id}/delegations/{delegation_id}/answer")
+async def answer_delegation_question(
+    session_id: str,
+    delegation_id: str,
+    req: AnswerDelegationQuestionRequest,
+    _: str = Depends(verify_token),
+) -> dict[str, Any]:
+    """Parent-side answer to a question the child agent raised via
+    its own `ask` MCP tool. The child's pending question is drained
+    with the parent's chosen label, the child's long-poll wakes, and
+    the child resumes (agent-collaboration.md §5.5).
+
+    Status codes:
+    - 200 OK on successful answer
+    - 404 if the delegation isn't ours
+    - 409 if there's no pending question, or the human UI raced us
+    """
+    rec = delegation_manager.get_delegation(delegation_id)
+    if rec is None or rec.parent_session_id != session_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, "Delegation not found"
+        )
+    try:
+        return await delegation_manager.answer_pending_question(
+            delegation_id, req.choice
+        )
+    except DelegationError as e:
+        raise HTTPException(e.status_code, str(e))

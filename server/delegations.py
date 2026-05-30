@@ -405,7 +405,9 @@ class DelegationManager:
         """Filter the session-manager broadcast bus to delegation
         children we're tracking. Mirrors the bridge quiet-mode filter:
         capture assistant_text, finalise on result, route error through
-        the failure injection path."""
+        the failure injection path, and route `question_request` up to
+        the parent so the parent's model gets a turn to answer it
+        (agent-collaboration.md §5.4 — the caller chain rule)."""
         sid = msg.get("session_id")
         if not sid:
             return
@@ -418,6 +420,9 @@ class DelegationManager:
             text = msg.get("content")
             if isinstance(text, str) and text:
                 rec.captured_text.append(text)
+            return
+        if kind == "question_request":
+            await self._inject_question(rec, msg)
             return
         if kind == "result":
             if msg.get("is_error"):
@@ -434,6 +439,135 @@ class DelegationManager:
             rec.finished_at = datetime.now(timezone.utc).isoformat()
             await self._inject_terminal(rec)
             return
+
+    async def _inject_question(
+        self, rec: DelegationRunState, msg: dict[str, Any]
+    ) -> None:
+        """Bubble a child's `question_request` up to the parent session
+        as an injected `[agent-question:…]` turn. The pending question
+        itself stays on the child's session (the existing UI path can
+        still answer it manually); the parent's
+        `answer_agent_question(delegation_id, choice)` tool drains that
+        same queue on success — first to drain wins.
+        """
+        assert self.session_mgr is not None
+        question_id = msg.get("question_id") or ""
+        questions = msg.get("questions") or []
+        body = self._render_question_body(questions)
+        prompt = (
+            f"[agent-question:{rec.target_agent_name} "
+            f"delegation={rec.delegation_id} "
+            f"question_id={question_id}]\n{body}\n\n"
+            f"Decide: answer them by calling "
+            f"`mcp__ask_agent__answer_agent_question(delegation_id="
+            f"\"{rec.delegation_id}\", choice=…)`; or, if you don't "
+            f"know, use your own `mcp__ask__user` to ask the user "
+            f"and forward their answer; or cancel via "
+            f"`mcp__ask_agent__cancel_agent_task`."
+        )
+        try:
+            await self.session_mgr.start_message(
+                rec.parent_session_id, prompt
+            )
+        except Exception:
+            logger.exception(
+                "Failed to inject delegation %s question into parent %s",
+                rec.delegation_id,
+                rec.parent_session_id,
+            )
+
+    @staticmethod
+    def _render_question_body(questions: list[dict[str, Any]]) -> str:
+        """Render the AskUserQuestion payload into a human-readable
+        block the parent's model can reason over. We render every
+        question in the batch, but answering currently applies the
+        parent's `choice` to the FIRST question only — see
+        `answer_pending_question`."""
+        if not questions:
+            return "(no question text — child sent an empty payload)"
+        lines: list[str] = []
+        for i, q in enumerate(questions, start=1):
+            qtext = q.get("question") or "(no question text)"
+            header = q.get("header")
+            multi = bool(q.get("multiSelect"))
+            options = q.get("options") or []
+            lines.append(f"Question {i}: {qtext}")
+            if header:
+                lines.append(f"  (header: {header})")
+            for opt in options:
+                label = (opt or {}).get("label") or "?"
+                desc = (opt or {}).get("description")
+                if desc:
+                    lines.append(f"  - {label}: {desc}")
+                else:
+                    lines.append(f"  - {label}")
+            mode = "multi-select" if multi else "single-choice"
+            lines.append(f"  ({mode}; pass the chosen label as `choice`.)")
+        return "\n".join(lines)
+
+    async def answer_pending_question(
+        self, delegation_id: str, choice: str
+    ) -> dict[str, Any]:
+        """Drain the oldest pending question on the delegation's child
+        session by feeding it the parent's chosen label.
+
+        Multiple-question batches are rare (the ask MCP tool accepts
+        1-4 questions per call; the common shape is 1). When there
+        are >1 we apply `choice` to the first question and leave the
+        rest with empty `selected` — same defaulting the human UI
+        does when the user skips an option."""
+        if self.session_mgr is None:
+            raise DelegationError(
+                "DelegationManager not bound", status_code=500
+            )
+        rec = self._records.get(delegation_id)
+        if rec is None:
+            raise DelegationError(
+                f"No delegation {delegation_id!r}", status_code=404
+            )
+        if rec.state != "running":
+            raise DelegationError(
+                f"Delegation {delegation_id!r} is {rec.state} — no "
+                f"pending question to answer",
+                status_code=409,
+            )
+        child = self.session_mgr.get_session(rec.delegation_id)
+        if child is None:
+            raise DelegationError(
+                "Child session no longer alive", status_code=404
+            )
+        if not child._pending_questions:
+            raise DelegationError(
+                "No pending question on the child session",
+                status_code=409,
+            )
+        question_id, pending = next(iter(child._pending_questions.items()))
+        choice = (choice or "").strip()
+        if not choice:
+            raise DelegationError(
+                "`choice` must be a non-empty string", status_code=400
+            )
+        answers = [{"selected": [choice], "text": None}]
+        # Pad multi-question batches with empty selections; same shape
+        # the frontend submits when a user clicks-through without
+        # answering some entries.
+        for _ in pending.questions[1:]:
+            answers.append({"selected": [], "text": None})
+        ok = await self.session_mgr.answer_question(
+            rec.delegation_id, question_id, answers
+        )
+        if not ok:
+            # Race: the human UI answered between our get and our set.
+            raise DelegationError(
+                "Question already answered by another path",
+                status_code=409,
+            )
+        return {
+            "delegation_id": delegation_id,
+            "question_id": question_id,
+            "choice": choice,
+            "ok": True,
+        }
 
     async def _inject_terminal(self, rec: DelegationRunState) -> None:
         """Push the terminal turn into the parent session.

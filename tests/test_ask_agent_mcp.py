@@ -262,6 +262,103 @@ def test_list_agent_tasks_empty(monkeypatch):
     assert "No delegations" in out
 
 
+# ---------------------------------------------------------------------------
+# answer_agent_question
+# ---------------------------------------------------------------------------
+
+
+def test_answer_agent_question_misconfigured(monkeypatch):
+    monkeypatch.delenv("OCTOPUS_API_BASE", raising=False)
+    monkeypatch.delenv("OCTOPUS_SESSION_ID", raising=False)
+    monkeypatch.delenv("OCTOPUS_AUTH_TOKEN", raising=False)
+    out = _call(
+        "answer_agent_question", delegation_id="d1", choice="A"
+    )
+    assert "misconfigured" in out.lower()
+
+
+def test_answer_agent_question_rejects_empty(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+    assert "non-empty" in _call(
+        "answer_agent_question", delegation_id="   ", choice="A"
+    )
+    assert "non-empty" in _call(
+        "answer_agent_question", delegation_id="d1", choice="   "
+    )
+
+
+def test_answer_agent_question_success(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+    posted: dict = {}
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: ARG001
+        posted["url"] = url
+        posted["body"] = json
+        return R()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    out = _call(
+        "answer_agent_question", delegation_id="d1", choice="Yes"
+    )
+    assert posted["url"].endswith(
+        "/api/sessions/s/delegations/d1/answer"
+    )
+    assert posted["body"] == {"choice": "Yes"}
+    assert "Answered" in out
+    assert "Yes" in out
+
+
+def test_answer_agent_question_404(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+
+    class R:
+        status_code = 404
+        text = ""
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
+    out = _call(
+        "answer_agent_question", delegation_id="d-gone", choice="A"
+    )
+    assert "No delegation" in out
+
+
+def test_answer_agent_question_409(monkeypatch):
+    """No pending question / human raced: 409 with reason text passes
+    through so the parent's model can choose to give up or retry."""
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+
+    class R:
+        status_code = 409
+        text = "Question already answered by another path"
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
+    out = _call(
+        "answer_agent_question", delegation_id="d1", choice="A"
+    )
+    assert "Cannot answer" in out
+    assert "already answered" in out
+
+
 def test_list_agent_tasks_summary(monkeypatch):
     monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
     monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
