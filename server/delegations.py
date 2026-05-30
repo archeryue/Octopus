@@ -92,6 +92,13 @@ class DelegationRunState:
     captured_text: list[str] = field(default_factory=list)
     finished_at: str | None = None
     error: str | None = None
+    # Defence-in-depth: terminal injection must fire at most once per
+    # record. The state-flip-before-interrupt dance in
+    # `cancel_delegation` already prevents the obvious race, but a
+    # `result` and an `error` event can arrive close together from a
+    # crashing child; this flag forces a single emission no matter
+    # how the producers interleave.
+    _terminal_injected: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
         """API-shape for ``GET /sessions/{sid}/delegations`` and the
@@ -263,20 +270,23 @@ class DelegationManager:
         if rec.state != "running":
             return rec
 
-        # Interrupt the child's running turn. If the child has nothing
-        # in flight, interrupt() returns False — that's fine, we still
-        # mark the record cancelled and inject the error so the parent
-        # gets a terminal turn.
+        # CRITICAL: transition the record state BEFORE calling
+        # `interrupt()`. The interrupt broadcasts an `error` event
+        # that our own `_on_broadcast` would otherwise turn into a
+        # spurious `[agent-error reason=child error]` injection,
+        # which would race with the `[agent-error reason=cancelled]`
+        # we inject below — the parent would see two terminal turns
+        # for one cancellation. The `_on_broadcast` running-check
+        # guards against that as long as we flip state first.
+        rec.state = "cancelled"
+        rec.error = reason or "cancelled by caller"
+        rec.finished_at = datetime.now(timezone.utc).isoformat()
         try:
             await self.session_mgr.interrupt(delegation_id)
         except Exception:
             logger.exception(
                 "interrupt(%s) raised during cancellation", delegation_id
             )
-
-        rec.state = "cancelled"
-        rec.error = reason or "cancelled by caller"
-        rec.finished_at = datetime.now(timezone.utc).isoformat()
         await self._inject_terminal(rec)
         return rec
 
@@ -333,26 +343,65 @@ class DelegationManager:
         caller; this method still catches it transitively via the cycle
         check, but the dedicated error message at the call site is
         clearer for the user.
+
+        Fail-closed semantics: a corrupted parent_session_id chain
+        (loop in the session-id pointers, or a chain longer than the
+        safety cap, or a non-null ``parent_session_id`` whose target
+        isn't live) is rejected as a 409 rather than silently treated
+        as a valid (short) chain. The cycle guard is what stands
+        between "Vera asks Octo" and an infinite delegation tower —
+        it must never be skipped.
         """
         assert self.session_mgr is not None
         chain_agent_ids: set[str] = set()
+        visited_session_ids: set[str] = set()
         existing_hops = 0
+        # Generous walk cap — much larger than DEPTH_CAP — chosen to
+        # cover the future where we relax depth without re-tuning this
+        # constant. Cap exhaustion is treated as corruption (see below)
+        # so a runaway loop can't camp the route forever.
+        _SAFETY_CAP = 64
         sid: str | None = parent.id
-        # Belt-and-braces: cap the walk at a generous bound so a
-        # corrupted (cyclic) parent_session_id chain doesn't spin
-        # forever. The DEPTH_CAP is small but the safety cap is much
-        # larger to leave headroom for future tuning.
-        for _ in range(64):
+        for _ in range(_SAFETY_CAP):
             if sid is None:
                 break
+            if sid in visited_session_ids:
+                # Real session-id cycle (e.g. A.parent=B, B.parent=A)
+                # — not a transitive agent cycle, but a corrupted
+                # pointer chain. Either way this is unsafe; reject.
+                raise DelegationError(
+                    "Caller chain has a session-id cycle "
+                    "(corrupted parent_session_id pointers)",
+                    status_code=409,
+                )
+            visited_session_ids.add(sid)
             session = self.session_mgr.get_session(sid)
             if session is None:
-                break
+                # The chain references a session we can't see in
+                # memory. For the root walk-back this is normal (sid
+                # was None already, handled above) — but if sid was
+                # non-null and lookup failed, the chain is incomplete
+                # and we can't make a sound depth/cycle decision.
+                raise DelegationError(
+                    "Caller chain references a session that no "
+                    "longer exists; refuse rather than guess",
+                    status_code=409,
+                )
             if session.agent_id:
                 chain_agent_ids.add(session.agent_id)
             if session.origin == "delegation":
                 existing_hops += 1
             sid = session.parent_session_id
+        else:
+            # for/else: loop exhausted the safety cap without
+            # encountering a None terminator. That's a chain longer
+            # than _SAFETY_CAP, which is unreasonable in practice —
+            # treat as corruption and fail closed.
+            raise DelegationError(
+                f"Caller chain exceeds {_SAFETY_CAP} hops; refuse "
+                f"as a fail-closed guard against pointer corruption",
+                status_code=409,
+            )
 
         if target_agent_id in chain_agent_ids:
             raise DelegationError(
@@ -379,8 +428,18 @@ class DelegationManager:
     ) -> str:
         """The child's first user message. Names the caller, ships the
         request verbatim, and optionally lists files the parent flagged
-        as relevant. We do NOT include any of the parent's transcript —
-        that's a deliberate scope/privacy boundary (plan §2)."""
+        as relevant.
+
+        File paths are resolved against ``working_dir`` (plan §5.7):
+        absolute paths pass through unchanged; relative ones get joined
+        to the working dir. We also check existence and clearly flag
+        missing entries — better the child sees ``(not found)`` than a
+        misleading absolute path that doesn't exist on disk.
+
+        We do NOT include any of the parent's transcript — that's a
+        deliberate scope/privacy boundary (plan §2)."""
+        from pathlib import Path
+
         lines = [
             f"You were asked by agent **{parent_name}** "
             f"(session `{parent_session_id}`).",
@@ -393,10 +452,25 @@ class DelegationManager:
             lines.append("")
             lines.append(
                 "The caller flagged these files as relevant "
-                f"(paths are absolute under `{working_dir}`):"
+                f"(paths resolved against `{working_dir}`):"
             )
-            for path in files:
-                lines.append(f"- {path}")
+            base = Path(working_dir)
+            for raw in files:
+                resolved = (
+                    Path(raw) if Path(raw).is_absolute() else base / raw
+                )
+                try:
+                    resolved = resolved.resolve()
+                except OSError:
+                    # Path resolution failed (e.g. permission error
+                    # walking a symlink); surface the raw form so the
+                    # child still sees what the parent meant.
+                    lines.append(f"- {raw}  (could not resolve)")
+                    continue
+                if resolved.exists():
+                    lines.append(f"- {resolved}")
+                else:
+                    lines.append(f"- {resolved}  (not found)")
         return "\n".join(lines)
 
     # ----------------------------------------------- broadcast → injection
@@ -459,11 +533,11 @@ class DelegationManager:
             f"delegation={rec.delegation_id} "
             f"question_id={question_id}]\n{body}\n\n"
             f"Decide: answer them by calling "
-            f"`mcp__ask_agent__answer_agent_question(delegation_id="
+            f"`mcp__ask_agent__answer(delegation_id="
             f"\"{rec.delegation_id}\", choice=…)`; or, if you don't "
             f"know, use your own `mcp__ask__user` to ask the user "
             f"and forward their answer; or cancel via "
-            f"`mcp__ask_agent__cancel_agent_task`."
+            f"`mcp__ask_agent__cancel`."
         )
         try:
             await self.session_mgr.start_message(
@@ -578,8 +652,17 @@ class DelegationManager:
         parent's model can disambiguate when multiple delegations are
         live concurrently, and so the frontend can detect and render
         it as a special card once Phase 4 lands.
+
+        Idempotent. The ``_terminal_injected`` flag ensures that
+        even if two terminal-producing events race (a `result` from
+        the child + a `cancel_delegation` from the parent, or a
+        `result` and an `error` from a crashing child), exactly one
+        ``[agent-…]`` turn lands in the parent session.
         """
         assert self.session_mgr is not None
+        if rec._terminal_injected:
+            return
+        rec._terminal_injected = True
         if rec.state == "completed":
             body = ("".join(rec.captured_text)).strip()
             if not body:

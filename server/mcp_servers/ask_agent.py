@@ -1,20 +1,30 @@
 """MCP stdio server: agent-to-agent delegation (agent-collaboration.md).
 
-The `ask_agent` server exposes three tools to the model:
+The `ask_agent` server exposes four tools to the model. Their full
+MCP names are `mcp__ask_agent__<tool>` (the prefix is the config key
+under which the harness mounts this server, not the FastMCP server
+name); inside this module the underlying Python functions are
+``ask_agent`` / ``cancel_agent_task`` / ``answer_agent_question`` /
+``list_agent_tasks`` and the ``@mcp.tool(name=…)`` decorators expose
+the short forms ``ask`` / ``cancel`` / ``answer`` / ``list``.
 
-  - `ask_agent(name, request, files?)` — start a fire-and-forget
-    delegation to another agent by name. Returns a `delegation_id`
-    immediately and ends the current turn; when the other agent
-    finishes, Octopus auto-fires a follow-up turn into this session
-    prefixed `[agent-reply:<name> delegation=<id>]` carrying the
-    other agent's reply.
+  - `ask` — start a fire-and-forget delegation to another agent by
+    name. Returns a `delegation_id` immediately and ends the current
+    turn; when the other agent finishes, Octopus auto-fires a
+    follow-up turn into this session prefixed
+    `[agent-reply:<name> delegation=<id>]` carrying the other
+    agent's reply.
 
-  - `cancel_agent_task(delegation_id, reason?)` — best-effort stop a
-    running delegation. Idempotent.
+  - `cancel` — best-effort stop a running delegation. Idempotent.
 
-  - `list_agent_tasks()` — recent delegations from this session
-    (most-recent first). Useful on a resumed turn to disambiguate
-    multiple concurrent delegations by id.
+  - `answer` — answer a question a delegated agent raised via its
+    own `ask` MCP tool. The other agent's pending question is
+    drained with the parent's chosen label and the other agent
+    resumes (agent-collaboration.md §5.5).
+
+  - `list` — recent delegations from this session (most-recent
+    first). Useful on a resumed turn to disambiguate multiple
+    concurrent delegations by id.
 
 Channel: this process is a child of the harness CLI (claude / codex),
 NOT of Octopus's FastAPI server. We can't reach the DelegationManager

@@ -85,30 +85,25 @@ export function AgentDelegationRequestCard({
     return m ? m[1] : null;
   }, [messages, toolUseId]);
 
-  // Fall back to (name, request) match when the tool_result hasn't
-  // arrived yet — that's the brief window between the tool_use
-  // rendering and the MCP shim's HTTP round-trip completing. Last
-  // resort: match by target_agent_name alone, most-recent first — so
-  // request-string round-trip differences between the model's tool
-  // input and the server's stored value can't strand the card with
-  // no live record to read state from.
+  // Fall back to (name, request) match only when the tool_result
+  // hasn't arrived yet — that's the brief window between the
+  // tool_use rendering and the MCP shim's HTTP round-trip completing.
+  // We deliberately do NOT fall further to "by name alone": under
+  // fan-out (multiple in-flight delegations to the same target) it
+  // would bind this card to the wrong record and the Cancel button
+  // would stop someone else's delegation. When neither match
+  // applies, render the card in a starting-state with no controls.
   const match = useSessionStore((s) => {
     const list = s.delegations[sessionId] || [];
     if (delegationIdFromResult) {
       return list.find((d) => d.delegation_id === delegationIdFromResult);
     }
-    const exact = [...list]
+    return [...list]
       .reverse()
       .find(
         (d) =>
           (d.target_agent_name || "").toLowerCase() === wantName &&
           d.request === request
-      );
-    if (exact) return exact;
-    return [...list]
-      .reverse()
-      .find(
-        (d) => (d.target_agent_name || "").toLowerCase() === wantName
       );
   });
   const [cancelling, setCancelling] = useState(false);

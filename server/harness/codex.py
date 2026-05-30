@@ -66,9 +66,9 @@ self-contained `request` (the other agent never sees this transcript). \
 Returns immediately; the other agent's reply arrives later as a follow-up \
 turn prefixed `[agent-reply:<name> delegation=<id>]` (or `[agent-question:…]` \
 / `[agent-error:…]`). If a question arrives, answer it via \
-`mcp__ask_agent__answer_agent_question(delegation_id, choice)` when you \
-can, or ask the user via `mcp__ask__user` if you can't. Related: \
-`mcp__ask_agent__cancel_agent_task`, `mcp__ask_agent__list_agent_tasks`."""
+`mcp__ask_agent__answer(delegation_id, choice)` when you can, or ask \
+the user via `mcp__ask__user` if you can't. Related: \
+`mcp__ask_agent__cancel`, `mcp__ask_agent__list`."""
 
 
 def _toml_basic_string(value: str) -> str:

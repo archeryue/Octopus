@@ -410,16 +410,36 @@ class SessionManager:
         )
         return new
 
-    async def auto_archive_scheduled_session(self, session_id: str) -> bool:
-        """Hide a finished scheduler-origin session (agent-refactor.md §5.6).
+    # Session origins whose sessions should be archived once they go
+    # fully idle, so they don't pile up the active list.
+    # - 'schedule': agent-refactor.md §5.6 (each fire materializes its
+    #   own fresh session; the archived rows are still browsable).
+    # - 'delegation': agent-collaboration.md §5.2 (delegation children
+    #   are transient by design; the parent reads what it needs from
+    #   the injected reply turn and the child is browsable from the
+    #   sidebar's "show delegations" toggle).
+    _AUTO_ARCHIVE_ORIGINS = ("schedule", "delegation")
 
-        Unlike `archive_session`, no replacement thread is created — the next
-        fire materializes its own fresh session under the agent. No-op if the
-        session is gone, not schedule-origin, or still running. Returns True
+    async def auto_archive_scheduled_session(self, session_id: str) -> bool:
+        """Hide a finished transient session (schedule or delegation
+        child) once it goes idle. agent-refactor.md §5.6 + agent-
+        collaboration.md §5.2.
+
+        Unlike `archive_session`, no replacement thread is created — the
+        next fire (schedule) or delegation request materializes its own
+        fresh session under the agent. No-op if the session is gone,
+        not auto-archivable by origin, or still running. Returns True
         if it archived.
+
+        The function name is kept (rather than renamed) because it's
+        referenced from main.py / scheduler.py; the behaviour
+        generalises while the call sites stay stable.
         """
         session = self.sessions.get(session_id)
-        if session is None or session.origin != "schedule":
+        if (
+            session is None
+            or session.origin not in self._AUTO_ARCHIVE_ORIGINS
+        ):
             return False
         if session._active_task and not session._active_task.done():
             return False  # still working — don't yank it
@@ -719,9 +739,12 @@ class SessionManager:
         # features #5). Detached because notifier sends do network I/O.
         await self._fire_session_idle_notification(session)
 
-        # Scheduler-origin sessions hide themselves once idle so heavy
-        # schedules don't pile up the active list (agent-refactor.md §5.6).
-        if session.origin == "schedule":
+        # Schedule-origin and delegation-origin sessions hide themselves
+        # once idle so heavy fan-out doesn't pile up the active list
+        # (agent-refactor.md §5.6 + agent-collaboration.md §5.2). The
+        # archived rows are still browsable via the account-menu manage
+        # page or the sidebar's "show delegations" toggle.
+        if session.origin in self._AUTO_ARCHIVE_ORIGINS:
             await self.auto_archive_scheduled_session(session_id)
 
     async def _fire_session_idle_notification(self, session: Session) -> None:

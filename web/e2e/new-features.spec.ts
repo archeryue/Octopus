@@ -1425,6 +1425,14 @@ async function clearAllNotifiers(request: APIRequestContext): Promise<void> {
 }
 
 test.describe("Notifier framework @llm", () => {
+  // The session-goes-idle webhook test depends on a real Claude turn
+  // landing the result event. Under full-suite load haiku occasionally
+  // hangs / produces a different shape, identical pattern to the
+  // agent-collaboration spec; one retry rides over that LLM
+  // non-determinism without masking a real defect (passes in
+  // isolation in ~8 s).
+  test.describe.configure({ retries: 1 });
+
   test.beforeEach(async ({ request }) => {
     await clearAllNotifiers(request);
   });

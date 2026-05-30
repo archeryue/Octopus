@@ -177,6 +177,90 @@ async def test_resolve_target_agent_missing_returns_none(dm, db):
 
 
 @pytest.mark.asyncio
+async def test_files_resolved_against_working_dir(
+    dm, mgr, db, monkeypatch, tmp_path
+):
+    """Plan §5.7: file paths are resolved against the parent's
+    working_dir and missing entries are flagged. Verifies the prompt
+    composer no longer leaves relative paths verbatim (which made the
+    'absolute under <working_dir>' claim a lie)."""
+    started: list[tuple[str, str]] = []
+
+    async def fake_start_message(sid, prompt, attachment_ids=None):
+        started.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", fake_start_message)
+    # Build a real working dir with one file that exists and one
+    # that doesn't, plus an absolute path to verify it passes through.
+    wd = tmp_path / "ws"
+    wd.mkdir()
+    (wd / "real.tsx").write_text("hello")
+    abs_real = tmp_path / "abs.txt"
+    abs_real.write_text("there")
+
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await mgr.create_session(
+        agent_id=octo["id"], name="parent", working_dir=str(wd),
+    )
+    await dm.start_delegation(
+        parent_session_id=parent.id,
+        agent_name="vera",
+        request="review",
+        files=["real.tsx", str(abs_real), "missing.tsx"],
+    )
+    assert started
+    _, prompt = started[0]
+    # Relative path resolved against working_dir.
+    assert str((wd / "real.tsx").resolve()) in prompt
+    # Absolute path passes through unchanged (modulo .resolve()).
+    assert str(abs_real.resolve()) in prompt
+    # Missing path is flagged so the child doesn't trust it.
+    assert "(not found)" in prompt
+    # Prompt text now reflects the resolution semantics.
+    assert "paths resolved against" in prompt
+
+
+@pytest.mark.asyncio
+async def test_delegation_session_auto_archives_on_idle(
+    dm, mgr, db, monkeypatch
+):
+    """Plan §5.2: delegation children auto-archive on idle, like
+    schedule-origin sessions. Without the fix, only
+    origin=='schedule' was being archived; delegation children
+    accumulated in the live sessions map."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    child = mgr.get_session(rec.delegation_id)
+    assert child is not None
+    # auto_archive_scheduled_session no-ops if the session is still
+    # "running" via _active_task; the test bypass that by clearing it.
+    child._active_task = None
+    ok = await mgr.auto_archive_scheduled_session(rec.delegation_id)
+    assert ok is True
+    # The session is no longer in the live map.
+    assert mgr.get_session(rec.delegation_id) is None
+
+
+@pytest.mark.asyncio
+async def test_auto_archive_skips_user_origin_sessions(mgr, db, monkeypatch):
+    """Sanity check the widened auto-archive still respects origin —
+    user-origin sessions must NOT be auto-archived even after going
+    idle."""
+    octo = await db.get_system_agent()
+    sess = await _make_session(mgr, octo["id"], origin="user")
+    sess._active_task = None
+    ok = await mgr.auto_archive_scheduled_session(sess.id)
+    assert ok is False
+    assert mgr.get_session(sess.id) is not None
+
+
+@pytest.mark.asyncio
 async def test_start_delegation_happy_path(dm, mgr, db, monkeypatch):
     # Disable real harness spawn — we only want to verify the wiring.
     started: list[tuple[str, str]] = []
@@ -301,6 +385,65 @@ async def test_cycle_rejected(dm, mgr, db, monkeypatch):
         )
     assert excinfo.value.status_code == 409
     assert "Cycle" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_chain_walk_rejects_session_id_cycle(dm, mgr, db, monkeypatch):
+    """If the parent_session_id pointers form a session-id cycle
+    (corrupted, not a real agent cycle), fail closed rather than
+    silently treating the chain as terminated. The cycle is forced
+    in memory after a valid creation, so the SQLite FK on
+    parent_session_id (which would catch the obvious construction
+    error) doesn't apply."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    a = await _make_agent(db, "A")
+    # Build a valid 2-session chain first so the FK is satisfied.
+    sess_a = await _make_session(mgr, octo["id"], name="a")
+    sess_b = await mgr.create_session(
+        agent_id=a["id"], name="b", working_dir="/tmp",
+        origin="delegation", parent_session_id=sess_a.id,
+        delegation_request="r",
+    )
+    # Force the cycle in memory only — corrupting the in-memory
+    # pointer chain without touching the DB. _check_chain walks via
+    # mgr.get_session which reads the in-memory map.
+    sess_a.parent_session_id = sess_b.id
+    with pytest.raises(DelegationError) as ex:
+        await dm.start_delegation(
+            parent_session_id=sess_a.id, agent_name="vera", request="r",
+        )
+    assert ex.value.status_code == 409
+    assert "session-id cycle" in str(ex.value)
+
+
+@pytest.mark.asyncio
+async def test_chain_walk_rejects_missing_ancestor(dm, mgr, db, monkeypatch):
+    """If a non-null parent_session_id points at a session that's
+    been hard-deleted from memory, the cycle/depth check can't make
+    a sound decision — fail closed instead of silently treating it
+    as a chain terminator."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    # Build the chain validly then evict the ancestor from the
+    # in-memory map. The remaining session still carries the now-
+    # stale parent_session_id; _check_chain walks via get_session
+    # which won't find it.
+    ancestor = await _make_session(mgr, octo["id"], name="ancestor")
+    child = await mgr.create_session(
+        agent_id=octo["id"], name="orphan", working_dir="/tmp",
+        origin="delegation", parent_session_id=ancestor.id,
+        delegation_request="r",
+    )
+    mgr.sessions.pop(ancestor.id, None)
+    with pytest.raises(DelegationError) as ex:
+        await dm.start_delegation(
+            parent_session_id=child.id, agent_name="vera", request="r",
+        )
+    assert ex.value.status_code == 409
+    assert "no longer exists" in str(ex.value)
 
 
 @pytest.mark.asyncio
@@ -504,6 +647,87 @@ async def test_cancel_delegation(dm, mgr, db, monkeypatch):
     # Idempotent.
     again = await dm.cancel_delegation(rec.delegation_id)
     assert again.state == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_delegation_single_inject_under_interrupt_broadcast(
+    dm, mgr, db, monkeypatch
+):
+    """The bug Vera caught: cancel_delegation() calls interrupt()
+    which broadcasts an `error` event before returning; without the
+    state-flip-first dance, `_on_broadcast` would catch that error,
+    finalize the record as `failed`, and inject `[agent-error
+    reason=child error]`. Then cancel_delegation would inject a
+    SECOND `[agent-error reason=cancelled]` — two terminal turns
+    for one cancellation.
+
+    With the fix, state flips to "cancelled" before interrupt fires,
+    so `_on_broadcast` short-circuits on `rec.state != "running"`."""
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+
+    async def fake_interrupt(sid):
+        # Mirror the real session_manager.interrupt: broadcast an
+        # `error` event on the child session before returning.
+        await dm._on_broadcast({
+            "type": "error",
+            "session_id": sid,
+            "message": "(interrupted by user)",
+        })
+        return True
+
+    monkeypatch.setattr(mgr, "interrupt", fake_interrupt)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    injected.clear()
+    updated = await dm.cancel_delegation(
+        rec.delegation_id, reason="user stop"
+    )
+    assert updated.state == "cancelled"
+    # Single terminal injection, NOT two.
+    assert len(injected) == 1, (
+        f"expected one terminal turn for one cancellation, "
+        f"got {len(injected)}: {injected!r}"
+    )
+    _, prompt = injected[0]
+    # The reason should be the cancel reason, not the "child error"
+    # placeholder — confirms the cancel path won, not the error path.
+    assert "user stop" in prompt
+    assert "child session error" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_terminal_injection_is_idempotent(dm, mgr, db, monkeypatch):
+    """Belt-and-suspenders: even if two terminal-producing events
+    race past the state guard (e.g. a `result` and an `error` from a
+    crashing child arrive in quick succession), exactly one
+    `[agent-…]` turn lands in the parent."""
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    injected.clear()
+    # Force the bypass: call `_inject_terminal` twice directly.
+    rec.state = "completed"
+    await dm._inject_terminal(rec)
+    await dm._inject_terminal(rec)
+    assert len(injected) == 1
 
 
 @pytest.mark.asyncio
@@ -830,8 +1054,14 @@ async def test_question_request_routed_to_parent(dm, mgr, db, monkeypatch):
     assert "Sidebar.tsx" in prompt
     assert "main UI" in prompt
     assert "single-choice" in prompt
-    # The mention of the answer tool nudges the parent's model.
-    assert "answer_agent_question" in prompt
+    # The injection names the actual MCP tool the parent's model
+    # should call (`mcp__ask_agent__answer`). Vera caught a
+    # version of this prompt that referenced
+    # `mcp__ask_agent__answer_agent_question` — a tool that
+    # doesn't exist (the Python function name leaked into the
+    # prompt). Guard the regression in both directions.
+    assert "mcp__ask_agent__answer" in prompt
+    assert "answer_agent_question" not in prompt
     # Delegation state stays running — question isn't a terminal event.
     assert rec.state == "running"
 

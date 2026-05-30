@@ -131,15 +131,15 @@ Pattern: call `mcp__ask_agent__ask`, briefly tell the user "asked \
 arrives, relay or build on what the other agent said.
 
 When a `[agent-question:…]` turn arrives, decide: answer directly \
-via `mcp__ask_agent__answer_agent_question(delegation_id, choice)` \
-if you know the answer; ask the user via `mcp__ask__user` if you \
-don't; cancel via `mcp__ask_agent__cancel_agent_task` as a last \
-resort. The other agent never talks to anyone except you — \
-questions and replies travel one hop, to the caller.
+via `mcp__ask_agent__answer(delegation_id, choice)` if you know \
+the answer; ask the user via `mcp__ask__user` if you don't; cancel \
+via `mcp__ask_agent__cancel` as a last resort. The other agent \
+never talks to anyone except you — questions and replies travel \
+one hop, to the caller.
 
-Related: `mcp__ask_agent__cancel_agent_task(delegation_id, reason?)` \
-to stop an in-flight delegation, `mcp__ask_agent__list_agent_tasks()` \
-to see recent delegations from this session."""
+Related: `mcp__ask_agent__cancel(delegation_id, reason?)` to stop \
+an in-flight delegation, `mcp__ask_agent__list()` to see recent \
+delegations from this session."""
 
 
 def _apply_env_credential(env: dict[str, str], credential: HarnessCredential | None) -> None:
