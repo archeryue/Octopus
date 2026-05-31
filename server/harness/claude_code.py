@@ -105,16 +105,19 @@ right answer. Don't use it for things you can decide yourself or \
 verify from the codebase. Don't use it as a substitute for \
 ExitPlanMode.
 
-[3] `mcp__ask_agent__ask(name, request, files?)` — delegate work to \
-another Octopus agent by display name. Use this when another agent \
-is better placed for the job (different skills, different tool \
-access, a fresh context). Returns a `delegation_id` IMMEDIATELY; the \
-other agent runs in the background and Octopus auto-injects a \
-follow-up turn here when they reply — prefixed \
-`[agent-reply:<name> delegation=<id>]` for a normal reply, \
-`[agent-question:<name> delegation=<id> question_id=<qid>]` if they \
-need an answer, or `[agent-error:<name> delegation=<id> \
-reason=<r>]` on failure / cancel.
+[3] `mcp__ask_agent__ask(request, name=…, delegation_id=…, files=…)` \
+— delegate work to another Octopus agent. Bimodal: pass `name` to \
+start a fresh delegation under a target agent, or pass \
+`delegation_id` (from a prior reply) to continue a previous \
+delegation in the same child session — exactly one of the two must \
+be set. Use a fresh delegation when another agent is better placed \
+for the job (different skills, different tool access, a fresh \
+context). Returns a `delegation_id` IMMEDIATELY; the other agent \
+runs in the background and Octopus auto-injects a follow-up turn \
+here when they reply — prefixed `[agent-reply:<name> delegation=<id>]` \
+for a normal reply, `[agent-question:<name> delegation=<id> \
+question_id=<qid>]` if they need an answer, or `[agent-error:<name> \
+delegation=<id> reason=<r>]` on failure / cancel.
 
 When the user says things like "ask <name> to …", "have <name> \
 review …", "delegate this to <name>", or "get <name>'s take on …" \
@@ -139,14 +142,14 @@ one hop, to the caller.
 
 **Continuing the same line of work with the same agent** (review \
 rounds, iterations on the same artifact, "now apply the same review \
-to file Y") — DON'T call `mcp__ask_agent__ask` again. That spawns a \
-fresh child session and makes them re-read everything. Instead call \
-`mcp__ask_agent__follow_up(delegation_id, request)` with the id of \
-the prior delegation: it reuses the same child session, so the \
-other agent still has the previous turn in their transcript and \
-can build on it. Use plain `ask` for fresh / unrelated / parallel \
-work — multiple in-flight delegations to one target need separate \
-sessions to run concurrently.
+to file Y") — don't omit the prior delegation_id and start over from \
+scratch. Instead call `mcp__ask_agent__ask` again but pass the \
+PRIOR `delegation_id` (and omit `name`): it reuses the same child \
+session, so the other agent still has the previous turn in their \
+transcript and can build on it without re-reading anything. Use the \
+`name`-only form for fresh / unrelated / parallel work — multiple \
+in-flight delegations to one target need separate sessions to run \
+concurrently. Exactly one of (`name`, `delegation_id`) must be set.
 
 Related: `mcp__ask_agent__cancel(delegation_id, reason?)` to stop \
 an in-flight delegation, `mcp__ask_agent__list()` to see recent \

@@ -40,20 +40,35 @@ def test_ask_agent_misconfigured(monkeypatch):
     assert "misconfigured" in out.lower()
 
 
-def test_ask_agent_rejects_empty_name(monkeypatch):
-    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
-    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
-    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
-    out = _call("ask_agent", name="   ", request="r")
-    assert "name" in out.lower() and "non-empty" in out.lower()
-
-
 def test_ask_agent_rejects_empty_request(monkeypatch):
     monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
     monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
     monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
     out = _call("ask_agent", name="Vera", request="   ")
     assert "request" in out.lower() and "non-empty" in out.lower()
+
+
+def test_ask_agent_rejects_when_neither_id_provided(monkeypatch):
+    """The merged `ask` tool requires exactly one of `name` or
+    `delegation_id`. Neither set is an error."""
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+    out = _call("ask_agent", request="r")
+    assert "exactly one" in out.lower()
+    # Whitespace-only ids count as not-set.
+    out = _call("ask_agent", name="   ", delegation_id="   ", request="r")
+    assert "exactly one" in out.lower()
+
+
+def test_ask_agent_rejects_when_both_ids_provided(monkeypatch):
+    """Both set is also an error — can't simultaneously start fresh
+    and continue the same delegation."""
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+    out = _call("ask_agent", name="Vera", delegation_id="d1", request="r")
+    assert "exactly one" in out.lower()
 
 
 def test_ask_agent_success(monkeypatch):
@@ -263,31 +278,14 @@ def test_list_agent_tasks_empty(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# follow_up_agent
+# ask_agent (continuation mode — delegation_id passed instead of name)
 # ---------------------------------------------------------------------------
 
 
-def test_follow_up_misconfigured(monkeypatch):
-    monkeypatch.delenv("OCTOPUS_API_BASE", raising=False)
-    monkeypatch.delenv("OCTOPUS_SESSION_ID", raising=False)
-    monkeypatch.delenv("OCTOPUS_AUTH_TOKEN", raising=False)
-    out = _call("follow_up_agent", delegation_id="d1", request="round 2")
-    assert "misconfigured" in out.lower()
-
-
-def test_follow_up_rejects_empty_args(monkeypatch):
-    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
-    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
-    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
-    assert "non-empty" in _call(
-        "follow_up_agent", delegation_id="   ", request="round 2"
-    )
-    assert "non-empty" in _call(
-        "follow_up_agent", delegation_id="d1", request="   "
-    )
-
-
-def test_follow_up_success(monkeypatch):
+def test_ask_agent_continue_routes_to_follow_up_endpoint(monkeypatch):
+    """When `delegation_id` is set (and `name` is not), `ask` posts
+    to the /follow-up endpoint and frames the return text as a
+    continuation."""
     monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
     monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
     monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
@@ -312,7 +310,7 @@ def test_follow_up_success(monkeypatch):
 
     monkeypatch.setattr(httpx, "post", fake_post)
     out = _call(
-        "follow_up_agent",
+        "ask_agent",
         delegation_id="d1",
         request="round 2",
     )
@@ -320,15 +318,17 @@ def test_follow_up_success(monkeypatch):
         "/api/sessions/s/delegations/d1/follow-up"
     )
     assert posted["body"] == {"request": "round 2"}
+    # No `agent_name` / `files` keys in the body for continuation mode.
+    assert "agent_name" not in posted["body"]
+    assert "files" not in posted["body"]
+    # The return text frames it as a continuation, not a fresh ask.
     assert "Continued delegation" in out
     assert "Vera" in out
-    # The follow-up text guides the model to end its turn (same
-    # pattern as bg_run / ask_agent).
-    assert "follow-up turn" in out
+    assert "previous round" in out
     assert "agent-reply:Vera" in out
 
 
-def test_follow_up_404(monkeypatch):
+def test_ask_agent_continue_404_nudges_to_fresh(monkeypatch):
     monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
     monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
     monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
@@ -341,13 +341,15 @@ def test_follow_up_404(monkeypatch):
 
     monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
     out = _call(
-        "follow_up_agent", delegation_id="ghost", request="r"
+        "ask_agent", delegation_id="ghost", request="r"
     )
     assert "No delegation" in out
-    assert "ask_agent" in out  # nudges the model to start fresh
+    # Nudges the model to retry with `name` instead.
+    assert "`name`" in out
+    assert "start fresh" in out.lower()
 
 
-def test_follow_up_409_still_running(monkeypatch):
+def test_ask_agent_continue_409_still_running(monkeypatch):
     monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
     monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
     monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
@@ -360,10 +362,18 @@ def test_follow_up_409_still_running(monkeypatch):
 
     monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
     out = _call(
-        "follow_up_agent", delegation_id="d1", request="round 2"
+        "ask_agent", delegation_id="d1", request="round 2"
     )
-    assert "Cannot follow up" in out
+    assert "Cannot continue" in out
     assert "still running" in out
+
+
+def test_ask_agent_continue_misconfigured(monkeypatch):
+    monkeypatch.delenv("OCTOPUS_API_BASE", raising=False)
+    monkeypatch.delenv("OCTOPUS_SESSION_ID", raising=False)
+    monkeypatch.delenv("OCTOPUS_AUTH_TOKEN", raising=False)
+    out = _call("ask_agent", delegation_id="d1", request="round 2")
+    assert "misconfigured" in out.lower()
 
 
 # ---------------------------------------------------------------------------

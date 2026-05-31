@@ -8,12 +8,20 @@ name); inside this module the underlying Python functions are
 ``list_agent_tasks`` and the ``@mcp.tool(name=…)`` decorators expose
 the short forms ``ask`` / ``cancel`` / ``answer`` / ``list``.
 
-  - `ask` — start a fire-and-forget delegation to another agent by
-    name. Returns a `delegation_id` immediately and ends the current
-    turn; when the other agent finishes, Octopus auto-fires a
-    follow-up turn into this session prefixed
+  - `ask(request, name=…, delegation_id=…, files=…)` — bimodal
+    delegation. Pass `name` to start a fresh delegation under a
+    target agent; pass `delegation_id` to continue a prior
+    delegation in the SAME child session (so the other agent keeps
+    her in-session transcript across rounds — review iterations,
+    "now apply that same review to file Y"). Exactly one of the two
+    ids must be set. Returns a `delegation_id` immediately and ends
+    the current turn; when the other agent finishes, Octopus
+    auto-fires a follow-up turn into this session prefixed
     `[agent-reply:<name> delegation=<id>]` carrying the other
-    agent's reply.
+    agent's reply. The two modes were originally separate `ask` and
+    `follow_up` tools; merged into one to keep the model's tool
+    surface small (fewer per-turn-context tokens, one decision
+    point instead of two).
 
   - `cancel` — best-effort stop a running delegation. Idempotent.
 
@@ -97,39 +105,60 @@ def _headers() -> dict[str, str] | None:
 
 @mcp.tool(name="ask")
 def ask_agent(
-    name: str,
     request: str,
+    name: str | None = None,
+    delegation_id: str | None = None,
     files: list[str] | None = None,
 ) -> str:
-    """Delegate work to another agent by name and wait — across turns —
-    for their reply. Returns a delegation id immediately; the other
+    """Delegate work to another agent and wait — across turns — for
+    their reply. Returns a delegation id immediately; the other
     agent's reply arrives as a follow-up turn into THIS session,
     prefixed `[agent-reply:<name> delegation=<id>]`.
+
+    Two modes, picked by which id you pass:
+
+    1) **Fresh delegation** — pass `name`. The other agent runs in a
+       new child session with no context from this conversation; brief
+       them in `request` as if they just walked into the room.
+
+    2) **Continuation of a prior round** — pass `delegation_id` from a
+       previous reply you got from the same agent. The other agent's
+       earlier turn is still in her transcript, so she resumes with
+       full context — ideal for review rounds, "now apply that same
+       review to file Y", or any iteration on the same line of work.
+       Don't repeat the original brief; just say what's new.
+
+    Use mode (1) for unrelated work or **parallel fan-out** (multiple
+    in-flight delegations to one target need separate sessions to run
+    concurrently). Use mode (2) to save the other agent re-reading
+    everything when you're continuing the same line of work.
+
+    Exactly ONE of (`name`, `delegation_id`) must be set.
 
     Use this when the other agent is better placed to do the work
     (different skills, different tool access, a fresh context). Do NOT
     use it to offload work you can do yourself in this turn — the
     cross-turn round-trip costs latency and tokens.
 
-    After calling this tool, briefly tell the user you've asked
-    `<name>` to do `<short paraphrase>` and end your turn. When the
-    follow-up turn arrives, relay or build on the other agent's
-    reply.
+    After calling, briefly tell the user what you asked and end your
+    turn. When the follow-up arrives, relay or build on the reply.
 
     Args:
+        request: What you want the other agent to do. For mode 1
+            (fresh), write it self-contained: name files, paste
+            snippets, spell out goals. For mode 2 (continuation), say
+            only what's NEW — the original brief and the previous
+            reply are already in the other agent's transcript.
         name: The other agent's display name (e.g. "Vera",
-            "Researcher"). Case-insensitive. Ambiguous matches
-            (two agents with the same name) are rejected — rename
-            one first.
-        request: What you want the other agent to do. Write it
-            self-contained: name files, paste relevant snippets,
-            spell out goals — the other agent does NOT see this
-            session's transcript. Treat it like asking a teammate
-            who walked into the room cold.
-        files: Optional list of file paths the other agent should
-            read first. Paths are interpreted relative to this
-            session's working directory. The other agent has its
-            own file-reading tools — we just point.
+            "Researcher"). Required for mode 1. Case-insensitive;
+            ambiguous matches are rejected.
+        delegation_id: The id from an earlier reply (`[agent-reply:…
+            delegation=<id>]`) to continue. Required for mode 2. The
+            delegation must be in a terminal state — wait for the
+            reply before continuing.
+        files: Optional list of paths the other agent should read.
+            Mode 1 only; ignored for continuations (the prior turn's
+            file references are already in the transcript).
 
     Returns:
         A short string with the delegation id. Cite that id back to
@@ -143,13 +172,63 @@ def ask_agent(
             "Error: ask_agent server is misconfigured (env vars "
             "missing); cannot start a delegation."
         )
-    if not (name or "").strip():
-        return "Error: `name` must be a non-empty agent name."
     if not (request or "").strip():
         return "Error: `request` must be a non-empty description of the ask."
 
+    name = (name or "").strip() or None
+    delegation_id = (delegation_id or "").strip() or None
+    if (name is None) == (delegation_id is None):
+        return (
+            "Error: exactly one of `name` (fresh delegation) or "
+            "`delegation_id` (continue prior) must be provided."
+        )
+
+    if delegation_id is not None:
+        # Continuation mode — same child session, model resumes with
+        # prior transcript in view.
+        url = (
+            f"{api}/api/sessions/{sid}/delegations/"
+            f"{delegation_id}/follow-up"
+        )
+        body: dict[str, object] = {"request": request}
+        try:
+            r = httpx.post(url, json=body, headers=hdrs, timeout=10.0)
+        except httpx.HTTPError as e:
+            return (
+                f"Error: failed to reach Octopus to continue "
+                f"delegation {delegation_id}: {e}"
+            )
+        if r.status_code == 404:
+            return (
+                f"No delegation `{delegation_id}` for this session — "
+                f"maybe it's from a different parent. Pass `name` "
+                f"instead to start fresh."
+            )
+        if r.status_code == 409:
+            return (
+                f"Cannot continue `{delegation_id}` right now: "
+                f"{r.text[:300]}. Pass `name` instead to start a "
+                f"fresh delegation."
+            )
+        if r.status_code not in (200, 201):
+            return (
+                f"Error continuing delegation `{delegation_id}` "
+                f"({r.status_code}): {r.text[:300]}"
+            )
+        data = r.json()
+        did = data.get("delegation_id", delegation_id)
+        target = data.get("target_agent_name") or "the other agent"
+        return (
+            f"Continued delegation `{did}` with {target} in the same "
+            f"session — they have the previous round in their "
+            f"transcript. Tell the user briefly what you asked, then "
+            f"end your turn. The reply will arrive as a follow-up "
+            f"turn prefixed `[agent-reply:{target} delegation={did}]`."
+        )
+
+    # Fresh-delegation mode.
     url = f"{api}/api/sessions/{sid}/delegations"
-    body: dict[str, object] = {
+    body = {
         "agent_name": name,
         "request": request,
     }
@@ -222,86 +301,6 @@ def cancel_agent_task(delegation_id: str, reason: str | None = None) -> str:
         f"Delegation `{delegation_id}` is in state {state}. A "
         f"terminal follow-up turn will arrive shortly if it wasn't "
         f"already finished."
-    )
-
-
-@mcp.tool(name="follow_up")
-def follow_up_agent(delegation_id: str, request: str) -> str:
-    """Continue a PREVIOUS delegation in the same child session, so
-    the other agent keeps her in-session transcript and can build on
-    what she did last round.
-
-    Use this for review / iteration loops where context continuity
-    matters — "you flagged X last round, I fixed it, take another
-    look", or "now apply the same review to file Y". The other agent
-    won't have to re-read everything she already read; she's still
-    holding it in conversation.
-
-    Use the plain `mcp__ask_agent__ask` tool instead for:
-      - fresh, unrelated work to the same agent;
-      - parallel fan-out (multiple in-flight delegations to one
-        target — they need separate sessions to run concurrently).
-
-    Args:
-        delegation_id: The id returned by an earlier `ask_agent` call,
-            now in a terminal state (replied / failed / cancelled).
-            Running delegations are rejected — wait for the reply
-            first.
-        request: The new ask. Don't repeat the original brief — the
-            other agent has it in her transcript already.
-
-    Returns:
-        A short string confirming the new round started. The reply
-        arrives as a fresh `[agent-reply:<name> delegation=<id>]`
-        follow-up turn into this session.
-    """
-    api = _api_base()
-    sid = _session_id()
-    hdrs = _headers()
-    if not (api and sid and hdrs):
-        return "Error: ask_agent server is misconfigured (env vars missing)."
-    if not (delegation_id or "").strip():
-        return "Error: `delegation_id` must be a non-empty string."
-    if not (request or "").strip():
-        return "Error: `request` must be a non-empty string."
-    url = (
-        f"{api}/api/sessions/{sid}/delegations/"
-        f"{delegation_id}/follow-up"
-    )
-    body = {"request": request}
-    try:
-        r = httpx.post(url, json=body, headers=hdrs, timeout=10.0)
-    except httpx.HTTPError as e:
-        return (
-            f"Error: failed to reach Octopus to follow up "
-            f"delegation {delegation_id}: {e}"
-        )
-    if r.status_code == 404:
-        return (
-            f"No delegation `{delegation_id}` for this session — "
-            f"maybe it's from a different parent. Use `ask_agent` "
-            f"to start fresh."
-        )
-    if r.status_code == 409:
-        return (
-            f"Cannot follow up `{delegation_id}` right now: "
-            f"{r.text[:300]}. Use `ask_agent` to start a fresh "
-            f"delegation instead."
-        )
-    if r.status_code not in (200, 201):
-        return (
-            f"Error following up delegation `{delegation_id}` "
-            f"({r.status_code}): {r.text[:300]}"
-        )
-    data = r.json()
-    did = data.get("delegation_id", delegation_id)
-    target = data.get("target_agent_name") or "the other agent"
-    return (
-        f"Continued delegation `{did}` with {target} in the same "
-        f"session — they have your previous round in their "
-        f"transcript. Reply will arrive as a follow-up turn "
-        f"prefixed `[agent-reply:{target} delegation={did}]`. Tell "
-        f"the user briefly what you asked, then end your turn."
     )
 
 

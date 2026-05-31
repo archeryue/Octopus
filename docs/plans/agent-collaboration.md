@@ -413,21 +413,38 @@ returns the live + recently-finished `DelegationRunState` records for
 this parent, capped at 25, most recent first. Symmetric with
 `mcp__bg__list`.
 
-### 5.6a `mcp__ask_agent__follow_up` — continue a prior delegation
+### 5.6a Continuing a prior delegation — bimodal `ask`
 
-`mcp__ask_agent__follow_up(delegation_id, request)` →
-`POST /api/sessions/{parent_sid}/delegations/{delegation_id}/follow-up`.
-Continues a previously-terminal delegation in the **same child
-session**, so the target agent's in-session transcript carries
-across rounds. The intended use is review/iteration loops: Octo
-asks Vera, Vera replies + auto-archives; on the next round Octo
-calls `follow_up` rather than another `ask` and Vera resumes with
+The `mcp__ask_agent__ask` tool is **bimodal**. Either:
+
+- Pass `name` to start a fresh delegation under a target agent (the
+  shape described in §5.1), or
+- Pass `delegation_id` (from a prior reply) to continue that
+  delegation in the **same child session** — the target agent's
+  in-session transcript carries across rounds.
+
+Exactly one of (`name`, `delegation_id`) must be set; the server
+rejects both-or-neither. The continuation routes to a separate
+REST endpoint
+(`POST /api/sessions/{parent_sid}/delegations/{delegation_id}/follow-up`)
+but at the model's surface it's the same tool, distinguished by
+which id is present.
+
+The intended use of mode 2 is review/iteration loops: Octo asks
+Vera, Vera replies + auto-archives; on the next round Octo calls
+`ask` again with the previous `delegation_id` and Vera resumes with
 her previous reply still visible in her own conversation — no
-re-reading of files, no re-establishing context. The plain `ask`
-tool is still the right shape for **fresh / unrelated work**, and
-for **parallel fan-out to the same target** (multiple in-flight
-delegations to one agent need separate sessions to run
-concurrently — sharing one would serialise them).
+re-reading of files, no re-establishing context. Mode 1 is still
+the right shape for **fresh / unrelated work**, and for **parallel
+fan-out to the same target** (multiple in-flight delegations to one
+agent need separate sessions to run concurrently — sharing one
+would serialise them).
+
+This bimodal merge was chosen over a separate `follow_up` tool
+deliberately: every extra MCP tool costs per-turn system-prompt
+context tokens AND gives the model an unnecessary "which one?"
+decision. The plain `bg_run` pattern is the precedent — one tool,
+parameters distinguish behaviour.
 
 Server-side flow:
 
