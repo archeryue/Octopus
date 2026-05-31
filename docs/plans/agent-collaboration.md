@@ -54,11 +54,14 @@ needed: a delegation is a normal `Session` row with a
 
 ## 1. Goals
 
-- A built-in MCP tool `mcp__ask_agent__ask(name, request, files?)`
-  available to every agent by default, by which an agent can delegate
-  a request to another named agent. The Python function that backs it
-  is still named `ask_agent`; the exported MCP tool name is `ask`
-  via `@mcp.tool(name="ask")`.
+- A built-in MCP tool
+  `mcp__ask_agent__ask(request, name=…, delegation_id=…, files=…)`
+  available to every agent by default. Pass `name` to delegate a
+  fresh request to another named agent; pass `delegation_id` to
+  continue a prior delegation in the same child session. Exactly one
+  id is required. The Python function that backs it is still named
+  `ask_agent`; the exported MCP tool name is `ask` via
+  `@mcp.tool(name="ask")`.
 - Delegations are **async, bg-task-style**: tool returns immediately
   with a `delegation_id`; the parent agent's turn ends; the child's
   reply arrives later as an injected follow-up turn.
@@ -105,7 +108,7 @@ to mimic its shape almost exactly:
 
 | bg-task | agent-delegation |
 |---|---|
-| `mcp__bg__run(command, description?)` | `mcp__ask_agent__ask(name, request, files?)` |
+| `mcp__bg__run(command, description?)` | `mcp__ask_agent__ask(request, name=…, delegation_id=…, files=…)` |
 | Returns `task_id` immediately | Returns `delegation_id` immediately |
 | Parent turn ends | Parent turn ends |
 | Subprocess runs in background | Child Session runs in background |
@@ -178,10 +181,11 @@ first user-message in the child's transcript.
 
 ## 5. Behavior
 
-### 5.1 `mcp__ask_agent__ask(name, request, files?)` — invocation
+### 5.1 `mcp__ask_agent__ask(request, name=…, delegation_id=…, files=…)` — invocation
 
 A new built-in MCP stdio server, `server/mcp_servers/ask_agent.py`,
-shaped exactly like `bg.py`. Four MCP-exposed tools: `ask` (start),
+shaped exactly like `bg.py`. Four MCP-exposed tools: `ask` (fresh start
+or same-session continuation),
 `answer` (answer a child question), `cancel` (stop), and `list`
 (introspect). Their full mounted names are
 `mcp__ask_agent__ask`, `mcp__ask_agent__answer`,

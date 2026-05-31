@@ -26,8 +26,10 @@ records live in [`plans/`](plans/), and the current system is described in
 - **Agent-to-agent collaboration** — the `mcp__ask_agent__*` MCP tools.
   One agent can delegate to another by name; the delegated child runs
   in its own session under its own agent's config; replies and
-  questions travel one hop, to the caller. Reverses the explicit "no
-  A2A" carve-out in `agent-refactor.md` §40-41; no Run table was
+  questions travel one hop, to the caller. Follow-up rounds pass the
+  prior `delegation_id` back to `ask`, reusing the same child session
+  so the delegated agent keeps her transcript. Reverses the explicit
+  "no A2A" carve-out in `agent-refactor.md` §40-41; no Run table was
   needed (a delegation is a normal `Session` row with
   `parent_session_id` set + `origin='delegation'`).
   ([`plans/agent-collaboration.md`](plans/agent-collaboration.md))

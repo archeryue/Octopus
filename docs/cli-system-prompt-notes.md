@@ -15,7 +15,7 @@ the model, with different scopes and reload semantics:
 
 `server/harness/claude_code.py` builds a long Python string
 (`_OCTOPUS_SYSTEM_PROMPT`) describing the MCP tools Octopus injects
-(`bg`, `ask`), and how to use each. The string is then passed as a
+(`bg`, `ask`, `ask_agent`), and how to use each. The string is then passed as a
 positional argv element on every CLI spawn:
 
 ```python
@@ -47,7 +47,7 @@ Moving the rule into `--append-system-prompt` means:
   remains valid as a per-user reinforcement.
 
 The actual text of the rule (see `_OCTOPUS_SYSTEM_PROMPT` in
-`server/backends/claude_code.py`) is intentionally strict: "use
+`server/harness/claude_code.py`) is intentionally strict: "use
 bg_run unconditionally for any test suite / build / install /
 sleep / network fetch". That's framed as a bright line because
 "≥30s use bg_run, <30s use Bash" — the prior wording — was too

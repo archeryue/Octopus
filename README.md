@@ -67,6 +67,10 @@ Phone / Browser / Telegram
     turn; the reply (`[agent-reply:Vera …]`) arrives as a new turn when
     Vera finishes. Multiple delegations in flight at once give you
     parallel fan-out for free.
+  - **Same-session follow-ups** for iteration. Calling `ask` again with a
+    prior `delegation_id` continues that child session, so the delegated
+    agent keeps her own transcript for review rounds instead of starting
+    cold.
   - **Cascade-cancel + nested chains.** Octo → Vera → Pete is supported
     (depth-3 cap with cycle detection); cancelling Vera also cancels
     Pete. Chat UI renders three card types — the in-flight delegation,
@@ -148,7 +152,7 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 754 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
+.venv/bin/pytest tests/ -v        # 764 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
 cd web && bun run test            # 64 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
 cd web && bun run test:e2e        # 62 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI). Split into `:fast` (UI-only, ~16s) and `:llm` (real Claude/Codex, ~3min) for dev iteration.
