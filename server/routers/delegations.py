@@ -52,7 +52,8 @@ class AnswerDelegationQuestionRequest(BaseModel):
 
 
 class FollowUpDelegationRequest(BaseModel):
-    """Body for `mcp__ask_agent__follow_up`: continue a prior
+    """Body for the continuation mode of `mcp__ask_agent__ask`
+    (delegation_id passed in place of name): continue a prior
     delegation with a new request in the SAME child session, so the
     target agent keeps her in-session transcript across rounds.
 
@@ -160,11 +161,20 @@ async def follow_up_delegation(
     - 201 Created on a successful new round (state flips to
       "running" again; reply arrives as a fresh `[agent-reply:…]`
       injection when the child finishes)
-    - 404 if the delegation doesn't belong to this parent
+    - 404 if the parent session is no longer live (archived /
+      deleted between rounds; the model must be invoked from a
+      live session for the reply to land somewhere visible) or if
+      the delegation doesn't belong to this parent
     - 409 if the delegation is still running (wait for its terminal
       first), or if the child session is hard-deleted (start a
       fresh `ask` instead)
     """
+    # Vera-round-5 finding: without this guard, an archived /
+    # deleted parent session could still receive a follow-up that
+    # round-resets the record, starts the child, and then silently
+    # drops the terminal turn because there's no live parent to
+    # inject into. Matches the start_delegation route's behaviour.
+    _require_session(session_id)
     try:
         rec = await delegation_manager.follow_up_delegation(
             parent_session_id=session_id,

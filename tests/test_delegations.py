@@ -993,6 +993,49 @@ async def test_follow_up_rejects_empty_request(dm, mgr, db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_route_follow_up_requires_live_parent(client, monkeypatch):
+    """Vera-round-5 finding: a follow-up from a parent session that's
+    no longer in the live sessions map (archived / deleted between
+    rounds) must 404 — otherwise the manager would round-reset the
+    record and start the child, then silently drop the terminal
+    turn because there's no live parent to inject into."""
+    async def noop(sid, prompt, attachment_ids=None):
+        return None
+
+    monkeypatch.setattr(session_manager, "start_message", noop)
+
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    octo = next(a for a in agents if a["is_system"])
+    await _post_agent(client, "Vera")
+    parent = await _post_session(client, octo["id"])
+    create = await client.post(
+        f"/api/sessions/{parent['id']}/delegations",
+        json={"agent_name": "vera", "request": "round 1"},
+        headers=HEADERS,
+    )
+    did = create.json()["delegation_id"]
+    await singleton_delegation_manager._on_broadcast({
+        "type": "result", "session_id": did, "is_error": False,
+    })
+    # Evict the parent session from the live map (simulating archive
+    # / hard delete between rounds).
+    session_manager.sessions.pop(parent["id"], None)
+
+    r = await client.post(
+        f"/api/sessions/{parent['id']}/delegations/{did}/follow-up",
+        json={"request": "round 2"},
+        headers=HEADERS,
+    )
+    assert r.status_code == 404
+    # The record must still be in its terminal state — the route
+    # rejected before round-reset, so subsequent attempts (if the
+    # user unarchives the parent) still see the original state.
+    rec = singleton_delegation_manager.get_delegation(did)
+    assert rec is not None
+    assert rec.state == "completed"
+
+
+@pytest.mark.asyncio
 async def test_route_follow_up(client, monkeypatch):
     """HTTP path mirrors the manager: 200/201 happy path; 404 for
     unknown delegation; 409 while running."""

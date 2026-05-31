@@ -475,9 +475,10 @@ Server-side flow:
    `[agent-reply:<name> delegation=<id>]` into the parent, then
    auto-archives the child for the next round.
 
-The model picks between `ask` and `follow_up` via the system-prompt
-rule appended in `claude_code.py` / `codex.py` — keyed on whether
-this is a *continuation* of an existing line of work with the same
+The model picks between the two `ask` modes (fresh `name` vs.
+continuation via `delegation_id`) via the system-prompt rule
+appended in `claude_code.py` / `codex.py` — keyed on whether this
+is a *continuation* of an existing line of work with the same
 agent. Cascade-cancel and the cycle/depth walk both still operate
 on the persistent `delegation_id`, so the chain semantics survive
 unchanged across rounds.
