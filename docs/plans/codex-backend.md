@@ -203,6 +203,15 @@ ends it, `_close_stream` releases the iterator) — **no
 
 ### 5.3 MCP tool injection — Octopus-specific (VM0 gives no help here)
 
+> **Post-implementation drift on the built-in set.** When this plan
+> was written the set was `{viewer, bg, ask}`. Today it's
+> `{bg, ask, ask_agent}`: `viewer` was removed when `/showme` became a
+> client-driven REST resolver (the model shouldn't open files on its
+> own — it can't tell whether anyone is at the screen), and `ask_agent`
+> landed alongside the [`agent-collaboration.md`](agent-collaboration.md)
+> feature. The injection *mechanism* described below stands unchanged;
+> only the names in the set rotated.
+
 `/showme`, `bg_run`, `ask_user` are MCP tools. Claude gets them via
 `--mcp-config <inline JSON>` (`claude_code.py:264-317`) registering three
 stdio servers (`python -m server.mcp_servers.{viewer,bg,ask}`) with a

@@ -212,7 +212,10 @@ class TurnSpec:
 
 **Shared in `assembly.py`** (moved out of both `build_args`), producing
 the neutral pieces passed into `build_turn_argv` via `TurnContext`:
-- selecting in-app MCP servers from `{viewer,bg,ask}` per `mcp_servers`,
+- selecting in-app MCP servers from `{bg,ask,ask_agent}` per `mcp_servers`
+  (the original set was `{viewer,bg,ask}`; `viewer` was removed when
+  `/showme` became a client-driven REST resolver, and `ask_agent`
+  landed with [`agent-collaboration.md`](agent-collaboration.md)),
 - merging connector MCP entries (`mcp_entry`, already neutral),
 - composing the system prompt = `persona + profile.tools_prompt
   + render_connectors_blurb(connectors)`. The Octopus-tools blurb stays
