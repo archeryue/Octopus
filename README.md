@@ -49,13 +49,34 @@ Phone / Browser / Telegram
 - **Background & scheduled work** — Agents fire off shell commands that run in
   the background **across turns** (the result arrives as a follow-up turn), and
   recurring scheduled prompts run per agent into fresh, auto-archiving sessions.
+- **Agent-to-agent collaboration** — One agent can delegate to another by
+  name: "ask Vera to review this file" spawns Vera in her own session
+  under her own agent config (credentials, memory, tools, even a different
+  backend — `claude-code` agent can delegate to a `codex` agent), and her
+  reply lands back in the caller's session as a follow-up turn. The
+  model:
+  - **The principal-chain rule.** Every session has exactly one *caller*
+    (the human for root sessions, the parent agent's session for
+    delegations). Questions and replies always travel one hop — to the
+    caller. If Vera doesn't know something, she asks her caller; if the
+    caller is another agent and *it* doesn't know, it asks *its* caller;
+    only the top of the chain (the human) ever sees a question that
+    propagated all the way up.
+  - **Async by default**, like background tasks. The model calls
+    `mcp__ask_agent__ask`, gets a `delegation_id` immediately, ends its
+    turn; the reply (`[agent-reply:Vera …]`) arrives as a new turn when
+    Vera finishes. Multiple delegations in flight at once give you
+    parallel fan-out for free.
+  - **Cascade-cancel + nested chains.** Octo → Vera → Pete is supported
+    (depth-3 cap with cycle detection); cancelling Vera also cancels
+    Pete. Chat UI renders three card types — the in-flight delegation,
+    the reply when it lands, and a question that travelled back to you
+    — and the sidebar surfaces hidden delegation sessions on demand.
+  - Design: [`docs/plans/agent-collaboration.md`](docs/plans/agent-collaboration.md).
 - **In-app tools** — Every agent gets MCP tools Octopus injects: a
   **background runner**, a structured **ask-the-user** prompt rendered as
-  a multiple-choice form in the UI, and **agent-to-agent delegation**
-  (`mcp__ask_agent__ask`) so one agent can hand work to another by name
-  ("ask Vera to review this") and resume when the other replies.
-  Cross-turn round-trips work the same as the background runner —
-  replies arrive as injected follow-up turns.
+  a multiple-choice form in the UI, and the agent-to-agent **delegation**
+  tools described in the previous bullet.
 - **In-app file viewer** — `/showme <reference>` opens a file from the
   session's working directory in a browser modal — markdown rendered,
   images/PDFs inline, code highlighted. Exact paths short-circuit (no
