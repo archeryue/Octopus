@@ -92,7 +92,7 @@ Claude/Codex credential badges.
   `_run_backend` `:866-905`). For Codex it holds a `thread_id`.
 - The `_run_backend` recovery loop (`:825-966`) respawns with
   `"continue"` to work around a *Claude-CLI* bug
-  (`docs/2026-05-18-bg-pipeline-hardening.md` §2); Codex must not inherit
+  (`docs/post-mortems/2026-05-18-bg-pipeline-hardening.md` §2); Codex must not inherit
   it.
 
 ---

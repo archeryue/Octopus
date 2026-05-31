@@ -3,7 +3,7 @@
 Linux's `MAX_ARG_STRLEN` ceiling (~128 KB / 32 pages) means `execve`
 fails with `E2BIG` if any single argv element is larger. Octopus
 passes the user prompt to `claude` as a positional argv after `--`
-(the VM0 shape — see `docs/2026-05-18-bg-pipeline-hardening.md` §2),
+(the VM0 shape — see `docs/post-mortems/2026-05-18-bg-pipeline-hardening.md` §2),
 so any prompt over the ceiling is unspawnable.
 
 In the wild this fires most often on bg-task-result injection

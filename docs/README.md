@@ -38,7 +38,9 @@ post-mortem on a tricky pipeline. Cited from code where relevant.
   `exec --json` event schema.
 - **[cli-system-prompt-notes.md](cli-system-prompt-notes.md)** — observed
   system-prompt behavior.
-- **[2026-05-18-bg-pipeline-hardening.md](2026-05-18-bg-pipeline-hardening.md)** —
-  post-mortem on four `mcp__bg__run` → model-turn pipeline bugs (referenced by
-  code). Note: the `server/backends/*` paths it cites predate the harness
-  refactor — that code now lives under `server/harness/`.
+- **[post-mortems/](post-mortems/)** — incident write-ups (kept here because
+  code/tests cite them inline). Currently
+  [`2026-05-18-bg-pipeline-hardening.md`](post-mortems/2026-05-18-bg-pipeline-hardening.md):
+  post-mortem on four `mcp__bg__run` → model-turn pipeline bugs. Note: the
+  `server/backends/*` paths it cites predate the harness refactor — that code
+  now lives under `server/harness/`.

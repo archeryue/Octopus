@@ -16,7 +16,7 @@ refactor (commit `5815560`). The old shape used
 `--input-format=stream-json` + `--permission-prompt-tool=stdio` and
 drove a bidirectional control protocol over stdin; that path is gone.
 The refactor and the recovery loop that sits on top of it are
-documented in `docs/2026-05-18-bg-pipeline-hardening.md` §2.
+documented in `docs/post-mortems/2026-05-18-bg-pipeline-hardening.md` §2.
 
 ## Invocation
 
@@ -49,7 +49,7 @@ Notes per flag:
   already trusts the call. The previous shape
   (`--permission-prompt-tool=stdio` + host callback) gave us nothing
   we needed and was on the failure surface for the CLI
-  premature-exit bug; see `docs/2026-05-18-bg-pipeline-hardening.md`
+  premature-exit bug; see `docs/post-mortems/2026-05-18-bg-pipeline-hardening.md`
   §2.
 - `--disallowedTools AskUserQuestion`: prevents the model from
   calling the built-in AUQ. We provide `mcp__ask__user` (see below)
@@ -68,7 +68,7 @@ What we **do not** set, and why:
 
 - `--input-format=stream-json` — was load-bearing on the failure
   surface for the CLI premature-exit bug
-  (`docs/2026-05-18-bg-pipeline-hardening.md` §2). With the default
+  (`docs/post-mortems/2026-05-18-bg-pipeline-hardening.md` §2). With the default
   text input, we pass the prompt as argv and never write to stdin.
 - `--permission-prompt-tool=stdio` — replaced by `--dangerously-skip-permissions`.
 - `--permission-mode default` — moot once skipped.
@@ -191,7 +191,7 @@ EOF and treats the turn as ended; the user sees the chat go silent
 with the tool's result missing.
 
 The post-mortem and the mitigation that shipped live in
-`docs/2026-05-18-bg-pipeline-hardening.md` §2. Short version:
+`docs/post-mortems/2026-05-18-bg-pipeline-hardening.md` §2. Short version:
 
 - Independent of the input-format / permission-prompt path (the
   VM0-shape refactor reduced frequency but did not eliminate).

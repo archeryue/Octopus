@@ -4,7 +4,7 @@ Each connector MCP server runs as a grandchild of the FastAPI process and
 calls back to it for the per-installation access token. Tokens are cached
 in-process until just before expiry so we don't HTTP every tool call. Results
 are capped so a large payload can't trip the CLI premature-exit bug
-(docs/2026-05-18-bg-pipeline-hardening.md §2).
+(docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2).
 """
 
 from __future__ import annotations

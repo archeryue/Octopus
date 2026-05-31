@@ -20,7 +20,7 @@ Modes:
                             interrupt() → stop() actually tears the process
                             down via SIGTERM/SIGKILL.
   premature-exit-after-tool : reproduces the CLI bug post-mortemed in
-                            docs/2026-05-18-bg-pipeline-hardening.md §2
+                            docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2
                             — emits init + tool_use + tool_result and
                             then exits WITHOUT emitting `result`,
                             simulating the model never being re-invoked.
@@ -123,7 +123,7 @@ def run_premature_exit_after_tool():
     then a tool_use, then the tool_result echo, then exit WITHOUT
     emitting `result`. This is the exact event shape that left
     session 561d86e2-… stuck — post-mortem in
-    docs/2026-05-18-bg-pipeline-hardening.md §2."""
+    docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2."""
     _emit_init()
     _emit({
         "type": "assistant",

@@ -252,7 +252,7 @@ by default and gate sensitive actions through `ask`/connector confirms instead.)
 `mcp__bg__run` spawns a detached shell task (`bg_tasks.py`) that survives across
 turns; when it exits, Octopus injects a follow-up turn carrying the captured
 output (spilled to a file first if large). An idle watchdog SIGTERMs tasks that
-go silent after producing output. Details: [`2026-05-18-bg-pipeline-hardening.md`](2026-05-18-bg-pipeline-hardening.md).
+go silent after producing output. Details: [`post-mortems/2026-05-18-bg-pipeline-hardening.md`](post-mortems/2026-05-18-bg-pipeline-hardening.md).
 
 ## WebSocket protocol (`/ws`)
 
@@ -404,7 +404,7 @@ provisioned on agent create, kept on archive, removed on hard delete.
   tool chatter is opt-in via `/verbose` (persisted per chat).
 - **Hardened bg pipeline.** Large prompts spill to a file (`E2BIG` guard),
   premature CLI exit after a tool use auto-respawns once, and an idle watchdog
-  reaps silent bg tasks. See [`2026-05-18-bg-pipeline-hardening.md`](2026-05-18-bg-pipeline-hardening.md).
+  reaps silent bg tasks. See [`post-mortems/2026-05-18-bg-pipeline-hardening.md`](post-mortems/2026-05-18-bg-pipeline-hardening.md).
 - **Secrets split + encrypted.** Credential/connector secrets live in dedicated
   `*_secrets` tables, Fernet-encrypted with the auth token, read only by the
   MCP subprocess at tool-call time.

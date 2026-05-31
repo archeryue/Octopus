@@ -875,7 +875,7 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
     # argv prompt, --dangerously-skip-permissions instead of the old
     # --permission-prompt-tool=stdio path. The migration away from
     # --input-format=stream-json was the whole point of the refactor
-    # (see docs/2026-05-18-bg-pipeline-hardening.md §2).
+    # (see docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2).
     argv_str = " ".join(str(a) for a in argv)
     assert "claude" in argv_str
     assert "--dangerously-skip-permissions" in argv_str
@@ -1017,7 +1017,7 @@ async def test_run_backend_translates_events_end_to_end(manager):
 
 # ---------------------------------------------------------------------------
 # Auto-respawn on CLI premature exit
-# (post-mortem in docs/2026-05-18-bg-pipeline-hardening.md §2)
+# (post-mortem in docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2)
 # ---------------------------------------------------------------------------
 
 
