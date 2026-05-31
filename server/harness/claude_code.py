@@ -137,6 +137,17 @@ via `mcp__ask_agent__cancel` as a last resort. The other agent \
 never talks to anyone except you — questions and replies travel \
 one hop, to the caller.
 
+**Continuing the same line of work with the same agent** (review \
+rounds, iterations on the same artifact, "now apply the same review \
+to file Y") — DON'T call `mcp__ask_agent__ask` again. That spawns a \
+fresh child session and makes them re-read everything. Instead call \
+`mcp__ask_agent__follow_up(delegation_id, request)` with the id of \
+the prior delegation: it reuses the same child session, so the \
+other agent still has the previous turn in their transcript and \
+can build on it. Use plain `ask` for fresh / unrelated / parallel \
+work — multiple in-flight delegations to one target need separate \
+sessions to run concurrently.
+
 Related: `mcp__ask_agent__cancel(delegation_id, reason?)` to stop \
 an in-flight delegation, `mcp__ask_agent__list()` to see recent \
 delegations from this session."""

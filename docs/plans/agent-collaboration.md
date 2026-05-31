@@ -413,6 +413,58 @@ returns the live + recently-finished `DelegationRunState` records for
 this parent, capped at 25, most recent first. Symmetric with
 `mcp__bg__list`.
 
+### 5.6a `mcp__ask_agent__follow_up` — continue a prior delegation
+
+`mcp__ask_agent__follow_up(delegation_id, request)` →
+`POST /api/sessions/{parent_sid}/delegations/{delegation_id}/follow-up`.
+Continues a previously-terminal delegation in the **same child
+session**, so the target agent's in-session transcript carries
+across rounds. The intended use is review/iteration loops: Octo
+asks Vera, Vera replies + auto-archives; on the next round Octo
+calls `follow_up` rather than another `ask` and Vera resumes with
+her previous reply still visible in her own conversation — no
+re-reading of files, no re-establishing context. The plain `ask`
+tool is still the right shape for **fresh / unrelated work**, and
+for **parallel fan-out to the same target** (multiple in-flight
+delegations to one agent need separate sessions to run
+concurrently — sharing one would serialise them).
+
+Server-side flow:
+
+1. Validate the delegation belongs to this parent (404 if not), and
+   is in a terminal state (409 if `running` — wait for the reply
+   first, there is no sound semantic for "follow up mid-flight").
+2. Unarchive the child session if needed. The round-2 auto-archive
+   timing means *every* completed delegation child is archived by
+   the time we get here; `SessionManager.unarchive_session`
+   reloads the row (including `parent_session_id` and
+   `delegation_request`, restored in round 3) and registers it in
+   the live sessions map. A hard-deleted child can't be reused —
+   409 with a "start a fresh delegation" hint.
+3. Round-reset the in-memory `DelegationRunState`:
+   `state="running"`, `captured_text=[]`, `error=None`,
+   `finished_at=None`, `_terminal_injected=False`,
+   `request=<new>`. Identity (`delegation_id`,
+   `parent_session_id`, `target_agent_id`, `target_agent_name`,
+   `created_at`) stays stable, so the request card and event
+   cards continue to render against the same id across rounds.
+4. Compose a thin "follow-up" preamble — "Agent X has a follow-up
+   for you in the same line of work; your previous reply is above
+   in this transcript. Their new request follows." — and call
+   `SessionManager.start_message(child_sid, prompt)`. The
+   broadcast subscriber that was already wired for this child id
+   handles the next `result` event the same way it does a fresh
+   delegation: `_inject_terminal` fires an
+   `[agent-reply:<name> delegation=<id>]` into the parent, then
+   auto-archives the child for the next round.
+
+The model picks between `ask` and `follow_up` via the system-prompt
+rule appended in `claude_code.py` / `codex.py` — keyed on whether
+this is a *continuation* of an existing line of work with the same
+agent. Cascade-cancel and the cycle/depth walk both still operate
+on the persistent `delegation_id`, so the chain semantics survive
+unchanged across rounds.
+
 ### 5.7 Working dir and `files` argument
 
 `working_dir` for the child inherits from the parent by default —

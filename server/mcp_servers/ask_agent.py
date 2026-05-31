@@ -225,6 +225,86 @@ def cancel_agent_task(delegation_id: str, reason: str | None = None) -> str:
     )
 
 
+@mcp.tool(name="follow_up")
+def follow_up_agent(delegation_id: str, request: str) -> str:
+    """Continue a PREVIOUS delegation in the same child session, so
+    the other agent keeps her in-session transcript and can build on
+    what she did last round.
+
+    Use this for review / iteration loops where context continuity
+    matters — "you flagged X last round, I fixed it, take another
+    look", or "now apply the same review to file Y". The other agent
+    won't have to re-read everything she already read; she's still
+    holding it in conversation.
+
+    Use the plain `mcp__ask_agent__ask` tool instead for:
+      - fresh, unrelated work to the same agent;
+      - parallel fan-out (multiple in-flight delegations to one
+        target — they need separate sessions to run concurrently).
+
+    Args:
+        delegation_id: The id returned by an earlier `ask_agent` call,
+            now in a terminal state (replied / failed / cancelled).
+            Running delegations are rejected — wait for the reply
+            first.
+        request: The new ask. Don't repeat the original brief — the
+            other agent has it in her transcript already.
+
+    Returns:
+        A short string confirming the new round started. The reply
+        arrives as a fresh `[agent-reply:<name> delegation=<id>]`
+        follow-up turn into this session.
+    """
+    api = _api_base()
+    sid = _session_id()
+    hdrs = _headers()
+    if not (api and sid and hdrs):
+        return "Error: ask_agent server is misconfigured (env vars missing)."
+    if not (delegation_id or "").strip():
+        return "Error: `delegation_id` must be a non-empty string."
+    if not (request or "").strip():
+        return "Error: `request` must be a non-empty string."
+    url = (
+        f"{api}/api/sessions/{sid}/delegations/"
+        f"{delegation_id}/follow-up"
+    )
+    body = {"request": request}
+    try:
+        r = httpx.post(url, json=body, headers=hdrs, timeout=10.0)
+    except httpx.HTTPError as e:
+        return (
+            f"Error: failed to reach Octopus to follow up "
+            f"delegation {delegation_id}: {e}"
+        )
+    if r.status_code == 404:
+        return (
+            f"No delegation `{delegation_id}` for this session — "
+            f"maybe it's from a different parent. Use `ask_agent` "
+            f"to start fresh."
+        )
+    if r.status_code == 409:
+        return (
+            f"Cannot follow up `{delegation_id}` right now: "
+            f"{r.text[:300]}. Use `ask_agent` to start a fresh "
+            f"delegation instead."
+        )
+    if r.status_code not in (200, 201):
+        return (
+            f"Error following up delegation `{delegation_id}` "
+            f"({r.status_code}): {r.text[:300]}"
+        )
+    data = r.json()
+    did = data.get("delegation_id", delegation_id)
+    target = data.get("target_agent_name") or "the other agent"
+    return (
+        f"Continued delegation `{did}` with {target} in the same "
+        f"session — they have your previous round in their "
+        f"transcript. Reply will arrive as a follow-up turn "
+        f"prefixed `[agent-reply:{target} delegation={did}]`. Tell "
+        f"the user briefly what you asked, then end your turn."
+    )
+
+
 @mcp.tool(name="answer")
 def answer_agent_question(delegation_id: str, choice: str) -> str:
     """Answer a question a delegated agent raised. Use this when a

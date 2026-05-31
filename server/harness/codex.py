@@ -67,7 +67,12 @@ Returns immediately; the other agent's reply arrives later as a follow-up \
 turn prefixed `[agent-reply:<name> delegation=<id>]` (or `[agent-question:…]` \
 / `[agent-error:…]`). If a question arrives, answer it via \
 `mcp__ask_agent__answer(delegation_id, choice)` when you can, or ask \
-the user via `mcp__ask__user` if you can't. Related: \
+the user via `mcp__ask__user` if you can't. For follow-up rounds \
+with the same agent on the same line of work (review iterations, \
+"apply that same review to file Y"), use \
+`mcp__ask_agent__follow_up(delegation_id, request)` instead of a \
+fresh `ask` — the same child session is reused so the other agent \
+keeps their transcript and doesn't re-read from scratch. Related: \
 `mcp__ask_agent__cancel`, `mcp__ask_agent__list`."""
 
 

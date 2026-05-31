@@ -307,6 +307,126 @@ class DelegationManager:
         await self._inject_terminal(rec)
         return rec
 
+    async def follow_up_delegation(
+        self,
+        *,
+        parent_session_id: str,
+        delegation_id: str,
+        request: str,
+    ) -> DelegationRunState:
+        """Continue a prior delegation with a new request in the SAME
+        child session — so the target agent keeps her in-session
+        transcript and can build on what she did last round.
+
+        Use this for review/iteration loops where context continuity
+        matters (Octo asks Vera "review again — I addressed your
+        finding 3"). Use plain `start_delegation` (the `ask` tool)
+        for fresh work or parallel fan-out to the same target —
+        sharing a session would serialise concurrent work and mix
+        unrelated contexts.
+
+        Validation:
+        - delegation must exist and belong to this parent
+        - delegation must be in a terminal state (not ``running``);
+          there's no sound semantic for "follow up while the previous
+          round is still working" — the parent should wait for the
+          terminal turn first
+        - the child session must exist (live OR archived); if
+          archived, we unarchive it. A hard-deleted child can't be
+          followed up — start a fresh delegation instead
+
+        Round-reset on the record:
+        - state → ``"running"``
+        - ``_terminal_injected`` → False (so the next terminal turn
+          fires, and is idempotent within the new round)
+        - ``captured_text`` cleared, ``error`` cleared,
+          ``finished_at`` cleared
+        - ``request`` updated to the new round's text so list_tasks
+          reflects the latest ask
+        - identity (``delegation_id``, ``parent_session_id``,
+          ``target_agent_id``, ``target_agent_name``) stable
+        """
+        if self.session_mgr is None:
+            raise DelegationError(
+                "DelegationManager not bound", status_code=500
+            )
+        if not request or not request.strip():
+            raise DelegationError(
+                "request must be a non-empty string", status_code=400
+            )
+        rec = self._records.get(delegation_id)
+        if rec is None or rec.parent_session_id != parent_session_id:
+            raise DelegationError(
+                f"No delegation {delegation_id!r} owned by this session",
+                status_code=404,
+            )
+        if rec.state == "running":
+            raise DelegationError(
+                f"Delegation {delegation_id!r} is still running; "
+                f"wait for its reply before following up",
+                status_code=409,
+            )
+
+        child = self.session_mgr.get_session(rec.delegation_id)
+        if child is None:
+            # Try unarchive — the round-2 auto-archive policy means
+            # any terminal delegation child sits in the archived
+            # state by the time we get here.
+            try:
+                child = await self.session_mgr.unarchive_session(
+                    rec.delegation_id
+                )
+            except ValueError as exc:
+                raise DelegationError(
+                    f"Child session {rec.delegation_id!r} is gone and "
+                    f"can't be reused; start a fresh delegation",
+                    status_code=409,
+                ) from exc
+
+        # Round-reset the record. Update last-write fields so the
+        # registry view (and any /list_agent_tasks consumer) reflects
+        # the new round's ask without losing the chain identity.
+        rec.state = "running"
+        rec.captured_text = []
+        rec.error = None
+        rec.finished_at = None
+        rec._terminal_injected = False
+        rec.request = request
+
+        # Compose a thin reopen-the-conversation prompt. We don't
+        # repeat the original briefing — the child already has it in
+        # her transcript. We just frame the new turn as a follow-up.
+        parent_agent = (
+            await self.db.get_agent(
+                self.session_mgr.get_session(parent_session_id).agent_id
+            )
+            if self.session_mgr.get_session(parent_session_id)
+            and self.session_mgr.get_session(parent_session_id).agent_id
+            else None
+        )
+        parent_name = (parent_agent or {}).get("name") or "another agent"
+        composed = (
+            f"Agent **{parent_name}** has a follow-up for you in the "
+            f"same line of work — your previous reply is above in "
+            f"this transcript. Their new request follows.\n\n"
+            f"---\n{request.strip()}"
+        )
+        try:
+            await self.session_mgr.start_message(rec.delegation_id, composed)
+        except Exception as exc:
+            logger.exception(
+                "Failed to start follow-up turn on child %s", rec.delegation_id
+            )
+            rec.state = "failed"
+            rec.error = f"failed to start follow-up: {exc}"
+            rec.finished_at = datetime.now(timezone.utc).isoformat()
+            await self._inject_terminal(rec)
+            raise DelegationError(
+                f"failed to start follow-up: {exc}", status_code=500
+            ) from exc
+
+        return rec
+
     async def _cascade_cancel_descendants(
         self, parent_delegation_id: str, *, root_reason: str
     ) -> None:

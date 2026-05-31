@@ -843,6 +843,193 @@ async def test_cancel_delegation(dm, mgr, db, monkeypatch):
     assert again.state == "cancelled"
 
 
+# ---------------------------------------------------------------------------
+# follow_up_delegation: continue a prior delegation in the same child session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_follow_up_happy_path(dm, mgr, db, monkeypatch):
+    """Octo asks Vera, Vera replies + her session auto-archives. Octo
+    follows up with a new round in the same session. The child is
+    unarchived, the record is reset to running, and the new request
+    flows to start_message — Vera will see her previous round in
+    her transcript when she resumes."""
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"], name="octo")
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="round 1",
+    )
+    # Drive Vera to terminal so she auto-archives.
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    assert rec.state == "completed"
+    assert mgr.get_session(rec.delegation_id) is None  # archived
+
+    # Follow up.
+    injected.clear()
+    updated = await dm.follow_up_delegation(
+        parent_session_id=parent.id,
+        delegation_id=rec.delegation_id,
+        request="round 2 — please re-check finding 3",
+    )
+    # Same identity, fresh round.
+    assert updated.delegation_id == rec.delegation_id
+    assert updated.state == "running"
+    assert updated.request == "round 2 — please re-check finding 3"
+    assert updated.captured_text == []
+    assert updated.error is None
+    assert updated.finished_at is None
+    assert updated._terminal_injected is False
+    # Child is back in the live map.
+    assert mgr.get_session(rec.delegation_id) is not None
+    # The new request was delivered to the child's session.
+    assert injected
+    sid, prompt = injected[0]
+    assert sid == rec.delegation_id
+    assert "follow-up" in prompt.lower()
+    assert "round 2 — please re-check finding 3" in prompt
+    # The full chain still works: Vera's NEW reply lands on Octo.
+    injected.clear()
+    await dm._on_broadcast({
+        "type": "assistant_text",
+        "session_id": rec.delegation_id,
+        "content": "Re-checked. Looks fixed.",
+    })
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    assert updated.state == "completed"
+    octo_injects = [p for s, p in injected if s == parent.id]
+    assert len(octo_injects) == 1
+    assert "Re-checked. Looks fixed." in octo_injects[0]
+
+
+@pytest.mark.asyncio
+async def test_follow_up_rejects_while_running(dm, mgr, db, monkeypatch):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    assert rec.state == "running"
+    with pytest.raises(DelegationError) as ex:
+        await dm.follow_up_delegation(
+            parent_session_id=parent.id,
+            delegation_id=rec.delegation_id,
+            request="round 2",
+        )
+    assert ex.value.status_code == 409
+    assert "still running" in str(ex.value)
+
+
+@pytest.mark.asyncio
+async def test_follow_up_rejects_unknown_delegation(dm, mgr, db, monkeypatch):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    parent = await _make_session(mgr, octo["id"])
+    with pytest.raises(DelegationError) as ex:
+        await dm.follow_up_delegation(
+            parent_session_id=parent.id,
+            delegation_id="ghost",
+            request="hi",
+        )
+    assert ex.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_follow_up_rejects_wrong_parent(dm, mgr, db, monkeypatch):
+    """A delegation can only be followed up by its OWN parent — a
+    different session can't continue someone else's conversation."""
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent_a = await _make_session(mgr, octo["id"], name="A")
+    parent_b = await _make_session(mgr, octo["id"], name="B")
+    rec = await dm.start_delegation(
+        parent_session_id=parent_a.id, agent_name="vera", request="r",
+    )
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    with pytest.raises(DelegationError) as ex:
+        await dm.follow_up_delegation(
+            parent_session_id=parent_b.id,
+            delegation_id=rec.delegation_id,
+            request="hi",
+        )
+    assert ex.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_follow_up_rejects_empty_request(dm, mgr, db, monkeypatch):
+    monkeypatch.setattr(mgr, "start_message", _noop_start_message)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"])
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="r",
+    )
+    await dm._on_broadcast({
+        "type": "result", "session_id": rec.delegation_id, "is_error": False,
+    })
+    with pytest.raises(DelegationError) as ex:
+        await dm.follow_up_delegation(
+            parent_session_id=parent.id,
+            delegation_id=rec.delegation_id,
+            request="   ",
+        )
+    assert ex.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_route_follow_up(client, monkeypatch):
+    """HTTP path mirrors the manager: 200/201 happy path; 404 for
+    unknown delegation; 409 while running."""
+    async def noop(sid, prompt, attachment_ids=None):
+        return None
+
+    monkeypatch.setattr(session_manager, "start_message", noop)
+
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    octo = next(a for a in agents if a["is_system"])
+    await _post_agent(client, "Vera")
+    parent = await _post_session(client, octo["id"])
+    create = await client.post(
+        f"/api/sessions/{parent['id']}/delegations",
+        json={"agent_name": "vera", "request": "round 1"},
+        headers=HEADERS,
+    )
+    did = create.json()["delegation_id"]
+
+    # Drive the delegation to terminal via the broadcast bus so the
+    # record can be followed-up.
+    await singleton_delegation_manager._on_broadcast({
+        "type": "result", "session_id": did, "is_error": False,
+    })
+
+    r = await client.post(
+        f"/api/sessions/{parent['id']}/delegations/{did}/follow-up",
+        json={"request": "round 2"},
+        headers=HEADERS,
+    )
+    assert r.status_code in (200, 201), r.text
+    body = r.json()
+    assert body["delegation_id"] == did
+    assert body["state"] == "running"
+    assert body["request"] == "round 2"
+
+
 @pytest.mark.asyncio
 async def test_cancel_cascades_to_descendants(dm, mgr, db, monkeypatch):
     """Vera's round-3 finding: cancelling a delegation must cascade

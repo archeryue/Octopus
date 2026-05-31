@@ -263,6 +263,110 @@ def test_list_agent_tasks_empty(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# follow_up_agent
+# ---------------------------------------------------------------------------
+
+
+def test_follow_up_misconfigured(monkeypatch):
+    monkeypatch.delenv("OCTOPUS_API_BASE", raising=False)
+    monkeypatch.delenv("OCTOPUS_SESSION_ID", raising=False)
+    monkeypatch.delenv("OCTOPUS_AUTH_TOKEN", raising=False)
+    out = _call("follow_up_agent", delegation_id="d1", request="round 2")
+    assert "misconfigured" in out.lower()
+
+
+def test_follow_up_rejects_empty_args(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+    assert "non-empty" in _call(
+        "follow_up_agent", delegation_id="   ", request="round 2"
+    )
+    assert "non-empty" in _call(
+        "follow_up_agent", delegation_id="d1", request="   "
+    )
+
+
+def test_follow_up_success(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+    posted: dict = {}
+
+    class R:
+        status_code = 201
+
+        def json(self):
+            return {
+                "delegation_id": "d1",
+                "target_agent_name": "Vera",
+                "state": "running",
+            }
+
+    def fake_post(url, json=None, headers=None, timeout=None):  # noqa: ARG001
+        posted["url"] = url
+        posted["body"] = json
+        return R()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    out = _call(
+        "follow_up_agent",
+        delegation_id="d1",
+        request="round 2",
+    )
+    assert posted["url"].endswith(
+        "/api/sessions/s/delegations/d1/follow-up"
+    )
+    assert posted["body"] == {"request": "round 2"}
+    assert "Continued delegation" in out
+    assert "Vera" in out
+    # The follow-up text guides the model to end its turn (same
+    # pattern as bg_run / ask_agent).
+    assert "follow-up turn" in out
+    assert "agent-reply:Vera" in out
+
+
+def test_follow_up_404(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+
+    class R:
+        status_code = 404
+        text = ""
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
+    out = _call(
+        "follow_up_agent", delegation_id="ghost", request="r"
+    )
+    assert "No delegation" in out
+    assert "ask_agent" in out  # nudges the model to start fresh
+
+
+def test_follow_up_409_still_running(monkeypatch):
+    monkeypatch.setenv("OCTOPUS_API_BASE", "http://x")
+    monkeypatch.setenv("OCTOPUS_SESSION_ID", "s")
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "t")
+
+    class R:
+        status_code = 409
+        text = "Delegation 'd1' is still running; wait for its reply"
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: R())
+    out = _call(
+        "follow_up_agent", delegation_id="d1", request="round 2"
+    )
+    assert "Cannot follow up" in out
+    assert "still running" in out
+
+
+# ---------------------------------------------------------------------------
 # answer_agent_question
 # ---------------------------------------------------------------------------
 

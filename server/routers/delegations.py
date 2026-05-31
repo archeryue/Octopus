@@ -51,6 +51,16 @@ class AnswerDelegationQuestionRequest(BaseModel):
     choice: str
 
 
+class FollowUpDelegationRequest(BaseModel):
+    """Body for `mcp__ask_agent__follow_up`: continue a prior
+    delegation with a new request in the SAME child session, so the
+    target agent keeps her in-session transcript across rounds.
+
+    The original brief lives in the child's transcript; we don't
+    repeat it — only the new request is needed."""
+    request: str
+
+
 def _require_session(session_id: str) -> None:
     """Live sessions only — delegations attach to in-memory sessions so
     the broadcast listener has a target. Archived sessions are
@@ -132,6 +142,38 @@ async def cancel_delegation(
     except DelegationError as e:
         raise HTTPException(e.status_code, str(e))
     return updated.to_public_dict()
+
+
+@router.post("/{session_id}/delegations/{delegation_id}/follow-up")
+async def follow_up_delegation(
+    session_id: str,
+    delegation_id: str,
+    req: FollowUpDelegationRequest,
+    _: str = Depends(verify_token),
+) -> dict[str, Any]:
+    """Continue a prior delegation with a new request in the SAME
+    child session. The target agent keeps her in-session transcript,
+    so review/iteration rounds don't make her re-read everything
+    (agent-collaboration.md §5.x).
+
+    Status codes:
+    - 201 Created on a successful new round (state flips to
+      "running" again; reply arrives as a fresh `[agent-reply:…]`
+      injection when the child finishes)
+    - 404 if the delegation doesn't belong to this parent
+    - 409 if the delegation is still running (wait for its terminal
+      first), or if the child session is hard-deleted (start a
+      fresh `ask` instead)
+    """
+    try:
+        rec = await delegation_manager.follow_up_delegation(
+            parent_session_id=session_id,
+            delegation_id=delegation_id,
+            request=req.request,
+        )
+    except DelegationError as e:
+        raise HTTPException(e.status_code, str(e))
+    return rec.to_public_dict()
 
 
 @router.post("/{session_id}/delegations/{delegation_id}/answer")
