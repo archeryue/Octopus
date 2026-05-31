@@ -2,11 +2,11 @@
 
 ## 0. Why this exists, and how grounded this is now
 
-This is `future-features.md` item #1 — the second backend. The whole
-`BackendBase` / `SubprocessJsonlBackend` abstraction (`server/backends/`)
-was built for exactly this: `ClaudeCodeBackend` is one concrete
-subclass, Codex is the second, and the rest of the system can't tell
-them apart.
+This is the second-backend initiative. The whole `BackendBase` /
+`SubprocessJsonlBackend` abstraction (`server/backends/`) was built
+for exactly this: `ClaudeCodeBackend` is one concrete subclass,
+Codex is the second, and the rest of the system can't tell them
+apart.
 
 **The mental model: a Codex session is a Claude session that happens to
 spawn a different binary.** Same chat UX, same in-app tools (`/showme`,
@@ -69,9 +69,9 @@ anything still marked unverified.
   egress-firewall mechanism (`vm0/.../codex_auth.rs`) is a multi-tenant
   microVM trick; single-user local Octopus uses a real on-disk login.
 
-## 3. The real starting state (correcting the future-features sketch)
+## 3. The real starting state (correcting the early sketch)
 
-The `future-features.md` #1 blurb says "_make_backend dispatches on
+An early sketch of this initiative said "_make_backend dispatches on
 `session.backend`." Half-true. Precisely:
 
 **Already in place:** `BackendKind` enum `claude-code | codex`

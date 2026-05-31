@@ -428,8 +428,8 @@ migration.
   `server/backends/`.
 - **Phase 5 — tests + docs.** Retarget every test in the Part-V
   inventory; add the new tests (§14). Update CLAUDE.md (structure,
-  test-count table, conventions) and `future-features.md`. No
-  `contracts.ts`/migration churn (D1).
+  test-count table, conventions). No `contracts.ts`/migration churn
+  (D1).
 
 ## 14. Tests (mirror the existing layout; zero failures)
 

@@ -1222,7 +1222,7 @@ test.describe("slash-command autocomplete", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Settings dialog (future-features #7)
+// Settings dialog
 // ---------------------------------------------------------------------------
 
 test.describe("Settings dialog", () => {
@@ -1402,7 +1402,6 @@ test.describe("/archive command @llm", () => {
 
 // ---------------------------------------------------------------------------
 // Notifier framework — UI CRUD + real-CLI webhook fire on session idle
-// (future-features #5)
 // ---------------------------------------------------------------------------
 
 async function clearAllNotifiers(request: APIRequestContext): Promise<void> {

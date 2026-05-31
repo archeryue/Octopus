@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { shouldApplyWsEvent } from "./useWebSocket";
 
-/** Snapshot-baseline dedup primitive (future-features #6).
+/** Snapshot-baseline dedup primitive.
  *
  * The full handler is hard to unit-test cleanly because it touches the
  * zustand store + WebSocket lifecycle, but the guard inside it — "is

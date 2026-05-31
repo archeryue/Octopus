@@ -170,5 +170,4 @@ relevant files are staged, so doc-only commits stay fast.
 See [docs/](docs/) for all documentation — start with
 [docs/architecture.md](docs/architecture.md) for system design, data flow, and
 the WebSocket protocol; [docs/plans/](docs/plans/) holds the per-initiative
-design records, and [docs/future-features.md](docs/future-features.md) tracks
-deliberately-deferred work.
+design records.

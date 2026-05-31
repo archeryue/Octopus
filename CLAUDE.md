@@ -11,11 +11,11 @@ This rule is non-negotiable. Specifically that means:
 - Never ship a half-done implementation and document the rest as
   "future work". If the full thing isn't worth doing right now, then
   don't start it at all.
-- Never write the cleaner version into `docs/future-features.md`
-  *instead* of doing it. The doc is for things we genuinely choose
-  not to do now (because they need a real second use case, an
-  external dep, a user decision); it is not a parking lot for
-  "felt too long".
+- Never park the cleaner version in a "deferred work" note
+  *instead* of doing it. Genuine deferrals (work that needs a real
+  second use case, an external dep, or a user decision) belong in
+  the relevant plan doc's §10 "What this defers"; nothing else is a
+  legitimate place to stash "felt too long".
 - Never add a comment like `# TODO: handle X properly later` or `#
   HACK: works for now`. If `X` matters, handle it in this change.
   If it doesn't matter, delete the comment.

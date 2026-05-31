@@ -242,7 +242,7 @@ CREATE TABLE IF NOT EXISTS custom_connectors (
     updated_at TEXT NOT NULL
 );
 
--- Async notification targets (future-features #5). Each row is one
+-- Async notification targets. Each row is one
 -- destination Octopus can poke when a session transitions to idle
 -- (and, later, when an AskUserQuestion is pending / a schedule fails).
 -- `config` is a JSON blob whose shape depends on `type` (e.g. for

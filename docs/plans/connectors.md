@@ -570,10 +570,10 @@ doesn't persist system prompts across `--resume`).
 This is the only backend-side change needed for Claude Code. The
 existing `--mcp-config` shape and tool-routing flow handle the rest.
 
-For **Codex** (when `CodexBackend` lands per
-`docs/future-features.md` item #1): the same connector list is
-passed in, and `CodexBackend.build_args` writes an analogous Codex
-MCP config. Codex's CLI honors `~/.codex/config.toml`, with MCP
+For **Codex** (when `CodexBackend` lands — see
+[`docs/plans/codex-backend.md`](codex-backend.md)): the same
+connector list is passed in, and `CodexBackend.build_args` writes
+an analogous Codex MCP config. Codex's CLI honors `~/.codex/config.toml`, with MCP
 servers declared as:
 
 ```toml
