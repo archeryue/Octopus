@@ -314,7 +314,10 @@ produces. No caller above them knows the difference.
 
 ## 4. Data model changes (small)
 
-Two new nullable columns on `sessions`:
+New nullable columns on `sessions` (six, per the round-6 split
+of metadata into ephemeral vs durable + the round-5 three-state
+lifecycle — Vera round-8 NIT corrected the stale "two columns"
+heading):
 
 ```sql
 forked_from_session_id TEXT     -- parent session
@@ -524,13 +527,23 @@ Backend (`SessionManager.fork_session`):
      atomic rename guarantees the CLI never sees a partial file.
    - **Codex:** no-op — returns
      `ForkArtifact(resume_id=None, needs_replay=True)`.
-   On exception, **compensate by deleting the just-created
-   sessions row** (a small follow-up transaction) AND **calling
-   `harness.cleanup_incomplete_fork_artifacts(working_dir,
-   resume_id_hint, fork_id)`** (Vera round-7 PARTIAL #4 — the
-   compensation path is part of the same backend-agnostic
-   surface as startup recovery; SessionManager must NOT know
-   "Claude's temp file is at <path>"). Propagate the error.
+   On exception, compensate in **this exact order** (Vera
+   round-8 fresh SHOULD-FIX — the row holds the
+   `resume_id_hint` / `fork_id` anchors the cleanup hook needs;
+   deleting it first would orphan any artifact prepare_fork
+   wrote):
+   1. Call
+      `harness.cleanup_incomplete_fork_artifacts(working_dir,
+      resume_id_hint, fork_id)`. If this raises, **leave the
+      sessions row in `fork_status='initializing'`** and
+      propagate the error — the row is still anchored for
+      startup recovery to retry idempotently on next boot.
+   2. Only after cleanup succeeds, delete the sessions row +
+      copied messages (a small follow-up DB transaction) and
+      propagate the original prepare_fork error.
+
+   Backend-agnostic surface — SessionManager never knows
+   "Claude's temp file is at <path>" (Vera round-7 PARTIAL #4).
    UPDATE the sessions row with
    `<resume-handle field>=artifact.resume_id` (Codex sets this
    to NULL since needs_replay is True) and
@@ -1121,7 +1134,7 @@ as `'ready'`, silently losing the post-crash unknown-disk-state):
 
 | `fork_status` | Meaning | Startup recovery action |
 |---|---|---|
-| `'initializing'` | Crashed before step 7 stamped `fork_metadata`. No resume artifact or metadata; possibly an orphan resume artifact on disk. | **PURGE.** Delete the row + its copied messages. **Call `harness.cleanup_incomplete_fork_artifacts(working_dir, resume_id_hint, fork_id)`** (Vera round-6 fresh SHOULD-FIX #1 — backend-specific path knowledge stays inside the harness; SessionManager never reaches into `~/.claude/projects/` directly). For Claude that hook removes `<cwd>/<resume_id>.jsonl` and `<cwd>/.<fork_id>.tmp` at exact paths; for Codex it's a no-op. The user re-creates the fork. |
+| `'initializing'` | Crashed before step 7 stamped `fork_metadata`. No resume artifact or metadata; possibly an orphan resume artifact on disk. | **PURGE in this exact order** (Vera round-8 fresh SHOULD-FIX — the row holds the `resume_id_hint` / `fork_id` anchors the cleanup hook needs): (1) Call `harness.cleanup_incomplete_fork_artifacts(working_dir, resume_id_hint, fork_id)` — for Claude it removes `<cwd>/<resume_id>.jsonl` and `<cwd>/.<fork_id>.tmp` at exact paths; for Codex it's a no-op (Vera round-6 fresh SHOULD-FIX #1). If cleanup fails, **leave the row as `'initializing'`** and log — next boot will retry idempotently. (2) Only after cleanup succeeds, delete the row + its copied messages. The user re-creates the fork. |
 | `'reverting'` | Step 7 completed (fork is durable) but step 8's git ops were in progress when crash happened. Working tree state is unknown — git stash may or may not exist; checkout may or may not have run. | **FINALIZE.** Do NOT purge — the fork DB state is valid. Set `fork_revert_record.status = "unknown_post_crash"` (the **durable** revert slot — Vera round-6 fresh SHOULD-FIX #2; NOT inside `fork_metadata`, which gets cleared after first turn) with a note instructing the user to manually inspect `git status` and `git stash list` for `octopus: pre-fork stash <fork_id>`. Promote `fork_status` to `'ready'`. The fork is then usable; the revert outcome is surfaced as "interrupted — check working tree." |
 | `'ready'` | Fork fully durable. | No-op. |
 
@@ -1385,10 +1398,15 @@ Five phases, each ends with the full verification suite green.
   `SessionManager.startup`, scan
   `sessions WHERE origin='fork' AND fork_status IN
   ('initializing', 'reverting')`:
-  - `'initializing'`: PURGE — delete row + copied messages +
-    call `harness.cleanup_incomplete_fork_artifacts(...)` so
-    backend-specific path cleanup stays in the harness (round-6
-    fresh SHOULD-FIX #1).
+  - `'initializing'`: PURGE in this exact order (Vera round-8
+    fresh SHOULD-FIX — anchors live on the row):
+    (1) call `harness.cleanup_incomplete_fork_artifacts(...)`
+        so backend-specific path cleanup stays in the harness
+        (round-6 fresh SHOULD-FIX #1); on cleanup failure
+        leave the row as `'initializing'` for next boot to
+        retry idempotently;
+    (2) only after cleanup succeeds, delete the row + copied
+        messages.
   - `'reverting'`: FINALIZE — set
     `fork_revert_record.status='unknown_post_crash'` with the
     user-readable note, promote `fork_status='ready'`. Do NOT
@@ -1439,14 +1457,19 @@ Five phases, each ends with the full verification suite green.
     `seq < M`, leaves `_message_count = M` so next msg gets `seq = M`
   - refuse-on-live-parent-work: every refusal case (active task,
     queued message, pending approval, active delegation)
-  - **saga / compensation** (Vera round-2 fresh BLOCKING #2 +
-    round-6 harness-hook): `prepare_fork` exception path deletes
-    the just-created `sessions` row AND calls
-    `harness.cleanup_incomplete_fork_artifacts` to remove any
-    partial backend-specific files (Claude's temp + final JSONL
+  - **saga / compensation** (Vera round-2 BLOCKING #2 + round-6
+    harness-hook + round-8 ordering): `prepare_fork` exception
+    path calls
+    `harness.cleanup_incomplete_fork_artifacts` FIRST to remove
+    any partial backend-specific files (Claude's temp + final
+    JSONL
     at deterministic paths derived from the pre-minted
-    resume_id); failing git checkout in `_safe_revert_files`
-    does NOT roll back the fork — the failure is recorded into
+    resume_id), THEN deletes the just-created `sessions` row +
+    copied messages. A test where the fake cleanup hook raises
+    asserts the row stays as `fork_status='initializing'` so
+    next boot retries idempotently (round-8 ordering anchor).
+    Failing git checkout in `_safe_revert_files` does NOT roll
+    back the fork — the failure is recorded into
     `fork_revert_record.status='failed'` (durable slot, round-6
     split) and surfaced in the response
   - **`_forking` flag blocks `start_message()`** (Vera round-2
@@ -1467,13 +1490,15 @@ Five phases, each ends with the full verification suite green.
     round-5 three-state refinement): THREE recovery paths
     exercised:
     (a) `fork_status='initializing'` row — startup PURGES it
-    (delete row + copied messages + call
-    `harness.cleanup_incomplete_fork_artifacts(working_dir,
-    resume_id, fork_id)` to sweep backend-specific files —
-    round-6 fresh SHOULD-FIX #1; the harness hook removes
+    in this exact order (Vera round-8 fresh SHOULD-FIX):
+    (1) call `harness.cleanup_incomplete_fork_artifacts(
+    working_dir, resume_id, fork_id)` — for Claude removes
     `<cwd>/<resume_id>.jsonl` AND `<cwd>/.<fork_id>.tmp` at
     exact paths derived from the pre-minted resume_id stored
-    in step 5);
+    in step 5 (round-6 fresh SHOULD-FIX #1); (2) only after
+    cleanup succeeds, delete row + copied messages. Test that
+    a fake-cleanup-raises causes the row to remain as
+    `'initializing'` so the next boot retries idempotently;
     (b) `fork_status='reverting'` row — startup FINALIZES it:
     sets `fork_revert_record.status='unknown_post_crash'`
     (durable slot — round-6 split) with a user-readable note,
