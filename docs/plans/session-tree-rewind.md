@@ -352,11 +352,23 @@ fork_status            TEXT     -- crash-recovery marker for the saga in
 All six NULL/FALSE for non-fork sessions. Indexed on
 `forked_from_session_id` for "find children of X" queries.
 
-`Session` dataclass gains the same six fields. `SessionInfo`
-(WebSocket/REST contract) exposes the user-facing five
-(`forkedFromSessionId`, `forkAfterSeq`, `forkNeedsReplay`,
-`forkMetadata`, `forkRevertRecord`); `fork_status` is
-server-internal.
+`Session` dataclass gains the same six fields. **`SessionInfo`
+(WebSocket/REST contract) exposes exactly five fork-related
+fields** (Vera round-7 fresh SHOULD-FIX #1 — earlier drafts
+listed inconsistent sets):
+- `canFork: bool` (capability flag from harness profile)
+- `forkedFromSessionId: string | null`
+- `forkAfterSeq: number | null`
+- `forkPrefilledPrompt: string | null` (read from
+  `fork_metadata.prefilled_prompt` while non-null)
+- `forkRevertRecord: ForkRevertRecord | null` (the durable
+  revert outcome)
+
+`fork_status`, `fork_needs_replay`, and the raw `fork_metadata`
+blob are **server-internal** — frontend never sees them
+directly. (The prefilled prompt is the only piece of
+`fork_metadata` the frontend needs, and it's exposed via the
+dedicated `forkPrefilledPrompt` field.)
 
 **Additional column on `messages`:**
 
@@ -513,20 +525,29 @@ Backend (`SessionManager.fork_session`):
    - **Codex:** no-op — returns
      `ForkArtifact(resume_id=None, needs_replay=True)`.
    On exception, **compensate by deleting the just-created
-   sessions row** (a small follow-up transaction) and
-   propagating the error. Claude's temp file is removed in the
-   exception path so no orphan stays under
-   `~/.claude/projects/`. UPDATE the sessions row with
+   sessions row** (a small follow-up transaction) AND **calling
+   `harness.cleanup_incomplete_fork_artifacts(working_dir,
+   resume_id_hint, fork_id)`** (Vera round-7 PARTIAL #4 — the
+   compensation path is part of the same backend-agnostic
+   surface as startup recovery; SessionManager must NOT know
+   "Claude's temp file is at <path>"). Propagate the error.
+   UPDATE the sessions row with
    `<resume-handle field>=artifact.resume_id` (Codex sets this
    to NULL since needs_replay is True) and
    `fork_needs_replay=artifact.needs_replay`.
-7. **Stamp `fork_metadata` (Vera round-1 F9).** Compose the JSON
-   payload now: prefilled prompt text (parent's message at
-   `seq=M` content — including `M=0`, since step 1 loaded the
-   row), the side-effect summary from step 4, the §5.6.4
-   rendered first-turn note, and placeholders `revert: null`
-   and `stash_ref: null` (filled by step 8). UPDATE the sessions
-   row with `fork_metadata`. **Promote `fork_status`:**
+7. **Stamp `fork_metadata` (Vera round-1 F9, round-6 ephemeral
+   split).** Compose the JSON payload now — **EPHEMERAL fields
+   only**, since `fork_metadata` gets cleared after first
+   turn: prefilled prompt text (parent's message at `seq=M`
+   content — including `M=0`, since step 1 loaded the row),
+   the side-effect summary from step 4, the §5.6.4 rendered
+   first-turn note, and `fork_label`. The revert outcome
+   (`ran`, `files`, `stash_ref`, `status`) lives in
+   `fork_revert_record`, NOT here (Vera round-7 PARTIAL #5 —
+   earlier draft had revert placeholders inside
+   `fork_metadata`; that contradicts the round-6 split). UPDATE
+   the sessions row with `fork_metadata`. **Promote
+   `fork_status`:**
    - If `revert_files=False`: directly `'ready'` (nothing left
      to do — the fork is fully durable).
    - If `revert_files=True`: `'reverting'` (Vera round-5
@@ -540,9 +561,11 @@ Backend (`SessionManager.fork_session`):
    round-6 fresh SHOULD-FIX #2; NOT inside `fork_metadata`,
    which gets cleared after the first turn) as
    `{"ran": bool, "files": [...], "stash_ref": "stash@{0}" | null,
-   "status": "completed" | "refused" | "unknown_post_crash",
-   "refused_reason": "..." | null}`. **After the UPDATE is
-   durable**, promote `fork_status` from `'reverting'` to
+   "status": "completed" | "refused" | "failed" | "unknown_post_crash",
+   "refused_reason": "..." | null, "error": "..." | null}` (the
+   canonical enum is defined in §5.6.5 — Vera round-7
+   SHOULD-FIX #2). **After the UPDATE is durable**, promote
+   `fork_status` from `'reverting'` to
    `'ready'`. If the preflight refuses, the fork still exists;
    the popover response surfaces the reason. If the git ops
    crash (rare — disk full, etc.), startup's `'reverting'`
@@ -966,9 +989,12 @@ git checkout HEAD -- <files>
 
 The stash is named so the user can `git stash pop` later if they
 change their mind. The stash ref is captured into
-`fork_metadata` so the §5.6.4 first-turn note can reference it
-and so a future "undo my fork revert" affordance has a stable
-anchor.
+**`fork_revert_record`** (Vera round-7 PARTIAL #5 — the durable
+slot from the round-6 split, NOT the ephemeral `fork_metadata`
+which gets cleared after first turn) so a future "undo my fork
+revert" affordance has a stable anchor. The §5.6.4 first-turn
+note reads from the same durable slot when rendering its "files
+WERE restored" line.
 
 If any condition fails, the checkbox is **disabled with an
 inline tooltip** explaining which check failed: "Working tree
@@ -1033,10 +1059,22 @@ ref that §5.6.3 promised was a durable anchor for any future
      "ran": true,
      "files": ["server/auth.py", "server/auth_test.py"],
      "stash_ref": "stash@{0}",
-     "status": "completed" | "unknown_post_crash" | "refused",
-     "refused_reason": null | "tree wasn't clean at fork-point"
+     "status": "completed" | "refused" | "failed" | "unknown_post_crash",
+     "refused_reason": null | "tree wasn't clean at fork-point",
+     "error": null | "git checkout failed: <stderr>"
    }
    ```
+   The **status enum is canonical** (Vera round-7 fresh
+   SHOULD-FIX #2 — earlier drafts split inconsistently across
+   §5.6.5 and the §8 test bullet):
+   - `'completed'` — preflight passed and git ops ran
+     successfully.
+   - `'refused'` — preflight refused; `refused_reason` is set.
+   - `'failed'` — preflight passed but git ops crashed (disk
+     full, race with external git); `error` is set.
+   - `'unknown_post_crash'` — startup recovery promoted a
+     `fork_status='reverting'` row whose git ops were in flight
+     when the server crashed; user must inspect manually.
 
 `session_manager` clears `fork_metadata` after the fork's first
 turn produces a `result` event; `fork_revert_record` is NEVER
@@ -1230,11 +1268,11 @@ Five phases, each ends with the full verification suite green.
   §5.6.3's safe-revert preflight has the data it needs (Vera
   round-1 F5).
 - Extend `Session` dataclass + `SessionInfo` REST/WS contract +
-  `contracts.ts` regen. `SessionInfo` exposes
-  `forkedFromSessionId`, `forkAfterSeq`, `canFork`,
-  `forkPrefilledPrompt` (read from `fork_metadata` while it
-  exists), AND `forkRevertRecord` (the durable revert outcome).
-  `fork_status` stays server-internal.
+  `contracts.ts` regen. `SessionInfo` exposes **exactly five**
+  fork-related fields per §4 (Vera round-7 fresh SHOULD-FIX #1):
+  `canFork`, `forkedFromSessionId`, `forkAfterSeq`,
+  `forkPrefilledPrompt`, `forkRevertRecord`. `fork_status` /
+  `fork_needs_replay` / raw `fork_metadata` are server-internal.
 - Origin enum gains `"fork"`. (Note: current default is `"user"`
   — Vera round-1 F12 NIT — keep `_AUTO_ARCHIVE_ORIGINS` /
   `_AUTO_ARCHIVE_ELIGIBLE` aligned: `"fork"` does NOT auto-archive.)
@@ -1387,9 +1425,13 @@ Five phases, each ends with the full verification suite green.
   "backend": "..." }`. `GET /api/sessions/{id}/fork-preview` is
   a sibling that runs the classifier + revert-preflight without
   committing anything.
-- **`SessionInfo` gains** `canFork: bool`, `forkedFromSessionId`,
-  `forkAfterSeq`, `forkPrefilledPrompt: string | null` (read from
-  `fork_metadata.prefilled_prompt`).
+- **`SessionInfo` gains exactly five fork-related fields** (per
+  §4 + Phase 1 — Vera round-7 fresh SHOULD-FIX #1): `canFork:
+  bool`, `forkedFromSessionId`, `forkAfterSeq`,
+  `forkPrefilledPrompt: string | null` (read from
+  `fork_metadata.prefilled_prompt` while non-null), and
+  `forkRevertRecord: ForkRevertRecord | null` (the durable
+  revert outcome).
 - **Backend tests (`tests/test_session_fork.py`):**
   - happy path on **both** backends (parametrized fake-Claude /
     fake-Codex harness)
@@ -1575,7 +1617,9 @@ Five phases, each ends with the full verification suite green.
   than parent's last seq; SQL transaction atomicity (failed
   artifact prep → no half-created session row, no orphaned
   message rows); `unarchive` of a fork restores
-  `forked_from_session_id` / `fork_after_seq` / `fork_metadata`;
+  `forked_from_session_id` / `fork_after_seq` / `fork_metadata` /
+  **`fork_revert_record`** (round-7 NIT — the durable revert
+  slot survives unarchive alongside the ephemeral metadata);
   **`fork_metadata` survives a simulated restart-before-first-turn
   (Vera round-1 F9)**.
 - **Replay-prompt wrapping (`test_send_message_fork_replay.py`):**
