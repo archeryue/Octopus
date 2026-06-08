@@ -338,7 +338,10 @@ fork_revert_record     TEXT     -- DURABLE JSON record of the safe-revert
                                 -- stash ref §5.6.3 promised as a durable
                                 -- anchor survives past first-turn clear).
                                 -- {ran, files, stash_ref, status,
-                                -- refused_reason}. NEVER cleared.
+                                -- refused_reason, error}. Status enum:
+                                -- completed | refused | failed |
+                                -- unknown_post_crash (see §5.6.5).
+                                -- NEVER cleared.
 fork_status            TEXT     -- crash-recovery marker for the saga in
                                 -- §5.1. THREE values:
                                 --   'initializing' — set in step 5;
