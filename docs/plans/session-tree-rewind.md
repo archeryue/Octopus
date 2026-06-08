@@ -143,17 +143,23 @@ async def prepare_fork(
     self,
     messages: list[dict],            # Octopus DB-shape rows up to fork-point
     working_dir: str,
+    resume_id_hint: str | None,      # caller-pre-minted id (round-5)
 ) -> ForkArtifact:
     """Prepare backend-specific state so the new fork session can be
     spawned. Pick whichever strategy this backend supports:
 
       • NATIVE_TRANSCRIPT — synthesize a resumable transcript at the
-        backend's on-disk location and return a real resume id.
+        backend's on-disk location using `resume_id_hint` as the
+        artifact id, return the same id in `ForkArtifact.resume_id`.
         Spawn uses the backend's native --resume path. (Claude.)
+        The hint is required for NATIVE so startup recovery can
+        locate orphan artifacts by exact path (round-5 SHOULD-FIX).
       • HISTORY_REPLAY — return None for resume_id, set
-        needs_replay=True. The first turn's USER PROMPT is wrapped
-        with the truncated history (in `SessionManager.send_message`,
-        NOT in developer_instructions — see §3.5); subsequent turns
+        needs_replay=True (the hint is ignored — Codex thread_ids
+        come from `thread.started` at first turn). The first
+        turn's USER PROMPT is wrapped with the truncated history
+        (in `SessionManager.send_message`, NOT in
+        developer_instructions — see §3.5); subsequent turns
         capture the backend's real resume id and switch to native
         resume from then on. (Codex.)
 
@@ -298,11 +304,16 @@ fork_metadata          TEXT     -- JSON payload built at fork-creation
                                 -- fork survives restart (Vera round-1 F9).
                                 -- Cleared after first successful result.
 fork_status            TEXT     -- crash-recovery marker for the saga in
-                                -- §5.1. 'initializing' set in step 5;
-                                -- promoted to 'ready' in step 7. Sessions
-                                -- found with 'initializing' at startup are
-                                -- incomplete forks — purged by §5.6.7's
-                                -- recovery sweep. NULL for non-fork rows.
+                                -- §5.1. THREE values:
+                                --   'initializing' — set in step 5;
+                                --       purged at startup (§5.6.7).
+                                --   'reverting'    — promoted in step 7
+                                --       when revert was requested; held
+                                --       through step 8's git ops; startup
+                                --       finalizes as unknown_post_crash.
+                                --   'ready'        — final state, set in
+                                --       step 7 (no revert) or step 8.
+                                -- NULL for non-fork rows.
 ```
 
 All five NULL/FALSE for non-fork sessions. Indexed on
@@ -387,7 +398,10 @@ Backend (`SessionManager.fork_session`):
      `_forking = True`, then releases the lock for the long-running
      steps below. Clears `_forking` in a `finally` so it's
      released on any failure.
-   The flag's lifetime spans steps 3–7 below.
+   The flag's lifetime spans steps 3–8 below (released in step 9
+   via `finally`). Safe-revert (step 8) holds the flag too — we
+   don't want a parent send racing in while git ops are running
+   in `working_dir`.
 3. **Lookup the harness.** Abort with
    `BackendForkNotSupported` if `profile.can_fork` is false
    (returns 409 — see Phase 2). In v1 both backends return
@@ -398,19 +412,30 @@ Backend (`SessionManager.fork_session`):
    The result populates the §5.6.2 popover.
 5. **DB-only transaction (Vera round-2 fresh BLOCKING #2 — single
    transaction CANNOT span JSONL writes or git operations; SQLite
-   rollback won't undo filesystem state).** Inside one DB
-   transaction:
+   rollback won't undo filesystem state).**
+   **Pre-mint the backend resume_id BEFORE the INSERT**
+   (Vera round-5 fresh SHOULD-FIX #2): for Claude, generate a
+   fresh `uuid4()` we'll later use as the synthesized JSONL's
+   final name. The pre-minted id is stored in the sessions row
+   in this step's INSERT, so startup recovery can locate the
+   orphan JSONL by exact path. For Codex (`HISTORY_REPLAY`) we
+   pre-mint a dummy that prepare_fork ignores; the real
+   thread_id comes from the first turn's `thread.started`.
+   Inside one DB transaction:
    1. INSERT the `sessions` row with `origin="fork"`,
       `forked_from_session_id=S`,
       `fork_after_seq=M-1` (or `-1` for `M=0`),
       **`fork_status='initializing'`** (Vera round-4 SHOULD-FIX
-      #2 — the crash-recovery marker; cleared to `'ready'` in
-      step 7),
+      #2 + round-5 lifecycle correction — the crash-recovery
+      marker; promoted to `'reverting'` or `'ready'` in step 7
+      depending on whether revert was requested, then to
+      `'ready'` after step 8 lands),
       `fork_needs_replay=False` (placeholder; UPDATE in step 6
       if the harness needs replay),
       `fork_metadata=NULL` (placeholder; UPDATE in step 7),
-      `<resume-handle field>=NULL` (placeholder; UPDATE after
-      `prepare_fork` returns),
+      `<resume-handle field>=<pre-minted resume_id>` (NOT NULL
+      anymore — round-5 fix; Claude harness honors this in
+      step 6, Codex harness overwrites in turn 1),
       `agent_id` / `working_dir` / `model` / `credential` /
       `connectors` copied from `S`.
    2. INSERT-SELECT messages from `S` where `seq <= fork_after_seq`
@@ -423,9 +448,16 @@ Backend (`SessionManager.fork_session`):
       attachment resolver at read time falls back from
       `<fork.id>/attachments/<name>` to the originating session
       walk (`forked_from_session_id` chain) — a one-line resolver
-      change in the file viewer / attachment-fetch route. No FS
-      state for fork creation to clean up; fork-delete is purely
-      a DB row removal.
+      change in the file viewer / attachment-fetch route. Per
+      §5.5 (round-5 fresh SHOULD-FIX #1), parent-delete blits
+      attachment files into descendant forks BEFORE removing
+      the parent's dir, so the read-time fallback stays valid
+      even after parent deletion. Fork-CREATE does no
+      attachment FS work; fork-DELETE still removes the fork's
+      OWN accumulated files (post-fork attachments, large-prompt
+      spill files, Claude's synthesized JSONL) per the existing
+      session-delete behavior (round-4 NIT — earlier "fork-delete
+      is purely a DB row removal" wording was too broad).
    3. Set in-memory `Session._message_count = M` (we copied `M`
       messages, last seq = `M-1`, next seq = `M`; for `M=0` this is
       `0` and next seq is `0`).
@@ -434,12 +466,15 @@ Backend (`SessionManager.fork_session`):
 6. **`prepare_fork` (external state, post-commit, with explicit
    compensation).** Now that the DB row exists, call
    `artifact = await harness.prepare_fork(copied_messages,
-   parent.working_dir)` (§3.1).
+   parent.working_dir, resume_id_hint=<pre-minted from step 5>)`
+   (§3.1).
    - **Claude:** synthesizes a JSONL by writing to a TEMP path
-     (e.g. `~/.claude/projects/<cwd>/.<resume_id>.tmp`) and
+     (`~/.claude/projects/<cwd>/.<fork_id>.tmp` — named by the
+     **fork session id**, not the resume_id, so recovery in
+     §5.6.7 can derive the temp name from the row exactly) and
      atomic-renames into the final
-     `~/.claude/projects/<cwd>/<resume_id>.jsonl`. The atomic
-     rename guarantees the CLI never sees a partial file.
+     `~/.claude/projects/<cwd>/<resume_id_hint>.jsonl`. The
+     atomic rename guarantees the CLI never sees a partial file.
    - **Codex:** no-op — returns
      `ForkArtifact(resume_id=None, needs_replay=True)`.
    On exception, **compensate by deleting the just-created
@@ -447,7 +482,8 @@ Backend (`SessionManager.fork_session`):
    propagating the error. Claude's temp file is removed in the
    exception path so no orphan stays under
    `~/.claude/projects/`. UPDATE the sessions row with
-   `<resume-handle field>=artifact.resume_id` and
+   `<resume-handle field>=artifact.resume_id` (Codex sets this
+   to NULL since needs_replay is True) and
    `fork_needs_replay=artifact.needs_replay`.
 7. **Stamp `fork_metadata` (Vera round-1 F9).** Compose the JSON
    payload now: prefilled prompt text (parent's message at
@@ -455,14 +491,21 @@ Backend (`SessionManager.fork_session`):
    row), the side-effect summary from step 4, the §5.6.4
    rendered first-turn note, and placeholders `revert: null`
    and `stash_ref: null` (filled by step 8). UPDATE the sessions
-   row with `fork_metadata`, AND set `fork_status='ready'` (the
-   crash-recovery marker — see step 5 / §5.6.7).
+   row with `fork_metadata`. **Promote `fork_status`:**
+   - If `revert_files=False`: directly `'ready'` (nothing left
+     to do — the fork is fully durable).
+   - If `revert_files=True`: `'reverting'` (Vera round-5
+     SHOULD-FIX: we need a marker that survives a crash during
+     git ops). Promotion to `'ready'` happens at the end of
+     step 8.
 8. **Safe-revert is a SEPARATE post-create step (Vera round-2
    fresh BLOCKING #2).** If `revert_files=True`, run
-   `_safe_revert_files` AFTER the fork session is fully
-   committed. The outcome lands in `fork_metadata.revert` as
+   `_safe_revert_files` AFTER step 7. The outcome lands in
+   `fork_metadata.revert` as
    `{"ran": bool, "files": [...], "stash_ref": "stash@{0}" | null,
-   "refused_reason": "..." | null}`. If the preflight refuses,
+   "refused_reason": "..." | null}`. **After the outcome
+   UPDATE is durable**, promote `fork_status` from `'reverting'`
+   to `'ready'`. If the preflight refuses,
    the fork still exists; the popover response surfaces the
    reason. If the git ops crash (rare — disk full, etc.),
    record the failure into `fork_metadata.revert.error` rather
@@ -706,10 +749,26 @@ step 5; nothing else needs explicit locking.
 ### 5.5 Deleting the parent
 
 If the parent is deleted, forks **do not cascade-delete**. The
-fork has its own copy of the prefix; it stands alone.
+fork has its own copy of message rows; it stands alone for
+conversation history. But because §5.1 step 5.2 deliberately
+doesn't copy attachment FILES (only metadata) — relying on a
+read-time fallback to the originating session — a naive
+parent-delete would strip those files out from under existing
+forks (Vera round-5 fresh SHOULD-FIX #1).
+
+So **parent-delete includes an attachment-blit step**: before
+removing the parent's attachment dir, walk the
+`forked_from_session_id` chain forward to find every
+descendant fork, and for each attachment file the fork
+references in its `messages.attachments` metadata, copy the
+file into the fork's own `~/.octopus/attachments/<fork_id>/`
+dir. After the blit, the parent's dir is safe to remove. The
+walk is bounded by the existing depth-3 cycle/depth guard
+(§3.4-ish — same rule the delegation chain uses).
+
 `forked_from_session_id` becomes a dangling reference; the UI
 shows "forked from (deleted session) at message N" but the fork
-remains usable.
+remains fully usable, attachments included.
 
 ### 5.6 Side effects: disclose-first, revert where safe
 
@@ -950,36 +1009,37 @@ addendum.
 #### 5.6.7 Crash recovery for incomplete forks
 
 The §5.1 saga commits the DB row in step 5 BEFORE `prepare_fork`
-(step 6) writes external state and BEFORE `fork_metadata` is
-stamped (step 7). If the server crashes between steps 5 and 7,
-startup can find a fork row that's missing its resume artifact,
-its metadata, and possibly its replay flag (Vera round-4
-SHOULD-FIX #2). The `fork_status` column makes these recoverable.
+(step 6) writes external state, BEFORE `fork_metadata` is
+stamped (step 7), and BEFORE safe-revert runs (step 8). A crash
+in any of those windows leaves the fork in a recoverable but
+intermediate state. The `fork_status` column has **three values**
+that map to the three distinct recovery actions (Vera round-5
+SHOULD-FIX — the round-4 two-state model treated revert-crash
+as `'ready'`, silently losing the post-crash unknown-disk-state):
 
-On `SessionManager.startup`, run a one-shot sweep:
+| `fork_status` | Meaning | Startup recovery action |
+|---|---|---|
+| `'initializing'` | Crashed before step 7 stamped `fork_metadata`. No resume artifact or metadata; possibly an orphan JSONL on disk. | **PURGE.** Delete the row + its copied messages. Sweep the orphan JSONL at exact path `~/.claude/projects/<cwd>/<resume_id>.jsonl` (using the **pre-minted `resume_id` from step 5's INSERT** — Vera round-5 SHOULD-FIX #2; no mtime heuristic needed). Sweep the temp `~/.claude/projects/<cwd>/.<fork_id>.tmp` (named by fork session id, also deterministic). The user re-creates the fork. |
+| `'reverting'` | Step 7 completed (fork is durable) but step 8's git ops were in progress when crash happened. Working tree state is unknown — git stash may or may not exist; checkout may or may not have run. | **FINALIZE.** Do NOT purge — the fork DB state is valid. Set `fork_metadata.revert.status = "unknown_post_crash"` with a note instructing the user to manually inspect `git status` and `git stash list` for `octopus: pre-fork stash <fork_id>`. Promote `fork_status` to `'ready'`. The fork is then usable; the revert outcome is surfaced as "interrupted — check working tree." |
+| `'ready'` | Fork fully durable. | No-op. |
+
+The startup sweep runs ONE query and dispatches on `fork_status`:
 
 ```sql
-SELECT id, forked_from_session_id, working_dir, backend
+SELECT id, forked_from_session_id, working_dir, backend,
+       <resume-handle field> AS resume_id, fork_status
 FROM sessions
-WHERE origin = 'fork' AND fork_status = 'initializing';
+WHERE origin = 'fork' AND fork_status IN ('initializing', 'reverting');
 ```
 
-For every match, the fork is incomplete. v1 takes the simple
-path: **purge** — delete the row + its copied messages, and
-sweep Claude's temp synthesized JSONLs (any
-`~/.claude/projects/<cwd>/.<fork_id>*.tmp` and any orphan
-`~/.claude/projects/<cwd>/<resume_id>.jsonl` whose mtime is
-within the crash window AND whose id has no `sessions` row).
-The user re-creates the fork from scratch. This is the right
-trade-off for v1: implementing a "resume from step 6" path
-would need re-running the side-effect classifier with the
-parent's now-evolved state, and the classifier output would
-differ from what the user originally saw.
+v1 chooses purge-on-`'initializing'` over a "resume from step 6"
+path because the classifier output and side-effect summary
+would differ after the parent's state evolves — the user
+should see fresh data.
 
-`fork_status='ready'` rows are left alone — they completed
-successfully. Once a fork's first turn lands (the `result`
-event clears `fork_metadata`), `fork_status` stays `'ready'`
-forever; there are no further transitions.
+Once a fork's first turn lands (the `result` event clears
+`fork_metadata`), `fork_status` stays `'ready'` forever; there
+are no further transitions.
 
 ## 6. Frontend rendering
 
@@ -1250,14 +1310,19 @@ Five phases, each ends with the full verification suite green.
     fresh F5)
   - `fork_metadata` is persisted before the response returns and
     survives a simulated restart-before-first-turn (F9)
-  - **Saga crash recovery** (Vera round-4 SHOULD-FIX #2): insert
-    a `sessions` row with `origin='fork'` +
-    `fork_status='initializing'` by hand (simulating a crash
-    after step 5 but before step 7), call
-    `SessionManager.startup`, assert: the row is deleted, copied
-    messages are removed, and an orphan temp JSONL stub created
-    alongside (`<cwd>/.<fork_id>.tmp`) is cleaned up.
-    `fork_status='ready'` rows are NOT touched by the sweep
+  - **Saga crash recovery** (Vera round-4 SHOULD-FIX #2 +
+    round-5 three-state refinement): THREE recovery paths
+    exercised:
+    (a) `fork_status='initializing'` row — startup PURGES it
+    (delete row + copied messages + sweep
+    `<cwd>/<resume_id>.jsonl` AND `<cwd>/.<fork_id>.tmp` using
+    the **pre-minted `resume_id` stored in step 5** — exact
+    paths, no mtime heuristic, round-5 SHOULD-FIX #2);
+    (b) `fork_status='reverting'` row — startup FINALIZES it:
+    sets `fork_metadata.revert.status='unknown_post_crash'`
+    with a user-readable note, promotes to `'ready'`; the row
+    is NOT purged (round-5 SHOULD-FIX);
+    (c) `fork_status='ready'` row — sweep NO-OPs
   - `classify_side_effects` over all three bins; **bg_tasks
     live-state path** with the explicit join (Vera round-2
     carryover F8 + round-3 correction): find `tool_use` rows
@@ -1269,16 +1334,20 @@ Five phases, each ends with the full verification suite green.
     (Vera round-2 fresh BLOCKING #1): clean=True + HEAD match +
     only-agent-dirty (revert runs); clean=False at M (refused);
     HEAD-moved (refused); unknown-dirty (refused); non-git
-    (refused); **M=0 case where the affordance is unavailable
-    by design** (no past activity to revert)
+    (refused); **M=0 follows the SAME rules** (Vera round-5
+    correction — earlier "unavailable by design" was wrong;
+    the seq=0 row's git anchor is what's checked, with the
+    rest of the session classified as past the fork point)
   - **`M=0` fork** (Vera round-2 fresh F3 + round-3 BLOCKING
-    correction): loads `seq=0` for prefill text + git anchor;
-    creates a fork with NO copied messages and `_message_count=0`;
-    classifier runs over `seq >= 0` (the entire original
-    session is past the fork point); revert preflight anchors
-    on `seq=0.git_head` / `git_status_clean`; on Codex the
-    wrapping still happens but `<fork-history>` is empty
-    framing — keeps send_message path uniform
+    correction + round-5 normalization): loads `seq=0` for
+    prefill text + git anchor; creates a fork with NO copied
+    messages and `_message_count=0`; classifier runs over
+    `seq >= 0` (the entire original session is past the fork
+    point); revert preflight anchors on `seq=0.git_head` /
+    `git_status_clean`; **on Codex `fork_needs_replay=True`**
+    and the wrapping path runs uniformly with an empty
+    `<fork-history>` block (round-5 — earlier "fork_needs_replay=False
+    for M=0" wording was wrong)
   - **Dispatch-only wrapping** (Vera round-2 fresh F4): when
     Codex first-turn fires, the row inserted into `messages` for
     the user message carries the raw text; only the prompt the
@@ -1373,11 +1442,19 @@ Five phases, each ends with the full verification suite green.
   **both** backends (parametrized over a fake-Claude and a
   fake-Codex harness); Pi-style boundary (rewind to user msg
   `seq=M` copies `seq < M`, `_message_count = M`); **`M=0`
-  degenerate case** (empty fork, no copied messages,
-  `fork_needs_replay=False`, prefilled prompt is the parent's
-  original first user message); refuse when parent has live
-  work (active task / queued msg / pending approval / active
-  delegation, with the right structured 409); copy-attachments;
+  case** (empty fork, no copied messages; on Codex
+  `fork_needs_replay=True` with empty `<fork-history>`;
+  prefilled prompt is the parent's original first user
+  message; classifier runs over `seq >= 0`; revert preflight
+  anchors on `seq=0`'s git state — Vera round-5 normalization);
+  refuse when parent has live work (active task / queued msg /
+  pending approval / active delegation, with the right
+  structured 409); **attachment metadata copies but FS files
+  do NOT** (Vera round-3 fix + round-5 wording correction —
+  earlier "copy-attachments" implied FS copy); **parent-delete
+  blits referenced attachment files into descendant forks
+  before removing the parent dir** (Vera round-5 fresh
+  SHOULD-FIX #1);
   fork-of-fork; reject `rewind_to_msg_seq < 0`; reject
   non-user-message targets; reject `rewind_to_msg_seq` greater
   than parent's last seq; SQL transaction atomicity (failed
