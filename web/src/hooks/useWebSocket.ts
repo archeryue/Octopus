@@ -235,6 +235,7 @@ function handleWsMessage(data: Record<string, unknown>) {
           agent_id: prev?.agent_id ?? null,
           origin: prev?.origin ?? "user",
           backend: prev?.backend ?? "claude-code",
+          can_fork: prev?.can_fork ?? true,
           archived: false,
         });
       }

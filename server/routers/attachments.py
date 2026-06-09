@@ -24,6 +24,7 @@ from ..attachments import (
     AttachmentError,
     MAX_FILE_BYTES,
     get_path,
+    get_path_with_fork_fallback,
     save_upload,
 )
 from ..auth import verify_token
@@ -114,7 +115,14 @@ async def download_attachment(
     # references an attachment, the chat history should be able to render
     # the chip / thumbnail even if the session was just archived. Hard
     # delete wipes the files, so a missing file naturally 404s below.
+    #
+    # Fork fallback (session-tree-rewind.md §5.1 step 5.2): a fork copies only
+    # attachment metadata, so resolve from the fork's own dir first, then walk
+    # its `forked_from_session_id` ancestors.
     path = get_path(session_id, attachment_id)
+    if path is None:
+        ancestors = await session_manager.fork_ancestor_ids(session_id)
+        path = get_path_with_fork_fallback(ancestors, attachment_id)
     if path is None or not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attachment not found")
 

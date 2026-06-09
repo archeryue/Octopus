@@ -32,6 +32,7 @@ describe("sessionStore", () => {
         archived: false,
         origin: "user",
         backend: "claude-code" as const,
+        can_fork: true,
       },
     ];
     setSessions(sessions);
@@ -79,6 +80,7 @@ describe("sessionStore", () => {
         archived: false,
         origin: "user",
         backend: "claude-code" as const,
+        can_fork: true,
       },
     ]);
 

@@ -174,6 +174,48 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/fork-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fork Preview
+         * @description Side-effect classification + revert preflight for the fork-confirm
+         *     popover (session-tree-rewind.md §5.6.2). Commits nothing.
+         */
+        get: operations["fork_preview_api_sessions__session_id__fork_preview_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fork Session
+         * @description Fork a session at a chosen user message (session-tree-rewind.md §5.1).
+         *     409 responses carry a structured `{reason, backend}` body.
+         */
+        post: operations["fork_session_api_sessions__session_id__fork_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/reset": {
         parameters: {
             query?: never;
@@ -455,6 +497,41 @@ export interface paths {
          *     transition from running → cancelled.
          */
         post: operations["cancel_delegation_api_sessions__session_id__delegations__delegation_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/delegations/{delegation_id}/follow-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Follow Up Delegation
+         * @description Continue a prior delegation with a new request in the SAME
+         *     child session. The target agent keeps her in-session transcript,
+         *     so review/iteration rounds don't make her re-read everything
+         *     (agent-collaboration.md §5.x).
+         *
+         *     Status codes:
+         *     - 201 Created on a successful new round (state flips to
+         *       "running" again; reply arrives as a fresh `[agent-reply:…]`
+         *       injection when the child finishes)
+         *     - 404 if the parent session is no longer live (archived /
+         *       deleted between rounds; the model must be invoked from a
+         *       live session for the reply to land somewhere visible) or if
+         *       the delegation doesn't belong to this parent
+         *     - 409 if the delegation is still running (wait for its terminal
+         *       first), or if the child session is hard-deleted (start a
+         *       fresh `ask` instead)
+         */
+        post: operations["follow_up_delegation_api_sessions__session_id__delegations__delegation_id__follow_up_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1526,6 +1603,62 @@ export interface components {
             /** Client Secret */
             client_secret: string;
         };
+        /**
+         * FollowUpDelegationRequest
+         * @description Body for the continuation mode of `mcp__ask_agent__ask`
+         *     (delegation_id passed in place of name): continue a prior
+         *     delegation with a new request in the SAME child session, so the
+         *     target agent keeps her in-session transcript across rounds.
+         *
+         *     The original brief lives in the child's transcript; we don't
+         *     repeat it — only the new request is needed.
+         */
+        FollowUpDelegationRequest: {
+            /** Request */
+            request: string;
+        };
+        /**
+         * ForkRevertRecord
+         * @description Durable record of a fork's safe-revert outcome (session-tree-rewind.md
+         *     §5.6.5). Mirrors the `fork_revert_record` JSON column; surfaced on
+         *     SessionInfo so the UI can render "files were restored / revert refused".
+         */
+        ForkRevertRecord: {
+            /**
+             * Ran
+             * @default false
+             */
+            ran: boolean;
+            /**
+             * Files
+             * @default []
+             */
+            files: string[];
+            /** Stash Ref */
+            stash_ref?: string | null;
+            /** Status */
+            status: string;
+            /** Refused Reason */
+            refused_reason?: string | null;
+            /** Error */
+            error?: string | null;
+        };
+        /**
+         * ForkSessionRequest
+         * @description Body for `POST /api/sessions/{id}/fork` (session-tree-rewind.md §5.1).
+         *     Rewind to *before* the user message at `rewind_to_msg_seq` and re-spawn.
+         */
+        ForkSessionRequest: {
+            /** Rewind To Msg Seq */
+            rewind_to_msg_seq: number;
+            /**
+             * Revert Files
+             * @default false
+             */
+            revert_files: boolean;
+            /** Label */
+            label?: string | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1736,6 +1869,18 @@ export interface components {
             /** Delegation Request */
             delegation_request?: string | null;
             /**
+             * Can Fork
+             * @default false
+             */
+            can_fork: boolean;
+            /** Forked From Session Id */
+            forked_from_session_id?: string | null;
+            /** Fork After Seq */
+            fork_after_seq?: number | null;
+            /** Fork Prefilled Prompt */
+            fork_prefilled_prompt?: string | null;
+            fork_revert_record?: components["schemas"]["ForkRevertRecord"] | null;
+            /**
              * Archived
              * @default false
              */
@@ -1794,6 +1939,18 @@ export interface components {
             parent_session_id?: string | null;
             /** Delegation Request */
             delegation_request?: string | null;
+            /**
+             * Can Fork
+             * @default false
+             */
+            can_fork: boolean;
+            /** Forked From Session Id */
+            forked_from_session_id?: string | null;
+            /** Fork After Seq */
+            fork_after_seq?: number | null;
+            /** Fork Prefilled Prompt */
+            fork_prefilled_prompt?: string | null;
+            fork_revert_record?: components["schemas"]["ForkRevertRecord"] | null;
             /**
              * Archived
              * @default false
@@ -2427,6 +2584,74 @@ export interface operations {
             };
         };
     };
+    fork_preview_api_sessions__session_id__fork_preview_get: {
+        parameters: {
+            query: {
+                rewind_to_msg_seq: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fork_session_api_sessions__session_id__fork_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForkSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reset_session_api_sessions__session_id__reset_post: {
         parameters: {
             query?: never;
@@ -2915,6 +3140,44 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": components["schemas"]["CancelDelegationRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    follow_up_delegation_api_sessions__session_id__delegations__delegation_id__follow_up_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                delegation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FollowUpDelegationRequest"];
             };
         };
         responses: {

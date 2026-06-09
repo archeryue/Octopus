@@ -31,6 +31,15 @@ class CreateSessionRequest(BaseModel):
     backend: BackendKind | None = None
 
 
+class ForkSessionRequest(BaseModel):
+    """Body for `POST /api/sessions/{id}/fork` (session-tree-rewind.md §5.1).
+    Rewind to *before* the user message at `rewind_to_msg_seq` and re-spawn."""
+
+    rewind_to_msg_seq: int
+    revert_files: bool = False
+    label: str | None = None
+
+
 class ImportSessionRequest(BaseModel):
     name: str = "Imported Session"
     working_dir: str | None = None
@@ -39,6 +48,21 @@ class ImportSessionRequest(BaseModel):
     agent_id: str | None = None  # owner; Default Agent when omitted
     backend: BackendKind = BackendKind.claude_code
     messages: list[MessageContent] = []
+
+
+class ForkRevertRecord(BaseModel):
+    """Durable record of a fork's safe-revert outcome (session-tree-rewind.md
+    §5.6.5). Mirrors the `fork_revert_record` JSON column; surfaced on
+    SessionInfo so the UI can render "files were restored / revert refused".
+    """
+
+    ran: bool = False
+    files: list[str] = []
+    stash_ref: str | None = None
+    # completed | refused | failed | unknown_post_crash
+    status: str
+    refused_reason: str | None = None
+    error: str | None = None
 
 
 class SessionInfo(BaseModel):
@@ -51,7 +75,7 @@ class SessionInfo(BaseModel):
     claude_session_id: str | None = None
     credential_id: str | None = None
     # Owning agent + who created the session ('user' | 'schedule' |
-    # 'bridge' | 'delegation').
+    # 'bridge' | 'delegation' | 'fork').
     agent_id: str | None = None
     origin: str = "user"
     # Which AI backend drives this session.
@@ -62,6 +86,20 @@ class SessionInfo(BaseModel):
     # (agent-collaboration.md §4.1)
     parent_session_id: str | None = None
     delegation_request: str | None = None
+    # Session tree-rewind / fork (session-tree-rewind.md §4). Exactly five
+    # fork-related fields are exposed; fork_status, fork_needs_replay and the
+    # raw fork_metadata blob are server-internal.
+    #   - can_fork: backend capability flag (harness profile)
+    #   - forked_from_session_id / fork_after_seq: tree linkage
+    #   - fork_prefilled_prompt: rewound user message text (from
+    #     fork_metadata.prefilled_prompt while non-null) — populates the
+    #     fork's chat input on open
+    #   - fork_revert_record: durable safe-revert outcome
+    can_fork: bool = False
+    forked_from_session_id: str | None = None
+    fork_after_seq: int | None = None
+    fork_prefilled_prompt: str | None = None
+    fork_revert_record: ForkRevertRecord | None = None
     # Hidden from the default `GET /api/sessions` list; surfaced only
     # when the caller passes `?include_archived=true` (or for individual
     # GETs by id, which always work). The `/archive` flow sets this;

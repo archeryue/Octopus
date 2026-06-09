@@ -13,7 +13,9 @@ import {
   type AttachmentMetadata,
   type Message,
   type PendingQuestion,
+  type SessionInfo,
 } from "../stores/sessionStore";
+import { ForkDialog } from "./ForkDialog";
 import { MessageBubble } from "./MessageBubble";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
@@ -83,6 +85,9 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
+  // Fork dialog (session-tree-rewind.md §6.1-6.2). `null` = closed; `{}` = the
+  // /fork picker; `{ seq }` = the per-message "Fork from here" confirm step.
+  const [forkDialog, setForkDialog] = useState<{ seq?: number } | null>(null);
   // Slash-command autocomplete: which item is highlighted, and whether the
   // user dismissed the menu with Esc (re-opens as soon as they type again).
   const [slashIndex, setSlashIndex] = useState(0);
@@ -131,6 +136,24 @@ export function ChatView({
     if (!activeSessionId || !hasMessages) return;
     virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
   }, [activeSessionId, hasMessages]);
+
+  // Prefilled chat input on fork open (session-tree-rewind.md §6.1). When the
+  // active session carries a non-null fork_prefilled_prompt (the rewound user
+  // message text, set in fork_metadata until the first turn), populate the
+  // input once. The ref keeps us from clobbering the user's edits, and once
+  // they send, the backend clears fork_metadata so it won't re-prefill.
+  const prefilledForRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prompt = activeSession?.fork_prefilled_prompt;
+    if (
+      activeSessionId &&
+      prompt &&
+      prefilledForRef.current !== activeSessionId
+    ) {
+      prefilledForRef.current = activeSessionId;
+      setInput(prompt);
+    }
+  }, [activeSessionId, activeSession?.fork_prefilled_prompt]);
 
   const isRunning = activeSession?.status === "running";
 
@@ -200,6 +223,7 @@ export function ChatView({
           sessionId={activeSessionId ?? ""}
           agentName={activeAgent?.name}
           agentAvatar={activeAgent?.avatar}
+          onFork={(seq) => setForkDialog({ seq })}
         />
       );
     },
@@ -459,6 +483,15 @@ export function ChatView({
       } catch {
         // best-effort — failure leaves the user in the original session
       }
+      return;
+    }
+
+    // /fork (alias /tree) — open the fork picker (session-tree-rewind.md §6.2).
+    // Message selection + confirmation happen in the dialog.
+    const forkCmd = trimmed.toLowerCase();
+    if (forkCmd === "/fork" || forkCmd === "/tree") {
+      setInput("");
+      setForkDialog({});
       return;
     }
 
@@ -807,6 +840,83 @@ export function ChatView({
     </div>
   );
 
+  // Fork sessions get a banner mirroring the delegation one
+  // (session-tree-rewind.md §6.4): "Forked from <parent> at message N".
+  // The parent may be deleted (dangling ref) → "(deleted session)".
+  const forkParentSession = useMemo(
+    () =>
+      activeSession?.forked_from_session_id
+        ? sessions.find((s) => s.id === activeSession.forked_from_session_id) ??
+          archivedSessions.find(
+            (s) => s.id === activeSession.forked_from_session_id
+          )
+        : undefined,
+    [activeSession?.forked_from_session_id, sessions, archivedSessions]
+  );
+  const openForkParent = () => {
+    if (!forkParentSession) return;
+    const store = useSessionStore.getState();
+    if (forkParentSession.agent_id)
+      store.setActiveAgentId(forkParentSession.agent_id);
+    store.setActiveSessionId(forkParentSession.id);
+  };
+
+  // A fork was just created: add it to the store, switch to it (the prefilled
+  // input effect populates the composer from fork_prefilled_prompt), and load
+  // its copied history. (session-tree-rewind.md §6.1)
+  const handleForked = async (fork: SessionInfo) => {
+    const store = useSessionStore.getState();
+    const next = store.sessions.filter((s) => s.id !== fork.id);
+    next.push(fork);
+    store.setSessions(next);
+    if (fork.agent_id) store.setActiveAgentId(fork.agent_id);
+    store.setActiveSessionId(fork.id);
+    try {
+      const res = await fetch(`${window.location.origin}/api/sessions/${fork.id}`, {
+        headers: { Authorization: `Bearer ${store.token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        store.setMessages(fork.id, data.messages || []);
+        store.setPendingQueue(fork.id, []);
+        store.setPendingQuestions(fork.id, []);
+        if (typeof data.next_message_seq === "number")
+          store.setLastAppliedSeq(fork.id, data.next_message_seq - 1);
+      }
+    } catch {
+      /* ignore — the session is selected regardless */
+    }
+  };
+
+  const forkBanner =
+    activeSession?.forked_from_session_id != null ? (
+      <div
+        className="chat-fork-banner flex items-center gap-2 px-4 py-1.5 shrink-0 border-b border-border bg-primary/5 text-xs text-muted-foreground"
+        data-testid="fork-banner"
+      >
+        <span className="text-primary" aria-hidden>
+          ⑂
+        </span>
+        <span>
+          Forked from{" "}
+          <span className="font-medium text-foreground">
+            {forkParentSession?.name ?? "(deleted session)"}
+          </span>{" "}
+          at message{" "}
+          <strong>{(activeSession.fork_after_seq ?? -1) + 1}</strong>
+        </span>
+        {forkParentSession && (
+          <button
+            type="button"
+            onClick={openForkParent}
+            className="btn-open-fork-parent ml-auto text-primary hover:underline"
+          >
+            back to parent →
+          </button>
+        )}
+      </div>
+    ) : null;
+
   const delegationBanner =
     activeSession?.parent_session_id ? (
       <div
@@ -863,7 +973,18 @@ export function ChatView({
       onDrop={isArchived ? undefined : handleDrop}
     >
       {header}
+      {forkBanner}
       {delegationBanner}
+
+      {forkDialog && activeSession && (
+        <ForkDialog
+          sessionId={activeSession.id}
+          parentName={activeSession.name || "Session"}
+          initialSeq={forkDialog.seq}
+          onClose={() => setForkDialog(null)}
+          onForked={handleForked}
+        />
+      )}
 
       {isDragOver && !isArchived && (
         <div className="chat-drop-overlay absolute inset-0 z-20 flex items-center justify-center bg-primary/10 border-2 border-dashed border-primary/60 pointer-events-none">

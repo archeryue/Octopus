@@ -1,10 +1,22 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
-from ..models import CreateSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
-from ..session_manager import session_manager
+from ..harness import BackendForkNotSupported
+from ..models import CreateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
+from ..session_manager import ForkError, fork_info_fields, session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+
+def _fork_fields(s) -> dict:
+    """The five public fork fields for SessionInfo, from a live Session."""
+    return fork_info_fields(
+        backend=s.backend,
+        forked_from_session_id=s.forked_from_session_id,
+        fork_after_seq=s.fork_after_seq,
+        fork_metadata=s.fork_metadata,
+        fork_revert_record=s.fork_revert_record,
+    )
 
 
 def _to_session_info(
@@ -25,6 +37,7 @@ def _to_session_info(
         parent_session_id=s.parent_session_id,
         delegation_request=s.delegation_request,
         archived=archived,
+        **_fork_fields(s),
     )
 
 
@@ -122,6 +135,7 @@ async def import_session(
         backend=s.backend,
         parent_session_id=s.parent_session_id,
         delegation_request=s.delegation_request,
+        **_fork_fields(s),
         messages=messages,
         pending_queue=[qp.prompt for qp in s._pending_queue],
         pending_questions=[
@@ -157,6 +171,7 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
             backend=s.backend,
             parent_session_id=s.parent_session_id,
             delegation_request=s.delegation_request,
+            **_fork_fields(s),
             messages=messages,
             pending_queue=[qp.prompt for qp in s._pending_queue],
             pending_questions=[
@@ -181,6 +196,56 @@ async def delete_session(session_id: str, _: str = Depends(verify_token)):
     deleted = await session_manager.delete_session(session_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+
+
+@router.get("/{session_id}/fork-preview")
+async def fork_preview(
+    session_id: str,
+    rewind_to_msg_seq: int = Query(...),
+    _: str = Depends(verify_token),
+):
+    """Side-effect classification + revert preflight for the fork-confirm
+    popover (session-tree-rewind.md §5.6.2). Commits nothing."""
+    try:
+        return await session_manager.fork_preview(session_id, rewind_to_msg_seq)
+    except ForkError as e:
+        raise HTTPException(
+            e.status_code, detail={"reason": e.reason, "message": str(e)}
+        )
+
+
+@router.post(
+    "/{session_id}/fork",
+    response_model=SessionInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def fork_session(
+    session_id: str,
+    req: ForkSessionRequest,
+    _: str = Depends(verify_token),
+):
+    """Fork a session at a chosen user message (session-tree-rewind.md §5.1).
+    409 responses carry a structured `{reason, backend}` body."""
+    try:
+        fork = await session_manager.fork_session(
+            session_id,
+            req.rewind_to_msg_seq,
+            revert_files=req.revert_files,
+            label=req.label,
+        )
+    except ForkError as e:
+        raise HTTPException(
+            e.status_code, detail={"reason": e.reason, "message": str(e)}
+        )
+    except BackendForkNotSupported as e:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "fork_not_supported_on_backend",
+                "backend": e.backend,
+            },
+        )
+    return _to_session_info(fork)
 
 
 @router.post("/{session_id}/reset")

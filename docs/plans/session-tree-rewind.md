@@ -1,9 +1,35 @@
 # Session Tree-Rewind — Tech Plan (`/fork` / `/tree`)
 
-> **Draft (2026-06-06).** Not yet implemented. Inspired by Pi
-> agent's `/tree`: rewind a conversation to a prior user message
-> and try again — edited, redone, or replaced with a new
-> instruction.
+> **Draft (2026-06-06).** Inspired by Pi agent's `/tree`: rewind a
+> conversation to a prior user message and try again — edited,
+> redone, or replaced with a new instruction.
+>
+> **Implementation status (2026-06-08): COMPLETE — Phases 1–5 landed
+> and green.** Backend (schema + harness fork contract + `fork_session`
+> saga + classifier + safe-revert + crash recovery + REST routes +
+> attachment fallback/blit) and frontend (store `buildForkTree`,
+> sidebar fork tree, fork banner, prefilled input, `ForkDialog`
+> picker/confirm, per-message "Fork from here" button, `/fork`+`/tree`
+> slash commands, Telegram browser-only notice) are implemented and
+> tested (`tests/test_fork_helpers.py`, `tests/test_session_fork.py`,
+> `tests/test_session_fork_real.py`, `web/src/lib/forkTree.test.ts`,
+> `web/src/components/ForkDialog.test.tsx`, `web/e2e/fork.spec.ts`).
+>
+> **⚠ Phase-5 strategy change — Claude uses HISTORY_REPLAY, not
+> NATIVE_TRANSCRIPT.** Real-CLI testing showed `claude --resume` of an
+> externally-synthesized JSONL is unreliable through the production
+> spawn path: the CLI resolves the resume id against a session-discovery
+> path that does NOT dependably see a transcript Octopus wrote, failing
+> ~all the time with "No conversation found" and silently starting a
+> fresh empty session (it resumes its OWN sessions fine). So BOTH
+> backends now use HISTORY_REPLAY: the fork's first turn replays the
+> truncated transcript in its user prompt; turn 2+ resumes the backend's
+> own captured session id natively. The NATIVE_TRANSCRIPT design below
+> (§3.2/§5.3.1) is preserved as documentation; it can return as a cache
+> optimization if/when the CLI gains reliable external-transcript resume.
+> Side effect of the investigation: `claude --print` now closes stdin
+> right after spawn (it takes its prompt from argv), removing a ~3s
+> per-turn wait the open pipe was causing.
 
 ## 0. What we're building, and the mental model
 

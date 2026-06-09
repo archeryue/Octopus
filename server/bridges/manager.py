@@ -22,6 +22,7 @@ BRIDGE_COMMANDS = {
     "/quiet": "Show only the agent's replies (hide tool activity)",
     "/verbose": "Also show tool activity (tool calls, results, cost)",
     "/showme": "Browser-only — opens a file in the in-app viewer",
+    "/fork": "Browser-only — rewind to a message and redo it",
     "/help": "Show available commands",
 }
 
@@ -406,6 +407,17 @@ class BridgeManager:
                 "/showme only works in the browser — the in-app file viewer "
                 "can't render in Telegram. Open Octopus in a web session to "
                 "use it.",
+            )
+
+        elif command in ("/fork", "/tree"):
+            # Forking needs a message picker / confirm popover that only the
+            # browser UI provides (session-tree-rewind.md §6.2). Intercept here
+            # so the CLI doesn't eat it as an unknown command.
+            await bridge.send_text(
+                chat_id,
+                "/fork only works in the browser — rewinding to a past "
+                "message needs the picker + confirm dialog. Open Octopus in a "
+                "web session to fork.",
             )
 
         elif command == "/help":

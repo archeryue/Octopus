@@ -139,11 +139,14 @@ def compose_system_prompt(
     connectors: list[tuple[Any, Any]],
     memory_dir: str | None = None,
     inject_memory: bool = False,
+    fork_note: str | None = None,
 ) -> str:
     """persona (if any) ahead of the harness's in-app-tools blurb, then the
     connectors blurb (if any), then the memory blurb (when the harness has no
-    native memory and an agent memory dir exists). Re-sent every turn — the
-    CLIs don't persist system prompts across resume."""
+    native memory and an agent memory dir exists), then the fork first-turn
+    note (session-tree-rewind.md §5.6.4 — framing the model needs to read the
+    forked world correctly). Re-sent every turn — the CLIs don't persist system
+    prompts across resume."""
     from ..connectors.base import render_connectors_blurb
 
     out = tools_prompt
@@ -153,4 +156,6 @@ def compose_system_prompt(
         out = f"{out}\n\n{render_connectors_blurb(connectors)}"
     if inject_memory and memory_dir:
         out = f"{out}\n\n{render_memory_blurb(memory_dir)}"
+    if fork_note:
+        out = f"{out}\n\n{fork_note}"
     return out

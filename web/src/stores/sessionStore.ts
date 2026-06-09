@@ -42,6 +42,11 @@ export interface Message {
   // messages that the user attached files to (image, PDF, anything).
   // The chat UI renders thumbnails / file chips below the message text.
   attachments?: AttachmentMetadata[];
+  // Per-session sequence number, present on messages loaded from the
+  // session detail snapshot. Used as the rewind target for "Fork from here"
+  // (session-tree-rewind.md §6.1). Absent on freshly-streamed messages until
+  // the next detail reload.
+  seq?: number;
 }
 
 export interface QuestionOption {

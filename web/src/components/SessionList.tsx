@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import {
   IconCheck,
+  IconChevronDown,
+  IconChevronRight,
   IconCopy,
   IconEye,
   IconEyeOff,
+  IconGitFork,
   IconSubtask,
   IconX,
 } from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
+import { buildForkTree, type ForkTreeNode } from "../lib/forkTree";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -30,6 +34,8 @@ export function SessionList({
   const [credentialId, setCredentialId] = useState<string>("");
   const [backend, setBackend] = useState<string>("claude-code");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // Fork subtrees default to expanded; clicking the triangle collapses one.
+  const [collapsedForks, setCollapsedForks] = useState<Set<string>>(new Set());
 
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
@@ -154,6 +160,142 @@ export function SessionList({
     }
   };
 
+  const toggleCollapse = (id: string) =>
+    setCollapsedForks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // One session row + its fork subtree (session-tree-rewind.md §6.3). Forks
+  // nest under their parent; a disclosure triangle collapses the subtree, and
+  // a fork shows an "@msg N" badge for its branch point.
+  const renderForkNode = (node: ForkTreeNode, depth: number) => {
+    const s = node.session;
+    const hasChildren = node.children.length > 0;
+    const collapsed = collapsedForks.has(s.id);
+    const isFork = s.forked_from_session_id != null;
+    return (
+      <div key={s.id} className="fork-node">
+        <div
+          className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
+            s.id === activeSessionId
+              ? "active bg-[hsl(var(--gray-200))] text-foreground"
+              : "text-sidebar-foreground hover:bg-sidebar-accent"
+          }`}
+          style={{ paddingLeft: `${0.5 + depth * 0.85}rem` }}
+          onClick={() => selectSession(s.id)}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              className="fork-disclosure inline-flex items-center text-muted-foreground/70 hover:text-foreground"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleCollapse(s.id);
+              }}
+              title={collapsed ? "Expand forks" : "Collapse forks"}
+              aria-label={collapsed ? "Expand forks" : "Collapse forks"}
+            >
+              {collapsed ? (
+                <IconChevronRight size={12} />
+              ) : (
+                <IconChevronDown size={12} />
+              )}
+            </button>
+          ) : (
+            <span className="inline-block w-3 shrink-0" />
+          )}
+          <span
+            className={`status-dot status-${s.status} inline-block size-2 rounded-full shrink-0 ${
+              s.status === "running"
+                ? "bg-primary animate-pulse"
+                : s.status === "waiting_approval"
+                ? "bg-yellow-500"
+                : "bg-muted-foreground/40"
+            }`}
+          />
+          {isFork && (
+            <IconGitFork
+              size={11}
+              className="fork-marker shrink-0 text-muted-foreground/70"
+              aria-hidden
+            />
+          )}
+          <span
+            className={`session-name truncate text-sm flex-1 ${
+              s.id === activeSessionId ? "font-medium" : ""
+            }`}
+          >
+            {s.name}
+          </span>
+          {isFork && s.fork_after_seq != null && (
+            <span
+              className="fork-badge shrink-0 rounded bg-muted px-1 text-[10px] font-mono text-muted-foreground"
+              title={`Forked before message ${s.fork_after_seq + 1}`}
+            >
+              @msg {s.fork_after_seq + 1}
+            </span>
+          )}
+          {s.origin === "delegation" && (
+            <span
+              className="delegation-marker inline-flex items-center text-muted-foreground/80"
+              title="Delegation session"
+              aria-label="Delegation session"
+            >
+              <IconSubtask size={12} />
+            </span>
+          )}
+          <div className="session-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <button
+              className="btn-copy-id inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"
+              onClick={(e) => {
+                e.stopPropagation();
+                navigator.clipboard.writeText(s.id);
+                setCopiedId(s.id);
+                setTimeout(() => setCopiedId(null), 1500);
+              }}
+              title="Copy session ID"
+            >
+              {copiedId === s.id ? <IconCheck size={14} /> : <IconCopy size={14} />}
+            </button>
+            <button
+              className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
+              onClick={(e) => {
+                e.stopPropagation();
+                deleteSession(s.id);
+              }}
+              title="Delete session"
+            >
+              <IconX size={14} />
+            </button>
+          </div>
+        </div>
+        {hasChildren &&
+          !collapsed &&
+          node.children.map((c) => renderForkNode(c, depth + 1))}
+      </div>
+    );
+  };
+
+  const renderForkForest = (list: SessionInfo[]) => {
+    const { roots, orphans } = buildForkTree(list);
+    return (
+      <>
+        {roots.map((n) => renderForkNode(n, 0))}
+        {orphans.length > 0 && (
+          <>
+            <div className="fork-orphan-label px-2 pt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/50">
+              (parent deleted)
+            </div>
+            {orphans.map((n) => renderForkNode(n, 0))}
+          </>
+        )}
+      </>
+    );
+  };
+
   return (
     <div className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40">
       <div className="session-list-items flex flex-col gap-0">
@@ -189,67 +331,7 @@ export function SessionList({
               <span>Hide delegations</span>
             </button>
           )}
-        {agentSessions.map((s) => (
-          <div
-            key={s.id}
-            className={`session-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer transition-colors ${
-              s.id === activeSessionId
-                ? "active bg-[hsl(var(--gray-200))] text-foreground"
-                : "text-sidebar-foreground hover:bg-sidebar-accent"
-            }`}
-            onClick={() => selectSession(s.id)}
-          >
-            <span
-              className={`status-dot status-${s.status} inline-block size-2 rounded-full shrink-0 ${
-                s.status === "running"
-                  ? "bg-primary animate-pulse"
-                  : s.status === "waiting_approval"
-                  ? "bg-yellow-500"
-                  : "bg-muted-foreground/40"
-              }`}
-            />
-            <span
-              className={`session-name truncate text-sm flex-1 ${
-                s.id === activeSessionId ? "font-medium" : ""
-              }`}
-            >
-              {s.name}
-            </span>
-            {s.origin === "delegation" && (
-              <span
-                className="delegation-marker inline-flex items-center text-muted-foreground/80"
-                title="Delegation session"
-                aria-label="Delegation session"
-              >
-                <IconSubtask size={12} />
-              </span>
-            )}
-            <div className="session-item-actions flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                className="btn-copy-id inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-card hover:text-sidebar-foreground"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigator.clipboard.writeText(s.id);
-                  setCopiedId(s.id);
-                  setTimeout(() => setCopiedId(null), 1500);
-                }}
-                title="Copy session ID"
-              >
-                {copiedId === s.id ? <IconCheck size={14} /> : <IconCopy size={14} />}
-              </button>
-              <button
-                className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-destructive/10 hover:text-destructive"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  deleteSession(s.id);
-                }}
-                title="Delete session"
-              >
-                <IconX size={14} />
-              </button>
-            </div>
-          </div>
-        ))}
+        {renderForkForest(agentSessions)}
       </div>
 
       {formOpen && (

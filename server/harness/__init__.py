@@ -10,6 +10,12 @@ Profiles self-register on import; importing this package wires them up
 from __future__ import annotations
 
 from .events import HarnessCredential, HarnessEvent, HarnessOneshotError
+from .fork import (
+    HISTORY_REPLAY,
+    NATIVE_TRANSCRIPT,
+    BackendForkNotSupported,
+    ForkArtifact,
+)
 from .harness import Harness
 from .login import LoginDriver, LoginMethod
 from .profile import (
@@ -45,6 +51,10 @@ __all__ = [
     "EventParser",
     "ParseOutput",
     "TranscriptCodec",
+    "ForkArtifact",
+    "BackendForkNotSupported",
+    "NATIVE_TRANSCRIPT",
+    "HISTORY_REPLAY",
     "LoginDriver",
     "LoginMethod",
     "register",

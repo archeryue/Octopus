@@ -400,6 +400,30 @@ def parse_oneshot_stdout(stdout: str) -> str:
     return "\n".join(texts)
 
 
+# ------------------------------------------------------------------ fork (HISTORY_REPLAY)
+
+
+async def _fork_prepare_replay(
+    messages: list[Any],
+    working_dir: str,
+    resume_id_hint: str | None,
+    fork_id: str,
+) -> "Any":
+    """No on-disk work (session-tree-rewind.md §5.3.2). Codex's resume state is
+    internal to the binary and has no transcript codec, so the first fork turn
+    instead carries the truncated history wrapped into its USER PROMPT (done in
+    `SessionManager.send_message`). `thread.started` captures the real resume id
+    on turn 1; turn 2+ uses native Codex resume. The `resume_id_hint` is
+    ignored."""
+    from .fork import ForkArtifact
+
+    return ForkArtifact(resume_id=None, needs_replay=True)
+
+
+# No fork_cleanup for Codex: HISTORY_REPLAY leaves no on-disk artifacts, so the
+# Harness cleanup hook is a no-op (profile.fork_cleanup stays None).
+
+
 # ------------------------------------------------------------------ login driver
 
 
@@ -459,6 +483,8 @@ CODEX = RuntimeProfile(
     # (docs/plans/memory.md §3). Memory is decoupled from CODEX_HOME; the
     # canonical dir is ensured by session_manager.
     injects_memory_prompt=True,
+    can_fork=True,  # HISTORY_REPLAY strategy (session-tree-rewind.md §5.3.2)
+    fork_prepare=_fork_prepare_replay,
     login=_DeviceLoginDriver(),
     transcript_codec=None,  # Codex has no handoff/pull transcript format
 )

@@ -129,6 +129,19 @@ class RuntimeProfile:
     # writes the canonical dir with file tools by instruction). Claude: False
     # (native memory, pointed at the canonical dir via an env override).
     injects_memory_prompt: bool = False
+    # Whether this backend can be forked (session-tree-rewind.md §3). A
+    # backend supplies `prepare_fork` + a working resume strategy
+    # (NATIVE_TRANSCRIPT or HISTORY_REPLAY). Both v1 backends set True; a
+    # future backend with no strategy leaves it False and the "Fork from
+    # here" affordance renders disabled. Surfaced via `SessionInfo.can_fork`.
+    can_fork: bool = False
     # Collaborators (optional features):
     login: LoginDriver | None = None
     transcript_codec: TranscriptCodec | None = None
+    # Fork strategy collaborators (session-tree-rewind.md §3). `fork_prepare`
+    # synthesizes backend-specific resume state and returns a `ForkArtifact`;
+    # `fork_cleanup` sweeps any partial artifacts left by an incomplete saga.
+    # Both async. None on a backend with no fork strategy (can_fork stays
+    # False). Typed as Any to avoid importing the fork DTOs into this module.
+    fork_prepare: Callable[..., Any] | None = None
+    fork_cleanup: Callable[..., Any] | None = None

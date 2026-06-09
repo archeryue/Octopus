@@ -491,6 +491,16 @@ class DelegationManager:
     def get_delegation(self, delegation_id: str) -> DelegationRunState | None:
         return self._records.get(delegation_id)
 
+    def has_active_delegation_for_parent(self, parent_session_id: str) -> bool:
+        """True if `parent_session_id` has any still-running delegation
+        (session-tree-rewind.md §5.4). The fork live-work check uses this to
+        refuse forking a parent that's mid-delegation — a fork is only allowed
+        against a quiescent parent."""
+        return any(
+            r.parent_session_id == parent_session_id and r.state == "running"
+            for r in self._records.values()
+        )
+
     # ----------------------------------------------------------- internals
 
     async def _resolve_target_agent(

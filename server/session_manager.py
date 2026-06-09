@@ -22,12 +22,14 @@ from .large_prompts import (
     spill_if_large,
 )
 from .harness import (
+    BackendForkNotSupported,
     HarnessCredential,
     HarnessEvent,
     HarnessRun,
     RunConfig,
     get_harness,
 )
+from . import fork_helpers
 from .config import settings
 from .crypto import decrypt, encrypt
 from .database import Database
@@ -43,6 +45,17 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ForkError(Exception):
+    """A fork request was rejected for a reason the route maps to a status
+    code (session-tree-rewind.md §5.1). `reason` is a stable machine token;
+    `status_code` is the HTTP status the route should return."""
+
+    def __init__(self, message: str, *, reason: str, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.reason = reason
+        self.status_code = status_code
 
 
 def resolve_working_dir(working_dir: str | None) -> str:
@@ -64,6 +77,58 @@ def resolve_working_dir(working_dir: str | None) -> str:
     """
     raw = working_dir or settings.default_working_dir
     return str(Path(raw).expanduser().resolve())
+
+
+def _session_fork_kwargs(row: dict[str, Any]) -> dict[str, Any]:
+    """Extract the six persisted fork columns from a `load_sessions` row dict
+    into Session(**…) kwargs. Centralised so every Session-from-row site stays
+    in lock-step (session-tree-rewind.md §4)."""
+    return {
+        "forked_from_session_id": row.get("forked_from_session_id"),
+        "fork_after_seq": row.get("fork_after_seq"),
+        "fork_needs_replay": bool(row.get("fork_needs_replay")),
+        "fork_metadata": row.get("fork_metadata"),
+        "fork_revert_record": row.get("fork_revert_record"),
+        "fork_status": row.get("fork_status"),
+    }
+
+
+def fork_info_fields(
+    *,
+    backend: str,
+    forked_from_session_id: str | None,
+    fork_after_seq: int | None,
+    fork_metadata: str | None,
+    fork_revert_record: str | None,
+) -> dict[str, Any]:
+    """The five fork-related fields exposed on `SessionInfo`
+    (session-tree-rewind.md §4). `can_fork` comes from the harness profile;
+    `fork_prefilled_prompt` is read out of the ephemeral `fork_metadata` blob
+    (while non-null); `fork_revert_record` is the durable revert outcome.
+    fork_status / fork_needs_replay / the raw blob stay server-internal."""
+    try:
+        can_fork = get_harness(backend).profile.can_fork
+    except Exception:
+        can_fork = False
+    prefilled: str | None = None
+    if fork_metadata:
+        try:
+            prefilled = json.loads(fork_metadata).get("prefilled_prompt")
+        except (json.JSONDecodeError, AttributeError):
+            prefilled = None
+    revert: dict[str, Any] | None = None
+    if fork_revert_record:
+        try:
+            revert = json.loads(fork_revert_record)
+        except json.JSONDecodeError:
+            revert = None
+    return {
+        "can_fork": can_fork,
+        "forked_from_session_id": forked_from_session_id,
+        "fork_after_seq": fork_after_seq,
+        "fork_prefilled_prompt": prefilled,
+        "fork_revert_record": revert,
+    }
 
 
 @dataclass
@@ -138,7 +203,21 @@ class Session:
     # The original delegation prompt, kept verbatim for UI display on
     # delegation sessions. NULL elsewhere.
     delegation_request: str | None = None
+    # Session tree-rewind / fork (session-tree-rewind.md §4). All NULL/False
+    # on non-fork sessions. fork_metadata / fork_revert_record hold raw JSON
+    # strings (parsed lazily); fork_status drives crash recovery.
+    forked_from_session_id: str | None = None
+    fork_after_seq: int | None = None
+    fork_needs_replay: bool = False
+    fork_metadata: str | None = None
+    fork_revert_record: str | None = None
+    fork_status: str | None = None
     _message_count: int = field(default=0, repr=False)
+    # Set True for the lifetime of a fork-create saga against this session as
+    # the PARENT (session-tree-rewind.md §5.4). start_message() refuses while
+    # set; cleared in fork_session's finally. A real mutex even though
+    # start_message sets _active_task without holding _lock.
+    _forking: bool = field(default=False, repr=False)
     _active_task: asyncio.Task | None = field(default=None, repr=False)
     # Per-prompt task that interrupt() targets; the outer _active_task is
     # the orchestrator loop and survives interrupts so it can drain the queue.
@@ -201,10 +280,13 @@ class SessionManager:
                 backend=row.get("backend") or "claude-code",
                 parent_session_id=row.get("parent_session_id"),
                 delegation_request=row.get("delegation_request"),
+                **_session_fork_kwargs(row),
             )
             session._message_count = await db.count_messages(session.id)
             self.sessions[session.id] = session
         logger.info("Loaded %d sessions from database", len(rows))
+        # Sweep forks left mid-saga by a crash (session-tree-rewind.md §5.6.7).
+        await self._recover_incomplete_forks()
 
     def on_broadcast(self, key: str, callback: Callable) -> None:
         self._broadcast_callbacks[key] = callback
@@ -224,6 +306,370 @@ class SessionManager:
 
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
+
+    async def _recover_incomplete_forks(self) -> None:
+        """Sweep forks left mid-saga by a crash (session-tree-rewind.md §5.6.7).
+        Dispatch on `fork_status`:
+          - 'initializing': PURGE in order — (1) call the harness cleanup hook
+            so backend-specific artifacts go via the harness (no reach into
+            ~/.claude/projects/ here); on cleanup failure leave the row for the
+            next boot to retry idempotently; (2) only after cleanup succeeds,
+            delete the row + copied messages.
+          - 'reverting': FINALIZE — git ops were in flight at crash; mark the
+            durable revert record `unknown_post_crash` and promote to 'ready'.
+        Idempotent — safe on every boot."""
+        if self.db is None:
+            return
+        try:
+            rows = await self.db.load_incomplete_forks()
+        except Exception:
+            logger.exception("fork recovery: could not query incomplete forks")
+            return
+        for row in rows:
+            fork_id = row["id"]
+            status = row["fork_status"]
+            if status == "initializing":
+                try:
+                    harness = get_harness(row["backend"])
+                    await harness.cleanup_incomplete_fork_artifacts(
+                        row["working_dir"], row["resume_id"], fork_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "fork %s: artifact cleanup failed; leaving "
+                        "'initializing' for next boot",
+                        fork_id,
+                    )
+                    continue
+                await self.db.delete_session(fork_id)
+                self.sessions.pop(fork_id, None)
+                logger.info("fork %s: purged incomplete (initializing) saga", fork_id)
+            elif status == "reverting":
+                try:
+                    rec = (
+                        json.loads(row["fork_revert_record"])
+                        if row["fork_revert_record"]
+                        else {}
+                    )
+                except json.JSONDecodeError:
+                    rec = {}
+                rec.setdefault("ran", True)
+                rec.setdefault("files", [])
+                rec.setdefault("stash_ref", None)
+                rec.setdefault("refused_reason", None)
+                rec["status"] = "unknown_post_crash"
+                rec["error"] = (
+                    "Server crashed during fork file-revert. Inspect `git "
+                    "status` and `git stash list` for "
+                    f"'octopus: pre-fork stash {fork_id}'."
+                )
+                await self.db.update_session_field(
+                    fork_id,
+                    fork_revert_record=json.dumps(rec),
+                    fork_status="ready",
+                )
+                sess = self.sessions.get(fork_id)
+                if sess is not None:
+                    sess.fork_revert_record = json.dumps(rec)
+                    sess.fork_status = "ready"
+                logger.info(
+                    "fork %s: finalized interrupted revert as unknown_post_crash",
+                    fork_id,
+                )
+
+    async def _clear_fork_first_turn_state(self, session: Session) -> None:
+        """Drop the ephemeral fork state once the fork's first turn produces a
+        `result` (session-tree-rewind.md §5.3.2/§5.6.5): clear
+        `fork_needs_replay` (so turn 2+ isn't wrapped) and `fork_metadata` (so
+        the chat input doesn't re-prefill). `fork_revert_record` is durable and
+        NEVER cleared. No-op on non-fork / already-cleared sessions."""
+        if not session.fork_needs_replay and session.fork_metadata is None:
+            return
+        session.fork_needs_replay = False
+        session.fork_metadata = None
+        if self.db:
+            await self.db.update_session_field(
+                session.id, fork_needs_replay=False, fork_metadata=None
+            )
+
+    async def fork_session(
+        self,
+        parent_id: str,
+        rewind_to_msg_seq: int,
+        *,
+        revert_files: bool = False,
+        label: str | None = None,
+    ) -> Session:
+        """Fork `parent_id` by rewinding to *before* the user message at
+        `seq=rewind_to_msg_seq` and re-spawning as a new branch
+        (session-tree-rewind.md §5.1). Returns the new fork Session. The saga is
+        ordered (NOT a single transaction — SQLite rollback can't undo FS/git):
+        validate → lock+`_forking` → classify → DB-only insert → `prepare_fork`
+        (with compensation) → stamp ephemeral metadata → optional safe-revert.
+        No `if backend ==` anywhere — the harness owns the strategy."""
+        from .delegations import delegation_manager
+
+        parent = self.sessions.get(parent_id)
+        if parent is None:
+            raise ForkError(
+                f"Session {parent_id} not found",
+                reason="parent_not_found",
+                status_code=404,
+            )
+
+        # 1. Validate the target user message (loaded for EVERY M, incl. M=0 —
+        #    it supplies the prefilled prompt + the git anchor for revert).
+        M = rewind_to_msg_seq
+        messages = await self.db.load_messages(parent_id) if self.db else []
+        by_seq = {m["seq"]: m for m in messages}
+        if M < 0 or M not in by_seq:
+            raise ForkError(
+                f"No message at seq {M} in session {parent_id}",
+                reason="invalid_rewind_seq",
+                status_code=400,
+            )
+        target = by_seq[M]
+        if target["role"] != "user":
+            raise ForkError(
+                f"Message at seq {M} is not a user message",
+                reason="target_not_user_message",
+                status_code=400,
+            )
+        fork_after_seq = M - 1
+        prefilled_prompt = (
+            target["content"] if isinstance(target["content"], str) else ""
+        )
+
+        harness = get_harness(parent.backend)
+        if not harness.can_fork:
+            raise BackendForkNotSupported(parent.backend)
+
+        # 2. Acquire the lock, validate no live parent work, claim `_forking`.
+        async with parent._lock:
+            if parent._forking:
+                raise ForkError(
+                    "Another fork is already in progress for this session",
+                    reason="fork_blocked_parent_turn_active",
+                    status_code=409,
+                )
+            if parent._active_task and not parent._active_task.done():
+                raise ForkError(
+                    "Parent session has an active turn",
+                    reason="fork_blocked_parent_turn_active",
+                    status_code=409,
+                )
+            if parent._pending_queue:
+                raise ForkError(
+                    "Parent session has a queued message",
+                    reason="fork_blocked_parent_turn_active",
+                    status_code=409,
+                )
+            if parent._pending_approvals:
+                raise ForkError(
+                    "Parent session has a pending tool approval",
+                    reason="fork_blocked_parent_turn_active",
+                    status_code=409,
+                )
+            if delegation_manager.has_active_delegation_for_parent(parent.id):
+                raise ForkError(
+                    "Parent session has an active delegation",
+                    reason="fork_blocked_parent_turn_active",
+                    status_code=409,
+                )
+            parent._forking = True
+
+        fork_id = uuid.uuid4().hex[:12]
+        # Pre-mint the backend resume id BEFORE the INSERT so startup recovery
+        # can locate an orphan artifact by exact path. NATIVE backends use it
+        # as the artifact name; REPLAY backends ignore it.
+        resume_id_hint = str(uuid.uuid4())
+        try:
+            # 4. Classify side effects over the rewound turn onward (seq >= M).
+            summary = await fork_helpers.classify_side_effects(self.db, parent_id, M)
+
+            # 5. DB-only transaction: insert fork row + copied messages.
+            now = datetime.now(timezone.utc).isoformat()
+            fork_name = label or self._derive_fork_name(parent.name, M)
+            copied = [m for m in messages if m["seq"] <= fork_after_seq]
+            await self.db.create_fork_session(
+                fork_id=fork_id,
+                name=fork_name,
+                working_dir=parent.working_dir,
+                created_at=now,
+                parent_id=parent_id,
+                backend=parent.backend,
+                agent_id=parent.agent_id,
+                credential_id=parent.credential_id,
+                resume_id=resume_id_hint,
+                fork_after_seq=fork_after_seq,
+            )
+            fork = Session(
+                id=fork_id,
+                name=fork_name,
+                working_dir=parent.working_dir,
+                created_at=now,
+                claude_session_id=resume_id_hint,
+                credential_id=parent.credential_id,
+                agent_id=parent.agent_id,
+                origin="fork",
+                backend=parent.backend,
+                forked_from_session_id=parent_id,
+                fork_after_seq=fork_after_seq,
+                fork_status="initializing",
+            )
+            # Copied M messages (seq 0..M-1); next assigned seq is M.
+            fork._message_count = M
+            self.sessions[fork_id] = fork
+
+            # 6. prepare_fork (external state) with explicit compensation.
+            try:
+                artifact = await harness.prepare_fork(
+                    [MessageContent(**m) for m in copied],
+                    parent.working_dir,
+                    resume_id_hint,
+                    fork_id,
+                )
+            except Exception:
+                # Compensate in order (§5.1 step 6): cleanup artifacts FIRST
+                # (the row still anchors resume_id_hint/fork_id), then delete.
+                try:
+                    await harness.cleanup_incomplete_fork_artifacts(
+                        parent.working_dir, resume_id_hint, fork_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "fork %s: artifact cleanup failed during compensation; "
+                        "leaving DB row 'initializing' for startup retry",
+                        fork_id,
+                    )
+                    # Drop the in-memory session so a failed fork can't appear
+                    # as a normal idle session (fork_status isn't exposed to
+                    # clients — Vera review SHOULD-FIX #2). The DB row stays for
+                    # the startup sweep to purge on the next boot.
+                    self.sessions.pop(fork_id, None)
+                    raise
+                await self.db.delete_session(fork_id)
+                self.sessions.pop(fork_id, None)
+                raise
+
+            fork.claude_session_id = artifact.resume_id
+            fork.fork_needs_replay = artifact.needs_replay
+            await self.db.update_session_field(
+                fork_id,
+                claude_session_id=artifact.resume_id,
+                fork_needs_replay=artifact.needs_replay,
+            )
+
+            # 7. Stamp ephemeral fork_metadata + promote fork_status.
+            note = fork_helpers.render_first_turn_note(
+                parent_label=parent.name, n=M, summary=summary, reverted=False
+            )
+            metadata = {
+                "prefilled_prompt": prefilled_prompt,
+                "side_effect_summary": summary,
+                "fork_label": label,
+                "first_turn_note": note,
+            }
+            fork.fork_metadata = json.dumps(metadata)
+            await self.db.update_session_field(
+                fork_id, fork_metadata=fork.fork_metadata
+            )
+            if revert_files:
+                fork.fork_status = "reverting"
+                await self.db.update_session_field(fork_id, fork_status="reverting")
+            else:
+                fork.fork_status = "ready"
+                await self.db.update_session_field(fork_id, fork_status="ready")
+
+            # 8. Safe-revert as a SEPARATE post-create step (durable record).
+            if revert_files:
+                record = await fork_helpers.safe_revert_files(
+                    parent.working_dir,
+                    summary["agent_touched_paths"],
+                    target.get("git_head"),
+                    target.get("git_status_clean"),
+                    fork_id,
+                )
+                fork.fork_revert_record = json.dumps(record)
+                await self.db.update_session_field(
+                    fork_id, fork_revert_record=fork.fork_revert_record
+                )
+                # Re-render the first-turn note with the real revert outcome.
+                reverted = record["ran"] and record["status"] == "completed"
+                metadata["first_turn_note"] = fork_helpers.render_first_turn_note(
+                    parent_label=parent.name, n=M, summary=summary, reverted=reverted
+                )
+                fork.fork_metadata = json.dumps(metadata)
+                await self.db.update_session_field(
+                    fork_id, fork_metadata=fork.fork_metadata
+                )
+                fork.fork_status = "ready"
+                await self.db.update_session_field(fork_id, fork_status="ready")
+
+            await self._broadcast(
+                {
+                    "type": "session_forked",
+                    "fork_session_id": fork.id,
+                    "parent_session_id": parent_id,
+                    "name": fork.name,
+                }
+            )
+            return fork
+        finally:
+            # 9. Always release `_forking` (even on prepare_fork failure).
+            parent._forking = False
+
+    @staticmethod
+    def _derive_fork_name(parent_name: str, m: int) -> str:
+        """Default label for a fork: parent's name plus the branch point."""
+        base = parent_name or "Session"
+        return f"{base} (fork @{m})"
+
+    async def fork_preview(
+        self, parent_id: str, rewind_to_msg_seq: int
+    ) -> dict[str, Any]:
+        """Run the side-effect classifier + revert preflight for the popover
+        WITHOUT committing anything (session-tree-rewind.md §5.6.2). Powers
+        `GET /api/sessions/{id}/fork-preview`."""
+        parent = self.sessions.get(parent_id)
+        if parent is None:
+            raise ForkError(
+                f"Session {parent_id} not found",
+                reason="parent_not_found",
+                status_code=404,
+            )
+        M = rewind_to_msg_seq
+        messages = await self.db.load_messages(parent_id) if self.db else []
+        by_seq = {m["seq"]: m for m in messages}
+        if M < 0 or M not in by_seq:
+            raise ForkError(
+                f"No message at seq {M} in session {parent_id}",
+                reason="invalid_rewind_seq",
+                status_code=400,
+            )
+        target = by_seq[M]
+        if target["role"] != "user":
+            raise ForkError(
+                f"Message at seq {M} is not a user message",
+                reason="target_not_user_message",
+                status_code=400,
+            )
+        summary = await fork_helpers.classify_side_effects(self.db, parent_id, M)
+        available, reason, _dirty = await fork_helpers.safe_revert_preflight(
+            parent.working_dir,
+            summary["agent_touched_paths"],
+            target.get("git_head"),
+            target.get("git_status_clean"),
+        )
+        return {
+            "rewind_to_msg_seq": M,
+            "prefilled_prompt": (
+                target["content"] if isinstance(target["content"], str) else ""
+            ),
+            "side_effect_summary": summary,
+            "revert": {"available": available, "refused_reason": reason},
+            "can_fork": get_harness(parent.backend).can_fork,
+        }
 
     async def create_session(
         self,
@@ -530,6 +976,13 @@ class SessionManager:
                     "parent_session_id": row.get("parent_session_id"),
                     "delegation_request": row.get("delegation_request"),
                     "archived": True,
+                    **fork_info_fields(
+                        backend=row.get("backend") or "claude-code",
+                        forked_from_session_id=row.get("forked_from_session_id"),
+                        fork_after_seq=row.get("fork_after_seq"),
+                        fork_metadata=row.get("fork_metadata"),
+                        fork_revert_record=row.get("fork_revert_record"),
+                    ),
                 }
             )
         return out
@@ -564,6 +1017,13 @@ class SessionManager:
             backend=match.get("backend") or "claude-code",
             parent_session_id=match.get("parent_session_id"),
             delegation_request=match.get("delegation_request"),
+            **fork_info_fields(
+                backend=match.get("backend") or "claude-code",
+                forked_from_session_id=match.get("forked_from_session_id"),
+                fork_after_seq=match.get("fork_after_seq"),
+                fork_metadata=match.get("fork_metadata"),
+                fork_revert_record=match.get("fork_revert_record"),
+            ),
             archived=True,
             messages=messages,
             pending_queue=[],
@@ -603,6 +1063,7 @@ class SessionManager:
             # banner / cycle walk would break.
             parent_session_id=match.get("parent_session_id"),
             delegation_request=match.get("delegation_request"),
+            **_session_fork_kwargs(match),
         )
         session._message_count = await self.db.count_messages(session.id)
         self.sessions[session.id] = session
@@ -614,6 +1075,81 @@ class SessionManager:
             }
         )
         return session
+
+    async def fork_ancestor_ids(self, session_id: str) -> list[str]:
+        """The `forked_from_session_id` chain above `session_id` (nearest
+        first), reading archived rows too so the walk survives parent archive
+        (session-tree-rewind.md §5.1 step 5.2 read-time fallback). Visited-set
+        guarded against corrupted pointers."""
+        if self.db is None:
+            return []
+        rows = {r["id"]: r for r in await self.db.load_sessions(include_archived=True)}
+        out: list[str] = []
+        seen: set[str] = set()
+        cur = rows.get(session_id)
+        while cur and cur.get("forked_from_session_id"):
+            pid = cur["forked_from_session_id"]
+            if pid in seen:
+                break
+            seen.add(pid)
+            out.append(pid)
+            cur = rows.get(pid)
+        return out
+
+    async def fork_descendant_ids(self, session_id: str) -> list[str]:
+        """Every fork descending from `session_id` at ANY depth (breadth-first,
+        visited-set guard — session-tree-rewind.md §5.5). Uncapped depth: fork
+        chains are a static DAG of past branches, so 'don't loop' is the only
+        invariant worth enforcing."""
+        if self.db is None:
+            return []
+        rows = await self.db.load_sessions(include_archived=True)
+        children: dict[str, list[str]] = {}
+        for r in rows:
+            p = r.get("forked_from_session_id")
+            if p:
+                children.setdefault(p, []).append(r["id"])
+        out: list[str] = []
+        seen: set[str] = set()
+        frontier = [session_id]
+        while frontier:
+            nxt: list[str] = []
+            for sid in frontier:
+                for child in children.get(sid, []):
+                    if child in seen:
+                        continue
+                    seen.add(child)
+                    out.append(child)
+                    nxt.append(child)
+            frontier = nxt
+        return out
+
+    async def _blit_attachments_to_descendant_forks(self, session_id: str) -> None:
+        """Before a session's attachment dir is removed, materialize into each
+        descendant fork's own dir any attachment file the fork references only
+        by metadata (session-tree-rewind.md §5.5) — keeping the read-time
+        fallback valid after this parent is gone."""
+        if self.db is None:
+            return
+        descendants = await self.fork_descendant_ids(session_id)
+        if not descendants:
+            return
+        from .attachments import blit_attachment, get_path_with_fork_fallback
+
+        for fork_id in descendants:
+            try:
+                msgs = await self.db.load_messages(fork_id)
+            except Exception:
+                continue
+            ancestors = await self.fork_ancestor_ids(fork_id)
+            for m in msgs:
+                for att in m.get("attachments") or []:
+                    aid = att.get("id")
+                    if not aid or get_attachment_path(fork_id, aid) is not None:
+                        continue  # fork already owns the file
+                    src = get_path_with_fork_fallback(ancestors, aid)
+                    if src is not None:
+                        blit_attachment(fork_id, src)
 
     async def delete_session(self, session_id: str) -> bool:
         session = self.sessions.pop(session_id, None)
@@ -631,6 +1167,11 @@ class SessionManager:
                 await session._backend.stop()
             except Exception:
                 pass
+        # Blit attachment files into descendant forks BEFORE removing this
+        # session's dir, so the read-time fallback stays valid (§5.5). Done
+        # before the DB delete so the descendant message rows are still
+        # readable for their attachment references.
+        await self._blit_attachments_to_descendant_forks(session_id)
         if self.db:
             await self.db.delete_session(session_id)
         # Best-effort: wipe any uploaded files for this session. We do
@@ -642,13 +1183,21 @@ class SessionManager:
         return True
 
     async def _persist_message(
-        self, session: Session, msg: MessageContent
+        self,
+        session: Session,
+        msg: MessageContent,
+        *,
+        git_head: str | None = None,
+        git_status_clean: bool | None = None,
     ) -> int | None:
         """Persist and return the assigned seq (or None if no DB).
 
         Callers tag broadcast/yield events with this seq so clients can
         dedupe against the snapshot returned by GET /api/sessions/{id}
         after a reconnect.
+
+        `git_head` / `git_status_clean` are the turn-start anchor captured for
+        user-message rows (session-tree-rewind.md §5.6.3); None elsewhere.
         """
         if not self.db:
             return None
@@ -667,6 +1216,8 @@ class SessionManager:
             session_id_ref=msg.session_id,
             cost=msg.cost,
             attachments=[a.model_dump() for a in msg.attachments] if msg.attachments else None,
+            git_head=git_head,
+            git_status_clean=git_status_clean,
         )
         return seq
 
@@ -694,6 +1245,10 @@ class SessionManager:
 
         queued = QueuedPrompt(prompt=prompt, attachment_ids=list(attachment_ids or []))
 
+        # Busy path: a turn is in flight → just queue. A fork can never be in
+        # flight here, because fork_session only sets `_forking` against a
+        # quiescent parent (no `_active_task`), so a running turn implies
+        # not-forking — no `_forking` check needed on this branch.
         if session._active_task and not session._active_task.done():
             session._pending_queue.append(queued)
             await self._broadcast(
@@ -706,9 +1261,28 @@ class SessionManager:
             )
             return
 
-        session._active_task = asyncio.create_task(
-            self._drive_messages(session_id, queued)
-        )
+        # Idle path: the session lock is free (send_message only holds it during
+        # a turn), so acquiring it here is non-blocking and gives a real mutex
+        # against a racing fork_session (session-tree-rewind.md §5.4). Under the
+        # lock: refuse if a fork is mid-saga, re-check for a turn another
+        # coroutine may have started while we waited, then claim `_active_task`.
+        async with session._lock:
+            if session._forking:
+                raise ValueError(f"Session {session_id} is busy (forking)")
+            if session._active_task and not session._active_task.done():
+                session._pending_queue.append(queued)
+                await self._broadcast(
+                    {
+                        "type": "queued",
+                        "session_id": session_id,
+                        "content": prompt,
+                        "queue_length": len(session._pending_queue),
+                    }
+                )
+                return
+            session._active_task = asyncio.create_task(
+                self._drive_messages(session_id, queued)
+            )
 
     async def _drive_messages(
         self, session_id: str, initial: QueuedPrompt
@@ -879,6 +1453,14 @@ class SessionManager:
                 )
                 attachment_paths.append(str(path))
 
+            # Capture the turn-start git anchor onto the user-message row
+            # (session-tree-rewind.md §5.6.3): this row's git state IS the
+            # branch-point state if the user later forks here. (None, None)
+            # when working_dir isn't a git repo.
+            git_head, git_status_clean = await fork_helpers.capture_git_anchor(
+                session.working_dir
+            )
+
             # Record user message — content is the *raw* prompt the user
             # typed; the augmented `<attachments>` block is only what we
             # hand to the backend.
@@ -888,7 +1470,12 @@ class SessionManager:
                 content=prompt,
                 attachments=attachments_meta,
             )
-            seq = await self._persist_message(session, user_msg)
+            seq = await self._persist_message(
+                session,
+                user_msg,
+                git_head=git_head,
+                git_status_clean=git_status_clean,
+            )
             event: dict[str, Any] = {
                 "type": "user_message",
                 "session_id": session_id,
@@ -912,6 +1499,27 @@ class SessionManager:
             augmented_prompt = _augment_prompt_with_attachments(
                 prompt, attachment_paths
             )
+
+            # Fork first-turn replay (HISTORY_REPLAY backends, e.g. Codex —
+            # session-tree-rewind.md §3.5/§5.3.2). DISPATCH-ONLY: the raw user
+            # text was persisted/broadcast above; only the prompt the backend
+            # subprocess sees is wrapped with the truncated parent transcript
+            # (the fork's own copied prefix, seq <= fork_after_seq). The flag
+            # clears after the first `result` lands, so turn 2+ isn't wrapped.
+            if session.fork_needs_replay and self.db:
+                cutoff = (
+                    session.fork_after_seq
+                    if session.fork_after_seq is not None
+                    else -1
+                )
+                copied = [
+                    MessageContent(**m)
+                    for m in await self.db.load_messages(session.id)
+                    if m["seq"] <= cutoff
+                ]
+                augmented_prompt = fork_helpers.wrap_for_fork_replay(
+                    augmented_prompt, copied
+                )
 
             # Spill prompts that would blow Linux's MAX_ARG_STRLEN
             # (~128 KB per argv element) to a per-session file and
@@ -1149,6 +1757,10 @@ class SessionManager:
                                 await self.db.update_session_field(
                                     session.id, claude_session_id=event.session_id
                                 )
+                        # First fork turn produced a result: drop the ephemeral
+                        # fork state so turn 2+ behaves like a normal resumed
+                        # session (session-tree-rewind.md §5.3.2/§5.6.5).
+                        await self._clear_fork_first_turn_state(session)
 
                     # Translate into the WS message shape the front-end expects
                     ws_event = self._event_to_ws_message(session.id, event)
@@ -1290,6 +1902,17 @@ class SessionManager:
             agent_memory.ensure_agent_dirs(session.agent_id)
             memory_dir = str(agent_memory.agent_memory_dir(session.agent_id))
 
+        # Fork first-turn note (session-tree-rewind.md §5.6.4): present while
+        # the fork's ephemeral fork_metadata is set (i.e. before its first
+        # result clears it), so it appears on turn 1 only — framing, not
+        # transcript. The replay block lives in the user channel, not here.
+        fork_note: str | None = None
+        if session.fork_metadata:
+            try:
+                fork_note = json.loads(session.fork_metadata).get("first_turn_note")
+            except (json.JSONDecodeError, AttributeError):
+                fork_note = None
+
         return RunConfig(
             session_id=session.id,
             system_prompt=system_prompt,
@@ -1299,6 +1922,7 @@ class SessionManager:
             tool_deny=tool_deny,
             connectors=connectors or [],
             memory_dir=memory_dir,
+            fork_note=fork_note,
         )
 
     # Refresh the access_token if it expires within this many seconds. A

@@ -211,6 +211,7 @@ describe("AgentDelegationRequestCard", () => {
           parent_session_id: "parent",
           delegation_request: "review the readme",
           backend: "claude-code",
+          can_fork: true,
           archived: false,
         },
       ],

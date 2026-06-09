@@ -373,6 +373,41 @@ class _JsonlTranscriptCodec:
         write_jsonl_file(Path(path), messages, session_id or "", working_dir or "")
 
 
+# ------------------------------------------------------------------ fork (HISTORY_REPLAY)
+#
+# Claude forks use HISTORY_REPLAY, NOT NATIVE_TRANSCRIPT (session-tree-rewind.md
+# §5.3 + Phase-5 finding). We originally synthesized a resumable JSONL on disk
+# and spawned `claude --resume <id>`, but the real CLI resolves `--resume`
+# against a session-discovery path that does NOT reliably see an externally
+# written transcript: through the production spawn path it fails ~all the time
+# with "No conversation found", silently starting a fresh (empty) session.
+# `claude` resumes its OWN sessions reliably, so HISTORY_REPLAY sidesteps the
+# problem: the fork's FIRST turn carries the truncated parent transcript wrapped
+# into its user prompt (a normal fresh `claude --print` turn — done in
+# SessionManager.send_message), and turn 2+ resumes claude's own captured
+# session id natively. Same contract + trade-offs as Codex (a heavier first
+# turn, no parent-prefix cache reuse). NATIVE_TRANSCRIPT can return as a cache
+# optimization if/when the CLI gains reliable external-transcript resume.
+
+
+async def _fork_prepare_replay(
+    messages: list[Any],
+    working_dir: str,
+    resume_id_hint: str | None,
+    fork_id: str,
+) -> "Any":
+    """No on-disk work. The first fork turn's user prompt is wrapped with the
+    truncated history (in SessionManager.send_message); `session_started`
+    captures claude's real session id on turn 1; turn 2+ uses native resume of
+    that own-session id. The `resume_id_hint` is ignored."""
+    from .fork import ForkArtifact
+
+    return ForkArtifact(resume_id=None, needs_replay=True)
+
+
+# No fork_cleanup for Claude: HISTORY_REPLAY leaves no on-disk artifacts.
+
+
 # ------------------------------------------------------------------ login driver
 
 
@@ -415,7 +450,14 @@ CLAUDE_CODE = RuntimeProfile(
     tools_prompt=_OCTOPUS_SYSTEM_PROMPT,
     credential_style="env_secret",
     premature_exit_recovery=True,
-    close_stdin_after_start=False,
+    # Close stdin right after spawn. `claude --print` takes its prompt from
+    # argv (`-- <prompt>`) and never reads stdin, so leaving the pipe open made
+    # the CLI wait ~3s ("no stdin data received in 3s") on every turn AND —
+    # critically — made `--resume` of a freshly-synthesized fork transcript
+    # fail ~all the time with "No conversation found" (a discovery race the
+    # open-stdin wait widened). Closing stdin gives immediate EOF: no wait, and
+    # synth resume becomes reliable (session-tree-rewind.md Phase 5).
+    close_stdin_after_start=True,
     build_turn_argv=build_turn_argv,
     new_event_parser=ClaudeEventParser,
     build_oneshot_argv=build_oneshot_argv,
@@ -424,6 +466,8 @@ CLAUDE_CODE = RuntimeProfile(
     # canonical per-agent dir via CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in
     # build_turn_argv, so no system-prompt blurb is needed.
     injects_memory_prompt=False,
+    can_fork=True,  # HISTORY_REPLAY strategy (session-tree-rewind.md §5.3 + Phase 5)
+    fork_prepare=_fork_prepare_replay,
     login=_OAuthLoginDriver(),
     transcript_codec=_JsonlTranscriptCodec(),
 )

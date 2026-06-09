@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { IconChevronDown, IconChevronRight, IconTool, IconFile, IconRobot } from "@tabler/icons-react";
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconTool,
+  IconFile,
+  IconGitFork,
+  IconRobot,
+} from "@tabler/icons-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -28,6 +35,10 @@ interface MessageBubbleProps {
   // session has no owning agent.
   agentName?: string;
   agentAvatar?: string | null;
+  // "Fork from here" affordance (session-tree-rewind.md §6.1): rendered on
+  // user messages when set + the message has a known seq. Called with the
+  // rewind target seq.
+  onFork?: (seq: number) => void;
 }
 
 function formatBytes(n: number): string {
@@ -96,6 +107,7 @@ export function MessageBubble({
   sessionId,
   agentName,
   agentAvatar,
+  onFork,
 }: MessageBubbleProps) {
   const assistantLabel = agentName || "Assistant";
   // Mirror the header's avatar treatment: show the agent's emoji, falling
@@ -125,10 +137,22 @@ export function MessageBubble({
           return <AgentDelegationEventCard event={delegationEvent} />;
         }
         return (
-          <div className="msg msg-user flex justify-end">
+          <div className="msg msg-user group flex justify-end">
             <div className="max-w-[85%] space-y-1">
-              <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
-                You
+              <div className="msg-label flex items-center justify-end gap-2 text-xs font-semibold text-muted-foreground">
+                {onFork && typeof message.seq === "number" && (
+                  <button
+                    type="button"
+                    data-testid="fork-from-here"
+                    className="fork-from-here inline-flex items-center gap-1 font-normal text-muted-foreground/70 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
+                    title="Fork from here — rewind to this message and redo it"
+                    onClick={() => onFork(message.seq as number)}
+                  >
+                    <IconGitFork size={12} />
+                    Fork from here
+                  </button>
+                )}
+                <span>You</span>
               </div>
               <div className="msg-content inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground whitespace-pre-wrap break-words">
                 {message.content}

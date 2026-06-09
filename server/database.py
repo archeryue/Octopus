@@ -62,8 +62,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- The original prompt for a delegation, stored verbatim so the UI can
     -- render "Octo asked: «…»" without rummaging through the first message.
     -- NULL on every non-delegation session.
-    delegation_request TEXT
+    delegation_request TEXT,
+    -- Session tree-rewind / fork (session-tree-rewind.md §4). A fork is a
+    -- clone of a parent session up to (but not including) a chosen user
+    -- message. All NULL/0 on non-fork sessions. forked_from_session_id is a
+    -- PLAIN reference (no FK action): parent delete leaves it dangling so the
+    -- UI can still render "forked from (deleted session)" and the orphan
+    -- bucket in buildForkTree anchors correctly (§5.5).
+    forked_from_session_id TEXT,           -- parent session id (dangling-ok)
+    fork_after_seq INTEGER,                -- last copied seq; rewound user msg
+                                           -- lives at fork_after_seq+1 on parent
+    fork_needs_replay INTEGER NOT NULL DEFAULT 0,  -- HISTORY_REPLAY backends
+                                           -- (Codex) until first result lands
+    fork_metadata TEXT,                    -- EPHEMERAL JSON (prefilled prompt,
+                                           -- side-effect summary, first-turn
+                                           -- note, label); cleared after first
+                                           -- result
+    fork_revert_record TEXT,               -- DURABLE JSON safe-revert outcome;
+                                           -- NEVER cleared
+    fork_status TEXT                       -- 'initializing'|'reverting'|'ready'
+                                           -- crash-recovery marker; NULL on
+                                           -- non-fork rows
 );
+-- NOTE: the index on forked_from_session_id is created in _apply_migrations
+-- (after the additive ALTER), NOT here — a legacy DB reaching this script
+-- already has a `sessions` table, so CREATE TABLE IF NOT EXISTS is a no-op and
+-- the column wouldn't exist yet at _SCHEMA time.
 
 CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +103,10 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id_ref TEXT,
     cost REAL,
     attachments TEXT,                       -- JSON list[AttachmentMetadata], null when none
+    -- Per-turn git anchor captured when a user message row is written
+    -- (session-tree-rewind.md §4 + §5.6.3). Powers the safe-revert preflight.
+    git_head TEXT,                          -- `git rev-parse HEAD`; NULL when not a git repo
+    git_status_clean INTEGER,               -- 1 iff `git status --porcelain` was empty
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 
@@ -412,6 +440,32 @@ class Database:
             except Exception:
                 pass
 
+        # Session tree-rewind / fork (session-tree-rewind.md §4). Six nullable
+        # columns on sessions + two on messages, all additive. forked_from has
+        # no FK action on purpose (dangling reference survives parent delete).
+        for ddl in (
+            "ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT",
+            "ALTER TABLE sessions ADD COLUMN fork_after_seq INTEGER",
+            "ALTER TABLE sessions ADD COLUMN fork_needs_replay INTEGER "
+            "NOT NULL DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN fork_metadata TEXT",
+            "ALTER TABLE sessions ADD COLUMN fork_revert_record TEXT",
+            "ALTER TABLE sessions ADD COLUMN fork_status TEXT",
+            "ALTER TABLE messages ADD COLUMN git_head TEXT",
+            "ALTER TABLE messages ADD COLUMN git_status_clean INTEGER",
+        ):
+            try:
+                await self._conn.execute(ddl)
+            except Exception:
+                pass
+        try:
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_forked_from "
+                "ON sessions(forked_from_session_id)"
+            )
+        except Exception:
+            pass
+
         # Backfill `ask_agent` into every existing agent's mcp_servers
         # list (agent-collaboration.md §5.1). The default list was
         # ["ask","bg"] before this landed; now it's
@@ -713,6 +767,59 @@ class Database:
         await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await self._conn.commit()
 
+    async def create_fork_session(
+        self,
+        *,
+        fork_id: str,
+        name: str,
+        working_dir: str,
+        created_at: str,
+        parent_id: str,
+        backend: str,
+        agent_id: str | None,
+        credential_id: str | None,
+        resume_id: str | None,
+        fork_after_seq: int,
+    ) -> None:
+        """The DB-only half of the fork saga (session-tree-rewind.md §5.1 step
+        5): INSERT the fork `sessions` row (origin='fork',
+        fork_status='initializing', pre-minted resume id) and INSERT-SELECT the
+        parent's messages with ``seq <= fork_after_seq`` — copied verbatim,
+        including their git anchors. For M=0 (`fork_after_seq == -1`) the SELECT
+        matches nothing. No FS, no git, no shell here — a clean rollback unit:
+        the two writes are wrapped so a failed message-copy rolls back the row
+        insert rather than leaving an open transaction a later commit would
+        flush (Vera review SHOULD-FIX #1)."""
+        await self._ensure_connected()
+        try:
+            await self._conn.execute(
+                "INSERT INTO sessions "
+                "(id, name, working_dir, created_at, claude_session_id, "
+                " credential_id, agent_id, origin, backend, "
+                " forked_from_session_id, fork_after_seq, fork_needs_replay, "
+                " fork_status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, 0, 'initializing')",
+                (
+                    fork_id, name, working_dir, created_at, resume_id,
+                    credential_id, agent_id, backend, parent_id, fork_after_seq,
+                ),
+            )
+            await self._conn.execute(
+                "INSERT INTO messages "
+                "(session_id, seq, role, type, content, tool_name, tool_input, "
+                " tool_use_id, is_error, session_id_ref, cost, attachments, "
+                " git_head, git_status_clean) "
+                "SELECT ?, seq, role, type, content, tool_name, tool_input, "
+                " tool_use_id, is_error, session_id_ref, cost, attachments, "
+                " git_head, git_status_clean "
+                "FROM messages WHERE session_id = ? AND seq <= ?",
+                (fork_id, parent_id, fork_after_seq),
+            )
+            await self._conn.commit()
+        except Exception:
+            await self._conn.rollback()
+            raise
+
     async def load_sessions(
         self, *, include_archived: bool = False
     ) -> list[dict[str, Any]]:
@@ -720,7 +827,9 @@ class Database:
         query = (
             "SELECT id, name, working_dir, created_at, claude_session_id, "
             "credential_id, archived, agent_id, origin, backend, "
-            "parent_session_id, delegation_request FROM sessions"
+            "parent_session_id, delegation_request, forked_from_session_id, "
+            "fork_after_seq, fork_needs_replay, fork_metadata, "
+            "fork_revert_record, fork_status FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -740,6 +849,12 @@ class Database:
                 "backend": row[9] or "claude-code",
                 "parent_session_id": row[10],
                 "delegation_request": row[11],
+                "forked_from_session_id": row[12],
+                "fork_after_seq": row[13],
+                "fork_needs_replay": bool(row[14]),
+                "fork_metadata": row[15],
+                "fork_revert_record": row[16],
+                "fork_status": row[17],
             }
             for row in rows
         ]
@@ -766,6 +881,8 @@ class Database:
         session_id_ref: str | None = None,
         cost: float | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        git_head: str | None = None,
+        git_status_clean: bool | None = None,
     ) -> None:
         await self._ensure_connected()
         content_str = json.dumps(content) if content is not None else None
@@ -774,12 +891,16 @@ class Database:
         attachments_str = (
             json.dumps(attachments) if attachments else None
         )
+        git_status_clean_int = (
+            int(git_status_clean) if git_status_clean is not None else None
+        )
 
         await self._conn.execute(
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
-            "tool_use_id, is_error, session_id_ref, cost, attachments) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "tool_use_id, is_error, session_id_ref, cost, attachments, "
+            "git_head, git_status_clean) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 seq,
@@ -793,6 +914,8 @@ class Database:
                 session_id_ref,
                 cost,
                 attachments_str,
+                git_head,
+                git_status_clean_int,
             ),
         )
         self._dirty = True
@@ -804,7 +927,8 @@ class Database:
         await self.flush()  # ensure pending writes are visible
         query = (
             "SELECT seq, role, type, content, tool_name, tool_input, tool_use_id, "
-            "is_error, session_id_ref, cost, attachments "
+            "is_error, session_id_ref, cost, attachments, git_head, "
+            "git_status_clean "
             "FROM messages WHERE session_id = ? ORDER BY seq"
         )
         params: list = [session_id]
@@ -819,6 +943,7 @@ class Database:
             tool_input = json.loads(row[5]) if row[5] is not None else None
             is_error = bool(row[7]) if row[7] is not None else None
             attachments = json.loads(row[10]) if row[10] is not None else []
+            git_status_clean = bool(row[12]) if row[12] is not None else None
             results.append(
                 {
                     "seq": row[0],
@@ -832,6 +957,8 @@ class Database:
                     "session_id": row[8],
                     "cost": row[9],
                     "attachments": attachments,
+                    "git_head": row[11],
+                    "git_status_clean": git_status_clean,
                 }
             )
         return results
@@ -1546,6 +1673,32 @@ class Database:
         await self._conn.commit()
         return cursor.rowcount > 0
 
+    async def load_incomplete_forks(self) -> list[dict[str, Any]]:
+        """Fork rows whose §5.1 saga didn't reach 'ready' — startup recovery
+        dispatches on `fork_status` (session-tree-rewind.md §5.6.7). The
+        resume id rides in `claude_session_id` (the pre-minted handle stored in
+        the saga's step-5 INSERT)."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id, forked_from_session_id, working_dir, backend, "
+            "claude_session_id, fork_status, fork_revert_record "
+            "FROM sessions WHERE origin = 'fork' AND fork_status IN "
+            "('initializing', 'reverting')"
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "forked_from_session_id": r[1],
+                "working_dir": r[2],
+                "backend": r[3] or "claude-code",
+                "resume_id": r[4],
+                "fork_status": r[5],
+                "fork_revert_record": r[6],
+            }
+            for r in rows
+        ]
+
     async def update_session_field(self, session_id: str, **fields: Any) -> None:
         await self._ensure_connected()
         allowed = {
@@ -1557,12 +1710,32 @@ class Database:
             "agent_id",
             "origin",
             "backend",
+            # Fork columns (session-tree-rewind.md §4). fork_metadata is
+            # nullable+clearable (set to None to clear after first turn);
+            # the others are written across the §5.1 saga.
+            "forked_from_session_id",
+            "fork_after_seq",
+            "fork_needs_replay",
+            "fork_metadata",
+            "fork_revert_record",
+            "fork_status",
         }
+        # Columns that must be writable to NULL. `fork_metadata` clears after
+        # the fork's first result; `claude_session_id` must be clearable so a
+        # HISTORY_REPLAY fork (Codex) can overwrite the pre-minted resume_id
+        # hint with NULL post-prepare_fork — otherwise a restart before the
+        # first turn reloads the bogus hint and spawns `codex resume <bogus>`
+        # (Vera review BLOCKING #1). Other columns omitted by the caller are
+        # left untouched.
+        nullable = {"fork_metadata", "claude_session_id"}
+        bool_fields = {"archived", "fork_needs_replay"}
         updates: dict[str, Any] = {}
         for k, v in fields.items():
             if k not in allowed:
                 continue
-            updates[k] = int(bool(v)) if k == "archived" else v
+            if v is None and k not in nullable:
+                continue
+            updates[k] = int(bool(v)) if k in bool_fields else v
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)

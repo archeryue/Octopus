@@ -70,6 +70,48 @@ class Harness:
     def transcript_codec(self):
         return self.profile.transcript_codec
 
+    # ------------------------------------------------------------------ fork
+
+    @property
+    def can_fork(self) -> bool:
+        return self.profile.can_fork
+
+    async def prepare_fork(
+        self,
+        messages: list,
+        working_dir: str,
+        resume_id_hint: str | None,
+        fork_id: str,
+    ):
+        """Prepare backend-specific state so a new fork session can spawn at the
+        branch point (session-tree-rewind.md §3.1). Returns a `ForkArtifact`.
+
+        NATIVE_TRANSCRIPT (Claude) synthesizes a resumable transcript on disk
+        named by `resume_id_hint`; HISTORY_REPLAY (Codex) returns
+        `needs_replay=True` and does no on-disk work. Raises
+        `BackendForkNotSupported` only when the backend has no strategy."""
+        from .fork import BackendForkNotSupported
+
+        if not self.profile.can_fork or self.profile.fork_prepare is None:
+            raise BackendForkNotSupported(self.backend)
+        return await self.profile.fork_prepare(
+            messages, working_dir, resume_id_hint, fork_id
+        )
+
+    async def cleanup_incomplete_fork_artifacts(
+        self,
+        working_dir: str,
+        resume_id_hint: str | None,
+        fork_id: str,
+    ) -> None:
+        """Sweep any backend-specific files `prepare_fork` may have left when a
+        fork saga didn't complete (session-tree-rewind.md §3.1). Idempotent —
+        safe on every boot for every 'initializing' row. No-op when the backend
+        has no on-disk fork artifacts (Codex / HISTORY_REPLAY)."""
+        if self.profile.fork_cleanup is None:
+            return
+        await self.profile.fork_cleanup(working_dir, resume_id_hint, fork_id)
+
     # ------------------------------------------------------------------ one-shot
 
     async def run_oneshot(self, ctx: OneShotContext, *, timeout: float = 90.0) -> str:

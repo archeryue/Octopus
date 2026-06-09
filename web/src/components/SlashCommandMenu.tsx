@@ -3,6 +3,7 @@ import {
   IconBrain,
   IconCalendarClock,
   IconFile,
+  IconGitFork,
   IconRefresh,
 } from "@tabler/icons-react";
 import { cn } from "../lib/utils";
@@ -38,6 +39,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     hint: "<path>",
     description: "Open a file in the in-app viewer",
     Icon: IconFile,
+  },
+  {
+    name: "/fork",
+    description: "Rewind to a user message and redo it as a new branch",
+    Icon: IconGitFork,
+  },
+  {
+    name: "/tree",
+    description: "Alias for /fork — rewind to a message and redo it",
+    Icon: IconGitFork,
   },
   {
     name: "/archive",
