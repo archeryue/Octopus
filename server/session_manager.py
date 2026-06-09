@@ -489,7 +489,11 @@ class SessionManager:
 
             # 5. DB-only transaction: insert fork row + copied messages.
             now = datetime.now(timezone.utc).isoformat()
-            fork_name = label or self._derive_fork_name(parent.name, M)
+            # A fork is a rewind, not a sibling branch: it inherits the
+            # parent's exact name so it slots into the sidebar as the original
+            # session (the parent is archived below). An explicit `label` still
+            # wins when the caller wants a distinct name.
+            fork_name = label or parent.name
             copied = [m for m in messages if m["seq"] <= fork_after_seq]
             await self.db.create_fork_session(
                 fork_id=fork_id,
@@ -606,24 +610,75 @@ class SessionManager:
                 fork.fork_status = "ready"
                 await self.db.update_session_field(fork_id, fork_status="ready")
 
-            await self._broadcast(
-                {
-                    "type": "session_forked",
-                    "fork_session_id": fork.id,
-                    "parent_session_id": parent_id,
-                    "name": fork.name,
-                }
-            )
+            # 9. Rewind, not branch: the fork takes the parent's place. Archive
+            # the parent and surface the swap with the same `session_archived`
+            # event `/archive` uses, so the fork slots into the sidebar wearing
+            # the original's identity. The fork is already fully ready; an
+            # archival hiccup must not fail it (worst case the parent lingers,
+            # recoverable by a manual archive), so only announce the swap when
+            # the parent actually went away.
+            archived_ok = True
+            try:
+                await self._archive_forked_parent(parent, fork)
+            except Exception:
+                archived_ok = False
+                logger.exception(
+                    "fork %s: archiving parent %s failed; fork is ready, "
+                    "parent left visible",
+                    fork.id,
+                    parent_id,
+                )
+            if archived_ok:
+                await self._broadcast(
+                    {
+                        "type": "session_archived",
+                        "old_session_id": parent_id,
+                        "new_session_id": fork.id,
+                        "name": fork.name,
+                    }
+                )
             return fork
         finally:
-            # 9. Always release `_forking` (even on prepare_fork failure).
+            # 10. Always release `_forking` (even on prepare_fork failure).
             parent._forking = False
 
-    @staticmethod
-    def _derive_fork_name(parent_name: str, m: int) -> str:
-        """Default label for a fork: parent's name plus the branch point."""
-        base = parent_name or "Session"
-        return f"{base} (fork @{m})"
+    async def _archive_forked_parent(self, parent: Session, fork: Session) -> None:
+        """Archive a fork's parent so the fork takes its place as the live
+        thread — the rewind model (session-tree-rewind.md): a fork REPLACES its
+        origin rather than living alongside it.
+
+        This is `archive_session`'s tail without the fresh-successor step — the
+        fork already IS the successor. The parent is guaranteed idle (the
+        `_forking` guard rejects any new turn while a fork is in flight), so the
+        teardown below is defensive. Exactly like `archive_session`'s tail:
+        schedules anchored on the parent follow onto the live successor (the
+        fork), and any bridge chat stuck to the parent has its sticky pointer
+        cleared so the next inbound message opens a fresh thread (a DB-only
+        repoint would diverge from the bridge's in-memory binding cache)."""
+        if parent._inner_task and not parent._inner_task.done():
+            parent._inner_task.cancel()
+        if parent._active_task and not parent._active_task.done():
+            parent._active_task.cancel()
+        if parent._backend:
+            try:
+                await asyncio.wait_for(parent._backend.stop(), timeout=2.0)
+            except Exception:
+                pass
+            parent._backend = None
+        parent._pending_queue.clear()
+        parent._pending_questions.clear()
+        self._cancel_all_question_timers(parent)
+
+        if self.db:
+            await self.db.update_session_field(parent.id, archived=True)
+        self.sessions.pop(parent.id, None)
+
+        if self.db:
+            repointed = await self.db.repoint_schedules_origin(parent.id, fork.id)
+            if self._schedule_runner is not None:
+                for row in repointed:
+                    await self._schedule_runner.reschedule(row)
+            await self.db.clear_bridge_sticky_for_session(parent.id)
 
     async def fork_preview(
         self, parent_id: str, rewind_to_msg_seq: int

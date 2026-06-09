@@ -168,14 +168,20 @@ export function SessionList({
       return next;
     });
 
-  // One session row + its fork subtree (session-tree-rewind.md §6.3). Forks
-  // nest under their parent; a disclosure triangle collapses the subtree, and
-  // a fork shows an "@msg N" badge for its branch point.
+  // One session row + its fork subtree (session-tree-rewind.md §6.3). A fork is
+  // a rewind: its parent is archived on creation, so the fork normally renders
+  // as a plain top-level root. Nesting (a disclosure triangle + an "@msg N"
+  // branch badge) only re-appears when the parent is present — e.g. after it's
+  // been unarchived.
   const renderForkNode = (node: ForkTreeNode, depth: number) => {
     const s = node.session;
     const hasChildren = node.children.length > 0;
     const collapsed = collapsedForks.has(s.id);
-    const isFork = s.forked_from_session_id != null;
+    // Fork chrome (the git-fork icon + "@msg N" badge) is only meaningful when
+    // the fork sits beneath its parent in the tree — i.e. it's nested (depth >
+    // 0). A rewind fork whose parent is archived renders as a top-level root
+    // and is shown as a plain session, indistinguishable from the original.
+    const showForkChrome = depth > 0;
     return (
       <div key={s.id} className="fork-node">
         <div
@@ -216,7 +222,7 @@ export function SessionList({
                 : "bg-muted-foreground/40"
             }`}
           />
-          {isFork && (
+          {showForkChrome && (
             <IconGitFork
               size={11}
               className="fork-marker shrink-0 text-muted-foreground/70"
@@ -230,7 +236,7 @@ export function SessionList({
           >
             {s.name}
           </span>
-          {isFork && s.fork_after_seq != null && (
+          {showForkChrome && s.fork_after_seq != null && (
             <span
               className="fork-badge shrink-0 rounded bg-muted px-1 text-[10px] font-mono text-muted-foreground"
               title={`Forked before message ${s.fork_after_seq + 1}`}
@@ -280,20 +286,8 @@ export function SessionList({
   };
 
   const renderForkForest = (list: SessionInfo[]) => {
-    const { roots, orphans } = buildForkTree(list);
-    return (
-      <>
-        {roots.map((n) => renderForkNode(n, 0))}
-        {orphans.length > 0 && (
-          <>
-            <div className="fork-orphan-label px-2 pt-1.5 text-[10px] uppercase tracking-wide text-muted-foreground/50">
-              (parent deleted)
-            </div>
-            {orphans.map((n) => renderForkNode(n, 0))}
-          </>
-        )}
-      </>
-    );
+    const roots = buildForkTree(list);
+    return <>{roots.map((n) => renderForkNode(n, 0))}</>;
   };
 
   return (

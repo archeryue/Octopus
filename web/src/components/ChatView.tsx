@@ -866,7 +866,13 @@ export function ChatView({
   // its copied history. (session-tree-rewind.md §6.1)
   const handleForked = async (fork: SessionInfo) => {
     const store = useSessionStore.getState();
-    const next = store.sessions.filter((s) => s.id !== fork.id);
+    // A fork is a rewind: it replaces its parent, which the backend archives.
+    // Drop the parent here too so the swap is correct on this tab regardless
+    // of when the `session_archived` broadcast lands.
+    const parentId = fork.forked_from_session_id ?? null;
+    const next = store.sessions.filter(
+      (s) => s.id !== fork.id && s.id !== parentId
+    );
     next.push(fork);
     store.setSessions(next);
     if (fork.agent_id) store.setActiveAgentId(fork.agent_id);

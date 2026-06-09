@@ -81,6 +81,13 @@ async def test_fork_claude_history_replay(manager):
     # Ephemeral metadata holds the prefilled prompt (parent's seq-2 text).
     meta = json.loads(fork.fork_metadata)
     assert meta["prefilled_prompt"] == "q1"  # seq 2 is the 2nd user turn ("q1")
+    # Rewind, not branch: the fork inherits the parent's name and the parent
+    # is archived so the fork takes its place in the active list.
+    assert fork.name == parent.name == "Parent"
+    assert parent.id not in manager.sessions
+    rows = {r["id"]: r for r in await manager.db.load_sessions(include_archived=True)}
+    assert rows[parent.id]["archived"] == 1
+    assert rows[fork.id]["archived"] == 0
 
 
 @pytest.mark.asyncio
@@ -141,6 +148,34 @@ async def test_fork_of_fork(manager):
     fork._message_count = 3
     grandchild = await manager.fork_session(fork.id, 2)
     assert grandchild.forked_from_session_id == fork.id
+    # Each fork archives its (now-replaced) parent — only the tip stays live.
+    assert parent.id not in manager.sessions
+    assert fork.id not in manager.sessions
+    assert grandchild.id in manager.sessions
+
+
+@pytest.mark.asyncio
+async def test_fork_repoints_schedules_and_clears_bridge(manager):
+    # Mirrors archive_session's tail: a `/schedule` anchored on the parent
+    # follows onto the fork (the successor), while a bridge chat's sticky
+    # pointer is cleared so its next message opens a fresh thread.
+    parent = await _seed_parent(manager, backend="codex")
+    await manager.db.save_schedule(
+        schedule_id="sch1", agent_id=parent.agent_id, name="nightly",
+        prompt="do it", created_at="2026-06-08T00:00:00+00:00",
+        interval_seconds=3600, origin_session_id=parent.id,
+    )
+    await manager.db.save_bridge_mapping(
+        platform="telegram", chat_id="c1", agent_id=parent.agent_id,
+        session_id=parent.id,
+    )
+
+    fork = await manager.fork_session(parent.id, 2)
+
+    schedules = {s["id"]: s for s in await manager.db.load_schedules()}
+    assert schedules["sch1"]["origin_session_id"] == fork.id
+    mappings = {m["chat_id"]: m for m in await manager.db.load_bridge_mappings()}
+    assert mappings["c1"]["session_id"] is None
 
 
 # ------------------------------------------------------------------ validation

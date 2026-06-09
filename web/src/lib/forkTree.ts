@@ -6,26 +6,22 @@ export interface ForkTreeNode {
   children: ForkTreeNode[];
 }
 
-export interface ForkTree {
-  /** Normal sessions (no `forked_from_session_id`), each with its fork subtree. */
-  roots: ForkTreeNode[];
-  /** Forks whose parent isn't in the set (parent deleted) — anchored at a
-   * top-level "(parent deleted)" group. */
-  orphans: ForkTreeNode[];
-}
-
 /**
- * Group a flat session list into fork trees. A session is a ROOT when it has no
- * `forked_from_session_id`; a CHILD when its parent is present in the list; an
- * ORPHAN when its parent id is set but absent (parent deleted — §5.5/§6.3).
- * Forks-of-forks nest naturally via recursion; a visited-set guards against a
+ * Group a flat session list into fork trees. A session is a CHILD when its
+ * `forked_from_session_id` parent is present in the list; otherwise it's a
+ * ROOT — whether it never forked, or its parent is absent.
+ *
+ * In the rewind flow a fork's parent is archived the instant the fork is
+ * created, so the parent is absent and the fork surfaces as a plain top-level
+ * session, indistinguishable from the original it replaced (session-tree-
+ * rewind.md — rewind, not branch). The nesting still re-forms if the parent is
+ * later unarchived. Forks-of-forks nest via recursion; a visited-set guards a
  * corrupted pointer cycle.
  */
-export function buildForkTree(sessions: SessionInfo[]): ForkTree {
+export function buildForkTree(sessions: SessionInfo[]): ForkTreeNode[] {
   const byId = new Map(sessions.map((s) => [s.id, s]));
   const childrenOf = new Map<string, SessionInfo[]>();
   const roots: SessionInfo[] = [];
-  const orphans: SessionInfo[] = [];
 
   for (const s of sessions) {
     const parent = s.forked_from_session_id;
@@ -33,10 +29,8 @@ export function buildForkTree(sessions: SessionInfo[]): ForkTree {
       const list = childrenOf.get(parent);
       if (list) list.push(s);
       else childrenOf.set(parent, [s]);
-    } else if (parent) {
-      orphans.push(s); // parent set but not present → dangling reference
     } else {
-      roots.push(s);
+      roots.push(s); // no parent, or parent archived/deleted → top-level
     }
   }
 
@@ -46,8 +40,5 @@ export function buildForkTree(sessions: SessionInfo[]): ForkTree {
     return { session: s, children: kids.map((c) => build(c, seen)) };
   };
 
-  return {
-    roots: roots.map((s) => build(s, new Set())),
-    orphans: orphans.map((s) => build(s, new Set())),
-  };
+  return roots.map((s) => build(s, new Set()));
 }

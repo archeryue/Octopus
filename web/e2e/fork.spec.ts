@@ -3,7 +3,9 @@ import { test, expect, type Page, type APIRequestContext } from "@playwright/tes
 // Pure-UI e2e for session tree-rewind / fork (session-tree-rewind.md §6).
 // No real LLM turn: we import a parent session, drive the per-message "Fork
 // from here" → confirm dialog → create flow, and assert the fork opens with
-// its banner + prefilled input and nests under the parent in the sidebar.
+// its banner + prefilled input. A fork is a rewind, not a branch: it inherits
+// the parent's name and the parent is archived, so the fork surfaces in the
+// sidebar as a plain top-level session (no nesting, no "@msg" badge).
 
 const TOKEN = "changeme";
 const API = "http://localhost:8765/api";
@@ -19,8 +21,9 @@ test.afterAll(async ({ request }) => {
     if (res.ok()) {
       const sessions: { id: string; name: string }[] = await res.json();
       for (const s of sessions) {
-        // Delete the parent and any forks of it (named "… (fork @N)").
-        if (!OWNED.has(s.name) && !s.name.includes("(fork @")) continue;
+        // The parent and its forks all carry the same name now (a fork inherits
+        // the parent's name), so one membership check covers both.
+        if (!OWNED.has(s.name)) continue;
         await request
           .delete(`${API}/sessions/${s.id}`, {
             headers: { Authorization: `Bearer ${TOKEN}` },
@@ -93,8 +96,15 @@ test("fork from a user message opens a prefilled, banner-marked branch", async (
     "second question about tests"
   );
 
-  // The sidebar nests the fork under its parent with an "@msg" badge.
-  await expect(page.locator(".fork-badge").first()).toBeVisible();
+  // Rewind, not branch: the parent is archived and the fork takes its place as
+  // a plain top-level session — it keeps the parent's name and shows no "@msg"
+  // fork badge anywhere in the active list.
+  await expect(
+    page
+      .locator(".session-item .session-name", { hasText: "Fork E2E Parent" })
+      .first()
+  ).toBeVisible();
+  await expect(page.locator(".fork-badge")).toHaveCount(0);
 });
 
 test("/fork picker lists user messages and creates a fork", async ({

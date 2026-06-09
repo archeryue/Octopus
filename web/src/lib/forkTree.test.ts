@@ -21,21 +21,20 @@ function sess(id: string, forkedFrom?: string, after?: number): SessionInfo {
 
 describe("buildForkTree", () => {
   it("returns flat sessions as roots with no children", () => {
-    const { roots, orphans } = buildForkTree([sess("a"), sess("b")]);
+    const roots = buildForkTree([sess("a"), sess("b")]);
     expect(roots.map((r) => r.session.id)).toEqual(["a", "b"]);
     expect(roots.every((r) => r.children.length === 0)).toBe(true);
-    expect(orphans).toHaveLength(0);
   });
 
-  it("nests a fork under its parent", () => {
-    const { roots } = buildForkTree([sess("a"), sess("b", "a", 3)]);
+  it("nests a fork under its parent when the parent is present", () => {
+    const roots = buildForkTree([sess("a"), sess("b", "a", 3)]);
     expect(roots).toHaveLength(1);
     expect(roots[0].session.id).toBe("a");
     expect(roots[0].children.map((c) => c.session.id)).toEqual(["b"]);
   });
 
   it("nests forks of forks", () => {
-    const { roots } = buildForkTree([
+    const roots = buildForkTree([
       sess("a"),
       sess("b", "a", 2),
       sess("c", "b", 1),
@@ -44,18 +43,18 @@ describe("buildForkTree", () => {
     expect(roots[0].children[0].children[0].session.id).toBe("c");
   });
 
-  it("buckets forks whose parent is absent as orphans", () => {
-    const { roots, orphans } = buildForkTree([sess("b", "gone", 3)]);
-    expect(roots).toHaveLength(0);
-    expect(orphans.map((o) => o.session.id)).toEqual(["b"]);
+  it("surfaces a fork whose parent is absent as a top-level root", () => {
+    // The rewind case: the parent was archived when the fork was created, so
+    // it's not in the active list and the fork stands on its own.
+    const roots = buildForkTree([sess("b", "gone", 3)]);
+    expect(roots.map((r) => r.session.id)).toEqual(["b"]);
+    expect(roots[0].children).toHaveLength(0);
   });
 
   it("does not loop on a corrupted self-parent pointer", () => {
-    // b -> b (cycle). It's not a root (parent set) and parent IS present →
-    // it becomes its own child; the visited-set stops the recursion.
-    const { roots, orphans } = buildForkTree([sess("a"), sess("b", "b")]);
-    // b's parent (b) is present, so it's a child of itself — not a root/orphan.
+    // b -> b (cycle). Its parent (b) is present, so it's a child of itself and
+    // never surfaces as a root; the visited-set stops the recursion.
+    const roots = buildForkTree([sess("a"), sess("b", "b")]);
     expect(roots.map((r) => r.session.id)).toEqual(["a"]);
-    expect(orphans).toHaveLength(0);
   });
 });
