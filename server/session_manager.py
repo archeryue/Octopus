@@ -287,6 +287,8 @@ class SessionManager:
         logger.info("Loaded %d sessions from database", len(rows))
         # Sweep forks left mid-saga by a crash (session-tree-rewind.md §5.6.7).
         await self._recover_incomplete_forks()
+        # Sweep delegation children orphaned by a restart (agent-collaboration.md §5.2).
+        await self._recover_orphaned_delegations()
 
     def on_broadcast(self, key: str, callback: Callable) -> None:
         self._broadcast_callbacks[key] = callback
@@ -376,6 +378,45 @@ class SessionManager:
                     "fork %s: finalized interrupted revert as unknown_post_crash",
                     fork_id,
                 )
+
+    async def _recover_orphaned_delegations(self) -> None:
+        """Archive delegation children left live by a restart
+        (agent-collaboration.md §5.2).
+
+        Delegation run records live ONLY in `DelegationManager._records`
+        (in-memory; never persisted — "the delegation id IS the child
+        session id, no parallel id space"). A restart wipes that registry,
+        and the child's subprocess is dead, so the chain can never finish:
+        no `result`/`error` will ever arrive to drive `_inject_terminal`,
+        and therefore nothing will ever auto-archive the child. Loaded back
+        by `initialize` as a live `origin == "delegation"` session, it would
+        otherwise sit forever in the sidebar's "+N delegations hidden"
+        count with no path to cleanup.
+
+        Any delegation-origin session that reaches this boot un-archived is
+        by definition abandoned (a healthy one archives itself the moment
+        its terminal turn is delivered, before the process ever exits). So
+        sweep them all into the archive — they stay browsable via the
+        account-menu manage page, exactly like a normal terminal delegation.
+        Idempotent: a clean boot finds none. Pure session lifecycle — no
+        backend specifics, so no harness involvement."""
+        orphans = [
+            sid for sid, s in self.sessions.items() if s.origin == "delegation"
+        ]
+        archived = 0
+        for sid in orphans:
+            try:
+                if await self.auto_archive_scheduled_session(sid):
+                    archived += 1
+            except Exception:
+                logger.exception(
+                    "delegation recovery: failed to archive orphan %s", sid
+                )
+        if archived:
+            logger.info(
+                "delegation recovery: archived %d orphaned delegation session(s)",
+                archived,
+            )
 
     async def _clear_fork_first_turn_state(self, session: Session) -> None:
         """Drop the ephemeral fork state once the fork's first turn produces a

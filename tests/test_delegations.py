@@ -302,6 +302,43 @@ async def test_auto_archive_skips_user_origin_sessions(mgr, db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_orphaned_delegation_archived_on_restart(db):
+    """A restart wipes DelegationManager._records (in-memory only) and
+    kills the child's subprocess, so a delegation child that was live at
+    restart can never finish or auto-archive itself — it would linger
+    forever in the sidebar's hidden-delegation count. SessionManager's
+    boot-time sweep archives such orphans; a healthy user-origin session
+    is left untouched."""
+    from server.session_manager import SessionManager
+
+    # Boot 1: a normal parent + a live delegation child (mid-flight when
+    # the process dies).
+    m1 = SessionManager()
+    await m1.initialize(db)
+    octo = await db.get_system_agent()
+    vera = await _make_agent(db, "Vera")
+    parent = await _make_session(m1, octo["id"], name="parent")
+    child = await m1.create_session(
+        agent_id=vera["id"], name="vera-child", working_dir="/tmp",
+        origin="delegation", parent_session_id=parent.id,
+        delegation_request="r",
+    )
+    assert child.id in m1.sessions  # live before the restart
+
+    # Boot 2: a fresh manager over the same DB — the run registry is gone.
+    m2 = SessionManager()
+    await m2.initialize(db)
+
+    # The orphaned delegation child is swept into the archive and dropped
+    # from memory; the user-origin parent survives as a live session.
+    assert child.id not in m2.sessions
+    assert parent.id in m2.sessions
+    rows = {r["id"]: r for r in await db.load_sessions(include_archived=True)}
+    assert rows[child.id]["archived"]
+    assert not rows[parent.id]["archived"]
+
+
+@pytest.mark.asyncio
 async def test_nested_chain_intermediate_stays_alive_while_grandchild_runs(
     dm, mgr, db, monkeypatch
 ):
