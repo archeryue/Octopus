@@ -6,6 +6,24 @@ import { Input } from "./ui/input";
 
 const API_URL = window.location.origin;
 
+// Prefixes that mark a user-role message as AUTO-INJECTED rather than
+// human-typed: bg-task-result deliveries and agent-to-agent reply/question/
+// error turns are persisted with role="user" but aren't prompts the user
+// would "redo". The fork picker hides them so only genuine human turns are
+// offered as rewind targets (mirrors the markers MessageBubble special-cases).
+const _AUTO_INJECTED_PREFIXES = [
+  "[bg-task-result]",
+  "[agent-reply:",
+  "[agent-question:",
+  "[agent-error:",
+];
+
+function isAutoInjectedPrompt(content: unknown): boolean {
+  if (typeof content !== "string") return false;
+  const t = content.trimStart();
+  return _AUTO_INJECTED_PREFIXES.some((p) => t.startsWith(p));
+}
+
 export interface ForkSideEffectSummary {
   file_edits: { path: string; turns: number }[];
   bg_tasks: {
@@ -222,7 +240,12 @@ export function ForkDialog({
         const data = await res.json();
         if (cancelled) return;
         const msgs: UserMsg[] = (data.messages || [])
-          .filter((mm: { role: string }) => mm.role === "user")
+          .filter(
+            (mm: { role: string; type: string; content: unknown }) =>
+              mm.role === "user" &&
+              mm.type === "text" &&
+              !isAutoInjectedPrompt(mm.content)
+          )
           .map((mm: { seq: number; content: unknown }) => ({
             seq: mm.seq,
             preview:
@@ -327,7 +350,7 @@ export function ForkDialog({
         </div>
 
         {!inConfirm && (
-          <div className="fork-picker space-y-1" data-testid="fork-picker">
+          <div className="fork-picker" data-testid="fork-picker">
             <p className="mb-2 text-xs text-muted-foreground">
               Pick a user message to rewind to and redo:
             </p>
@@ -336,20 +359,23 @@ export function ForkDialog({
                 No user messages to fork from.
               </p>
             )}
-            {userMsgs.map((u) => (
-              <button
-                key={u.seq}
-                type="button"
-                data-fork-seq={u.seq}
-                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-foreground hover:bg-accent"
-                onClick={() => setSelectedSeq(u.seq)}
-              >
-                <span className="font-mono text-[11px] text-muted-foreground">
-                  #{u.seq}
-                </span>
-                <span className="truncate">{u.preview}</span>
-              </button>
-            ))}
+            {/* Scrollable list — long conversations can have many turns. */}
+            <div className="max-h-[50vh] space-y-1 overflow-y-auto pr-1">
+              {userMsgs.map((u) => (
+                <button
+                  key={u.seq}
+                  type="button"
+                  data-fork-seq={u.seq}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-foreground hover:bg-accent"
+                  onClick={() => setSelectedSeq(u.seq)}
+                >
+                  <span className="font-mono text-[11px] text-muted-foreground">
+                    #{u.seq}
+                  </span>
+                  <span className="truncate">{u.preview}</span>
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
