@@ -159,6 +159,10 @@ function handleWsMessage(data: Record<string, unknown>) {
         type: "text",
         content: data.content as string,
         attachments: (data.attachments as Message["attachments"]) ?? undefined,
+        // Carry the row seq so "Fork from here" can target a just-sent
+        // message without waiting for a detail reload (the event always
+        // includes it for persisted rows).
+        seq: seq ?? undefined,
       });
       break;
 
