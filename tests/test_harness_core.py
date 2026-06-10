@@ -363,3 +363,33 @@ def test_is_auth_error_codex_ignores_bare_unauthorized_from_tools():
     assert not h.is_auth_error("MCP server returned Unauthorized")
     assert not h.is_auth_error("tool failed: GitHub Unauthorized")
     assert not h.is_auth_error("your session token has expired, refetch it")
+
+
+def test_is_transient_error_matches_server_reliability_failures():
+    """5xx / overloaded / dropped-connection trip the retry classifier on both
+    backends (harness-transient-retry.md §3)."""
+    c, x = get_harness("claude-code"), get_harness("codex")
+    assert c.is_transient_error("API Error: 529 Overloaded")
+    assert c.is_transient_error("API Error: 503 Service Unavailable")
+    assert c.is_transient_error("connection reset by peer")
+    assert x.is_transient_error("stream error: 503 service unavailable")
+    assert x.is_transient_error("error 500 internal server error")
+    assert not c.is_transient_error("")
+    assert not x.is_transient_error("turn completed")
+
+
+def test_is_transient_error_excludes_quota_and_auth():
+    """Quota/credit and auth failures must NOT be retried — they match no
+    transient pattern (harness-transient-retry.md §2), keeping the three
+    dispositions mutually exclusive."""
+    c, x = get_harness("claude-code"), get_harness("codex")
+    for blob in (
+        "rate limit exceeded",
+        "429 too many requests",
+        "you have insufficient quota",
+        "billing: credit balance is too low",
+        "API Error: 401 Invalid authentication credentials",
+        "invalid x-api-key",
+    ):
+        assert not c.is_transient_error(blob), blob
+        assert not x.is_transient_error(blob), blob

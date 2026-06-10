@@ -490,6 +490,30 @@ _CODEX_AUTH_ERROR_PATTERNS = (
     # wrongly flag the harness credential dead. Patterns must be auth-specific.
 )
 
+# Transient provider-reliability failures worth an automatic retry
+# (harness-transient-retry.md §3). Server-side 5xx / overload / dropped
+# connection only — NO "rate limit" / "429" / "quota" (the user's limit) and
+# no auth phrases (handled above).
+_CODEX_TRANSIENT_ERROR_PATTERNS = (
+    "overloaded",
+    "error 500",
+    "error 502",
+    "error 503",
+    "error 504",
+    "internal server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "temporarily unavailable",
+    "connection error",
+    "connection reset",
+    "connection refused",
+    "stream error",
+    "stream disconnected",
+    "request timed out",
+    "timed out",
+)
+
 
 CODEX = RuntimeProfile(
     backend="codex",
@@ -498,6 +522,7 @@ CODEX = RuntimeProfile(
     credential_style="home_dir",
     premature_exit_recovery=False,
     auth_error_patterns=_CODEX_AUTH_ERROR_PATTERNS,
+    transient_error_patterns=_CODEX_TRANSIENT_ERROR_PATTERNS,
     close_stdin_after_start=True,
     build_turn_argv=build_turn_argv,
     new_event_parser=CodexEventParser,

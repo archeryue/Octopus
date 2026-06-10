@@ -58,6 +58,19 @@ class Harness:
         low = text.lower()
         return any(p in low for p in self.profile.auth_error_patterns)
 
+    def is_transient_error(self, text: str) -> bool:
+        """Whether `text` (a failed turn's combined error output + stderr) looks
+        like a TRANSIENT provider-reliability failure — a 5xx / overloaded /
+        dropped-connection / timeout that a bounded retry can ride out
+        (harness-transient-retry.md §3). Case-insensitive substring match over
+        the profile's `transient_error_patterns`; pure. Mutually exclusive with
+        `is_auth_error`, and excludes quota/credit (never retried). Callers gate
+        on the turn having failed with no output yet."""
+        if not text or not self.profile.transient_error_patterns:
+            return False
+        low = text.lower()
+        return any(p in low for p in self.profile.transient_error_patterns)
+
     @property
     def premature_exit_recovery(self) -> bool:
         """Whether the session_manager run loop should apply the Claude-CLI

@@ -130,6 +130,12 @@ class RuntimeProfile:
     # as an expired/invalid credential; `Harness.is_auth_error` matches them.
     # Empty tuple = no reactive auth detection for this backend.
     auth_error_patterns: tuple[str, ...] = ()
+    # Lowercased substrings that identify a TRANSIENT provider-reliability
+    # failure (5xx / overloaded / dropped connection / timeout) in this
+    # backend's CLI error output (harness-transient-retry.md §3). A failed
+    # turn matching these is retried with backoff. Must stay free of auth
+    # phrases (handled separately) and quota/credit phrases (never retried).
+    transient_error_patterns: tuple[str, ...] = ()
     # Whether the composed system prompt should carry the agent-memory blurb
     # (docs/plans/memory.md §3). Codex: True (no native memory — it reads/
     # writes the canonical dir with file tools by instruction). Claude: False

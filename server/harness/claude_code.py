@@ -465,6 +465,30 @@ _CLAUDE_AUTH_ERROR_PATTERNS = (
     "invalid_grant",
 )
 
+# Transient provider-reliability failures worth an automatic retry
+# (harness-transient-retry.md §3). Server-side 5xx / overload / dropped
+# connection only — deliberately NO "rate limit" / "429" / "quota" / "credit"
+# (those are the user's limit, not a blip) and no auth phrases (handled above).
+_CLAUDE_TRANSIENT_ERROR_PATTERNS = (
+    "overloaded",
+    "api error: 500",
+    "api error: 502",
+    "api error: 503",
+    "api error: 504",
+    "api error: 529",
+    "internal server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "connection error",
+    "connection reset",
+    "connection refused",
+    "request timed out",
+    "timed out",
+    "the server had an error",
+    "stream disconnected",
+)
+
 
 CLAUDE_CODE = RuntimeProfile(
     backend="claude-code",
@@ -473,6 +497,7 @@ CLAUDE_CODE = RuntimeProfile(
     credential_style="env_secret",
     premature_exit_recovery=True,
     auth_error_patterns=_CLAUDE_AUTH_ERROR_PATTERNS,
+    transient_error_patterns=_CLAUDE_TRANSIENT_ERROR_PATTERNS,
     # Close stdin right after spawn. `claude --print` takes its prompt from
     # argv (`-- <prompt>`) and never reads stdin, so leaving the pipe open made
     # the CLI wait ~3s ("no stdin data received in 3s") on every turn AND —

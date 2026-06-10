@@ -1767,6 +1767,14 @@ class SessionManager:
     # burning tokens on a genuinely broken state."
     _MAX_RECOVERY_ATTEMPTS = 1
 
+    # Bounded retry for TRANSIENT provider-reliability failures (5xx /
+    # overloaded / dropped connection — harness-transient-retry.md §4).
+    # Distinct from the premature-exit recovery above: that resumes with
+    # "continue" after a tool_use; this re-runs the same prompt after a
+    # clean (no-output) transient failure, with exponential backoff.
+    _MAX_TRANSIENT_RETRIES = 2
+    _TRANSIENT_RETRY_BASE_DELAY = 1.0  # seconds; doubles each attempt
+
     async def _run_backend(
         self, session: Session, prompt: str
     ) -> AsyncIterator[dict[str, Any]]:
@@ -1798,12 +1806,23 @@ class SessionManager:
         connectors = await self._load_connectors(agent)
         current_prompt = prompt
         recovery_attempts = 0
+        transient_attempts = 0
+        # The resume id this logical turn STARTED from. A transient retry
+        # re-runs the original invocation, so it must restore this — a failed
+        # no-output attempt can still emit `session_started` and mutate
+        # session.claude_session_id, which would otherwise turn the retry into
+        # a `--resume <failed-id>` of the same prompt (Vera review,
+        # harness-transient-retry.md §4).
+        resume_at_turn_start = session.claude_session_id
 
         while True:
             backend = self._make_run(session, agent, connectors)
             session._backend = backend
             saw_result = False
             saw_tool_use = False
+            # Whether any assistant text streamed this attempt — gates the
+            # transient retry (don't re-run a turn that already produced output).
+            saw_text = False
             # Terminal-error signal for post-turn auth-expiry classification.
             saw_error_event = False
             error_event_text = ""
@@ -1833,6 +1852,8 @@ class SessionManager:
 
                     if event.type == "tool_use":
                         saw_tool_use = True
+                    if event.type == "text" and event.content and event.content.strip():
+                        saw_text = True
 
                     # Persist whichever message shape this event maps to. The
                     # returned seq goes onto the WS event so reconnecting
@@ -1910,10 +1931,63 @@ class SessionManager:
                 # getattr: real HarnessRun exposes stderr_text; lightweight
                 # test/backend stand-ins may not.
                 stderr_text = getattr(backend, "stderr_text", "") or ""
-                auth_blob = (error_event_text + "\n" + stderr_text)[:8000]
-                if harness.is_auth_error(auth_blob):
+                error_blob = (error_event_text + "\n" + stderr_text)[:8000]
+
+                # (a) Auth-credential rejection → flag + stop (never retried;
+                # re-auth won't fix itself). harness-credential-reauth.md §4.
+                if harness.is_auth_error(error_blob):
                     yield await self._surface_auth_expiry(
                         session, cred_id=cred_id, backend=harness.backend
+                    )
+                    return
+
+                # (b) Transient provider-reliability failure (5xx / overloaded /
+                # dropped connection) → retry the SAME prompt with backoff,
+                # bounded. Gated on no output yet (no assistant text, no
+                # tool_use): re-running a clean immediate failure is
+                # side-effect-free, whereas re-running after partial work could
+                # duplicate text or re-execute a tool. Quota/credit errors match
+                # no pattern here, so they fall through and surface as-is.
+                # harness-transient-retry.md §4.
+                if (
+                    not saw_tool_use
+                    and not saw_text
+                    and harness.is_transient_error(error_blob)
+                ):
+                    if transient_attempts < self._MAX_TRANSIENT_RETRIES:
+                        transient_attempts += 1
+                        delay = self._TRANSIENT_RETRY_BASE_DELAY * (
+                            2 ** (transient_attempts - 1)
+                        )
+                        logger.warning(
+                            "Session %s: transient backend error; retrying in "
+                            "%.1fs (attempt %d/%d)",
+                            session.id, delay, transient_attempts,
+                            self._MAX_TRANSIENT_RETRIES,
+                        )
+                        # Re-run the ORIGINAL invocation: discard any resume id
+                        # the failed no-output attempt captured, restoring the
+                        # turn-start resume state so the retry isn't a
+                        # `--resume <failed-id>` of the same prompt (Vera review).
+                        if session.claude_session_id != resume_at_turn_start:
+                            session.claude_session_id = resume_at_turn_start
+                            if self.db:
+                                await self.db.update_session_field(
+                                    session.id,
+                                    claude_session_id=resume_at_turn_start,
+                                )
+                        yield await self._surface_transient_retry(
+                            session,
+                            attempt=transient_attempts,
+                            max_attempts=self._MAX_TRANSIENT_RETRIES,
+                            delay=delay,
+                        )
+                        await asyncio.sleep(delay)
+                        continue  # re-run the SAME prompt
+                    # Budget exhausted — surface a clear error so the user knows
+                    # it wasn't their request that failed.
+                    yield await self._surface_transient_exhausted(
+                        session, backend=harness.backend, attempts=transient_attempts
                     )
                     return
 
@@ -2314,6 +2388,58 @@ class SessionManager:
             "code": "auth_expired",
             "credential_id": cred_id,
             "backend": backend,
+        }
+        if seq is not None:
+            event["seq"] = seq
+        return event
+
+    async def _surface_transient_retry(
+        self, session: Session, *, attempt: int, max_attempts: int, delay: float
+    ) -> dict[str, Any]:
+        """Persist + return a discreet marker that the turn hit a transient
+        backend error and is being retried (harness-transient-retry.md §4), so
+        the delay isn't a silent stall. Mirrors the premature-exit marker."""
+        human = (
+            f"(transient backend error — retrying in {delay:.0f}s, "
+            f"attempt {attempt}/{max_attempts})"
+        )
+        seq = await self._persist_message(
+            session,
+            MessageContent(role=MessageRole.system, type="error", content=human),
+        )
+        event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session.id,
+            "message": human,
+            "code": "transient_retry",
+        }
+        if seq is not None:
+            event["seq"] = seq
+        return event
+
+    async def _surface_transient_exhausted(
+        self, session: Session, *, backend: str, attempts: int
+    ) -> dict[str, Any]:
+        """Persist + return a clear error once transient retries are exhausted,
+        so a provider-side blip doesn't read as a silent failure of the user's
+        request (harness-transient-retry.md §4)."""
+        display = self._BACKEND_DISPLAY.get(backend, backend)
+        human = (
+            f"The {display} backend kept failing with a transient error after "
+            f"{attempts} {'retry' if attempts == 1 else 'retries'}. This is a "
+            "provider-side issue, not your request — please try again in a moment."
+        )
+        seq = await self._persist_message(
+            session,
+            MessageContent(
+                role=MessageRole.system, type="error", content=human, is_error=True
+            ),
+        )
+        event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session.id,
+            "message": human,
+            "code": "transient_exhausted",
         }
         if seq is not None:
             event["seq"] = seq

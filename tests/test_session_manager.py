@@ -1584,3 +1584,156 @@ async def test_failed_codex_turn_with_tool_unauthorized_does_not_flag(manager, m
     assert not any(e.get("code") == "auth_expired" for e in events)
     row = await manager.db.get_credential(cid)
     assert row["needs_reconnect"] is False
+
+
+# --------------------------------------------------------------- transient retry
+# Provider-reliability failures (5xx / overloaded) → bounded same-prompt retry
+# (harness-transient-retry.md §4).
+
+
+class _SeqBackend:
+    """One scripted attempt: records the prompt it was started with, yields a
+    fixed event list, exposes stderr_text."""
+
+    def __init__(self, events, stderr_text=""):
+        self._events = list(events)
+        self.stderr_text = stderr_text
+        self.started_with = None
+        self.started_resume = None
+
+    async def start(self, prompt, working_dir=None, resume_id=None, **kwargs):
+        self.started_with = prompt
+        self.started_resume = resume_id
+
+    def stream(self):
+        async def _gen():
+            for e in self._events:
+                yield e
+        return _gen()
+
+    async def stop(self):
+        pass
+
+
+def _seq_factory(backends):
+    it = iter(backends)
+
+    def _factory(*args, **kwargs):
+        return next(it)
+
+    return _factory
+
+
+@pytest.mark.asyncio
+async def test_transient_error_retries_same_prompt_then_succeeds(manager, monkeypatch):
+    from server.harness import HarnessEvent
+
+    monkeypatch.setattr(type(manager), "_TRANSIENT_RETRY_BASE_DELAY", 0.0)
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "Transient", None, backend="claude-code"
+    )
+    attempt1 = _SeqBackend(
+        events=[HarnessEvent(type="result", is_error=True,
+                             content="API Error: 529 Overloaded")]
+    )
+    attempt2 = _SeqBackend(
+        events=[
+            HarnessEvent(type="text", content="hello at last"),
+            HarnessEvent(type="result", is_error=False, session_id="s1"),
+        ]
+    )
+    monkeypatch.setattr(manager, "_make_run", _seq_factory([attempt1, attempt2]))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert any(e.get("code") == "transient_retry" for e in events)
+    assert not any(e.get("code") == "transient_exhausted" for e in events)
+    assert any(e.get("type") == "assistant_text" for e in events)
+    # The retry re-ran the ORIGINAL prompt, not a "continue" resume.
+    assert attempt2.started_with == "hi"
+
+
+@pytest.mark.asyncio
+async def test_transient_retry_ignores_failed_attempts_resume_id(manager, monkeypatch):
+    """Vera review: a failed no-output attempt can still emit `session_started`
+    and mutate session.claude_session_id. The retry must re-run the ORIGINAL
+    invocation (turn-start resume state), NOT `--resume <failed-id>`."""
+    from server.harness import HarnessEvent
+
+    monkeypatch.setattr(type(manager), "_TRANSIENT_RETRY_BASE_DELAY", 0.0)
+    agent = await manager.db.get_system_agent()
+    # Fresh session: no resume id at turn start.
+    session = await manager.create_session(
+        agent["id"], "TransientResume", None, backend="claude-code"
+    )
+    assert session.claude_session_id is None
+    attempt1 = _SeqBackend(
+        events=[
+            HarnessEvent(type="session_started", session_id="failed-new-id"),
+            HarnessEvent(type="result", is_error=True,
+                         content="API Error: 529 Overloaded"),
+        ]
+    )
+    attempt2 = _SeqBackend(
+        events=[HarnessEvent(type="result", is_error=False, session_id="good-id")]
+    )
+    monkeypatch.setattr(manager, "_make_run", _seq_factory([attempt1, attempt2]))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert any(e.get("code") == "transient_retry" for e in events)
+    # The retry must NOT resume the failed attempt's session.
+    assert attempt2.started_resume is None
+    assert attempt2.started_with == "hi"
+
+
+@pytest.mark.asyncio
+async def test_transient_error_bounded_then_surfaces(manager, monkeypatch):
+    from server.harness import HarnessEvent
+
+    monkeypatch.setattr(type(manager), "_TRANSIENT_RETRY_BASE_DELAY", 0.0)
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "TransientBounded", None, backend="claude-code"
+    )
+    # initial + 2 retries all fail transiently → exhausted on the 3rd.
+    fails = [
+        _SeqBackend(events=[HarnessEvent(type="result", is_error=True,
+                                         content="API Error: 503 Service Unavailable")])
+        for _ in range(3)
+    ]
+    monkeypatch.setattr(manager, "_make_run", _seq_factory(fails))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    retries = [e for e in events if e.get("code") == "transient_retry"]
+    assert len(retries) == manager._MAX_TRANSIENT_RETRIES
+    assert any(e.get("code") == "transient_exhausted" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_transient_error_after_output_does_not_retry(manager, monkeypatch):
+    """If assistant text already streamed, a transient failure must NOT trigger
+    an automatic re-run (it would duplicate output) — it surfaces instead."""
+    from server.harness import HarnessEvent
+
+    monkeypatch.setattr(type(manager), "_TRANSIENT_RETRY_BASE_DELAY", 0.0)
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "TransientAfterOutput", None, backend="claude-code"
+    )
+    only = _SeqBackend(
+        events=[
+            HarnessEvent(type="text", content="partial answer"),
+            HarnessEvent(type="result", is_error=True,
+                         content="API Error: 500 internal server error"),
+        ]
+    )
+    # A second backend would only be pulled if a retry (wrongly) fired.
+    monkeypatch.setattr(manager, "_make_run", _seq_factory([only]))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert not any(e.get("code") in ("transient_retry", "transient_exhausted")
+                   for e in events)
