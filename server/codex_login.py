@@ -103,7 +103,9 @@ class CodexLoginManager:
     def __init__(self) -> None:
         self._sessions: dict[str, CodexLoginSession] = {}
 
-    async def start(self, label: str) -> CodexLoginSession:
+    async def start(
+        self, label: str, *, reauth_credential_id: str | None = None
+    ) -> CodexLoginSession:
         argv = build_codex_login_argv()
         if argv is None:
             raise RuntimeError(
@@ -111,7 +113,11 @@ class CodexLoginManager:
                 "sign-in isn't available."
             )
 
-        credential_id = uuid.uuid4().hex[:12]
+        # Re-authorization reuses the existing credential id, so `codex login`
+        # writes a fresh auth.json into the SAME CODEX_HOME the credential
+        # already points at — no new dir, no path change, bindings preserved
+        # (harness-credential-reauth.md §5). A fresh sign-in mints a new id.
+        credential_id = reauth_credential_id or uuid.uuid4().hex[:12]
         home = codex_home_for(credential_id)
         os.makedirs(home, exist_ok=True)
 

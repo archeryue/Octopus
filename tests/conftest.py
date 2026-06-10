@@ -17,3 +17,7 @@ os.environ["OCTOPUS_AUTH_TOKEN"] = "changeme"
 _TEST_AGENTS_DIR = tempfile.mkdtemp(prefix="octopus-test-agents-")
 os.environ["OCTOPUS_AGENTS_DIR"] = _TEST_AGENTS_DIR
 atexit.register(lambda: shutil.rmtree(_TEST_AGENTS_DIR, ignore_errors=True))
+
+# Real-CLI availability gates live in tests/cli_gate.py (imported by the
+# *_real.py suites as `from tests.cli_gate import …`); they're not here because
+# `import conftest` isn't reliably resolvable under pytest collection.

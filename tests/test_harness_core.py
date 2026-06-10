@@ -330,3 +330,36 @@ async def test_run_oneshot_nonzero_exit_raises():
     with pytest.raises(HarnessOneshotError) as ei:
         await harness.run_oneshot(OneShotContext(prompt="x"))
     assert ei.value.code == "failed"
+
+
+# --------------------------------------------------------------- auth-error detection
+
+
+def test_is_auth_error_claude_matches_401_and_phrases():
+    """Claude/Anthropic 401 phrasings trip the real claude-code harness
+    (harness-credential-reauth.md §3); benign output and empty text don't."""
+    h = get_harness("claude-code")
+    assert h.is_auth_error(
+        "Failed to authenticate. API Error: 401 Invalid authentication credentials"
+    )
+    assert h.is_auth_error("oauth token has expired, please run /login")
+    assert not h.is_auth_error("Tool returned HTTP 200; all good")
+    assert not h.is_auth_error("")
+
+
+def test_is_auth_error_codex_matches_and_is_case_insensitive():
+    h = get_harness("codex")
+    assert h.is_auth_error("stream error: 401 Unauthorized")
+    assert h.is_auth_error("Your authentication token has expired")
+    assert not h.is_auth_error("turn completed successfully")
+    assert not h.is_auth_error("")
+
+
+def test_is_auth_error_codex_ignores_bare_unauthorized_from_tools():
+    """A non-auth failure that merely contains "unauthorized" (an MCP/connector
+    401, a tool error) must NOT be read as a harness-credential failure — the
+    patterns are auth-specific, never a bare "unauthorized" (Vera review)."""
+    h = get_harness("codex")
+    assert not h.is_auth_error("MCP server returned Unauthorized")
+    assert not h.is_auth_error("tool failed: GitHub Unauthorized")
+    assert not h.is_auth_error("your session token has expired, refetch it")

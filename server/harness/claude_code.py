@@ -417,7 +417,12 @@ class _OAuthLoginDriver:
 
     method = LoginMethod.oauth_redirect
 
-    async def start(self, label: str | None = None):
+    async def start(
+        self, label: str | None = None, *, reauth_credential_id: str | None = None
+    ):
+        # Claude re-auth targets the existing credential on the `complete`
+        # route (it carries `credential_id`), so the redirect start itself is
+        # identical for fresh and re-auth logins — nothing to thread here.
         from ..oauth_login import oauth_login_manager
 
         return await oauth_login_manager.start()
@@ -444,12 +449,30 @@ class _OAuthLoginDriver:
 # ------------------------------------------------------------------ profile
 
 
+# Phrases the Claude CLI / Anthropic API emit when the credential is bad —
+# a revoked/rotated key or an expired OAuth token (harness-credential-reauth.md
+# §3). Specific enough to not fire on an unrelated 401 a *tool* surfaces.
+_CLAUDE_AUTH_ERROR_PATTERNS = (
+    "invalid authentication credentials",
+    "authentication_error",
+    "invalid x-api-key",
+    "invalid api key",
+    "oauth token has expired",
+    "oauth token is invalid",
+    "api error: 401",
+    "401 unauthorized",
+    "please run /login",
+    "invalid_grant",
+)
+
+
 CLAUDE_CODE = RuntimeProfile(
     backend="claude-code",
     binary="claude",
     tools_prompt=_OCTOPUS_SYSTEM_PROMPT,
     credential_style="env_secret",
     premature_exit_recovery=True,
+    auth_error_patterns=_CLAUDE_AUTH_ERROR_PATTERNS,
     # Close stdin right after spawn. `claude --print` takes its prompt from
     # argv (`-- <prompt>`) and never reads stdin, so leaving the pipe open made
     # the CLI wait ~3s ("no stdin data received in 3s") on every turn AND —

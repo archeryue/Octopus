@@ -37,6 +37,7 @@ from .oauth_errors import RefreshErrorCode
 from .oauth_providers import OAuthTokenSet, get_provider
 from .models import (
     AttachmentMetadata,
+    CredentialStatus,
     MessageContent,
     MessageRole,
     PendingQuestionInfo,
@@ -1788,6 +1789,12 @@ class SessionManager:
         agent = await self._load_agent(session)
         harness = get_harness(session.backend)
         credential = await self._resolve_credential(session, agent, harness)
+        # The effective credential id (session override, else the agent's).
+        # Used to flag the right row needs_reconnect on a mid-turn 401
+        # (harness-credential-reauth.md §4). None = host-default CLI auth.
+        cred_id = session.credential_id or (
+            agent.get("credential_id") if agent else None
+        )
         connectors = await self._load_connectors(agent)
         current_prompt = prompt
         recovery_attempts = 0
@@ -1797,6 +1804,9 @@ class SessionManager:
             session._backend = backend
             saw_result = False
             saw_tool_use = False
+            # Terminal-error signal for post-turn auth-expiry classification.
+            saw_error_event = False
+            error_event_text = ""
 
             try:
                 await backend.start(
@@ -1858,6 +1868,20 @@ class SessionManager:
                         # session (session-tree-rewind.md §5.3.2/§5.6.5).
                         await self._clear_fork_first_turn_state(session)
 
+                    # Capture terminal-error text (a failed `result` or an
+                    # `error` event) for post-turn auth-expiry classification
+                    # (harness-credential-reauth.md §4). tool_result errors are
+                    # excluded — a tool failing isn't the turn failing.
+                    if event.type in ("result", "error") and event.is_error:
+                        saw_error_event = True
+                        if event.content:
+                            error_event_text += event.content + "\n"
+                        if event.raw:
+                            try:
+                                error_event_text += json.dumps(event.raw) + "\n"
+                            except (TypeError, ValueError):
+                                pass
+
                     # Translate into the WS message shape the front-end expects
                     ws_event = self._event_to_ws_message(session.id, event)
                     if ws_event is not None:
@@ -1872,6 +1896,26 @@ class SessionManager:
                         "backend.stop() failed cleanly for session %s", session.id
                     )
                 session._backend = None
+
+            # Reactive auth-expiry: a failed turn whose error text (terminal
+            # event content/raw + the CLI's stderr) matches this backend's
+            # auth-rejection patterns means the bound credential is dead
+            # (revoked / rotated / expired past what the proactive refresh
+            # caught). Flag it needs_reconnect and surface a re-authorize
+            # prompt, then STOP — the premature-exit "continue" respawn below
+            # must not run (re-auth won't fix itself, and the retry just burns
+            # the budget). harness-credential-reauth.md §4.
+            turn_failed = saw_error_event or not saw_result
+            if turn_failed:
+                # getattr: real HarnessRun exposes stderr_text; lightweight
+                # test/backend stand-ins may not.
+                stderr_text = getattr(backend, "stderr_text", "") or ""
+                auth_blob = (error_event_text + "\n" + stderr_text)[:8000]
+                if harness.is_auth_error(auth_blob):
+                    yield await self._surface_auth_expiry(
+                        session, cred_id=cred_id, backend=harness.backend
+                    )
+                    return
 
             # Decide whether to recover. The bug signature is:
             # CLI exited without a `result` event AFTER emitting a
@@ -2222,6 +2266,59 @@ class SessionManager:
         )
         return new_ts.access_token
 
+    _BACKEND_DISPLAY = {"claude-code": "Claude Code", "codex": "Codex"}
+
+    async def _surface_auth_expiry(
+        self, session: Session, *, cred_id: str | None, backend: str
+    ) -> dict[str, Any]:
+        """Flag the bound credential needs_reconnect (if any) and build the
+        re-authorize chat event for a mid-turn 401 (harness-credential-reauth.md
+        §4). Persists a human-readable system error so it survives reload; the
+        returned WS event additionally carries `code`/`credential_id`/`backend`
+        so the client can refresh the sidebar and light up the re-auth badge.
+        """
+        label: str | None = None
+        if cred_id is not None:
+            await self._mark_needs_reconnect(
+                cred_id, RefreshErrorCode.invalid_credentials
+            )
+            if self.db:
+                row = await self.db.get_credential(cred_id)
+                if row:
+                    label = row.get("label")
+        display = self._BACKEND_DISPLAY.get(backend, backend)
+        if cred_id is not None:
+            quoted = f" “{label}”" if label else ""
+            human = (
+                f"Authentication failed (401) for the {display} credential"
+                f"{quoted}. Its sign-in has expired or been revoked — "
+                "re-authorize it in the Harness section of the sidebar, then "
+                "resend your message."
+            )
+        else:
+            human = (
+                f"Authentication failed (401) for {display}. The CLI's own "
+                "sign-in has expired — re-authorize the backend, then resend "
+                "your message."
+            )
+        seq = await self._persist_message(
+            session,
+            MessageContent(
+                role=MessageRole.system, type="error", content=human, is_error=True
+            ),
+        )
+        event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session.id,
+            "message": human,
+            "code": "auth_expired",
+            "credential_id": cred_id,
+            "backend": backend,
+        }
+        if seq is not None:
+            event["seq"] = seq
+        return event
+
     async def _mark_needs_reconnect(
         self, credential_id: str, code: RefreshErrorCode
     ) -> None:
@@ -2229,6 +2326,7 @@ class SessionManager:
             return
         await self.db.update_credential(
             credential_id,
+            status=CredentialStatus.needs_reconnect.value,
             needs_reconnect=True,
             last_refresh_error_code=code.value,
         )

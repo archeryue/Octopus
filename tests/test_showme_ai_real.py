@@ -18,15 +18,15 @@ This is the test that would have caught the production failure on
 
 from __future__ import annotations
 
-import shutil
-
 import pytest
 
+from tests.cli_gate import claude_cli_works
 from server.harness import get_harness
 from server.showme_ai import resolve_showme_reference
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("claude") is None, reason="needs the claude CLI on PATH"
+    not claude_cli_works(),
+    reason="claude CLI unavailable or not signed in",
 )
 
 

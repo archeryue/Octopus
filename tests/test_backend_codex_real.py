@@ -16,18 +16,14 @@ Confirmed against codex 0.132.0 in this session:
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 
+from tests.cli_gate import codex_cli_works
 from server.harness import HarnessEvent, RunConfig, get_harness
-from server.harness.run import _which_with_fallback
-
-_codex = _which_with_fallback("codex")
-_logged_in = os.path.exists(os.path.expanduser("~/.codex/auth.json"))
 
 pytestmark = pytest.mark.skipif(
-    _codex is None or not _logged_in,
+    not codex_cli_works(),
     reason="codex CLI not on PATH or no ~/.codex login; skipping real-CLI tests",
 )
 

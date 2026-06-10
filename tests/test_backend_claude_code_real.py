@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
 
 import pytest
 
@@ -29,9 +28,11 @@ for _d in _EXTRA_BIN_DIRS:
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
 
+from tests.cli_gate import claude_cli_works
+
 pytestmark = pytest.mark.skipif(
-    shutil.which("claude") is None,
-    reason="claude CLI not on PATH; install or skip real-CLI tests",
+    not claude_cli_works(),
+    reason="claude CLI unavailable or not signed in; skip real-CLI tests",
 )
 
 CWD = os.getcwd()

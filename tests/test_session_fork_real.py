@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import glob
 import os
-import shutil
 import subprocess
 
 import pytest
@@ -35,8 +34,12 @@ for _d in [
     if _d and _d not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
-HAS_CLAUDE = shutil.which("claude") is not None
-HAS_CODEX = shutil.which("codex") is not None
+from tests.cli_gate import claude_cli_works, codex_cli_works
+
+# Gate on the CLI being installed AND signed in — a logged-out binary would
+# otherwise fail these with a confusing 401 instead of skipping.
+HAS_CLAUDE = claude_cli_works()
+HAS_CODEX = codex_cli_works()
 
 
 async def _bootstrap(tmp_path, monkeypatch):

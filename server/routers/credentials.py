@@ -33,6 +33,7 @@ from ..models import (
     BackendKind,
     CreateCredentialRequest,
     CredentialInfo,
+    CredentialStatus,
     UpdateCredentialRequest,
 )
 from ..harness import LoginMethod, get_harness, has_backend
@@ -121,6 +122,11 @@ async def update_credential(
         update_kwargs["label"] = req.label
     if req.secret is not None:
         update_kwargs["secret_encrypted"] = encrypt(req.secret, settings.auth_token)
+        # A fresh secret recovers a credential the CLI had rejected — clear
+        # the reactive needs_reconnect flag (harness-credential-reauth.md §5).
+        update_kwargs["status"] = CredentialStatus.active.value
+        update_kwargs["needs_reconnect"] = False
+        update_kwargs["last_refresh_error_code"] = None
 
     if update_kwargs:
         await db.update_credential(credential_id, **update_kwargs)
@@ -164,6 +170,10 @@ class OAuthCompleteRequest(BaseModel):
     login_id: str
     code: str = Field(min_length=1)
     label: str = Field(min_length=1)
+    # Re-authorization (harness-credential-reauth.md §5): when set, update
+    # this EXISTING credential's secret in place + clear its needs_reconnect
+    # flag, instead of minting a new row — so agent/session bindings survive.
+    credential_id: str | None = None
 
 
 class OAuthCancelRequest(BaseModel):
@@ -244,7 +254,6 @@ async def oauth_complete(
             detail=session.message or "login completed without a usable result",
         )
 
-    cid = uuid.uuid4().hex[:12]
     created_at = datetime.now(timezone.utc).isoformat()
 
     if session.token:
@@ -269,6 +278,32 @@ async def oauth_complete(
             detail="login completed with no token or oauth_tokens",
         )
 
+    # Re-authorization in place: update the existing row's secret + clear the
+    # needs_reconnect flag so every agent/session already bound to this
+    # credential id keeps working (harness-credential-reauth.md §5).
+    if req.credential_id is not None:
+        existing = await db.get_credential(req.credential_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="credential not found")
+        if existing["backend"] != BackendKind.claude_code.value:
+            raise HTTPException(
+                status_code=400,
+                detail="credential backend mismatch for re-authorization",
+            )
+        await db.update_credential(
+            req.credential_id,
+            label=req.label,
+            secret_encrypted=secret_encrypted,
+            token_expires_at=token_expires_at,
+            status=CredentialStatus.active.value,
+            needs_reconnect=False,
+            last_refresh_error_code=None,
+        )
+        updated = await db.get_credential(req.credential_id)
+        assert updated is not None
+        return _row_to_info(updated)
+
+    cid = uuid.uuid4().hex[:12]
     await db.save_credential(
         credential_id=cid,
         backend=BackendKind.claude_code.value,
@@ -307,6 +342,10 @@ async def oauth_cancel(req: OAuthCancelRequest, _: str = Depends(verify_token)):
 
 class CodexLoginStartRequest(BaseModel):
     label: str = Field(min_length=1)
+    # Re-authorization (harness-credential-reauth.md §5): when set, re-run
+    # `codex login` against this existing credential's own CODEX_HOME so its
+    # auth.json is refreshed in place (no new row, no new dir, bindings kept).
+    reauth_credential_id: str | None = None
 
 
 class CodexLoginStartResponse(BaseModel):
@@ -335,8 +374,20 @@ class CodexLoginCancelRequest(BaseModel):
 async def codex_login_start(
     req: CodexLoginStartRequest, _: str = Depends(verify_token)
 ):
+    if req.reauth_credential_id is not None:
+        db = _require_db()
+        existing = await db.get_credential(req.reauth_credential_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="credential not found")
+        if existing["backend"] != BackendKind.codex.value:
+            raise HTTPException(
+                status_code=400,
+                detail="credential backend mismatch for re-authorization",
+            )
     try:
-        session = await get_harness(BackendKind.codex.value).login.start(req.label)
+        session = await get_harness(BackendKind.codex.value).login.start(
+            req.label, reauth_credential_id=req.reauth_credential_id
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return CodexLoginStartResponse(login_id=session.id)
@@ -355,26 +406,43 @@ async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
     credential: CredentialInfo | None = None
     if session.state == CodexLoginState.success and not session.persisted:
         db = _require_db()
-        created_at = datetime.now(timezone.utc).isoformat()
         # No real secret for Codex — the credential *is* the CODEX_HOME dir.
         # Store the dir path (encrypted, harmless) so the row is self-describing;
         # session_manager resolves the dir deterministically from credential_id.
-        await db.save_credential(
-            credential_id=session.credential_id,
-            backend=BackendKind.codex.value,
-            label=session.label,
-            auth_type=AuthType.oauth.value,
-            secret_encrypted=encrypt(session.codex_home, settings.auth_token),
-            created_at=created_at,
-        )
-        session.persisted = True
-        credential = CredentialInfo(
-            id=session.credential_id,
-            backend=BackendKind.codex,
-            label=session.label,
-            auth_type=AuthType.oauth,
-            created_at=created_at,
-        )
+        existing = await db.get_credential(session.credential_id)
+        if existing is not None:
+            # Re-authorization: the row already exists (its CODEX_HOME just got
+            # a fresh auth.json) — clear the needs_reconnect flag in place so
+            # every binding keeps working (harness-credential-reauth.md §5).
+            await db.update_credential(
+                session.credential_id,
+                label=session.label,
+                status=CredentialStatus.active.value,
+                needs_reconnect=False,
+                last_refresh_error_code=None,
+            )
+            session.persisted = True
+            credential = _row_to_info(
+                await db.get_credential(session.credential_id)
+            )
+        else:
+            created_at = datetime.now(timezone.utc).isoformat()
+            await db.save_credential(
+                credential_id=session.credential_id,
+                backend=BackendKind.codex.value,
+                label=session.label,
+                auth_type=AuthType.oauth.value,
+                secret_encrypted=encrypt(session.codex_home, settings.auth_token),
+                created_at=created_at,
+            )
+            session.persisted = True
+            credential = CredentialInfo(
+                id=session.credential_id,
+                backend=BackendKind.codex,
+                label=session.label,
+                auth_type=AuthType.oauth,
+                created_at=created_at,
+            )
 
     return CodexLoginStatusResponse(
         state=session.state.value,

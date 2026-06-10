@@ -28,6 +28,10 @@ class RefreshErrorCode(str, Enum):
     refresh_token_invalidated = "refresh_token_invalidated"
     refresh_token_other = "refresh_token_other"
     network_error = "network_error"
+    # The CLI rejected the credential at runtime with a 401 / auth error,
+    # detected reactively from a failed turn rather than from a proactive
+    # token refresh (harness-credential-reauth.md §4).
+    invalid_credentials = "invalid_credentials"
     unknown = "unknown"
 
 

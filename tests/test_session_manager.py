@@ -1431,3 +1431,156 @@ async def test_archive_broadcasts_session_archived_event(manager):
     assert archived_evts[0]["old_session_id"] == old.id
     assert archived_evts[0]["new_session_id"] == new.id
     assert archived_evts[0]["name"] == "X"
+
+
+# --------------------------------------------------------------- auth-expiry detection
+# Reactive mid-turn 401 → flag the bound credential needs_reconnect and emit a
+# re-authorize prompt (harness-credential-reauth.md §4).
+
+
+class _FakeBackend:
+    """Stand-in HarnessRun: yields a scripted event list and exposes a fixed
+    stderr_text, so _run_backend's auth-expiry classifier can be exercised
+    without a real CLI subprocess."""
+
+    def __init__(self, events, stderr_text=""):
+        self._events = list(events)
+        self.stderr_text = stderr_text
+
+    async def start(self, *args, **kwargs):
+        pass
+
+    def stream(self):
+        async def _gen():
+            for e in self._events:
+                yield e
+        return _gen()
+
+    async def stop(self):
+        pass
+
+
+async def _bind_credential(manager, backend, secret="sk-ant-x"):
+    from datetime import datetime, timezone
+    from server.config import settings
+    from server.crypto import encrypt
+
+    cid = f"cred-{backend}"
+    await manager.db.save_credential(
+        credential_id=cid,
+        backend=backend,
+        label="Bound",
+        auth_type="api_key" if backend == "claude-code" else "oauth",
+        secret_encrypted=encrypt(secret, settings.auth_token),
+        created_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return cid
+
+
+@pytest.mark.asyncio
+async def test_auth_error_in_stderr_flags_credential_and_emits(manager, monkeypatch):
+    """Claude 401 lands in stderr with no `result` — the turn is failed, the
+    blob matches the claude harness patterns, so the bound credential is
+    flagged and an `auth_expired` event is emitted."""
+    cid = await _bind_credential(manager, "claude-code")
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "Auth", None, credential_id=cid, backend="claude-code"
+    )
+    fake = _FakeBackend(
+        events=[],
+        stderr_text="Failed to authenticate. API Error: 401 Invalid authentication credentials",
+    )
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: fake)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    auth = [e for e in events if e.get("code") == "auth_expired"]
+    assert len(auth) == 1
+    assert auth[0]["credential_id"] == cid
+    assert auth[0]["backend"] == "claude-code"
+    row = await manager.db.get_credential(cid)
+    assert row["needs_reconnect"] is True
+    assert row["status"] == "needs_reconnect"
+    assert row["last_refresh_error_code"] == "invalid_credentials"
+
+
+@pytest.mark.asyncio
+async def test_auth_error_codex_result_content_flags_credential(manager, monkeypatch):
+    """Codex surfaces auth failure as a `turn.failed` → is_error result whose
+    content carries the message; detection reads it from the event stream."""
+    from server.harness import HarnessEvent
+
+    cid = await _bind_credential(manager, "codex", secret="/tmp/home")
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "AuthCodex", None, credential_id=cid, backend="codex"
+    )
+    fake = _FakeBackend(
+        events=[
+            HarnessEvent(
+                type="result", is_error=True, content="stream error: 401 Unauthorized"
+            )
+        ]
+    )
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: fake)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert any(e.get("code") == "auth_expired" for e in events)
+    row = await manager.db.get_credential(cid)
+    assert row["needs_reconnect"] is True
+
+
+@pytest.mark.asyncio
+async def test_clean_turn_does_not_flag_credential(manager, monkeypatch):
+    """A successful turn must never flag the credential, even if stderr happens
+    to mention a 401 (e.g. a tool the model ran hit one)."""
+    from server.harness import HarnessEvent
+
+    cid = await _bind_credential(manager, "claude-code")
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "Clean", None, credential_id=cid, backend="claude-code"
+    )
+    fake = _FakeBackend(
+        events=[HarnessEvent(type="result", is_error=False, session_id="s1")],
+        stderr_text="a tool logged: API Error: 401 (from some third-party API)",
+    )
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: fake)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert not any(e.get("code") == "auth_expired" for e in events)
+    row = await manager.db.get_credential(cid)
+    assert row["needs_reconnect"] is False
+
+
+@pytest.mark.asyncio
+async def test_failed_codex_turn_with_tool_unauthorized_does_not_flag(manager, monkeypatch):
+    """Vera review: a Codex turn that FAILS for a non-auth reason whose text
+    merely contains "Unauthorized" (e.g. an MCP/connector 401 bubbling up) must
+    NOT flag the harness credential — only auth-specific phrases do."""
+    from server.harness import HarnessEvent
+
+    cid = await _bind_credential(manager, "codex", secret="/tmp/home")
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "ToolFail", None, credential_id=cid, backend="codex"
+    )
+    fake = _FakeBackend(
+        events=[
+            HarnessEvent(
+                type="result",
+                is_error=True,
+                content="turn failed: MCP server github returned Unauthorized",
+            )
+        ]
+    )
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: fake)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert not any(e.get("code") == "auth_expired" for e in events)
+    row = await manager.db.get_credential(cid)
+    assert row["needs_reconnect"] is False

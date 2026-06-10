@@ -436,10 +436,14 @@ class _DeviceLoginDriver:
 
     method = LoginMethod.device_code
 
-    async def start(self, label: str | None = None):
+    async def start(
+        self, label: str | None = None, *, reauth_credential_id: str | None = None
+    ):
         from ..codex_login import codex_login_manager
 
-        return await codex_login_manager.start((label or "").strip())
+        return await codex_login_manager.start(
+            (label or "").strip(), reauth_credential_id=reauth_credential_id
+        )
 
     async def submit_code(self, login_id: str, code: str):
         raise NotImplementedError("device_code login polls; it has no code to submit")
@@ -467,12 +471,33 @@ class _DeviceLoginDriver:
 # ------------------------------------------------------------------ profile
 
 
+# Phrases Codex / the OpenAI backend emit when the stored ChatGPT auth has
+# expired or been revoked (harness-credential-reauth.md §3). Codex surfaces
+# these in `turn.failed` / `error` event text; we also scan its stderr.
+_CODEX_AUTH_ERROR_PATTERNS = (
+    "401 unauthorized",
+    "error 401",
+    "invalid authentication credentials",
+    "invalid api key",
+    "incorrect api key",
+    "your authentication token has expired",
+    "please run `codex login`",
+    "please run codex login",
+    "not logged in",
+    # NB: deliberately NOT a bare "unauthorized" / "token has expired" — those
+    # appear in non-auth failures (an MCP/connector 401, a tool's "GitHub
+    # Unauthorized") that escalate to a Codex `error`/`turn.failed`, and would
+    # wrongly flag the harness credential dead. Patterns must be auth-specific.
+)
+
+
 CODEX = RuntimeProfile(
     backend="codex",
     binary="codex",
     tools_prompt=_OCTOPUS_SYSTEM_PROMPT_CODEX,
     credential_style="home_dir",
     premature_exit_recovery=False,
+    auth_error_patterns=_CODEX_AUTH_ERROR_PATTERNS,
     close_stdin_after_start=True,
     build_turn_argv=build_turn_argv,
     new_event_parser=CodexEventParser,

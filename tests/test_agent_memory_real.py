@@ -15,10 +15,10 @@ from __future__ import annotations
 import asyncio
 import glob
 import os
-import shutil
 
 import pytest
 
+from tests.cli_gate import claude_cli_works, codex_cli_works
 from server import agent_memory
 from server.config import settings
 from server.harness import HarnessEvent, RunConfig, get_harness
@@ -82,7 +82,7 @@ async def _recall(backend: str, cfg: dict, wd: str) -> str:
     return _text(events)
 
 
-@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not on PATH")
+@pytest.mark.skipif(not claude_cli_works(), reason="claude CLI unavailable or not signed in")
 @pytest.mark.asyncio
 async def test_claude_reads_per_agent_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "agents_dir", str(tmp_path / "agents"))
@@ -96,7 +96,7 @@ async def test_claude_reads_per_agent_memory(tmp_path, monkeypatch):
     assert CODENAME in out.upper()
 
 
-@pytest.mark.skipif(shutil.which("codex") is None, reason="codex CLI not on PATH")
+@pytest.mark.skipif(not codex_cli_works(), reason="codex CLI unavailable or not signed in")
 @pytest.mark.asyncio
 async def test_codex_reads_per_agent_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "agents_dir", str(tmp_path / "agents"))
@@ -110,7 +110,7 @@ async def test_codex_reads_per_agent_memory(tmp_path, monkeypatch):
     assert CODENAME in out.upper()
 
 
-@pytest.mark.skipif(shutil.which("claude") is None, reason="claude CLI not on PATH")
+@pytest.mark.skipif(not claude_cli_works(), reason="claude CLI unavailable or not signed in")
 @pytest.mark.asyncio
 async def test_claude_resume_survives_memory_override(tmp_path, monkeypatch):
     """With memory pointed at the per-agent dir, --resume must still find the

@@ -124,6 +124,12 @@ class RuntimeProfile:
     new_event_parser: Callable[[], EventParser]
     build_oneshot_argv: Callable[[OneShotContext], tuple[list[str], dict[str, Any]]]
     parse_oneshot_stdout: Callable[[str], str]
+    # Lowercased substrings that identify an auth-credential rejection in
+    # THIS backend's CLI error output (harness-credential-reauth.md §3). A
+    # failed turn whose combined error text contains any of them is treated
+    # as an expired/invalid credential; `Harness.is_auth_error` matches them.
+    # Empty tuple = no reactive auth detection for this backend.
+    auth_error_patterns: tuple[str, ...] = ()
     # Whether the composed system prompt should carry the agent-memory blurb
     # (docs/plans/memory.md §3). Codex: True (no native memory — it reads/
     # writes the canonical dir with file tools by instruction). Claude: False

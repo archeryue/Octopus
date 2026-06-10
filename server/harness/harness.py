@@ -46,6 +46,18 @@ class Harness:
         """Build the per-turn streaming run engine for this harness."""
         return HarnessRun(self.profile, config)
 
+    def is_auth_error(self, text: str) -> bool:
+        """Whether `text` (a failed turn's combined error output + stderr)
+        looks like this backend's auth-credential rejection — a 401 / expired
+        or revoked token (harness-credential-reauth.md §3). Case-insensitive
+        substring match over the profile's `auth_error_patterns`; pure, no I/O.
+        Callers gate on the turn actually having failed so a tool that merely
+        returns a 401 to the model can't trip it."""
+        if not text or not self.profile.auth_error_patterns:
+            return False
+        low = text.lower()
+        return any(p in low for p in self.profile.auth_error_patterns)
+
     @property
     def premature_exit_recovery(self) -> bool:
         """Whether the session_manager run loop should apply the Claude-CLI

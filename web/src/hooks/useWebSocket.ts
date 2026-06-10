@@ -172,6 +172,20 @@ function handleWsMessage(data: Record<string, unknown>) {
         type: "error",
         content: data.message as string,
       });
+      // A mid-turn 401 flagged the bound credential needs_reconnect server-side
+      // (harness-credential-reauth.md §6). Refetch credentials so the Harness
+      // sidebar lights up its "Re-authorize" badge without a manual reload.
+      if (data.code === "auth_expired") {
+        const t = getState().token;
+        if (t) {
+          fetch(`${window.location.origin}/api/credentials`, {
+            headers: { Authorization: `Bearer ${t}` },
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((creds) => creds && getState().setCredentials(creds))
+            .catch(() => {});
+        }
+      }
       break;
 
     case "bg_started": {

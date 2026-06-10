@@ -8,7 +8,12 @@ different endpoints, different UX — so this is not a forced single-shape
 needs so it resolves login via `get_harness(backend).login` instead of
 importing the managers directly and branching on backend kind:
 
-  - `start(label)`         begin a login; returns the manager's session
+  - `start(label, *, reauth_credential_id=None)`
+                           begin a login; returns the manager's session.
+                           `reauth_credential_id` re-authorizes an existing
+                           credential in place (device_code only — Claude
+                           carries its re-auth target on `submit_code`'s
+                           complete route instead). harness-credential-reauth.md §5
   - `submit_code(id,code)` oauth_redirect only — exchange the pasted code
   - `get(id)`              device_code only — poll the in-flight login
   - `cancel(id)`           abort (idempotent)
@@ -39,7 +44,9 @@ class LoginMethod(str, Enum):
 class LoginDriver(Protocol):
     method: LoginMethod
 
-    async def start(self, label: str | None = None) -> Any: ...
+    async def start(
+        self, label: str | None = None, *, reauth_credential_id: str | None = None
+    ) -> Any: ...
     async def submit_code(self, login_id: str, code: str) -> Any: ...
     def get(self, login_id: str) -> Any: ...
     async def cancel(self, login_id: str) -> None: ...

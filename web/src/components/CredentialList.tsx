@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconCheck, IconCopy, IconPlus, IconX } from "@tabler/icons-react";
+import {
+  IconCheck,
+  IconCopy,
+  IconPlus,
+  IconRefresh,
+  IconX,
+} from "@tabler/icons-react";
 import {
   useSessionStore,
   type CredentialInfo,
@@ -77,6 +83,11 @@ export function CredentialList() {
   const [label, setLabel] = useState("");
   const [code, setCode] = useState("");
   const [copiedCode, setCopiedCode] = useState(false);
+  // Set while re-authorizing an existing credential (harness-credential-reauth.md
+  // §5): threads the target id through the login flow so the backend updates
+  // that row in place + clears its needs_reconnect flag, instead of minting a
+  // new credential and stranding every binding on the dead one.
+  const [reauthId, setReauthId] = useState<string | null>(null);
 
   const headers = {
     "Content-Type": "application/json",
@@ -99,6 +110,16 @@ export function CredentialList() {
     fetchCredentials();
   }, [fetchCredentials]);
 
+  // Replace an existing credential (re-auth) or append a new one, off the
+  // freshest store state — works for both fresh sign-in and in-place re-auth.
+  const upsertCredential = (c: CredentialInfo) => {
+    const cur = useSessionStore.getState().credentials;
+    const idx = cur.findIndex((x) => x.id === c.id);
+    setCredentials(
+      idx >= 0 ? cur.map((x) => (x.id === c.id ? c : x)) : [...cur, c]
+    );
+  };
+
   // ----------------------------------------------------------- open / close
 
   const openChooser = () => {
@@ -113,7 +134,23 @@ export function CredentialList() {
     setLabel("");
     setCode("");
     setCopiedCode(false);
+    setReauthId(null);
     setFlow({ kind: "idle" });
+  };
+
+  // Re-authorize an existing (expired) credential: jump straight into its
+  // backend's login flow with the target id remembered, skipping the chooser.
+  const reauthCredential = (c: CredentialInfo) => {
+    setReauthId(c.id);
+    setLabel(c.label);
+    setCode("");
+    setCopiedCode(false);
+    setOpen(true);
+    if (c.backend === "claude-code") {
+      void startClaudeLogin();
+    } else {
+      void startCodexLogin(c.id, c.label);
+    }
   };
 
   // --------------------------------------------------------------- Claude OAuth
@@ -160,6 +197,9 @@ export function CredentialList() {
           login_id: loginId,
           code: code.trim(),
           label: label.trim(),
+          // Re-auth in place when set; the backend updates this row + clears
+          // its needs_reconnect flag instead of minting a new credential.
+          credential_id: reauthId,
         }),
       });
       if (!res.ok) {
@@ -170,7 +210,7 @@ export function CredentialList() {
         return;
       }
       const created: CredentialInfo = await res.json();
-      setCredentials([...credentials, created]);
+      upsertCredential(created);
       closeAndReset();
     } catch (e) {
       setFlow({ kind: "error", message: String(e) });
@@ -179,8 +219,12 @@ export function CredentialList() {
 
   // --------------------------------------------------------------- Codex device
 
-  const startCodexLogin = async () => {
-    if (!label.trim()) {
+  const startCodexLogin = async (
+    reauthCredentialId?: string,
+    labelOverride?: string
+  ) => {
+    const effectiveLabel = (labelOverride ?? label).trim();
+    if (!effectiveLabel) {
       setFlow({ kind: "error", message: "A label is required" });
       return;
     }
@@ -189,7 +233,10 @@ export function CredentialList() {
       const res = await fetch(`${API}/codex/start`, {
         method: "POST",
         headers,
-        body: JSON.stringify({ label: label.trim() }),
+        body: JSON.stringify({
+          label: effectiveLabel,
+          reauth_credential_id: reauthCredentialId ?? null,
+        }),
       });
       if (!res.ok) {
         setFlow({
@@ -229,10 +276,7 @@ export function CredentialList() {
             credential?: CredentialInfo | null;
           } = await res.json();
           if (body.state === "success" && body.credential) {
-            setCredentials([
-              ...useSessionStore.getState().credentials,
-              body.credential,
-            ]);
+            upsertCredential(body.credential);
             closeAndReset();
             return;
           }
@@ -335,16 +379,41 @@ export function CredentialList() {
               {c.backend === "claude-code" ? "Claude" : "Codex"}
             </span>
             <span className="credential-label truncate flex-1">{c.label}</span>
-            <span
-              className={`credential-badge auth-${c.auth_type} text-[10px] font-medium uppercase tracking-wider shrink-0 ${
-                c.auth_type === "oauth"
-                  ? "text-primary-700"
-                  : "text-sidebar-foreground/50"
-              }`}
-              title={c.auth_type === "oauth" ? "Signed in" : "API key"}
-            >
-              {c.auth_type === "oauth" ? "OAuth" : "Key"}
-            </span>
+            {c.needs_reconnect ? (
+              <>
+                {/* Reactive 401: the sign-in expired/was revoked mid-turn
+                    (harness-credential-reauth.md §6). Surface a re-authorize
+                    affordance, mirroring the connectors' reconnect button. */}
+                <span
+                  className="credential-badge auth-expired text-[10px] font-medium uppercase tracking-wider shrink-0 text-destructive"
+                  title={
+                    c.last_refresh_error_code
+                      ? `Sign-in invalid (${c.last_refresh_error_code})`
+                      : "Sign-in invalid"
+                  }
+                >
+                  expired
+                </span>
+                <button
+                  className="btn-credential-reauth inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider shrink-0 text-destructive hover:underline"
+                  onClick={() => reauthCredential(c)}
+                  title="Re-authorize this credential"
+                >
+                  <IconRefresh size={12} /> reauth
+                </button>
+              </>
+            ) : (
+              <span
+                className={`credential-badge auth-${c.auth_type} text-[10px] font-medium uppercase tracking-wider shrink-0 ${
+                  c.auth_type === "oauth"
+                    ? "text-primary-700"
+                    : "text-sidebar-foreground/50"
+                }`}
+                title={c.auth_type === "oauth" ? "Signed in" : "API key"}
+              >
+                {c.auth_type === "oauth" ? "OAuth" : "Key"}
+              </span>
+            )}
             <button
               className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10 hover:text-destructive"
               onClick={() => remove(c.id)}

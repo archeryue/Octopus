@@ -1,18 +1,19 @@
 """Real-CLI integration test for natural-language schedule parsing.
 
-Skipped unless the `claude` binary is on PATH (mirrors test_backend_*_real.py).
-Exercises the actual one-shot parse end-to-end — proves `harness.run_oneshot`
-+ JSON extraction + validation work against the live CLI, not just mocks."""
-
-import shutil
+Skipped unless the `claude` CLI is installed AND signed in (mirrors
+test_backend_*_real.py). Exercises the actual one-shot parse end-to-end —
+proves `harness.run_oneshot` + JSON extraction + validation work against the
+live CLI, not just mocks."""
 
 import pytest
 
+from tests.cli_gate import claude_cli_works
 from server.harness import get_harness
 from server.schedule_ai import parse_schedule_text
 
 pytestmark = pytest.mark.skipif(
-    shutil.which("claude") is None, reason="needs the claude CLI on PATH"
+    not claude_cli_works(),
+    reason="claude CLI unavailable or not signed in",
 )
 
 
