@@ -44,19 +44,23 @@ cross-backend composition. This is the sub-agent abstraction, done agnostically.
 For native Claude `Task` inside an Octopus turn:
 - **(a) keep-but-bound** — leave `Task` allowed, rely on Layer-1 (turn-safety:
   process-group reaping + idle/overall timeout) to bound and reap it. Preserves
-  a useful Claude capability; least disruptive. *(current lean)*
+  a useful Claude capability; least disruptive. **This is the de-facto current
+  state** now that Layer 1 has shipped (commit 5c95197 / turn-safety.md): `Task`
+  is not denied, and a runaway/hung fan-out is reaped + timed-out.
 - **(b) disable + route** — add `Task` to the default `tool_deny`, and steer all
   sub-agent work through Octopus delegations + the bounded sub-turn primitive.
   Fully agnostic and observable; loses Claude's in-context subagents.
 
-Recommendation to revisit: **(a)** first (Layer 1 makes it safe regardless),
-and treat delegations as the canonical sub-agent abstraction to invest in.
-Note: Layer 1 (turn-safety.md) makes (a) viable *and* underpins
-native-deep-research.md, so it lands first either way — this decision can wait.
+Recommendation: stay on **(a)** (Layer 1 already makes it safe), and treat
+delegations as the canonical sub-agent abstraction to invest in. Only switch to
+(b) if real usage shows native `Task` still causes trouble despite Layer 1.
 
-## 5. Why deferred
+## 5. Why deferred (status)
 
-Layer 1 + native deep research are the active builds and don't depend on
-resolving this. Native `Task` is already bounded once Layer 1 ships, so there's
-no urgency to pick (a) vs (b) now. Revisit after Layer 1, with real usage data
-on whether native `Task` causes further trouble.
+Both prerequisites this doc deferred behind have now **shipped**: Layer-1
+turn-safety (5c95197) and native deep research (7621818) — the latter's bounded,
+isolated *scoped sub-turn* (server/research/leaf.py) is exactly the "spawn a
+bounded sub-turn" primitive of §3.2, already proven on both backends. So native
+`Task` is already bounded (option (a) operative), and there's no urgency to pick
+(a) vs (b). Revisit only with real usage data, and — if we invest — by enriching
+delegations (§3.1: parallel fan-out, a sub-agent/preset library).
