@@ -1826,6 +1826,11 @@ class SessionManager:
             # Terminal-error signal for post-turn auth-expiry classification.
             saw_error_event = False
             error_event_text = ""
+            # Per-turn watchdog state (turn-safety.md §3): the watchdog stops a
+            # turn that goes silent (idle) or runs too long (overall) so it can
+            # never hang forever the way the deep-research wedge did.
+            watchdog_state = {"last": time.monotonic(), "tripped": None}
+            watchdog = self._start_turn_watchdog(backend, watchdog_state)
 
             try:
                 await backend.start(
@@ -1836,6 +1841,7 @@ class SessionManager:
                 )
 
                 async for event in backend.stream():
+                    watchdog_state["last"] = time.monotonic()
                     # session_started arrives on the CLI's init event,
                     # before any tool work. Persist the resume id
                     # immediately so the recovery path below can use
@@ -1910,6 +1916,12 @@ class SessionManager:
                             ws_event["seq"] = msg_seq
                         yield ws_event
             finally:
+                if watchdog is not None:
+                    watchdog.cancel()
+                    try:
+                        await watchdog
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 try:
                     await backend.stop()
                 except Exception:
@@ -1917,6 +1929,17 @@ class SessionManager:
                         "backend.stop() failed cleanly for session %s", session.id
                     )
                 session._backend = None
+
+            # Turn watchdog tripped (idle or overall cap): the backend was
+            # stopped mid-turn. Surface a clear error and STOP — before the
+            # auth/transient/premature-exit dispatch, so a timeout is never
+            # mis-read as transient or respawned. turn-safety.md §3.
+            if watchdog_state["tripped"] is not None:
+                reason, limit = watchdog_state["tripped"]
+                yield await self._surface_turn_timeout(
+                    session, reason=reason, limit=limit, backend=harness.backend
+                )
+                return
 
             # Reactive auth-expiry: a failed turn whose error text (terminal
             # event content/raw + the CLI's stderr) matches this backend's
@@ -2341,6 +2364,80 @@ class SessionManager:
         return new_ts.access_token
 
     _BACKEND_DISPLAY = {"claude-code": "Claude Code", "codex": "Codex"}
+
+    def _start_turn_watchdog(
+        self, backend: HarnessRun, state: dict[str, Any]
+    ) -> "asyncio.Task | None":
+        """Stop `backend` if the turn goes silent for `turn_idle_timeout_seconds`
+        or runs past `turn_max_seconds` (turn-safety.md §3). Returns the watchdog
+        task (or None if both checks are disabled). On a trip it records
+        `state["tripped"] = (reason, limit)` and calls `backend.stop()`, which
+        emits the stream-end sentinel so the run loop unblocks cleanly — no
+        generator cancellation. `state["last"]` is the caller-updated last-event
+        timestamp."""
+        idle = settings.turn_idle_timeout_seconds
+        overall = settings.turn_max_seconds
+        if idle <= 0 and overall <= 0:
+            return None
+        limits = [x for x in (idle, overall) if x and x > 0]
+        tick = min(5.0, max(0.05, min(limits) / 4))
+        started = time.monotonic()
+
+        async def _run() -> None:
+            while True:
+                await asyncio.sleep(tick)
+                now = time.monotonic()
+                if idle > 0 and now - state["last"] > idle:
+                    state["tripped"] = ("idle", idle)
+                elif overall > 0 and now - started > overall:
+                    state["tripped"] = ("overall", overall)
+                else:
+                    continue
+                logger.warning(
+                    "Session turn watchdog tripped (%s); stopping backend",
+                    state["tripped"][0],
+                )
+                try:
+                    await backend.stop()
+                except Exception:
+                    logger.exception("watchdog backend.stop() failed")
+                return
+
+        return asyncio.create_task(_run())
+
+    async def _surface_turn_timeout(
+        self, session: Session, *, reason: str, limit: int, backend: str
+    ) -> dict[str, Any]:
+        """Persist + return the error for a watchdog-stopped turn
+        (turn-safety.md §3)."""
+        display = self._BACKEND_DISPLAY.get(backend, backend)
+        if reason == "idle":
+            human = (
+                f"This turn was stopped after {limit}s with no activity from "
+                f"{display} — it looked wedged (e.g. a tool or sub-task that "
+                "never returned). Nothing was lost; try again, and consider "
+                "narrowing the task."
+            )
+        else:
+            human = (
+                f"This turn hit the {limit}s maximum duration and was stopped. "
+                "Try again or break the work into smaller steps."
+            )
+        seq = await self._persist_message(
+            session,
+            MessageContent(
+                role=MessageRole.system, type="error", content=human, is_error=True
+            ),
+        )
+        event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session.id,
+            "message": human,
+            "code": "turn_timeout",
+        }
+        if seq is not None:
+            event["seq"] = seq
+        return event
 
     async def _surface_auth_expiry(
         self, session: Session, *, cred_id: str | None, backend: str

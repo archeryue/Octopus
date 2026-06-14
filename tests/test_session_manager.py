@@ -1737,3 +1737,143 @@ async def test_transient_error_after_output_does_not_retry(manager, monkeypatch)
 
     assert not any(e.get("code") in ("transient_retry", "transient_exhausted")
                    for e in events)
+
+
+# --------------------------------------------------------------- turn watchdog
+# turn-safety.md §3: a turn that goes silent (idle) or runs too long is stopped
+# and surfaced, instead of hanging forever (the deep-research wedge).
+
+
+class _StallBackend:
+    """Yields `pre` events then blocks forever — until stop() unblocks it.
+    Models a wedged turn (no terminal result)."""
+
+    def __init__(self, pre=None):
+        self.pre = list(pre or [])
+        self.stopped = False
+        self.stderr_text = ""
+        self._unblock = asyncio.Event()
+
+    async def start(self, *args, **kwargs):
+        pass
+
+    def stream(self):
+        async def _gen():
+            for e in self.pre:
+                yield e
+            await self._unblock.wait()  # stall until stop()
+        return _gen()
+
+    async def stop(self):
+        self.stopped = True
+        self._unblock.set()
+
+
+@pytest.mark.asyncio
+async def test_turn_idle_timeout_stops_and_surfaces(manager, monkeypatch):
+    from server.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "turn_idle_timeout_seconds", 0.2)
+    monkeypatch.setattr(cfg, "turn_max_seconds", 0)
+    session = await _new(manager, "Stall")
+    backend = _StallBackend()
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: backend)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert any(e.get("code") == "turn_timeout" for e in events)
+    assert backend.stopped is True
+
+
+@pytest.mark.asyncio
+async def test_fast_turn_not_killed_by_watchdog(manager, monkeypatch):
+    from server.config import settings as cfg
+    from server.harness import HarnessEvent
+
+    monkeypatch.setattr(cfg, "turn_idle_timeout_seconds", 5)
+    session = await _new(manager, "Fast")
+    backend = _FakeBackend(
+        events=[HarnessEvent(type="result", is_error=False, session_id="s1")]
+    )
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: backend)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert not any(e.get("code") == "turn_timeout" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_does_not_trigger_premature_exit_respawn(manager, monkeypatch):
+    """A timed-out turn must return BEFORE the premature-exit "continue" respawn
+    — even with the respawn preconditions (tool_use seen + a resume id) met."""
+    from server.config import settings as cfg
+    from server.harness import HarnessEvent
+
+    monkeypatch.setattr(cfg, "turn_idle_timeout_seconds", 0.2)
+    monkeypatch.setattr(cfg, "turn_max_seconds", 0)
+    session = await _new(manager, "StallTool")  # claude-code → premature recovery on
+    backend = _StallBackend(pre=[
+        HarnessEvent(type="session_started", session_id="resume-1"),
+        HarnessEvent(type="tool_use", tool_name="Bash", tool_input={}, tool_use_id="t1"),
+    ])
+    calls = {"n": 0}
+
+    def factory(*a, **k):
+        calls["n"] += 1
+        return backend
+
+    monkeypatch.setattr(manager, "_make_run", factory)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert any(e.get("code") == "turn_timeout" for e in events)
+    assert calls["n"] == 1  # not respawned with "continue"
+
+
+class _DripBackend:
+    """Yields a text event every `interval`s forever (so idle keeps resetting),
+    until stop() unblocks it — to prove the OVERALL cap trips on a steadily-
+    alive turn."""
+
+    def __init__(self, interval=0.05):
+        self.interval = interval
+        self.stopped = False
+        self.stderr_text = ""
+        self._unblock = asyncio.Event()
+
+    async def start(self, *args, **kwargs):
+        pass
+
+    def stream(self):
+        from server.harness import HarnessEvent
+
+        async def _gen():
+            while not self._unblock.is_set():
+                yield HarnessEvent(type="text", content="…")
+                try:
+                    await asyncio.wait_for(self._unblock.wait(), timeout=self.interval)
+                except asyncio.TimeoutError:
+                    pass
+        return _gen()
+
+    async def stop(self):
+        self.stopped = True
+        self._unblock.set()
+
+
+@pytest.mark.asyncio
+async def test_turn_overall_cap_trips_even_with_steady_events(manager, monkeypatch):
+    from server.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "turn_idle_timeout_seconds", 5)   # idle never trips
+    monkeypatch.setattr(cfg, "turn_max_seconds", 0.3)          # overall does
+    session = await _new(manager, "Drip")
+    backend = _DripBackend()
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: backend)
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    timeout = next((e for e in events if e.get("code") == "turn_timeout"), None)
+    assert timeout is not None
+    assert "maximum duration" in timeout["message"]  # the overall-cap message
+    assert backend.stopped is True

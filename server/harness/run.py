@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -96,7 +97,36 @@ def prepare_spawn(
     env = kwargs.get("env") or os.environ.copy()
     cli_dir = os.path.dirname(argv[0]) if argv and os.path.isabs(argv[0]) else None
     env["PATH"] = augmented_path(env.get("PATH"), cli_dir)
-    return argv, {**kwargs, "env": env}
+    # Own process group (session leader) so the whole tree the CLI spawns —
+    # MCP servers, nested subagents (Claude `Task`/Workflow) — is reapable as a
+    # unit via killpg, instead of orphaning on stop()/interrupt()
+    # (turn-safety.md §2). Shared by the streaming engine and run_oneshot.
+    # bg_tasks / codex_login already do this.
+    return argv, {**kwargs, "env": env, "start_new_session": True}
+
+
+def _terminate_process_group(proc: "asyncio.subprocess.Process", sig: int) -> bool:
+    """Signal the whole process group led by `proc` (so nested CLI children die
+    with it), falling back to the direct child if the group can't be resolved.
+    Returns True if a group signal was sent. Idempotent / best-effort —
+    swallows the races where the process already exited (turn-safety.md §2)."""
+    if proc.returncode is not None:
+        return False
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        pgid = None
+    if pgid is not None:
+        try:
+            os.killpg(pgid, sig)
+            return True
+        except (ProcessLookupError, PermissionError):
+            return False
+    try:
+        proc.send_signal(sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return False
 
 
 def parse_json_line(line: str) -> dict[str, Any] | None:
@@ -271,19 +301,16 @@ class HarnessRun:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
             except asyncio.TimeoutError:
-                logger.warning("CLI didn't exit on stdin close, terminating")
-                try:
-                    proc.terminate()
-                except ProcessLookupError:
-                    pass
+                # Escalate to the whole process GROUP so nested CLI children
+                # (MCP servers, subagents) die too, not just the direct child
+                # (turn-safety.md §2).
+                logger.warning("CLI didn't exit on stdin close, terminating group")
+                _terminate_process_group(proc, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=2.0)
                 except asyncio.TimeoutError:
-                    logger.warning("CLI didn't exit on SIGTERM, killing")
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
+                    logger.warning("CLI didn't exit on SIGTERM, killing group")
+                    _terminate_process_group(proc, signal.SIGKILL)
                     await proc.wait()
 
         for task in (self._stdout_task, self._stderr_task):

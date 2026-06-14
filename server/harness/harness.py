@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 
 from .events import HarnessOneshotError
 from .login import LoginDriver
@@ -165,7 +166,17 @@ class Harness:
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            proc.kill()
+            # Reap the whole group (run_oneshot is tool-free, but it's a session
+            # leader via prepare_spawn — kill the group, not just the leader, so
+            # nothing lingers). turn-safety.md §2.
+            from .run import _terminate_process_group
+
+            _terminate_process_group(proc, signal.SIGKILL)
+            # Reap the killed leader so it can't linger as a zombie (Vera review).
+            try:
+                await proc.wait()
+            except Exception:
+                logger.debug("run_oneshot proc.wait() after kill failed", exc_info=True)
             raise HarnessOneshotError("timeout", "one-shot call timed out")
         if proc.returncode != 0:
             logger.warning(

@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     # where no human will ever see the prompt). 0 disables auto-answer.
     ask_user_question_timeout_seconds: int = 1800
 
+    # Per-turn safety watchdog (turn-safety.md §3). A turn that emits no harness
+    # event for `turn_idle_timeout_seconds`, or that runs longer than
+    # `turn_max_seconds` overall, is stopped and surfaced as an error instead of
+    # hanging forever (the deep-research wedge). Idle is generous — a single web
+    # sub-turn can legitimately take tens of seconds. 0 disables that check.
+    turn_idle_timeout_seconds: int = 300
+    turn_max_seconds: int = 1800
+
     # Connectors (connectors.md §7). The public base URL is what connector
     # OAuth redirect URIs are built against; behind a tunnel it must be set
     # to the stable public host. Unset → computed as http://127.0.0.1:{port}.

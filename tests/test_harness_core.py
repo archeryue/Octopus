@@ -393,3 +393,51 @@ def test_is_transient_error_excludes_quota_and_auth():
     ):
         assert not c.is_transient_error(blob), blob
         assert not x.is_transient_error(blob), blob
+
+
+# --------------------------------------------------------------- process-group reaping
+# turn-safety.md §2: turns spawn in their own process group so nested children
+# (MCP servers / subagents) are reaped as a unit, not orphaned.
+
+
+def test_prepare_spawn_sets_session_leader():
+    from server.harness.run import prepare_spawn
+
+    _, kwargs = prepare_spawn(["sh", "-c", "true"], {})
+    assert kwargs.get("start_new_session") is True
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_group_reaps_children(tmp_path):
+    """Killing the group must take down a CHILD the spawned process started —
+    the orphan leak the old direct-child kill() left behind."""
+    import os
+    import signal as _signal
+    from server.harness.run import _terminate_process_group, prepare_spawn
+
+    def _alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    # Parent starts a backgrounded `sleep`, prints its pid, then waits — so the
+    # child shares the parent's new process group.
+    argv, kwargs = prepare_spawn(
+        ["sh", "-c", "sleep 30 & echo $!; wait"], {}
+    )
+    proc = await asyncio.create_subprocess_exec(
+        *argv, stdout=asyncio.subprocess.PIPE, **kwargs
+    )
+    child_pid = int((await proc.stdout.readline()).strip())
+    assert _alive(child_pid)
+
+    sent_group = _terminate_process_group(proc, _signal.SIGKILL)
+    await proc.wait()
+    for _ in range(50):  # let the kernel reap the child
+        if not _alive(child_pid):
+            break
+        await asyncio.sleep(0.02)
+    assert sent_group is True
+    assert not _alive(child_pid), "child process was orphaned, not reaped"
