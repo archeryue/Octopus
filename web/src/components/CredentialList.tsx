@@ -631,7 +631,7 @@ export function CredentialList() {
             {flow.kind === "codex_label" && (
               <Button
                 className="btn-codex-start"
-                onClick={startCodexLogin}
+                onClick={() => startCodexLogin()}
                 disabled={!label.trim()}
               >
                 Continue

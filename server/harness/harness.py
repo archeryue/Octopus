@@ -163,21 +163,32 @@ class Harness:
             )
         except FileNotFoundError:
             raise HarnessOneshotError("not_found", f"{self.profile.binary} CLI not found")
+        from .run import _terminate_process_group
+
+        def _reap() -> None:
+            # Kill the whole group (run_oneshot is a session leader via
+            # prepare_spawn) so nothing lingers. turn-safety.md §2.
+            _terminate_process_group(proc, signal.SIGKILL)
+
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            # Reap the whole group (run_oneshot is tool-free, but it's a session
-            # leader via prepare_spawn — kill the group, not just the leader, so
-            # nothing lingers). turn-safety.md §2.
-            from .run import _terminate_process_group
-
-            _terminate_process_group(proc, signal.SIGKILL)
-            # Reap the killed leader so it can't linger as a zombie (Vera review).
+            _reap()
             try:
-                await proc.wait()
+                await proc.wait()  # reap the killed leader (no zombie)
             except Exception:
                 logger.debug("run_oneshot proc.wait() after kill failed", exc_info=True)
             raise HarnessOneshotError("timeout", "one-shot call timed out")
+        except asyncio.CancelledError:
+            # Job cancelled (or the job-level wait_for expired) while we were in
+            # communicate() — reap the group too, else the CLI orphans (Vera
+            # review). Best-effort wait, then propagate the cancellation.
+            _reap()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except Exception:
+                pass
+            raise
         if proc.returncode != 0:
             logger.warning(
                 "%s one-shot exited %s: %s",

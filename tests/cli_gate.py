@@ -58,8 +58,28 @@ def claude_cli_works() -> bool:
 
 @functools.lru_cache(maxsize=1)
 def codex_cli_works() -> bool:
-    """True only if `codex` is installed AND has a logged-in ChatGPT session
-    (`~/.codex/auth.json`) — the same signal test_backend_codex_real.py uses."""
-    if _resolve_cli("codex") is None:
+    """True only if `codex` is installed AND actually authenticated. A present
+    `~/.codex/auth.json` is NOT sufficient — its token can be invalidated while
+    the file lingers (a real 401 we hit in practice). So we probe with a tiny
+    real `codex exec`, exactly like the claude gate; a logged-out CLI exits
+    non-zero, so dependent tests skip rather than hollow-pass/fail."""
+    exe = _resolve_cli("codex")
+    if exe is None:
         return False
-    return os.path.exists(os.path.expanduser("~/.codex/auth.json"))
+    import tempfile
+
+    try:
+        proc = subprocess.run(
+            [
+                exe, "exec", "--json", "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox", "--", "Reply with OK.",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            cwd=tempfile.gettempdir(),
+            timeout=90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # A 401 / invalidated token exits non-zero and prints the auth error.
+    return proc.returncode == 0

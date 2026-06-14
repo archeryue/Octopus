@@ -38,6 +38,21 @@ class McpServerEntry:
     env: dict[str, str]
 
 
+@dataclass(frozen=True)
+class WebCapability:
+    """How a backend does web search/fetch, for native deep research
+    (native-deep-research.md §4). A profile with `web = None` has no web tools,
+    so deep research is unavailable on it (gated like `can_fork`).
+
+    `tool_names` are the backend's native web tool identifiers (Claude:
+    WebSearch/WebFetch; Codex: web_search) — used to allow them on a research
+    leaf and to recognize web activity in the event stream. `combined` marks a
+    single search-and-read tool (Codex) vs separate search + fetch (Claude)."""
+
+    tool_names: tuple[str, ...]
+    combined: bool = False
+
+
 @dataclass
 class TurnContext:
     """Fully-assembled, neutral inputs for one turn — what `build_turn_argv`
@@ -56,6 +71,11 @@ class TurnContext:
     # Per-agent native memory (docs/plans/memory.md): the canonical markdown
     # dir both harnesses point at. None when there's no owning agent.
     memory_dir: str | None = None
+    # Native-deep-research web leaf (native-deep-research.md §4): when True, the
+    # profile renders a SCOPED, read-only-ish turn that enables the backend's
+    # web tools and forbids destructive/fan-out tools (no Bash/Write/subagents),
+    # so a throwaway research leaf can search the web but can't touch the box.
+    web_research: bool = False
 
 
 @dataclass
@@ -130,6 +150,9 @@ class RuntimeProfile:
     # as an expired/invalid credential; `Harness.is_auth_error` matches them.
     # Empty tuple = no reactive auth detection for this backend.
     auth_error_patterns: tuple[str, ...] = ()
+    # Web search/fetch capability for native deep research (§4); None = the
+    # backend has no web tools, so research is gated off on it.
+    web: "WebCapability | None" = None
     # Lowercased substrings that identify a TRANSIENT provider-reliability
     # failure (5xx / overloaded / dropped connection / timeout) in this
     # backend's CLI error output (harness-transient-retry.md §3). A failed

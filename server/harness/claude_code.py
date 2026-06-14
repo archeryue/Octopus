@@ -30,6 +30,7 @@ from .profile import (
     ParseOutput,
     RuntimeProfile,
     TurnContext,
+    WebCapability,
 )
 from .registry import register
 
@@ -171,6 +172,14 @@ def _apply_env_credential(env: dict[str, str], credential: HarnessCredential | N
 # ------------------------------------------------------------------ turn argv
 
 
+# Tools a deep-research web leaf must NOT have: anything that writes/executes
+# on the host, or spawns nested subagents (which would recurse the very fan-out
+# we're orchestrating). native-deep-research.md §4.
+_CLAUDE_WEB_LEAF_DENY = (
+    "Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "Task",
+)
+
+
 def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
     """Render a `claude --print` command for one turn (VM0 shape).
 
@@ -189,6 +198,15 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         }
     )
     disallowed = ["AskUserQuestion", *(ctx.tool_deny or [])]
+    if ctx.web_research:
+        # A research leaf may search/read the web but must not touch the box or
+        # fan out its own subagents (native-deep-research.md §4). Deny the
+        # destructive/exec + subagent tools; WebSearch/WebFetch/Read/etc. stay
+        # available. (--allowedTools semantics vary with skip-permissions, so we
+        # use a denylist, which is unambiguous.)
+        disallowed += [
+            t for t in _CLAUDE_WEB_LEAF_DENY if t not in disallowed
+        ]
 
     argv = [
         "claude",
@@ -467,8 +485,11 @@ _CLAUDE_AUTH_ERROR_PATTERNS = (
 
 # Transient provider-reliability failures worth an automatic retry
 # (harness-transient-retry.md §3). Server-side 5xx / overload / dropped
-# connection only — deliberately NO "rate limit" / "429" / "quota" / "credit"
-# (those are the user's limit, not a blip) and no auth phrases (handled above).
+# connection — plus Anthropic's SERVER-side throttle, which the CLI annotates
+# "(not your usage limit)". We still must NOT retry the user's OWN quota/usage
+# limit, so we match the throttle by its specific phrasing ("temporarily
+# limiting requests", "not your usage limit") rather than a bare "rate limit"
+# (which also appears in the user's-limit message). No auth phrases here.
 _CLAUDE_TRANSIENT_ERROR_PATTERNS = (
     "overloaded",
     "api error: 500",
@@ -487,6 +508,9 @@ _CLAUDE_TRANSIENT_ERROR_PATTERNS = (
     "timed out",
     "the server had an error",
     "stream disconnected",
+    # Server-side throttle (NOT the user's usage limit) — retryable.
+    "temporarily limiting requests",
+    "not your usage limit",
 )
 
 
@@ -498,6 +522,7 @@ CLAUDE_CODE = RuntimeProfile(
     premature_exit_recovery=True,
     auth_error_patterns=_CLAUDE_AUTH_ERROR_PATTERNS,
     transient_error_patterns=_CLAUDE_TRANSIENT_ERROR_PATTERNS,
+    web=WebCapability(tool_names=("WebSearch", "WebFetch"), combined=False),
     # Close stdin right after spawn. `claude --print` takes its prompt from
     # argv (`-- <prompt>`) and never reads stdin, so leaving the pipe open made
     # the CLI wait ~3s ("no stdin data received in 3s") on every turn AND —

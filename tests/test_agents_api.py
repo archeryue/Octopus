@@ -59,7 +59,7 @@ async def test_default_agent_present(client):
     # agent-collaboration.md §5.1). ask_agent landed alongside the
     # collaboration feature; the migration backfills it into any
     # pre-existing agent rows too.
-    assert system[0]["mcp_servers"] == ["ask", "bg", "ask_agent"]
+    assert system[0]["mcp_servers"] == ["ask", "bg", "ask_agent", "research"]
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@ import {
   type SessionInfo,
 } from "../stores/sessionStore";
 import { ForkDialog } from "./ForkDialog";
+import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
@@ -564,6 +565,59 @@ export function ChatView({
       return;
     }
 
+    // /research command — kick off an Octopus-native deep-research job
+    // (native-deep-research.md §7). Returns immediately with a job id; the
+    // progress shows in a ResearchCard and the cited report arrives as a turn.
+    if (lower === "/research" || lower.startsWith("/research ")) {
+      setInput("");
+      const store = useSessionStore.getState();
+      const sid = activeSessionId;
+      const addNotice = (content: string, isError = false) =>
+        store.addMessage(sid, { role: "system", type: "notice", content, is_error: isError });
+      const question = trimmed.slice("/research".length).trim();
+      if (!question) {
+        addNotice("Usage: /research <question>", true);
+        return;
+      }
+      store.addMessage(sid, { role: "user", type: "text", content: trimmed });
+      addNotice(`🔎 Starting deep research: “${question}”…`);
+      try {
+        const res = await fetch(
+          `${window.location.origin}/api/sessions/${sid}/research`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${store.token}`,
+            },
+            body: JSON.stringify({ question }),
+          }
+        );
+        if (!res.ok) {
+          let detail = `Couldn't start research (HTTP ${res.status}).`;
+          try {
+            const body = await res.json();
+            if (typeof body?.detail === "string") detail = body.detail;
+          } catch {
+            /* keep generic */
+          }
+          addNotice(detail, true);
+          return;
+        }
+        const job = await res.json();
+        store.upsertResearch(sid, {
+          id: job.id,
+          session_id: sid,
+          question,
+          status: "running",
+          phase: job.phase ?? "scope",
+        });
+      } catch {
+        addNotice("Couldn't start research — network error.", true);
+      }
+      return;
+    }
+
     // /remember command — persist a note to the agent's long-term memory.
     // Harness-agnostic: we send a memory-writing instruction as a normal
     // turn, and the session's agent (Claude or Codex) writes it using its
@@ -1024,6 +1078,12 @@ export function ChatView({
       {isWaitingForResponse && (
         <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
           {agentLabel} is waiting for your response
+        </div>
+      )}
+
+      {activeSessionId && (
+        <div className="research-card-wrap shrink-0 px-4 empty:hidden">
+          <ResearchCard sessionId={activeSessionId} />
         </div>
       )}
 

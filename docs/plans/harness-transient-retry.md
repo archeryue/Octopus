@@ -46,6 +46,16 @@ server error", "service unavailable", "bad gateway", "529", "connection
 reset", "timed out", "stream error", …), chosen narrow after Vera's note
 that broad tokens (a bare "unauthorized") cause false positives.
 
+**Server-side throttle vs. the user's usage limit.** Anthropic emits a
+server-side throttle as "Server is temporarily limiting requests (**not your
+usage limit**) · Rate limited" — a transient blip that SHOULD retry, despite
+containing "Rate limited". We must still NOT retry the user's *own* quota /
+usage limit. So we match the throttle on its specific phrasing
+("temporarily limiting requests", "not your usage limit") rather than a bare
+"rate limit" / "429" (which also appears in the user's-limit message, and
+stays non-retryable). This was a real miss: the bare-"rate limit" exclusion
+swallowed the server throttle and stopped the turn instead of retrying.
+
 ## 4. Retry in the run loop (`session_manager._run_backend`)
 
 The retry slots into the existing post-turn dispatch, BEFORE the

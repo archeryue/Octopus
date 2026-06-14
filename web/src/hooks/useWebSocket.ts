@@ -4,6 +4,7 @@ import {
   type BgTask,
   type Message,
   type PendingQuestion,
+  type ResearchJob,
   type SessionStatus,
 } from "../stores/sessionStore";
 
@@ -228,6 +229,47 @@ function handleWsMessage(data: Record<string, unknown>) {
       break;
     }
 
+    case "research_started": {
+      getState().upsertResearch(sessionId, {
+        id: data.research_id as string,
+        session_id: sessionId,
+        question: data.question as string,
+        status: "running",
+        phase: "scope",
+      });
+      break;
+    }
+
+    case "research_progress": {
+      getState().upsertResearch(sessionId, {
+        id: data.research_id as string,
+        phase: (data.phase as string) ?? null,
+        detail: data.detail as string,
+        counts: (data.counts as Record<string, number>) ?? undefined,
+      });
+      break;
+    }
+
+    case "research_completed": {
+      getState().upsertResearch(sessionId, {
+        id: data.research_id as string,
+        status: "completed",
+        phase: "done",
+        sources: (data.sources as string[]) ?? undefined,
+        verified: (data.verified as number) ?? undefined,
+      });
+      break;
+    }
+
+    case "research_failed": {
+      getState().upsertResearch(sessionId, {
+        id: data.research_id as string,
+        status: (data.status as ResearchJob["status"]) ?? "failed",
+        error: (data.error as string) ?? null,
+      });
+      break;
+    }
+
     case "session_archived": {
       // Another client (or this tab's archive POST) hid the old
       // session and replaced it with new_session_id. Update the
@@ -338,6 +380,18 @@ export function useWebSocket() {
               .then((r) => (r.ok ? r.json() : null))
               .then((tasks) => {
                 if (tasks) getState().setBgTasks(activeSessionId, tasks);
+              })
+              .catch(() => {});
+            // Research jobs: same reconnect reload, so an in-flight job's card
+            // (and recently-finished ones) reappear without a missed
+            // `research_started` (native-deep-research.md §7).
+            fetch(
+              `${window.location.origin}/api/sessions/${activeSessionId}/research`,
+              { headers: { Authorization: `Bearer ${t}` } }
+            )
+              .then((r) => (r.ok ? r.json() : null))
+              .then((jobs) => {
+                if (jobs) getState().setResearch(activeSessionId, jobs);
               })
               .catch(() => {});
           }

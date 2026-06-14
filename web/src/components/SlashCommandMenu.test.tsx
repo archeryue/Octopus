@@ -55,9 +55,10 @@ describe("filterSlashCommands", () => {
     expect(filterSlashCommands("/rem").map((c) => c.name)).toEqual([
       "/remember",
     ]);
-    // Both /remember and /reset share the /re prefix; list order is preserved.
+    // /remember, /research and /reset share the /re prefix; order preserved.
     expect(filterSlashCommands("/re").map((c) => c.name)).toEqual([
       "/remember",
+      "/research",
       "/reset",
     ]);
   });

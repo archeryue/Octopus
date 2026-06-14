@@ -29,6 +29,7 @@ from .profile import (
     ParseOutput,
     RuntimeProfile,
     TurnContext,
+    WebCapability,
 )
 from .registry import register
 
@@ -130,14 +131,21 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         "codex",
         "exec",
         "--json",
-        # Analog of Claude's --dangerously-skip-permissions.
-        "--dangerously-bypass-approvals-and-sandbox",
         "--skip-git-repo-check",
         "-C",
         ctx.working_dir,
         "-c",
         f"developer_instructions={_toml_basic_string(ctx.system_prompt)}",
     ]
+    if ctx.web_research:
+        # A research leaf: enable codex's native web_search and run READ-ONLY so
+        # it can search the web but can't write/exec on the host — codex's
+        # honest equivalent of Claude's web-leaf denylist (no per-tool allowlist
+        # exists). native-deep-research.md §4.
+        argv += ["--sandbox", "read-only", "-c", "tools.web_search=true"]
+    else:
+        # Analog of Claude's --dangerously-skip-permissions for a full turn.
+        argv += ["--dangerously-bypass-approvals-and-sandbox"]
     argv += _mcp_config_args(ctx)
     if ctx.model:
         argv += ["-m", ctx.model]
@@ -512,6 +520,9 @@ _CODEX_TRANSIENT_ERROR_PATTERNS = (
     "stream disconnected",
     "request timed out",
     "timed out",
+    # Server-side throttle (NOT the user's usage limit) — retryable.
+    "temporarily limiting requests",
+    "not your usage limit",
 )
 
 
@@ -523,6 +534,9 @@ CODEX = RuntimeProfile(
     premature_exit_recovery=False,
     auth_error_patterns=_CODEX_AUTH_ERROR_PATTERNS,
     transient_error_patterns=_CODEX_TRANSIENT_ERROR_PATTERNS,
+    # Single combined search-and-read tool, enabled per-leaf via the
+    # web_research render path (-c tools.web_search=true). native-deep-research.md §4.
+    web=WebCapability(tool_names=("web_search",), combined=True),
     close_stdin_after_start=True,
     build_turn_argv=build_turn_argv,
     new_event_parser=CodexEventParser,

@@ -26,6 +26,7 @@ from .profile import (
     RuntimeProfile,
     TranscriptCodec,
     TurnContext,
+    WebCapability,
 )
 from .registry import (
     DEFAULT_BACKEND,
@@ -46,6 +47,7 @@ __all__ = [
     "RunConfig",
     "RuntimeProfile",
     "TurnContext",
+    "WebCapability",
     "OneShotContext",
     "McpServerEntry",
     "EventParser",

@@ -201,7 +201,7 @@ def test_callback_env_has_session_id_when_present():
 def test_select_mcp_servers_all_by_default():
     env = assembly.build_callback_env("s")
     entries = assembly.select_mcp_servers(None, [], env)
-    assert [e.key for e in entries] == ["bg", "ask", "ask_agent"]
+    assert [e.key for e in entries] == ["bg", "ask", "ask_agent", "research"]
     bg = next(e for e in entries if e.key == "bg")
     assert bg.env["OCTOPUS_SESSION_ID"] == "s"
     ask_agent_entry = next(e for e in entries if e.key == "ask_agent")
@@ -388,11 +388,24 @@ def test_is_transient_error_excludes_quota_and_auth():
         "429 too many requests",
         "you have insufficient quota",
         "billing: credit balance is too low",
+        "you have reached your usage limit",   # the USER's limit — not retryable
         "API Error: 401 Invalid authentication credentials",
         "invalid x-api-key",
     ):
         assert not c.is_transient_error(blob), blob
         assert not x.is_transient_error(blob), blob
+
+
+def test_is_transient_error_retries_server_side_throttle():
+    """The server-side throttle Anthropic marks "(not your usage limit)" IS a
+    transient blip and must retry — even though it says "Rate limited". Keying
+    on the specific phrasing distinguishes it from the user's own usage limit."""
+    c = get_harness("claude-code")
+    msg = (
+        "API Error: Server is temporarily limiting requests "
+        "(not your usage limit) · Rate limited"
+    )
+    assert c.is_transient_error(msg)
 
 
 # --------------------------------------------------------------- process-group reaping
@@ -441,3 +454,35 @@ async def test_terminate_process_group_reaps_children(tmp_path):
         await asyncio.sleep(0.02)
     assert sent_group is True
     assert not _alive(child_pid), "child process was orphaned, not reaped"
+
+
+@pytest.mark.asyncio
+async def test_run_oneshot_reaps_group_on_cancel(monkeypatch):
+    """Cancelling a run_oneshot mid-flight must reap its process group, not
+    orphan the CLI (Vera review). We spy on the group-kill helper."""
+    import signal as _signal
+    import server.harness.run as run_mod
+
+    calls: list[int] = []
+    real = run_mod._terminate_process_group
+
+    def spy(proc, sig):
+        calls.append(sig)
+        return real(proc, sig)
+
+    monkeypatch.setattr(run_mod, "_terminate_process_group", spy)
+
+    def build_oneshot_argv(ctx):
+        return ([sys.executable, "-c", "import time; time.sleep(30)"], {})
+
+    profile = RuntimeProfile(
+        **{**_stream_profile().__dict__, "build_oneshot_argv": build_oneshot_argv}
+    )
+    task = asyncio.create_task(
+        Harness(profile).run_oneshot(OneShotContext(prompt="x"), timeout=30)
+    )
+    await asyncio.sleep(0.4)  # let the subprocess spawn
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _signal.SIGKILL in calls

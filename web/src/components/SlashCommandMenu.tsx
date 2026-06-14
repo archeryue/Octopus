@@ -5,6 +5,7 @@ import {
   IconFile,
   IconGitFork,
   IconRefresh,
+  IconWorldSearch,
 } from "@tabler/icons-react";
 import { cn } from "../lib/utils";
 
@@ -33,6 +34,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     hint: "<text>",
     description: "Save a note to the agent's long-term memory",
     Icon: IconBrain,
+  },
+  {
+    name: "/research",
+    hint: "<question>",
+    description: "Deep research — fan-out web search + a cited report",
+    Icon: IconWorldSearch,
   },
   {
     name: "/showme",

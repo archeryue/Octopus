@@ -24,6 +24,7 @@ from server.harness.profile import OneShotContext, TurnContext
 def _assemble_ctx(
     *, prompt, wd, resume, credential, model=None, mcp_servers=None,
     tool_allow=None, tool_deny=None, persona=None, session_id=None, connectors=(),
+    web_research=False,
 ) -> TurnContext:
     abs_wd = str(Path(wd).resolve())
     cb = assembly.build_callback_env(session_id)
@@ -32,8 +33,22 @@ def _assemble_ctx(
     return TurnContext(
         prompt=prompt, working_dir=abs_wd, resume_id=resume, system_prompt=sysp,
         model=model, tool_allow=tool_allow, tool_deny=tool_deny,
-        mcp_servers=entries, credential=credential,
+        mcp_servers=entries, credential=credential, web_research=web_research,
     )
+
+
+def test_turn_argv_web_research_denies_destructive_tools(tmp_path):
+    """A research web leaf must forbid host-touching / subagent tools so it can
+    only search+read the web (native-deep-research.md §4)."""
+    ctx = _assemble_ctx(
+        prompt="research", wd=str(tmp_path), resume=None, credential=None,
+        web_research=True,
+    )
+    argv, _ = build_turn_argv(ctx)
+    denied = argv[argv.index("--disallowedTools") + 1].split(",")
+    for t in ("Bash", "Write", "Edit", "Task"):
+        assert t in denied
+    assert "WebSearch" not in denied and "WebFetch" not in denied  # web stays
 
 
 def test_turn_argv_full_config(tmp_path):

@@ -84,10 +84,10 @@ async def test_backfill_from_old_schema(tmp_path):
         assert len(system) == 1
         default = system[0]
         assert default["name"] == "Octo"
-        # The ask_agent backfill (agent-collaboration.md §5.1) runs
-        # alongside the other migrations and is appended to every
-        # existing agent's mcp_servers list. Order preserved.
-        assert default["mcp_servers"] == ["ask", "bg", "ask_agent"]
+        # The built-in backfill (agent-collaboration.md §5.1 ask_agent;
+        # native-deep-research.md §7 research) runs alongside the other
+        # migrations and appends to every existing agent's mcp_servers list.
+        assert default["mcp_servers"] == ["ask", "bg", "ask_agent", "research"]
 
         # Session backfilled onto it, origin defaults to 'user', backend to
         # claude-code (codex-backend.md §4.1 migration).

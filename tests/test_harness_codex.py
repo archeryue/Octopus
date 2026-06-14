@@ -20,15 +20,32 @@ from server.harness.events import HarnessCredential
 from server.harness.profile import OneShotContext, TurnContext
 
 
-def _assemble_ctx(*, prompt, wd, resume, credential, model=None, mcp_servers=None, persona=None, session_id=None):
+def _assemble_ctx(*, prompt, wd, resume, credential, model=None, mcp_servers=None, persona=None, session_id=None, web_research=False):
     abs_wd = str(Path(wd).resolve())
     cb = assembly.build_callback_env(session_id)
     entries = assembly.select_mcp_servers(mcp_servers, [], cb)
     sysp = assembly.compose_system_prompt(persona, _OCTOPUS_SYSTEM_PROMPT_CODEX, [])
     return TurnContext(
         prompt=prompt, working_dir=abs_wd, resume_id=resume, system_prompt=sysp,
-        model=model, tool_allow=None, tool_deny=None, mcp_servers=entries, credential=credential,
+        model=model, tool_allow=None, tool_deny=None, mcp_servers=entries,
+        credential=credential, web_research=web_research,
     )
+
+
+def test_turn_argv_web_research_uses_readonly_sandbox_and_web_search(tmp_path):
+    """A research web leaf runs codex READ-ONLY with web_search enabled — no
+    destructive bypass (native-deep-research.md §4)."""
+    ctx = _assemble_ctx(
+        prompt="research", wd=str(tmp_path), resume=None,
+        credential=HarnessCredential(backend="codex", auth_type="oauth", home_dir=None),
+        web_research=True,
+    )
+    argv, _ = build_turn_argv(ctx)
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    assert "tools.web_search=true" in argv
+    assert "--dangerously-bypass-approvals-and-sandbox" not in argv
+    # Sandbox/web flags are exec-level — must precede a resume subcommand.
+    assert "resume" not in argv  # new turn here, but the ordering invariant holds
 
 
 def test_turn_argv_full_config(tmp_path):

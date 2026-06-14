@@ -177,6 +177,26 @@ interface SessionStore {
   // across reloads.
   showDelegations: boolean;
   setShowDelegations: (v: boolean) => void;
+
+  // Native deep-research jobs, keyed by sessionId → list (native-deep-research.md
+  // §7). The ResearchCard renders live phase/progress; the final report arrives
+  // as a normal injected turn.
+  research: Record<string, ResearchJob[]>;
+  upsertResearch: (sessionId: string, job: Partial<ResearchJob> & { id: string }) => void;
+  setResearch: (sessionId: string, jobs: ResearchJob[]) => void;
+}
+
+export interface ResearchJob {
+  id: string;
+  session_id: string;
+  question: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  phase: string | null;        // scope | search | verify | synthesize | done
+  detail?: string;
+  counts?: Record<string, number>;
+  sources?: string[];
+  verified?: number;
+  error?: string | null;
 }
 
 export interface BgTask {
@@ -396,6 +416,30 @@ export const useSessionStore = create<SessionStore>((set) => ({
     }),
   setBgTasks: (sessionId, tasks) =>
     set((s) => ({ bgTasks: { ...s.bgTasks, [sessionId]: tasks } })),
+
+  research: {},
+  upsertResearch: (sessionId, job) =>
+    set((s) => {
+      const current = s.research[sessionId] || [];
+      const idx = current.findIndex((j) => j.id === job.id);
+      if (idx < 0) {
+        // Inserting a NEW card: only do so from a full payload (started /
+        // snapshot). A bare progress/completed/failed patch for an unknown id
+        // (missed `research_started` after reconnect or in a 2nd tab) would
+        // render a card with no question/status — skip it; the /research
+        // snapshot fetch on session load seeds those properly (Vera review).
+        if (!job.question || !job.status) return {};
+        return { research: { ...s.research, [sessionId]: [...current, job as ResearchJob] } };
+      }
+      const next = [
+        ...current.slice(0, idx),
+        { ...current[idx], ...job },
+        ...current.slice(idx + 1),
+      ];
+      return { research: { ...s.research, [sessionId]: next } };
+    }),
+  setResearch: (sessionId, jobs) =>
+    set((s) => ({ research: { ...s.research, [sessionId]: jobs } })),
 
   delegations: {},
   upsertDelegation: (parentSessionId, d) =>

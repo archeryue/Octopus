@@ -162,6 +162,9 @@ class RunConfig:
     # appended to the system addendum on a fork's first turn only. None
     # otherwise. NOT the replay transcript (that lives in the user channel).
     fork_note: str | None = None
+    # Native-deep-research web leaf (native-deep-research.md §4): render a
+    # scoped, web-enabled, read-only-ish turn (no destructive/fan-out tools).
+    web_research: bool = False
 
 
 class HarnessRun:
@@ -221,6 +224,7 @@ class HarnessRun:
             mcp_servers=mcp_servers,
             credential=credential,
             memory_dir=self._config.memory_dir,
+            web_research=self._config.web_research,
         )
 
     def build_argv(

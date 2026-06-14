@@ -16,6 +16,7 @@ from .auth import verify_token
 
 from .bg_tasks import bg_task_manager
 from .delegations import delegation_manager
+from .research import research_manager
 from .bridges.manager import BridgeManager
 from .config import settings
 from .tunnel import CloudflareTunnel
@@ -23,7 +24,7 @@ from .database import Database
 from .notifiers import notifier_manager
 from .agent_manager import AgentManager
 from .connector_manager import ConnectorManager
-from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, schedules, sessions, ws
+from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -90,6 +91,11 @@ async def lifespan(app: FastAPI):
     # replies/errors back into the parent session as injected turns.
     delegation_manager.bind(session_mgr=session_manager, db=db)
 
+    # Native deep research (native-deep-research.md). Tracks research jobs as
+    # async tasks; injects the final report back into the session.
+    research_manager.bind(session_mgr=session_manager, db=db)
+    await research_manager.recover_interrupted()
+
     # Start Cloudflare Tunnel if enabled
     tunnel: CloudflareTunnel | None = None
     if settings.enable_tunnel:
@@ -136,6 +142,7 @@ app.include_router(attachments.router)
 app.include_router(files.router)
 app.include_router(bg_tasks_router.router)
 app.include_router(delegations_router.router)
+app.include_router(research_router.router)
 app.include_router(questions.router)
 app.include_router(schedules.router)
 app.include_router(credentials.router)

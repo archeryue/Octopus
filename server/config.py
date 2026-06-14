@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     turn_idle_timeout_seconds: int = 300
     turn_max_seconds: int = 1800
 
+    # Native deep research (native-deep-research.md §6/§8). Max jobs running
+    # concurrently across all sessions (per-job leaf fan-out is bounded inside
+    # the pipeline); and a hard per-job wall-clock cap.
+    research_max_concurrent_jobs: int = 2
+    research_job_timeout_seconds: int = 1200
+
     # Connectors (connectors.md §7). The public base URL is what connector
     # OAuth redirect URIs are built against; behind a tunnel it must be set
     # to the stable public host. Unset → computed as http://127.0.0.1:{port}.

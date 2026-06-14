@@ -31,6 +31,9 @@ _BUILTIN_MODULES = {
     # callback-env shape as ask/bg — talks to the FastAPI delegations
     # routes which sit in front of DelegationManager.
     "ask_agent": "server.mcp_servers.ask_agent",
+    # Native deep research (native-deep-research.md §7). Thin shim to the
+    # /api/sessions/{sid}/research routes in front of ResearchManager.
+    "research": "server.mcp_servers.research",
 }
 
 
@@ -76,6 +79,11 @@ def select_mcp_servers(
         "ask_agent": {
             "command": sys.executable,
             "args": ["-m", _BUILTIN_MODULES["ask_agent"]],
+            "env": dict(callback_env),
+        },
+        "research": {
+            "command": sys.executable,
+            "args": ["-m", _BUILTIN_MODULES["research"]],
             "env": dict(callback_env),
         },
     }

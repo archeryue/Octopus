@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Built-in MCP servers attached to the Default Agent (and the default for
 # any newly-created agent). Kept here so the migration backfill and the
 # CREATE TABLE default stay in lock-step.
-_DEFAULT_MCP_SERVERS = ["ask", "bg", "ask_agent"]
+_DEFAULT_MCP_SERVERS = ["ask", "bg", "ask_agent", "research"]
 _DEFAULT_MCP_SERVERS_JSON = json.dumps(_DEFAULT_MCP_SERVERS)
 
 _SCHEMA = """
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS agents (
     model TEXT,                             -- e.g. "claude-opus-4-7"; null = backend default
     credential_id TEXT REFERENCES backend_credentials(id) ON DELETE SET NULL,
     backend TEXT NOT NULL DEFAULT 'claude-code',  -- default harness for new sessions
-    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","ask_agent"]',
+    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","ask_agent","research"]',
                                             -- JSON array of built-in Octopus MCP server ids.
     tool_allow TEXT NOT NULL DEFAULT '',    -- newline-separated tool/MCP names; empty = allow all
     tool_deny  TEXT NOT NULL DEFAULT '',    -- newline-separated; deny takes precedence over allow
@@ -314,6 +314,30 @@ CREATE TABLE IF NOT EXISTS bg_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_bg_tasks_session
   ON bg_tasks(session_id, started_at);
+
+-- Native deep-research jobs (native-deep-research.md §6). A job runs the
+-- fan-out pipeline as a tracked async task; completion and delivery are
+-- tracked SEPARATELY (a job can be `completed` while its report is still
+-- queued behind an active turn). New-table-only — CREATE IF NOT EXISTS is a
+-- no-op migration on existing DBs.
+CREATE TABLE IF NOT EXISTS research_jobs (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    status TEXT NOT NULL,                  -- running|completed|failed|cancelled|interrupted
+    phase TEXT,                            -- scope|search|verify|synthesize|done
+    error TEXT,
+    report_path TEXT,
+    cost REAL,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    injection_status TEXT NOT NULL DEFAULT 'pending',  -- pending|delivered|failed
+    injected_at TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_jobs_session
+  ON research_jobs(session_id, created_at);
 """
 
 
@@ -466,19 +490,16 @@ class Database:
         except Exception:
             pass
 
-        # Backfill `ask_agent` into every existing agent's mcp_servers
-        # list (agent-collaboration.md §5.1). The default list was
-        # ["ask","bg"] before this landed; now it's
-        # ["ask","bg","ask_agent"]. The CREATE TABLE default applies
-        # only to brand-new rows on fresh databases — pre-existing rows
-        # already have a stored value and need this catch-up. Idempotent:
-        # parsing + set-membership means re-running is a no-op.
-        await self._backfill_ask_agent_into_mcp_servers()
+        # Backfill default built-in MCP servers into every existing agent's
+        # mcp_servers list as new ones land (`ask_agent` —
+        # agent-collaboration.md §5.1; `research` — native-deep-research.md §7).
+        # The CREATE TABLE default applies only to brand-new rows on fresh
+        # databases — pre-existing rows already have a stored value and need
+        # this catch-up. Idempotent: set-membership means re-running is a no-op.
+        await self._backfill_builtin_mcp_servers(("ask_agent", "research"))
 
-    async def _backfill_ask_agent_into_mcp_servers(self) -> None:
-        cursor = await self._conn.execute(
-            "SELECT id, mcp_servers FROM agents"
-        )
+    async def _backfill_builtin_mcp_servers(self, names: tuple[str, ...]) -> None:
+        cursor = await self._conn.execute("SELECT id, mcp_servers FROM agents")
         rows = list(await cursor.fetchall())
         for agent_id, raw in rows:
             try:
@@ -489,13 +510,16 @@ class Database:
                 continue
             if not isinstance(current, list):
                 continue
-            if "ask_agent" in current:
-                continue
-            current.append("ask_agent")
-            await self._conn.execute(
-                "UPDATE agents SET mcp_servers = ? WHERE id = ?",
-                (json.dumps(current), agent_id),
-            )
+            added = False
+            for name in names:
+                if name not in current:
+                    current.append(name)
+                    added = True
+            if added:
+                await self._conn.execute(
+                    "UPDATE agents SET mcp_servers = ? WHERE id = ?",
+                    (json.dumps(current), agent_id),
+                )
 
     async def _migrate_schedule_recurrence(self) -> None:
         """Schedules gained cron/timezone/recurrence_label and `interval_seconds`
@@ -2129,6 +2153,93 @@ class Database:
         cursor = await self._conn.execute(
             "UPDATE bg_tasks SET status = 'interrupted', completed_at = ? "
             "WHERE status IN ('running', 'pending')",
+            (completed_at,),
+        )
+        await self._conn.commit()
+        return cursor.rowcount
+
+    # --- Research jobs (native-deep-research.md §6) ---
+
+    _RESEARCH_COLS = (
+        "id, session_id, question, status, phase, error, report_path, cost, "
+        "created_at, completed_at, injection_status, injected_at"
+    )
+
+    @staticmethod
+    def _row_to_research_job(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "session_id": row[1],
+            "question": row[2],
+            "status": row[3],
+            "phase": row[4],
+            "error": row[5],
+            "report_path": row[6],
+            "cost": row[7],
+            "created_at": row[8],
+            "completed_at": row[9],
+            "injection_status": row[10],
+            "injected_at": row[11],
+        }
+
+    async def create_research_job(
+        self, job_id: str, session_id: str, question: str, created_at: str
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO research_jobs "
+            "(id, session_id, question, status, phase, created_at, injection_status) "
+            "VALUES (?, ?, ?, 'running', 'scope', ?, 'pending')",
+            (job_id, session_id, question, created_at),
+        )
+        await self._conn.commit()
+
+    async def update_research_job(self, job_id: str, **fields: Any) -> None:
+        """Patch any of: status, phase, error, report_path, cost, completed_at,
+        injection_status, injected_at."""
+        await self._ensure_connected()
+        allowed = {
+            "status", "phase", "error", "report_path", "cost", "completed_at",
+            "injection_status", "injected_at",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        await self._conn.execute(
+            f"UPDATE research_jobs SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [job_id],
+        )
+        await self._conn.commit()
+
+    async def get_research_job(self, job_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._RESEARCH_COLS} FROM research_jobs WHERE id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        return self._row_to_research_job(row) if row else None
+
+    async def list_research_jobs_for_session(
+        self, session_id: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._RESEARCH_COLS} FROM research_jobs "
+            "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+            (session_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_research_job(r) for r in rows]
+
+    async def mark_in_flight_research_jobs_interrupted(self, completed_at: str) -> int:
+        """Boot sweep: a `running` row belongs to a prior process — its task is
+        gone, so flip it to `interrupted` (native-deep-research.md §6). v1 does
+        not resume mid-pipeline. Returns rows updated."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "UPDATE research_jobs SET status = 'interrupted', completed_at = ? "
+            "WHERE status = 'running'",
             (completed_at,),
         )
         await self._conn.commit()
