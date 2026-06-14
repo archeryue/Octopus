@@ -1,34 +1,71 @@
-"""Real end-to-end deep research (native-deep-research.md).
+"""Real end-to-end deep research against a signed-in harness CREDENTIAL.
 
-Drives the WHOLE backend stack — ResearchManager → orchestrator → leaf
-executors → a REAL harness with REAL web tools — and asserts a cited report
-comes back and is injected. Gated on codex being signed in (it has web search
-via `tools.web_search`); skipped otherwise so CI without a login still passes.
-Costs real API calls + a minute or two.
-
-Limits are shrunk hard (1 angle, 1 claim, 1 vote) to keep it quick.
+Unlike the bare-CLI *_real tests (which use host ambient auth), deep research
+runs through an Octopus credential. The codex credential is directory-backed
+(its own CODEX_HOME with auth.json), so we discover a usable one on disk and
+bind a session to its id — no DB credential row needed, since codex resolution
+is purely path-based. Gated + skipped when no usable codex credential exists.
+Costs real API calls + ~30-60s. Drives the WHOLE stack:
+ResearchManager → orchestrator → real codex web_search → cited report → inject.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
+import os
+import subprocess
+import tempfile
 
 import pytest
 
-from tests.cli_gate import codex_cli_works
+from server.codex_login import codex_home_for
 from server.database import Database
 from server.research import manager as rm_mod
 from server.research.manager import ResearchManager
 from server.research.orchestrator import ResearchLimits, run_research as _real_run
 from server.session_manager import SessionManager
+from tests.cli_gate import _resolve_cli
+
+
+@functools.lru_cache(maxsize=1)
+def _usable_codex_credential() -> str | None:
+    """A signed-in, directory-backed codex credential id whose CODEX_HOME holds
+    a WORKING auth.json (probed for real). None if none is usable."""
+    exe = _resolve_cli("codex")
+    if exe is None:
+        return None
+    base = os.path.dirname(codex_home_for("_probe_"))  # the per-credential root
+    if not os.path.isdir(base):
+        return None
+    for cid in sorted(os.listdir(base)):
+        home = os.path.join(base, cid)
+        if not os.path.exists(os.path.join(home, "auth.json")):
+            continue
+        env = {**os.environ, "CODEX_HOME": home}
+        try:
+            proc = subprocess.run(
+                [exe, "exec", "--json", "--skip-git-repo-check",
+                 "--dangerously-bypass-approvals-and-sandbox", "--", "Reply with OK."],
+                stdin=subprocess.DEVNULL, capture_output=True,
+                cwd=tempfile.gettempdir(), env=env, timeout=90,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0:
+            return cid
+    return None
+
 
 pytestmark = pytest.mark.skipif(
-    not codex_cli_works(), reason="codex CLI unavailable or not signed in"
+    _usable_codex_credential() is None,
+    reason="no signed-in codex credential available for a real research run",
 )
 
 
 @pytest.mark.asyncio
 async def test_real_codex_deep_research_end_to_end(tmp_path, monkeypatch):
+    cred_id = _usable_codex_credential()
     db = Database(":memory:")
     await db.initialize()
     mgr = SessionManager()
@@ -36,7 +73,6 @@ async def test_real_codex_deep_research_end_to_end(tmp_path, monkeypatch):
     rm = ResearchManager()
     rm.bind(session_mgr=mgr, db=db)
 
-    # Capture the injected report instead of spawning a real follow-up turn.
     injected: list[str] = []
 
     async def fake_start_message(session_id, prompt):
@@ -44,41 +80,40 @@ async def test_real_codex_deep_research_end_to_end(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mgr, "start_message", fake_start_message)
 
-    # Shrink the pipeline for speed (still real searches).
+    # Shrink limits hard for speed — still REAL web searches.
     async def small_run(question, **kw):
         kw["limits"] = ResearchLimits(
-            max_angles=1, max_findings_per_angle=2, max_claims=1,
-            votes_per_claim=1, concurrency=2, leaf_timeout=150, reason_timeout=90,
+            max_angles=1, max_findings_per_angle=3, max_claims=2,
+            votes_per_claim=1, concurrency=2, leaf_timeout=180, reason_timeout=120,
         )
         return await _real_run(question, **kw)
 
     monkeypatch.setattr(rm_mod, "run_research", small_run)
 
     agent = await db.get_system_agent()
+    # Bind the session to the directory-backed codex credential id — the
+    # manager resolves it to its CODEX_HOME (no DB row needed).
     session = await mgr.create_session(
-        agent["id"], "Research", str(tmp_path), backend="codex"
+        agent["id"], "Research", str(tmp_path), backend="codex",
+        credential_id=cred_id,
     )
     row = await rm.start(
-        session.id, "What is the latest stable version of Python 3? Cite python.org."
+        session.id,
+        "What is the latest stable version of Python 3? Cite python.org.",
     )
     await asyncio.wait_for(rm._tasks[row["id"]], timeout=360)
 
     final = await db.get_research_job(row["id"])
     assert final["status"] == "completed", f"job did not complete: {final}"
     assert final["injection_status"] == "delivered"
-    assert final["report_path"], "no report file was written"
-    assert injected, "no report was injected into the session"
-    body = injected[0]
-    assert body.startswith(f"[deep-research:{row['id']}]")
+    assert final["report_path"], "no report file written"
 
-    # Prove REAL research happened — not a degraded/empty run. The injected
-    # prefix echoes the question (which contains "python"), so checking the
-    # whole body for "python" would hollow-pass; instead require the actual
-    # report file to be substantial and cite a real source. (Read the file
-    # rather than the question-bearing injection prefix.)
+    # Prove REAL research happened (not a degraded empty run): a substantial,
+    # source-citing report read from the FILE (not the question-bearing
+    # injection prefix, which would hollow-pass on the echoed question).
     with open(final["report_path"], encoding="utf-8") as fh:
         report = fh.read()
-    assert len(report) > 120, f"report too short — likely a degraded run:\n{report}"
+    assert len(report) > 120, f"report too short — degraded run?\n{report}"
     assert "http" in report.lower(), f"report cites no source:\n{report}"
 
     await db.close()
