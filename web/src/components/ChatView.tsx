@@ -487,10 +487,10 @@ export function ChatView({
       return;
     }
 
-    // /fork (alias /tree) — open the fork picker (session-tree-rewind.md §6.2).
-    // Message selection + confirmation happen in the dialog.
-    const forkCmd = trimmed.toLowerCase();
-    if (forkCmd === "/fork" || forkCmd === "/tree") {
+    // /rewind — open the rewind picker (session-tree-rewind.md §6.2). Message
+    // selection + confirmation happen in the dialog. (The underlying mechanism
+    // is still a "fork"/branch internally; only the command name is /rewind.)
+    if (trimmed.toLowerCase() === "/rewind") {
       setInput("");
       setForkDialog({});
       return;
@@ -921,14 +921,24 @@ export function ChatView({
   const handleForked = async (fork: SessionInfo) => {
     const store = useSessionStore.getState();
     // A fork is a rewind: it replaces its parent, which the backend archives.
-    // Drop the parent here too so the swap is correct on this tab regardless
-    // of when the `session_archived` broadcast lands.
+    // Drop the parent from the live list here too so the swap is correct on
+    // this tab regardless of when the `session_archived` broadcast lands.
     const parentId = fork.forked_from_session_id ?? null;
+    const parent = parentId
+      ? store.sessions.find((s) => s.id === parentId)
+      : undefined;
     const next = store.sessions.filter(
       (s) => s.id !== fork.id && s.id !== parentId
     );
     next.push(fork);
     store.setSessions(next);
+    // Keep the (now-archived) parent in archivedSessions so the fork banner can
+    // still resolve its name and the "open parent" button works — otherwise it
+    // renders "(deleted session)".
+    if (parent) {
+      const rest = store.archivedSessions.filter((s) => s.id !== parent.id);
+      store.setArchivedSessions([{ ...parent, archived: true }, ...rest]);
+    }
     if (fork.agent_id) store.setActiveAgentId(fork.agent_id);
     store.setActiveSessionId(fork.id);
     try {

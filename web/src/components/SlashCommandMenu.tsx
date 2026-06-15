@@ -48,13 +48,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     Icon: IconFile,
   },
   {
-    name: "/fork",
+    name: "/rewind",
     description: "Rewind to a user message and redo it as a new branch",
-    Icon: IconGitFork,
-  },
-  {
-    name: "/tree",
-    description: "Alias for /fork — rewind to a message and redo it",
     Icon: IconGitFork,
   },
   {

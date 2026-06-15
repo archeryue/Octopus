@@ -107,7 +107,7 @@ test("fork from a user message opens a prefilled, banner-marked branch", async (
   await expect(page.locator(".fork-badge")).toHaveCount(0);
 });
 
-test("/fork picker lists user messages and creates a fork", async ({
+test("/rewind picker lists user messages and creates a branch", async ({
   page,
   request,
 }) => {
@@ -120,11 +120,11 @@ test("/fork picker lists user messages and creates a fork", async ({
     .click();
   await expect(page.locator(".chat-header h3")).toHaveText("Fork E2E Parent");
 
-  // Type the /fork slash command and submit it to open the picker. The first
+  // Type the /rewind slash command and submit it to open the picker. The first
   // Enter is captured by the slash-autocomplete menu (it selects the command
-  // into the composer as "/fork "); the second Enter actually sends it.
+  // into the composer as "/rewind "); the second Enter actually sends it.
   const composer = page.locator(".chat-input-bar textarea");
-  await composer.fill("/fork");
+  await composer.fill("/rewind");
   await composer.press("Enter");
   await composer.press("Enter");
 

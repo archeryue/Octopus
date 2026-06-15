@@ -300,6 +300,13 @@ function handleWsMessage(data: Record<string, unknown>) {
         });
       }
       store.setSessions(next);
+      // Keep the archived session resolvable (so e.g. a fork's now-archived
+      // parent renders its name in the fork banner instead of "(deleted
+      // session)", and its "open parent" link works).
+      if (prev) {
+        const restArchived = store.archivedSessions.filter((s) => s.id !== oldId);
+        store.setArchivedSessions([{ ...prev, archived: true }, ...restArchived]);
+      }
       if (store.activeSessionId === oldId) {
         store.setActiveSessionId(newId);
         if (newId) {
