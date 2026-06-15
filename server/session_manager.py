@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -102,7 +103,7 @@ def fork_info_fields(
     fork_metadata: str | None,
     fork_revert_record: str | None,
 ) -> dict[str, Any]:
-    """The five fork-related fields exposed on `SessionInfo`
+    """The fork-related fields exposed on `SessionInfo`
     (session-tree-rewind.md §4). `can_fork` comes from the harness profile;
     `fork_prefilled_prompt` is read out of the ephemeral `fork_metadata` blob
     (while non-null); `fork_revert_record` is the durable revert outcome.
@@ -112,9 +113,12 @@ def fork_info_fields(
     except Exception:
         can_fork = False
     prefilled: str | None = None
+    full_copy = False
     if fork_metadata:
         try:
-            prefilled = json.loads(fork_metadata).get("prefilled_prompt")
+            meta = json.loads(fork_metadata)
+            prefilled = meta.get("prefilled_prompt")
+            full_copy = bool(meta.get("full_copy"))
         except (json.JSONDecodeError, AttributeError):
             prefilled = None
     revert: dict[str, Any] | None = None
@@ -129,6 +133,9 @@ def fork_info_fields(
         "fork_after_seq": fork_after_seq,
         "fork_prefilled_prompt": prefilled,
         "fork_revert_record": revert,
+        # A /fork copy-dir duplicate vs a /rewind branch — the UI renders the
+        # fork banner / sidebar badge differently (session-fork-copy.md).
+        "fork_is_full_copy": full_copy,
     }
 
 
@@ -346,6 +353,12 @@ class SessionManager:
                     continue
                 await self.db.delete_session(fork_id)
                 self.sessions.pop(fork_id, None)
+                # A /fork duplicate owns a private working-dir copy under
+                # ~/.octopus/fork/ — remove it too so an abandoned saga doesn't
+                # leak the copied tree (session-fork-copy.md). A /rewind fork
+                # shares the parent's dir, which `_is_fork_copy_dir` excludes.
+                if self._is_fork_copy_dir(row["working_dir"]):
+                    shutil.rmtree(row["working_dir"], ignore_errors=True)
                 logger.info("fork %s: purged incomplete (initializing) saga", fork_id)
             elif status == "reverting":
                 try:
@@ -419,19 +432,37 @@ class SessionManager:
                 archived,
             )
 
+    # Durable fork_metadata keys that survive first-turn cleanup. `full_copy`
+    # (+ its `duplicated_from` companion) is a permanent identity of a /fork
+    # copy-dir duplicate — it drives the UI banner/badge for the session's whole
+    # life (session-fork-copy.md). Everything else in the blob (e.g.
+    # `prefilled_prompt`) is ephemeral first-turn state.
+    _DURABLE_FORK_META_KEYS = ("full_copy", "duplicated_from")
+
     async def _clear_fork_first_turn_state(self, session: Session) -> None:
         """Drop the ephemeral fork state once the fork's first turn produces a
         `result` (session-tree-rewind.md §5.3.2/§5.6.5): clear
-        `fork_needs_replay` (so turn 2+ isn't wrapped) and `fork_metadata` (so
-        the chat input doesn't re-prefill). `fork_revert_record` is durable and
-        NEVER cleared. No-op on non-fork / already-cleared sessions."""
+        `fork_needs_replay` (so turn 2+ isn't wrapped) and the ephemeral
+        `fork_metadata` keys (so the chat input doesn't re-prefill), while
+        PRESERVING durable keys like `full_copy` (Vera review). `fork_revert_record`
+        is a separate column and NEVER touched. No-op on non-fork / cleared."""
         if not session.fork_needs_replay and session.fork_metadata is None:
             return
         session.fork_needs_replay = False
-        session.fork_metadata = None
+        surviving: str | None = None
+        if session.fork_metadata:
+            try:
+                meta = json.loads(session.fork_metadata)
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            durable = {
+                k: meta[k] for k in self._DURABLE_FORK_META_KEYS if k in meta
+            }
+            surviving = json.dumps(durable) if durable else None
+        session.fork_metadata = surviving
         if self.db:
             await self.db.update_session_field(
-                session.id, fork_needs_replay=False, fork_metadata=None
+                session.id, fork_needs_replay=False, fork_metadata=surviving
             )
 
     async def fork_session(
@@ -682,6 +713,194 @@ class SessionManager:
             return fork
         finally:
             # 10. Always release `_forking` (even on prepare_fork failure).
+            parent._forking = False
+
+    @staticmethod
+    def _fork_copy_base() -> str:
+        """Base dir holding every /fork working-dir copy (session-fork-copy.md)."""
+        return os.path.expanduser(os.path.join("~", ".octopus", "fork"))
+
+    @staticmethod
+    def _fork_copy_dest(src_working_dir: str, fork_id: str) -> str:
+        """Destination for a /fork working-dir copy: ~/.octopus/fork/<name>-<id>
+        (session-fork-copy.md). Keeps the project basename for readability +
+        the fork id for uniqueness. Creates the base dir."""
+        base = SessionManager._fork_copy_base()
+        os.makedirs(base, exist_ok=True)
+        name = os.path.basename(os.path.normpath(src_working_dir)) or "session"
+        return os.path.join(base, f"{name}-{fork_id}")
+
+    @staticmethod
+    def _is_fork_copy_dir(working_dir: str | None) -> bool:
+        """True iff `working_dir` is a private /fork copy (under the fork base)
+        and so safe to delete on cleanup — a /rewind fork instead SHARES the
+        parent's dir, which must never be removed."""
+        if not working_dir:
+            return False
+        # Normalize both sides (expanduser + abspath) so a `~/.octopus/fork/...`
+        # style row still classifies — otherwise it would leak rather than be
+        # swept (Vera review hardening).
+        norm = lambda p: os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+        base = norm(SessionManager._fork_copy_base())
+        wd = norm(working_dir)
+        return wd != base and (wd + os.sep).startswith(base + os.sep)
+
+    @staticmethod
+    def _copy_tree(src: str, dest: str) -> None:
+        # Literal full copy (the user's explicit choice — incl. .git /
+        # node_modules / .venv). Symlinks copied AS symlinks so we don't follow
+        # them into huge targets / loops.
+        shutil.copytree(src, dest, symlinks=True)
+
+    async def duplicate_session(
+        self, parent_id: str, *, label: str | None = None
+    ) -> Session:
+        """`/fork`: duplicate `parent_id` at HEAD onto an INDEPENDENT full copy
+        of its working directory (session-fork-copy.md). The new session carries
+        the parent's whole conversation and continues it at the copied path; the
+        PARENT is left untouched (not archived). Distinct from `fork_session`
+        (/rewind), which rewinds to a message and archives the parent."""
+        from .delegations import delegation_manager
+
+        parent = self.sessions.get(parent_id)
+        if parent is None:
+            raise ForkError(
+                f"Session {parent_id} not found",
+                reason="parent_not_found", status_code=404,
+            )
+        harness = get_harness(parent.backend)
+        if not harness.can_fork:
+            raise BackendForkNotSupported(parent.backend)
+
+        # Same idle guard as fork_session — a copy of a mid-turn workspace would
+        # be inconsistent, and the resume artifact needs a settled transcript.
+        async with parent._lock:
+            if parent._forking:
+                raise ForkError("Another fork is already in progress for this session",
+                                reason="fork_blocked_parent_turn_active", status_code=409)
+            if parent._active_task and not parent._active_task.done():
+                raise ForkError("Parent session has an active turn",
+                                reason="fork_blocked_parent_turn_active", status_code=409)
+            if parent._pending_queue:
+                raise ForkError("Parent session has a queued message",
+                                reason="fork_blocked_parent_turn_active", status_code=409)
+            if parent._pending_approvals:
+                raise ForkError("Parent session has a pending tool approval",
+                                reason="fork_blocked_parent_turn_active", status_code=409)
+            if delegation_manager.has_active_delegation_for_parent(parent.id):
+                raise ForkError("Parent session has an active delegation",
+                                reason="fork_blocked_parent_turn_active", status_code=409)
+            parent._forking = True
+
+        fork_id = uuid.uuid4().hex[:12]
+        resume_id_hint = str(uuid.uuid4())
+        dest = self._fork_copy_dest(parent.working_dir, fork_id)
+        try:
+            # Snapshot the transcript AFTER claiming `_forking` (Vera review):
+            # loading it earlier risks a fast turn slipping in between the read
+            # and the guard, which would copy a post-turn working dir against a
+            # pre-turn message list. With the guard held, both are consistent.
+            messages = await self.db.load_messages(parent_id) if self.db else []
+            last_seq = max((m["seq"] for m in messages), default=-1)
+
+            # 1. Full literal copy of the working dir (large/slow → off-thread).
+            #    copytree can leave a partial dir behind on a mid-copy error, so
+            #    sweep it before surfacing the failure (Vera review).
+            try:
+                await asyncio.to_thread(self._copy_tree, parent.working_dir, dest)
+            except Exception as e:
+                shutil.rmtree(dest, ignore_errors=True)
+                raise ForkError(
+                    f"Failed to copy the working directory: {e}",
+                    reason="copy_failed", status_code=500,
+                )
+
+            now = datetime.now(timezone.utc).isoformat()
+            fork_name = label or f"{parent.name} (fork)"
+            # 2. DB-only: insert the fork row + copy ALL messages (seq<=last).
+            #    fork_after_seq = last_seq is the replay cutoff (it's also what
+            #    HISTORY_REPLAY backends inject on turn 1 — so it MUST stay set,
+            #    or the duplicate would continue with no copied context). The UI
+            #    distinguishes a full copy from a rewind via fork_metadata's
+            #    `full_copy` flag, not by nulling fork_after_seq (Vera review).
+            try:
+                await self.db.create_fork_session(
+                    fork_id=fork_id, name=fork_name, working_dir=dest,
+                    created_at=now, parent_id=parent_id, backend=parent.backend,
+                    agent_id=parent.agent_id, credential_id=parent.credential_id,
+                    resume_id=resume_id_hint, fork_after_seq=last_seq,
+                )
+            except Exception:
+                shutil.rmtree(dest, ignore_errors=True)
+                raise
+            fork = Session(
+                id=fork_id, name=fork_name, working_dir=dest, created_at=now,
+                claude_session_id=resume_id_hint, credential_id=parent.credential_id,
+                agent_id=parent.agent_id, origin="fork", backend=parent.backend,
+                forked_from_session_id=parent_id, fork_after_seq=last_seq,
+                fork_status="initializing",
+            )
+            fork._message_count = last_seq + 1
+            self.sessions[fork_id] = fork
+
+            # 3. prepare_fork against the COPIED dir → resume targets the copy.
+            try:
+                artifact = await harness.prepare_fork(
+                    [MessageContent(**m) for m in messages], dest,
+                    resume_id_hint, fork_id,
+                )
+            except Exception:
+                # Compensate in order (mirrors fork_session): cleanup artifacts
+                # FIRST (the row still anchors resume_id/fork_id), then delete
+                # the row + the copied dir. If cleanup fails, leave BOTH the row
+                # ('initializing') AND the copied dir in place so the startup
+                # sweep can retry cleanup idempotently — deleting the dir here
+                # would strand the row pointing at a missing working_dir (Vera
+                # review). The sweep rmtrees the copied dir once cleanup wins.
+                try:
+                    await harness.cleanup_incomplete_fork_artifacts(
+                        dest, resume_id_hint, fork_id
+                    )
+                except Exception:
+                    logger.exception(
+                        "fork %s: artifact cleanup failed; leaving row + copied "
+                        "dir for next-boot retry",
+                        fork_id,
+                    )
+                    self.sessions.pop(fork_id, None)
+                    raise
+                await self.db.delete_session(fork_id)
+                self.sessions.pop(fork_id, None)
+                shutil.rmtree(dest, ignore_errors=True)
+                raise
+
+            # 4. Apply resume state + finalize. fork_after_seq stays = last_seq
+            #    (replay cutoff, see above); the `full_copy` flag tells the UI to
+            #    render "full copy of the working dir" instead of "@msg N".
+            fork.claude_session_id = artifact.resume_id
+            fork.fork_needs_replay = artifact.needs_replay
+            fork.fork_status = "ready"
+            fork.fork_metadata = json.dumps(
+                {"full_copy": True, "duplicated_from": parent.name}
+            )
+            await self.db.update_session_field(
+                fork_id,
+                claude_session_id=artifact.resume_id,
+                fork_needs_replay=artifact.needs_replay,
+                fork_status="ready",
+                fork_metadata=fork.fork_metadata,
+            )
+
+            # 5. Parent is left untouched (NOT archived). Announce the new fork
+            #    so other tabs add it.
+            await self._broadcast({
+                "type": "session_forked",
+                "parent_session_id": parent_id,
+                "fork_session_id": fork.id,
+                "name": fork.name,
+            })
+            return fork
+        finally:
             parent._forking = False
 
     async def _archive_forked_parent(self, parent: Session, fork: Session) -> None:

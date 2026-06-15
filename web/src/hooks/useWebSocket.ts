@@ -296,6 +296,7 @@ function handleWsMessage(data: Record<string, unknown>) {
           origin: prev?.origin ?? "user",
           backend: prev?.backend ?? "claude-code",
           can_fork: prev?.can_fork ?? true,
+          fork_is_full_copy: false,
           archived: false,
         });
       }
@@ -315,6 +316,44 @@ function handleWsMessage(data: Record<string, unknown>) {
           store.setPendingQuestions(newId, []);
         }
       }
+      break;
+    }
+    case "session_forked": {
+      // A /fork duplicate was created (session-fork-copy.md). The parent is
+      // untouched, so we only ADD the new session to the list. The initiating
+      // tab already added + switched to it via handleDuplicated; dedupe by id
+      // so this broadcast is a no-op there and a plain add elsewhere. We don't
+      // switch the active session — only the initiator follows the fork.
+      const forkId = data.fork_session_id as string;
+      const store = getState();
+      if (store.sessions.some((s) => s.id === forkId)) break;
+      // Fetch the authoritative SessionInfo rather than synthesizing a partial
+      // one (Vera review) — gives the sidebar the right working_dir, backend,
+      // fork flags, etc. Re-dedupe inside the callback in case the initiating
+      // tab's own add raced in first.
+      const tok = store.token;
+      if (!tok) break;
+      void fetch(`${window.location.origin}/api/sessions/${forkId}`, {
+        headers: { Authorization: `Bearer ${tok}` },
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((detail) => {
+          if (!detail) return;
+          const s = getState();
+          if (s.sessions.some((x) => x.id === forkId)) return;
+          // The detail endpoint is a SessionInfo superset (+ messages,
+          // pending_queue, pending_questions, next_message_seq); strip the
+          // detail-only fields so the list holds a clean SessionInfo.
+          const {
+            messages: _m,
+            pending_queue: _q,
+            pending_questions: _pq,
+            next_message_seq: _n,
+            ...info
+          } = detail;
+          s.setSessions([...s.sessions, info]);
+        })
+        .catch(() => {});
       break;
     }
   }

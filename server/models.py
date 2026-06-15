@@ -40,6 +40,13 @@ class ForkSessionRequest(BaseModel):
     label: str | None = None
 
 
+class DuplicateSessionRequest(BaseModel):
+    """Body for `POST /api/sessions/{id}/duplicate` (session-fork-copy.md).
+    Fork the whole session onto an independent full copy of its working dir."""
+
+    label: str | None = None
+
+
 class ImportSessionRequest(BaseModel):
     name: str = "Imported Session"
     working_dir: str | None = None
@@ -95,11 +102,15 @@ class SessionInfo(BaseModel):
     #     fork_metadata.prefilled_prompt while non-null) — populates the
     #     fork's chat input on open
     #   - fork_revert_record: durable safe-revert outcome
+    #   - fork_is_full_copy: True for a /fork copy-dir duplicate (carries the
+    #     whole history onto an independent working-dir copy), False for a
+    #     /rewind branch — the UI renders the banner/badge differently
     can_fork: bool = False
     forked_from_session_id: str | None = None
     fork_after_seq: int | None = None
     fork_prefilled_prompt: str | None = None
     fork_revert_record: ForkRevertRecord | None = None
+    fork_is_full_copy: bool = False
     # Hidden from the default `GET /api/sessions` list; surfaced only
     # when the caller passes `?include_archived=true` (or for individual
     # GETs by id, which always work). The `/archive` flow sets this;

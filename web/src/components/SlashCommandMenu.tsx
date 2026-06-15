@@ -2,6 +2,7 @@ import {
   IconArchive,
   IconBrain,
   IconCalendarClock,
+  IconCopy,
   IconFile,
   IconGitFork,
   IconRefresh,
@@ -51,6 +52,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     name: "/rewind",
     description: "Rewind to a user message and redo it as a new branch",
     Icon: IconGitFork,
+  },
+  {
+    name: "/fork",
+    hint: "[name]",
+    description: "Fork onto a full copy of the working dir (parent untouched)",
+    Icon: IconCopy,
   },
   {
     name: "/archive",

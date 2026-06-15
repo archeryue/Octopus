@@ -49,6 +49,7 @@ describe("filterSlashCommands", () => {
       "/schedule",
     ]);
     expect(filterSlashCommands("/a").map((c) => c.name)).toEqual(["/archive"]);
+    expect(filterSlashCommands("/f").map((c) => c.name)).toEqual(["/fork"]);
   });
 
   it("matches /remember, including the /re overlap with /reset", () => {

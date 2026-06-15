@@ -216,6 +216,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Duplicate Session
+         * @description `/fork`: duplicate a session onto an independent full copy of its working
+         *     directory (session-fork-copy.md). The parent is left untouched. 409
+         *     responses carry a structured `{reason}` / `{reason, backend}` body.
+         */
+        post: operations["duplicate_session_api_sessions__session_id__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/reset": {
         parameters: {
             query?: never;
@@ -560,6 +582,62 @@ export interface paths {
          *     - 409 if there's no pending question, or the human UI raced us
          */
         post: operations["answer_delegation_question_api_sessions__session_id__delegations__delegation_id__answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/research": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Research */
+        get: operations["list_research_api_sessions__session_id__research_get"];
+        put?: never;
+        /**
+         * Start Research
+         * @description Launch a deep-research job. Returns immediately with the job row; the
+         *     final report is injected into the session as a turn when it finishes.
+         */
+        post: operations["start_research_api_sessions__session_id__research_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/research/{research_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Research */
+        get: operations["get_research_api_sessions__session_id__research__research_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/research/{research_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Research */
+        post: operations["cancel_research_api_sessions__session_id__research__research_id__cancel_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1341,6 +1419,8 @@ export interface components {
         CodexLoginStartRequest: {
             /** Label */
             label: string;
+            /** Reauth Credential Id */
+            reauth_credential_id?: string | null;
         };
         /** CodexLoginStartResponse */
         CodexLoginStartResponse: {
@@ -1604,6 +1684,15 @@ export interface components {
             client_secret: string;
         };
         /**
+         * DuplicateSessionRequest
+         * @description Body for `POST /api/sessions/{id}/duplicate` (session-fork-copy.md).
+         *     Fork the whole session onto an independent full copy of its working dir.
+         */
+        DuplicateSessionRequest: {
+            /** Label */
+            label?: string | null;
+        };
+        /**
          * FollowUpDelegationRequest
          * @description Body for the continuation mode of `mcp__ask_agent__ask`
          *     (delegation_id passed in place of name): continue a prior
@@ -1767,6 +1856,8 @@ export interface components {
             code: string;
             /** Label */
             label: string;
+            /** Credential Id */
+            credential_id?: string | null;
         };
         /** OAuthStartRequest */
         OAuthStartRequest: {
@@ -1881,6 +1972,11 @@ export interface components {
             fork_prefilled_prompt?: string | null;
             fork_revert_record?: components["schemas"]["ForkRevertRecord"] | null;
             /**
+             * Fork Is Full Copy
+             * @default false
+             */
+            fork_is_full_copy: boolean;
+            /**
              * Archived
              * @default false
              */
@@ -1952,6 +2048,11 @@ export interface components {
             fork_prefilled_prompt?: string | null;
             fork_revert_record?: components["schemas"]["ForkRevertRecord"] | null;
             /**
+             * Fork Is Full Copy
+             * @default false
+             */
+            fork_is_full_copy: boolean;
+            /**
              * Archived
              * @default false
              */
@@ -2001,6 +2102,11 @@ export interface components {
             request: string;
             /** Files */
             files?: string[] | null;
+        };
+        /** StartResearchRequest */
+        StartResearchRequest: {
+            /** Question */
+            question: string;
         };
         /** SubmitAnswerRequest */
         SubmitAnswerRequest: {
@@ -2652,6 +2758,41 @@ export interface operations {
             };
         };
     };
+    duplicate_session_api_sessions__session_id__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DuplicateSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     reset_session_api_sessions__session_id__reset_post: {
         parameters: {
             query?: never;
@@ -3218,6 +3359,144 @@ export interface operations {
                 "application/json": components["schemas"]["AnswerDelegationQuestionRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_research_api_sessions__session_id__research_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_research_api_sessions__session_id__research_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartResearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_research_api_sessions__session_id__research__research_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                research_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_research_api_sessions__session_id__research__research_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                research_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

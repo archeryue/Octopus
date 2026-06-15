@@ -496,6 +496,52 @@ export function ChatView({
       return;
     }
 
+    // /fork [name] — duplicate the whole session onto an INDEPENDENT full copy
+    // of its working dir (session-fork-copy.md). The parent stays put; we add
+    // the new session, switch to it, and load its carried-over history. An
+    // optional trailing name overrides the default "<parent> (fork)".
+    const lowerFork = trimmed.toLowerCase();
+    if (lowerFork === "/fork" || lowerFork.startsWith("/fork ")) {
+      setInput("");
+      const store = useSessionStore.getState();
+      const sid = activeSessionId;
+      const label = trimmed.slice("/fork".length).trim() || undefined;
+      const addNotice = (content: string, isError = false) =>
+        store.addMessage(sid, { role: "system", type: "notice", content, is_error: isError });
+      addNotice("⑂ Forking — copying the working directory…");
+      try {
+        const res = await fetch(
+          `${window.location.origin}/api/sessions/${sid}/duplicate`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${store.token}`,
+            },
+            body: JSON.stringify({ label }),
+          }
+        );
+        if (!res.ok) {
+          let detail = `Couldn't fork (HTTP ${res.status}).`;
+          try {
+            const body = await res.json();
+            const d = body?.detail;
+            if (typeof d === "string") detail = d;
+            else if (typeof d?.message === "string") detail = d.message;
+          } catch {
+            /* keep the generic message */
+          }
+          addNotice(detail, true);
+          return;
+        }
+        const fork = await res.json();
+        await handleDuplicated(fork);
+      } catch {
+        addNotice("Couldn't fork — network error.", true);
+      }
+      return;
+    }
+
     // /schedule command — natural-language scheduling. Bare `/schedule` opens
     // the overview; otherwise the whole line goes to the backend, which parses
     // it (explicit "30m …" instantly, else a one-shot AI parse using this
@@ -958,6 +1004,33 @@ export function ChatView({
     }
   };
 
+  // A /fork duplicate was just created (session-fork-copy.md): unlike a rewind,
+  // the parent is UNTOUCHED, so we only add the new session + switch to it and
+  // load its carried-over history. No parent removal, no archive.
+  const handleDuplicated = async (fork: SessionInfo) => {
+    const store = useSessionStore.getState();
+    const next = store.sessions.filter((s) => s.id !== fork.id);
+    next.push(fork);
+    store.setSessions(next);
+    if (fork.agent_id) store.setActiveAgentId(fork.agent_id);
+    store.setActiveSessionId(fork.id);
+    try {
+      const res = await fetch(`${window.location.origin}/api/sessions/${fork.id}`, {
+        headers: { Authorization: `Bearer ${store.token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        store.setMessages(fork.id, data.messages || []);
+        store.setPendingQueue(fork.id, []);
+        store.setPendingQuestions(fork.id, []);
+        if (typeof data.next_message_seq === "number")
+          store.setLastAppliedSeq(fork.id, data.next_message_seq - 1);
+      }
+    } catch {
+      /* ignore — the session is selected regardless */
+    }
+  };
+
   const forkBanner =
     activeSession?.forked_from_session_id != null ? (
       <div
@@ -971,9 +1044,15 @@ export function ChatView({
           Forked from{" "}
           <span className="font-medium text-foreground">
             {forkParentSession?.name ?? "(deleted session)"}
-          </span>{" "}
-          at message{" "}
-          <strong>{(activeSession.fork_after_seq ?? -1) + 1}</strong>
+          </span>
+          {activeSession.fork_is_full_copy ? (
+            <>{" "}— full copy of the working dir</>
+          ) : (
+            <>
+              {" "}at message{" "}
+              <strong>{(activeSession.fork_after_seq ?? -1) + 1}</strong>
+            </>
+          )}
         </span>
         {forkParentSession && (
           <button

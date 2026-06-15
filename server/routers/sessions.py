@@ -2,14 +2,14 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
 from ..harness import BackendForkNotSupported
-from ..models import CreateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
+from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
 from ..session_manager import ForkError, fork_info_fields, session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
 
 def _fork_fields(s) -> dict:
-    """The five public fork fields for SessionInfo, from a live Session."""
+    """The public fork fields for SessionInfo, from a live Session."""
     return fork_info_fields(
         backend=s.backend,
         forked_from_session_id=s.forked_from_session_id,
@@ -233,6 +233,36 @@ async def fork_session(
             revert_files=req.revert_files,
             label=req.label,
         )
+    except ForkError as e:
+        raise HTTPException(
+            e.status_code, detail={"reason": e.reason, "message": str(e)}
+        )
+    except BackendForkNotSupported as e:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "fork_not_supported_on_backend",
+                "backend": e.backend,
+            },
+        )
+    return _to_session_info(fork)
+
+
+@router.post(
+    "/{session_id}/duplicate",
+    response_model=SessionInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def duplicate_session(
+    session_id: str,
+    req: DuplicateSessionRequest,
+    _: str = Depends(verify_token),
+):
+    """`/fork`: duplicate a session onto an independent full copy of its working
+    directory (session-fork-copy.md). The parent is left untouched. 409
+    responses carry a structured `{reason}` / `{reason, backend}` body."""
+    try:
+        fork = await session_manager.duplicate_session(session_id, label=req.label)
     except ForkError as e:
         raise HTTPException(
             e.status_code, detail={"reason": e.reason, "message": str(e)}

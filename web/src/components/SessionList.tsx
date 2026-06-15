@@ -236,7 +236,7 @@ export function SessionList({
           >
             {s.name}
           </span>
-          {showForkChrome && s.fork_after_seq != null && (
+          {showForkChrome && s.fork_after_seq != null && !s.fork_is_full_copy && (
             <span
               className="fork-badge shrink-0 rounded bg-muted px-1 text-[10px] font-mono text-muted-foreground"
               title={`Forked before message ${s.fork_after_seq + 1}`}
