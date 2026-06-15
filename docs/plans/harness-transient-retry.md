@@ -64,20 +64,26 @@ The retry slots into the existing post-turn dispatch, BEFORE the
 
 - A turn is *failed* when it produced an `is_error` result/error event, or
   no result at all.
-- On `is_transient_error(blob)` **AND no output yet** (`not saw_tool_use and
-  not saw_text`): retry the SAME prompt after exponential backoff
+- On `is_transient_error(blob)`, retry after exponential backoff
   (`_TRANSIENT_RETRY_BASE_DELAY * 2**(n-1)`), bounded by
-  `_MAX_TRANSIENT_RETRIES` (2). A discreet system marker is persisted +
-  broadcast each retry; on exhaustion a clear error is surfaced.
+  `_MAX_TRANSIENT_RETRIES` (2), in one of **two modes**:
+  - **No output yet** (`not saw_tool_use and not saw_text`) → re-run the
+    ORIGINAL prompt, restoring the turn-start resume id (a failed no-output
+    attempt may have captured a `session_started` id we must discard).
+  - **Output already streamed** AND a resume id was captured → **RESUME with
+    "continue"** from that id, so we pick up where the turn left off WITHOUT
+    re-running tools or duplicating text.
+  A discreet marker is persisted + broadcast each retry; on exhaustion (or
+  output-without-a-resume-id) a clear error is surfaced.
 
-**Why gate on no-output-yet.** Re-running the prompt is the simplest correct
-recovery only when the failed attempt had no side effects: the dominant
-transient case (overloaded/5xx at the call boundary) emits nothing before
-failing, so re-running is clean. If assistant text already streamed or a
-tool already ran, re-running could duplicate text or re-execute a tool — so
-we don't auto-retry then; the error surfaces and the user decides. (This is
-the inverse of the premature-exit recovery, which RESUMES with "continue"
-specifically because it fires only after a `tool_use`.)
+**Why two modes (corrected).** The first cut gated retry on *no output yet* and
+let a mid-turn throttle simply stop the session — but a long agent turn almost
+always emits tool calls / text before being throttled, so that was the common
+failure, not the rare one. Re-running the prompt after partial work would
+duplicate it, so for that case we instead RESUME the conversation with
+"continue" (the same mechanism as the premature-exit recovery) — bounded and
+backed off — which recovers the turn safely. Re-running the original prompt is
+reserved for the clean no-output case.
 
 The backoff `sleep` is a normal `await` inside the turn, so a user interrupt
 cancels it like any in-flight turn.

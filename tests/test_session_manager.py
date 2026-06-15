@@ -1713,9 +1713,10 @@ async def test_transient_error_bounded_then_surfaces(manager, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_transient_error_after_output_does_not_retry(manager, monkeypatch):
-    """If assistant text already streamed, a transient failure must NOT trigger
-    an automatic re-run (it would duplicate output) — it surfaces instead."""
+async def test_transient_error_after_output_resumes_with_continue(manager, monkeypatch):
+    """A transient failure AFTER output (the common mid-turn throttle) must
+    retry by RESUMING with "continue" from the captured resume id — not re-run
+    the prompt (which would duplicate) and not stop the session."""
     from server.harness import HarnessEvent
 
     monkeypatch.setattr(type(manager), "_TRANSIENT_RETRY_BASE_DELAY", 0.0)
@@ -1723,20 +1724,24 @@ async def test_transient_error_after_output_does_not_retry(manager, monkeypatch)
     session = await manager.create_session(
         agent["id"], "TransientAfterOutput", None, backend="claude-code"
     )
-    only = _SeqBackend(
-        events=[
-            HarnessEvent(type="text", content="partial answer"),
-            HarnessEvent(type="result", is_error=True,
-                         content="API Error: 500 internal server error"),
-        ]
-    )
-    # A second backend would only be pulled if a retry (wrongly) fired.
-    monkeypatch.setattr(manager, "_make_run", _seq_factory([only]))
+    attempt1 = _SeqBackend(events=[
+        HarnessEvent(type="session_started", session_id="sid1"),
+        HarnessEvent(type="tool_use", tool_name="Bash", tool_input={}, tool_use_id="t1"),
+        HarnessEvent(type="result", is_error=True,
+                     content="API Error: Server is temporarily limiting requests "
+                             "(not your usage limit) · Rate limited"),
+    ])
+    attempt2 = _SeqBackend(events=[HarnessEvent(type="result", is_error=False, session_id="sid1")])
+    monkeypatch.setattr(manager, "_make_run", _seq_factory([attempt1, attempt2]))
 
     events = [e async for e in manager._run_backend(session, "hi")]
 
-    assert not any(e.get("code") in ("transient_retry", "transient_exhausted")
-                   for e in events)
+    assert any(e.get("code") == "transient_retry" for e in events)
+    assert not any(e.get("code") == "transient_exhausted" for e in events)
+    # The retry RESUMED the conversation: "continue" against the captured id,
+    # not a re-run of the original prompt.
+    assert attempt2.started_with == "continue"
+    assert attempt2.started_resume == "sid1"
 
 
 # --------------------------------------------------------------- turn watchdog

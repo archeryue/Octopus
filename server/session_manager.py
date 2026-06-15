@@ -1965,40 +1965,48 @@ class SessionManager:
                     return
 
                 # (b) Transient provider-reliability failure (5xx / overloaded /
-                # dropped connection) → retry the SAME prompt with backoff,
-                # bounded. Gated on no output yet (no assistant text, no
-                # tool_use): re-running a clean immediate failure is
-                # side-effect-free, whereas re-running after partial work could
-                # duplicate text or re-execute a tool. Quota/credit errors match
-                # no pattern here, so they fall through and surface as-is.
+                # dropped connection / server-side throttle) → bounded retry.
+                # TWO modes, by whether the turn already produced output:
+                #   - NO output yet → re-run the ORIGINAL prompt from the
+                #     turn-start resume state (side-effect-free; discard any
+                #     resume id a failed no-output attempt captured — Vera).
+                #   - output already streamed (tool_use/text) AND a resume id
+                #     was captured → RESUME with "continue" so we pick up where
+                #     it left off WITHOUT re-running tools or duplicating text.
+                #     This is the common case: a long agent turn throttled
+                #     mid-flight — the earlier no-output-only gate let it stop.
+                # Quota/credit errors match no pattern here → surface as-is.
                 # harness-transient-retry.md §4.
-                if (
-                    not saw_tool_use
-                    and not saw_text
-                    and harness.is_transient_error(error_blob)
-                ):
-                    if transient_attempts < self._MAX_TRANSIENT_RETRIES:
+                if harness.is_transient_error(error_blob):
+                    produced_output = saw_tool_use or saw_text
+                    can_retry = (
+                        transient_attempts < self._MAX_TRANSIENT_RETRIES
+                        and (not produced_output or bool(session.claude_session_id))
+                    )
+                    if can_retry:
                         transient_attempts += 1
                         delay = self._TRANSIENT_RETRY_BASE_DELAY * (
                             2 ** (transient_attempts - 1)
                         )
                         logger.warning(
                             "Session %s: transient backend error; retrying in "
-                            "%.1fs (attempt %d/%d)",
+                            "%.1fs (attempt %d/%d, resume=%s)",
                             session.id, delay, transient_attempts,
-                            self._MAX_TRANSIENT_RETRIES,
+                            self._MAX_TRANSIENT_RETRIES, produced_output,
                         )
-                        # Re-run the ORIGINAL invocation: discard any resume id
-                        # the failed no-output attempt captured, restoring the
-                        # turn-start resume state so the retry isn't a
-                        # `--resume <failed-id>` of the same prompt (Vera review).
-                        if session.claude_session_id != resume_at_turn_start:
-                            session.claude_session_id = resume_at_turn_start
-                            if self.db:
-                                await self.db.update_session_field(
-                                    session.id,
-                                    claude_session_id=resume_at_turn_start,
-                                )
+                        if produced_output:
+                            # Continue the in-progress conversation from its
+                            # captured resume id — no re-run, no duplication.
+                            current_prompt = "continue"
+                        else:
+                            current_prompt = prompt  # original invocation
+                            if session.claude_session_id != resume_at_turn_start:
+                                session.claude_session_id = resume_at_turn_start
+                                if self.db:
+                                    await self.db.update_session_field(
+                                        session.id,
+                                        claude_session_id=resume_at_turn_start,
+                                    )
                         yield await self._surface_transient_retry(
                             session,
                             attempt=transient_attempts,
@@ -2006,9 +2014,10 @@ class SessionManager:
                             delay=delay,
                         )
                         await asyncio.sleep(delay)
-                        continue  # re-run the SAME prompt
-                    # Budget exhausted — surface a clear error so the user knows
-                    # it wasn't their request that failed.
+                        continue
+                    # Budget exhausted (or output with no resume id to continue
+                    # from) — surface a clear error so the user knows it wasn't
+                    # their request that failed.
                     yield await self._surface_transient_exhausted(
                         session, backend=harness.backend, attempts=transient_attempts
                     )
@@ -2521,10 +2530,16 @@ class SessionManager:
         so a provider-side blip doesn't read as a silent failure of the user's
         request (harness-transient-retry.md §4)."""
         display = self._BACKEND_DISPLAY.get(backend, backend)
+        if attempts > 0:
+            tail = (
+                f"kept failing with a transient error after {attempts} "
+                f"{'retry' if attempts == 1 else 'retries'}"
+            )
+        else:
+            tail = "hit a transient error mid-turn and couldn't be safely resumed"
         human = (
-            f"The {display} backend kept failing with a transient error after "
-            f"{attempts} {'retry' if attempts == 1 else 'retries'}. This is a "
-            "provider-side issue, not your request — please try again in a moment."
+            f"The {display} backend {tail}. This is a provider-side issue, not "
+            "your request — please try again in a moment."
         )
         seq = await self._persist_message(
             session,
