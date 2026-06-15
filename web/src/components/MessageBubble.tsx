@@ -145,11 +145,11 @@ export function MessageBubble({
                     type="button"
                     data-testid="fork-from-here"
                     className="fork-from-here inline-flex items-center gap-1 font-normal text-muted-foreground/70 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
-                    title="Fork from here — rewind to this message and redo it"
+                    title="Rewind to this message and redo it"
                     onClick={() => onFork(message.seq as number)}
                   >
                     <IconGitFork size={12} />
-                    Fork from here
+                    Rewind to here
                   </button>
                 )}
                 <span>You</span>

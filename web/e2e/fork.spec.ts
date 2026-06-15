@@ -74,7 +74,7 @@ test("fork from a user message opens a prefilled, banner-marked branch", async (
     .click();
   await expect(page.locator(".chat-header h3")).toHaveText("Fork E2E Parent");
 
-  // Hover the SECOND user message and click its "Fork from here" affordance.
+  // Hover the SECOND user message and click its "Rewind to here" affordance.
   const secondUserMsg = page.locator(".msg-user").nth(1);
   await expect(secondUserMsg).toContainText("second question about tests");
   await secondUserMsg.hover();

@@ -337,7 +337,7 @@ export function ForkDialog({
         <div className="mb-3 flex items-center gap-2">
           <IconGitFork size={18} className="text-primary" />
           <h3 className="flex-1 text-base font-semibold text-foreground">
-            {inConfirm ? "Create fork" : "Fork from a message"}
+            {inConfirm ? "Rewind to this message" : "Rewind to a message"}
           </h3>
           <button
             type="button"
@@ -356,7 +356,7 @@ export function ForkDialog({
             </p>
             {userMsgs.length === 0 && (
               <p className="text-xs italic text-muted-foreground/60">
-                No user messages to fork from.
+                No user messages to rewind to.
               </p>
             )}
             {/* Scrollable list — long conversations can have many turns. */}
@@ -411,7 +411,7 @@ export function ForkDialog({
               disabled={!preview || creating}
               onClick={createFork}
             >
-              {creating ? "Creating…" : "Create fork"}
+              {creating ? "Rewinding…" : "Rewind"}
             </Button>
           )}
         </div>
