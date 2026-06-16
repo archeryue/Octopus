@@ -97,6 +97,24 @@ describe("sessionStore", () => {
     expect(useSessionStore.getState().connected).toBe(true);
   });
 
+  it("records and clears deferred /fork intents per session", () => {
+    const { setPendingFork, clearPendingFork } = useSessionStore.getState();
+    setPendingFork("s1", "my fork");
+    setPendingFork("s2", null);
+    expect(useSessionStore.getState().pendingForks).toEqual({
+      s1: { label: "my fork" },
+      s2: { label: null },
+    });
+    // Re-setting overwrites the label for that session.
+    setPendingFork("s1", "renamed");
+    expect(useSessionStore.getState().pendingForks.s1).toEqual({ label: "renamed" });
+    // Clear is per-session and idempotent.
+    clearPendingFork("s1");
+    expect(useSessionStore.getState().pendingForks).toEqual({ s2: { label: null } });
+    clearPendingFork("s1");
+    expect(useSessionStore.getState().pendingForks).toEqual({ s2: { label: null } });
+  });
+
   it("upsertBgTask appends new tasks and patches existing by id", () => {
     const { upsertBgTask } = useSessionStore.getState();
     const base = {

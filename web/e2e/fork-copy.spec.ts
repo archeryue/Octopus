@@ -13,7 +13,12 @@ import { join } from "path";
 
 const TOKEN = "changeme";
 const API = "http://localhost:8765/api";
-const OWNED = new Set(["Fork-Copy E2E Parent", "copy"]);
+const OWNED = new Set([
+  "Fork-Copy E2E Parent",
+  "copy",
+  "Deferred Fork Parent",
+  "deferred-fork",
+]);
 const cleanupDirs: string[] = [];
 
 test.afterAll(async ({ request }) => {
@@ -114,4 +119,75 @@ test("/fork duplicates onto a copied dir; the original session stays", async ({
   await expect(
     page.locator(".session-item .session-name").getByText("copy", { exact: true })
   ).toBeVisible();
+});
+
+async function createSessionWithDir(
+  request: APIRequestContext,
+  name: string,
+  workingDir: string
+): Promise<{ id: string }> {
+  const res = await request.post(`${API}/sessions`, {
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    data: { name, working_dir: workingDir },
+  });
+  expect(res.ok()).toBeTruthy();
+  return res.json();
+}
+
+// Deferred /fork: typing /fork while a turn is running must NOT refuse — it
+// queues the fork and fires it once the session goes idle. Real LLM turn, so
+// it carries @llm (excluded from the :fast bucket).
+test.describe("Deferred /fork @llm", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  test("/fork while running queues, then fires when the session goes idle", async ({
+    page,
+    request,
+  }) => {
+    const srcDir = mkdtempSync(join(tmpdir(), "octo-deferfork-"));
+    cleanupDirs.push(srcDir);
+    writeFileSync(join(srcDir, "hello.txt"), "original\n");
+
+    await createSessionWithDir(request, "Deferred Fork Parent", srcDir);
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Deferred Fork Parent" })
+      .click();
+    await expect(page.locator(".chat-header h3")).toHaveText("Deferred Fork Parent");
+
+    const input = page.locator(".chat-input-bar textarea");
+    // Force a tool-use turn with sleeps so the run is genuinely still going
+    // when we type /fork (a plain text prompt finishes too fast to catch).
+    await input.fill(
+      "Use the Bash tool to run `sleep 5`, then say: done forking test"
+    );
+    await page.locator("button.btn-send").click();
+
+    // Wait for the run to start (cold-start a real CLI can be slow under load).
+    await expect(page.locator(".status-badge.status-running")).toBeVisible({
+      timeout: 60_000,
+    });
+
+    // Type /fork WHILE running → it must queue, not error.
+    await input.fill("/fork deferred-fork");
+    await input.press("Enter");
+    await expect(
+      page.locator(".notice-pill", { hasText: "Fork queued" }).first()
+    ).toBeVisible();
+    // No fork session exists yet — it's only an intent.
+    await expect(
+      page.locator(".session-item .session-name").getByText("deferred-fork", { exact: true })
+    ).toHaveCount(0);
+
+    // Once the turn finishes and the session is idle, the deferred fork fires
+    // and (we're still on the parent) switches us into it with the full-copy
+    // banner. Generous timeout: the sleep turn + a possible bg follow-up.
+    await expect(page.locator('[data-testid="fork-banner"]')).toBeVisible({
+      timeout: 120_000,
+    });
+    await expect(page.locator('[data-testid="fork-banner"]')).toContainText(
+      "full copy of the working dir"
+    );
+    await expect(page.locator(".chat-header h3")).toHaveText("deferred-fork");
+  });
 });

@@ -27,6 +27,7 @@ import {
   type SlashCommand,
 } from "./SlashCommandMenu";
 import { Button } from "./ui/button";
+import { isSessionBusy } from "../lib/deferredFork";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -127,6 +128,32 @@ export function ChatView({
   const pendingQuestions = activeSessionId
     ? (pendingQuestionsMap[activeSessionId] ?? EMPTY_QUESTIONS)
     : EMPTY_QUESTIONS;
+  const pendingForksMap = useSessionStore((s) => s.pendingForks);
+  // Forks whose POST is currently in flight — guards the watcher against
+  // double-firing the same deferred fork across re-renders.
+  const forksInFlight = useRef<Set<string>>(new Set());
+  // Bounded backoff for the 409-race retry path: per-session attempt count +
+  // outstanding retry timers, and a tick that re-runs the watcher when a
+  // backoff elapses (the frontend may see the session as idle while the
+  // backend is still briefly busy for a reason isSessionBusy can't see — an
+  // active delegation, another tab's fork — so we can't rely on a store change
+  // to re-trigger). See the deferred-fork watcher below.
+  const forkAttempts = useRef<Map<string, number>>(new Map());
+  const forkRetryTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map()
+  );
+  const [forkRetryTick, setForkRetryTick] = useState(0);
+  // Drop a session's deferred-fork backoff state (pending timer + attempt
+  // count) — called whenever its intent is resolved or abandoned so a stale
+  // timer can't re-fire it. Closes over stable refs; safe to recreate.
+  const clearForkBackoff = (sid: string) => {
+    const t = forkRetryTimers.current.get(sid);
+    if (t !== undefined) {
+      clearTimeout(t);
+      forkRetryTimers.current.delete(sid);
+    }
+    forkAttempts.current.delete(sid);
+  };
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   // Scroll to the bottom when switching into a session whose history has
@@ -443,6 +470,10 @@ export function ChatView({
         const store = useSessionStore.getState();
         store.setPendingQuestions(activeSessionId, []);
         store.setPendingQueue(activeSessionId, []);
+        // A reset is a recovery action — drop any deferred /fork for this
+        // session so it doesn't fire once the reset lands it back at idle.
+        store.clearPendingFork(activeSessionId);
+        clearForkBackoff(activeSessionId);
       } catch {
         // best-effort — if the request itself fails the session stays as-is
       }
@@ -472,6 +503,9 @@ export function ChatView({
         // on both removal AND insertion so the two paths converge to
         // the same list regardless of arrival order.
         const store = useSessionStore.getState();
+        // The archived session is going away — drop any deferred /fork for it.
+        store.clearPendingFork(activeSessionId);
+        clearForkBackoff(activeSessionId);
         const next = store.sessions.filter(
           (s) => s.id !== activeSessionId && s.id !== fresh.id
         );
@@ -497,48 +531,32 @@ export function ChatView({
     }
 
     // /fork [name] — duplicate the whole session onto an INDEPENDENT full copy
-    // of its working dir (session-fork-copy.md). The parent stays put; we add
-    // the new session, switch to it, and load its carried-over history. An
-    // optional trailing name overrides the default "<parent> (fork)".
+    // of its working dir (session-fork-copy.md). A consistent copy + resume
+    // transcript needs a SETTLED session, so we can't fork mid-turn. Rather
+    // than refuse, we ALWAYS record the intent and let the single watcher fire
+    // it: immediately if idle, or once the session goes idle + its queue drains
+    // if busy. Recording the intent (never POSTing directly here) is what makes
+    // a 409 race recoverable — the watcher owns retry. Optional trailing name
+    // overrides the default "<parent> (fork)".
     const lowerFork = trimmed.toLowerCase();
     if (lowerFork === "/fork" || lowerFork.startsWith("/fork ")) {
       setInput("");
       const store = useSessionStore.getState();
       const sid = activeSessionId;
       const label = trimmed.slice("/fork".length).trim() || undefined;
-      const addNotice = (content: string, isError = false) =>
-        store.addMessage(sid, { role: "system", type: "notice", content, is_error: isError });
-      addNotice("⑂ Forking — copying the working directory…");
-      try {
-        const res = await fetch(
-          `${window.location.origin}/api/sessions/${sid}/duplicate`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${store.token}`,
-            },
-            body: JSON.stringify({ label }),
-          }
-        );
-        if (!res.ok) {
-          let detail = `Couldn't fork (HTTP ${res.status}).`;
-          try {
-            const body = await res.json();
-            const d = body?.detail;
-            if (typeof d === "string") detail = d;
-            else if (typeof d?.message === "string") detail = d.message;
-          } catch {
-            /* keep the generic message */
-          }
-          addNotice(detail, true);
-          return;
-        }
-        const fork = await res.json();
-        await handleDuplicated(fork);
-      } catch {
-        addNotice("Couldn't fork — network error.", true);
-      }
+      const busy = isSessionBusy(
+        activeSession?.status,
+        pendingQueueMap[sid]?.length ?? 0,
+        pendingQuestionsMap[sid]?.length ?? 0
+      );
+      store.setPendingFork(sid, label ?? null);
+      store.addMessage(sid, {
+        role: "system",
+        type: "notice",
+        content: busy
+          ? "⑂ Fork queued — it'll run when this session goes idle."
+          : "⑂ Forking — copying the working directory…",
+      });
       return;
     }
 
@@ -1005,13 +1023,29 @@ export function ChatView({
   };
 
   // A /fork duplicate was just created (session-fork-copy.md): unlike a rewind,
-  // the parent is UNTOUCHED, so we only add the new session + switch to it and
-  // load its carried-over history. No parent removal, no archive.
-  const handleDuplicated = async (fork: SessionInfo) => {
+  // the parent is UNTOUCHED, so we only add the new session to the list. When
+  // `switchTo` (the foreground case — the user just typed /fork here), we also
+  // make it active and load its carried-over history; when false (a deferred
+  // fork firing while the user is reading elsewhere) we add it quietly and post
+  // a notice on the parent instead of yanking the view away.
+  const handleDuplicated = async (
+    fork: SessionInfo,
+    { switchTo }: { switchTo: boolean } = { switchTo: true }
+  ) => {
     const store = useSessionStore.getState();
     const next = store.sessions.filter((s) => s.id !== fork.id);
     next.push(fork);
     store.setSessions(next);
+    if (!switchTo) {
+      const parentId = fork.forked_from_session_id;
+      if (parentId)
+        store.addMessage(parentId, {
+          role: "system",
+          type: "notice",
+          content: `⑂ Fork ready — “${fork.name}”. Open it from the sidebar.`,
+        });
+      return;
+    }
     if (fork.agent_id) store.setActiveAgentId(fork.agent_id);
     store.setActiveSessionId(fork.id);
     try {
@@ -1030,6 +1064,144 @@ export function ChatView({
       /* ignore — the session is selected regardless */
     }
   };
+
+  // POST the duplicate for `sid` and open it. Returns "ok" | "retry" | "fail".
+  // "retry" means the backend's idle-guard rejected us (a turn / delegation
+  // slipped in between our check and the POST) — the caller keeps the pending
+  // fork and schedules a retry. `switchTo` is false for the deferred path
+  // (don't steal focus). Sole caller is the watcher.
+  const runFork = async (
+    sid: string,
+    label: string | undefined,
+    { switchTo }: { switchTo: boolean }
+  ): Promise<"ok" | "retry" | "fail"> => {
+    const store = useSessionStore.getState();
+    const addNotice = (content: string, isError = false) =>
+      store.addMessage(sid, { role: "system", type: "notice", content, is_error: isError });
+    try {
+      const res = await fetch(
+        `${window.location.origin}/api/sessions/${sid}/duplicate`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${store.token}`,
+          },
+          body: JSON.stringify({ label }),
+        }
+      );
+      if (!res.ok) {
+        let reason = "";
+        let detail = `Couldn't fork (HTTP ${res.status}).`;
+        try {
+          const body = await res.json();
+          const d = body?.detail;
+          if (typeof d === "string") detail = d;
+          else if (d && typeof d === "object") {
+            reason = d.reason ?? "";
+            if (typeof d.message === "string") detail = d.message;
+          }
+        } catch {
+          /* keep the generic message */
+        }
+        if (res.status === 409 && reason === "fork_blocked_parent_turn_active")
+          return "retry";
+        store.clearPendingFork(sid);
+        addNotice(detail, true);
+        return "fail";
+      }
+      const fork = await res.json();
+      store.clearPendingFork(sid);
+      await handleDuplicated(fork, { switchTo });
+      return "ok";
+    } catch {
+      // Network error — don't strand a deferred fork forever; surface it.
+      store.clearPendingFork(sid);
+      addNotice("Couldn't fork — network error.", true);
+      return "fail";
+    }
+  };
+
+  // Deferred-fork watcher (session-fork-copy.md): the SOLE executor of every
+  // /fork — the command handler only records the intent in `pendingForks`, and
+  // this fires it the moment its session is idle AND its queue / question
+  // prompts drain. Re-runs whenever a session's status / queue changes, or a
+  // backoff tick elapses. `forksInFlight` prevents double-firing across renders
+  // and effect re-runs while the POST is in flight. A "retry" (the backend
+  // idle-guard rejected a race the frontend couldn't see) schedules a bounded
+  // backoff re-attempt; after MAX_FORK_RETRIES we give up with a notice rather
+  // than spin or strand the intent forever.
+  useEffect(() => {
+    const MAX_FORK_RETRIES = 6;
+    for (const sid of Object.keys(pendingForksMap)) {
+      if (forksInFlight.current.has(sid)) continue;
+      // Honor an in-progress backoff: while a retry timer is pending, an
+      // unrelated re-render must NOT jump the cooldown and POST early (Vera
+      // review). The timer's own callback re-runs this effect when it elapses.
+      if (forkRetryTimers.current.has(sid)) continue;
+      const sess = sessions.find((s) => s.id === sid);
+      if (!sess) {
+        // The parent vanished (archived/deleted) before the fork could run.
+        useSessionStore.getState().clearPendingFork(sid);
+        clearForkBackoff(sid);
+        continue;
+      }
+      const busy = isSessionBusy(
+        sess.status,
+        pendingQueueMap[sid]?.length ?? 0,
+        pendingQuestionsMap[sid]?.length ?? 0
+      );
+      if (busy) continue;
+      forksInFlight.current.add(sid);
+      const label = pendingForksMap[sid].label ?? undefined;
+      const switchTo = useSessionStore.getState().activeSessionId === sid;
+      void runFork(sid, label, { switchTo })
+        .then((result) => {
+          if (result === "retry") {
+            // The intent may have been cleared (e.g. /reset or /archive) while
+            // this in-flight POST was resolving — don't schedule a retry for a
+            // fork nobody's waiting on (Vera review nit).
+            if (!useSessionStore.getState().pendingForks[sid]) {
+              clearForkBackoff(sid);
+              return;
+            }
+            const n = (forkAttempts.current.get(sid) ?? 0) + 1;
+            if (n > MAX_FORK_RETRIES) {
+              clearForkBackoff(sid);
+              useSessionStore.getState().clearPendingFork(sid);
+              useSessionStore.getState().addMessage(sid, {
+                role: "system",
+                type: "notice",
+                content:
+                  "Couldn't fork — the session stayed busy. Try /fork again.",
+                is_error: true,
+              });
+              return;
+            }
+            forkAttempts.current.set(sid, n);
+            const delay = Math.min(8000, 400 * 2 ** n);
+            const t = setTimeout(() => {
+              // Only retire the timer if it's still the one we scheduled (a
+              // later resolution may have replaced/cleared it).
+              if (forkRetryTimers.current.get(sid) === t)
+                forkRetryTimers.current.delete(sid);
+              setForkRetryTick((v) => v + 1); // re-run this effect
+            }, delay);
+            forkRetryTimers.current.set(sid, t);
+          } else {
+            clearForkBackoff(sid); // ok / hard-fail → reset backoff
+          }
+        })
+        .finally(() => forksInFlight.current.delete(sid));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingForksMap, sessions, pendingQueueMap, pendingQuestionsMap, forkRetryTick]);
+
+  // Clear any outstanding fork-retry timers on unmount.
+  useEffect(() => {
+    const timers = forkRetryTimers.current;
+    return () => timers.forEach((t) => clearTimeout(t));
+  }, []);
 
   const forkBanner =
     activeSession?.forked_from_session_id != null ? (

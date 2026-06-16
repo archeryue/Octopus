@@ -138,6 +138,15 @@ interface SessionStore {
   dequeuePending: (sessionId: string) => void;
   clearPending: (sessionId: string) => void;
 
+  // Deferred /fork requests (session-fork-copy.md). When `/fork` is typed
+  // while a session is busy, we record the intent here instead of erroring;
+  // a watcher fires the duplicate once the session goes idle + drained.
+  // Keyed by the PARENT session id → the requested label (null = default
+  // name). Tab-scoped (not persisted) — closing the tab drops it.
+  pendingForks: Record<string, { label: string | null }>;
+  setPendingFork: (sessionId: string, label: string | null) => void;
+  clearPendingFork: (sessionId: string) => void;
+
   // Active AskUserQuestion prompts waiting for the user's answer.
   pendingQuestions: Record<string, PendingQuestion[]>;
   setPendingQuestions: (sessionId: string, qs: PendingQuestion[]) => void;
@@ -370,6 +379,19 @@ export const useSessionStore = create<SessionStore>((set) => ({
       const next = { ...s.pendingQueue };
       delete next[sessionId];
       return { pendingQueue: next };
+    }),
+
+  pendingForks: {},
+  setPendingFork: (sessionId, label) =>
+    set((s) => ({
+      pendingForks: { ...s.pendingForks, [sessionId]: { label } },
+    })),
+  clearPendingFork: (sessionId) =>
+    set((s) => {
+      if (!s.pendingForks[sessionId]) return s;
+      const next = { ...s.pendingForks };
+      delete next[sessionId];
+      return { pendingForks: next };
     }),
 
   pendingQuestions: {},
