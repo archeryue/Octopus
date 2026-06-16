@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   IconCheck,
-  IconChevronDown,
-  IconChevronRight,
   IconCopy,
   IconEye,
   IconEyeOff,
-  IconGitFork,
   IconSubtask,
   IconX,
 } from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
-import { buildForkTree, type ForkTreeNode } from "../lib/forkTree";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -34,8 +30,6 @@ export function SessionList({
   const [credentialId, setCredentialId] = useState<string>("");
   const [backend, setBackend] = useState<string>("claude-code");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  // Fork subtrees default to expanded; clicking the triangle collapses one.
-  const [collapsedForks, setCollapsedForks] = useState<Set<string>>(new Set());
 
   const token = useSessionStore((s) => s.token);
   const sessions = useSessionStore((s) => s.sessions);
@@ -160,28 +154,11 @@ export function SessionList({
     }
   };
 
-  const toggleCollapse = (id: string) =>
-    setCollapsedForks((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
-  // One session row + its fork subtree (session-tree-rewind.md §6.3). A fork is
-  // a rewind: its parent is archived on creation, so the fork normally renders
-  // as a plain top-level root. Nesting (a disclosure triangle + an "@msg N"
-  // branch badge) only re-appears when the parent is present — e.g. after it's
-  // been unarchived.
-  const renderForkNode = (node: ForkTreeNode, depth: number) => {
-    const s = node.session;
-    const hasChildren = node.children.length > 0;
-    const collapsed = collapsedForks.has(s.id);
-    // Fork chrome (the git-fork icon + "@msg N" badge) is only meaningful when
-    // the fork sits beneath its parent in the tree — i.e. it's nested (depth >
-    // 0). A rewind fork whose parent is archived renders as a top-level root
-    // and is shown as a plain session, indistinguishable from the original.
-    const showForkChrome = depth > 0;
+  // Every session is a flat, EQUAL row in the sidebar — no parent/child
+  // nesting, no fork chrome. A /fork duplicate or /rewind branch is just
+  // another session; its lineage lives in the chat-header fork banner, not as
+  // sidebar hierarchy (user preference: sidebar sessions never look nested).
+  const renderSessionRow = (s: SessionInfo) => {
     return (
       <div key={s.id} className="fork-node">
         <div
@@ -190,29 +167,8 @@ export function SessionList({
               ? "active bg-[hsl(var(--gray-200))] text-foreground"
               : "text-sidebar-foreground hover:bg-sidebar-accent"
           }`}
-          style={{ paddingLeft: `${0.5 + depth * 0.85}rem` }}
           onClick={() => selectSession(s.id)}
         >
-          {hasChildren ? (
-            <button
-              type="button"
-              className="fork-disclosure inline-flex items-center text-muted-foreground/70 hover:text-foreground"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleCollapse(s.id);
-              }}
-              title={collapsed ? "Expand forks" : "Collapse forks"}
-              aria-label={collapsed ? "Expand forks" : "Collapse forks"}
-            >
-              {collapsed ? (
-                <IconChevronRight size={12} />
-              ) : (
-                <IconChevronDown size={12} />
-              )}
-            </button>
-          ) : (
-            <span className="inline-block w-3 shrink-0" />
-          )}
           <span
             className={`status-dot status-${s.status} inline-block size-2 rounded-full shrink-0 ${
               s.status === "running"
@@ -222,13 +178,6 @@ export function SessionList({
                 : "bg-muted-foreground/40"
             }`}
           />
-          {showForkChrome && (
-            <IconGitFork
-              size={11}
-              className="fork-marker shrink-0 text-muted-foreground/70"
-              aria-hidden
-            />
-          )}
           <span
             className={`session-name truncate text-sm flex-1 ${
               s.id === activeSessionId ? "font-medium" : ""
@@ -236,14 +185,6 @@ export function SessionList({
           >
             {s.name}
           </span>
-          {showForkChrome && s.fork_after_seq != null && !s.fork_is_full_copy && (
-            <span
-              className="fork-badge shrink-0 rounded bg-muted px-1 text-[10px] font-mono text-muted-foreground"
-              title={`Forked before message ${s.fork_after_seq + 1}`}
-            >
-              @msg {s.fork_after_seq + 1}
-            </span>
-          )}
           {s.origin === "delegation" && (
             <span
               className="delegation-marker inline-flex items-center text-muted-foreground/80"
@@ -278,17 +219,13 @@ export function SessionList({
             </button>
           </div>
         </div>
-        {hasChildren &&
-          !collapsed &&
-          node.children.map((c) => renderForkNode(c, depth + 1))}
       </div>
     );
   };
 
-  const renderForkForest = (list: SessionInfo[]) => {
-    const roots = buildForkTree(list);
-    return <>{roots.map((n) => renderForkNode(n, 0))}</>;
-  };
+  const renderForkForest = (list: SessionInfo[]) => (
+    <>{list.map(renderSessionRow)}</>
+  );
 
   return (
     <div className="session-list session-list-nested ml-3 mt-0.5 mb-1 pl-2 border-l border-sidebar-border/40">
