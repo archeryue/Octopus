@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 
 class ForkError(Exception):
     """A fork request was rejected for a reason the route maps to a status
-    code (session-tree-rewind.md §5.1). `reason` is a stable machine token;
+    code (session-rewind.md §5.1). `reason` is a stable machine token;
     `status_code` is the HTTP status the route should return."""
 
     def __init__(self, message: str, *, reason: str, status_code: int = 400) -> None:
@@ -84,7 +84,7 @@ def resolve_working_dir(working_dir: str | None) -> str:
 def _session_fork_kwargs(row: dict[str, Any]) -> dict[str, Any]:
     """Extract the six persisted fork columns from a `load_sessions` row dict
     into Session(**…) kwargs. Centralised so every Session-from-row site stays
-    in lock-step (session-tree-rewind.md §4)."""
+    in lock-step (session-rewind.md §4)."""
     return {
         "forked_from_session_id": row.get("forked_from_session_id"),
         "fork_after_seq": row.get("fork_after_seq"),
@@ -104,7 +104,7 @@ def fork_info_fields(
     fork_revert_record: str | None,
 ) -> dict[str, Any]:
     """The fork-related fields exposed on `SessionInfo`
-    (session-tree-rewind.md §4). `can_fork` comes from the harness profile;
+    (session-rewind.md §4). `can_fork` comes from the harness profile;
     `fork_prefilled_prompt` is read out of the ephemeral `fork_metadata` blob
     (while non-null); `fork_revert_record` is the durable revert outcome.
     fork_status / fork_needs_replay / the raw blob stay server-internal."""
@@ -134,7 +134,7 @@ def fork_info_fields(
         "fork_prefilled_prompt": prefilled,
         "fork_revert_record": revert,
         # A /fork copy-dir duplicate vs a /rewind branch — the UI renders the
-        # fork banner / sidebar badge differently (session-fork-copy.md).
+        # fork banner / sidebar badge differently (session-fork.md).
         "fork_is_full_copy": full_copy,
     }
 
@@ -211,7 +211,7 @@ class Session:
     # The original delegation prompt, kept verbatim for UI display on
     # delegation sessions. NULL elsewhere.
     delegation_request: str | None = None
-    # Session tree-rewind / fork (session-tree-rewind.md §4). All NULL/False
+    # Session tree-rewind / fork (session-rewind.md §4). All NULL/False
     # on non-fork sessions. fork_metadata / fork_revert_record hold raw JSON
     # strings (parsed lazily); fork_status drives crash recovery.
     forked_from_session_id: str | None = None
@@ -222,7 +222,7 @@ class Session:
     fork_status: str | None = None
     _message_count: int = field(default=0, repr=False)
     # Set True for the lifetime of a fork-create saga against this session as
-    # the PARENT (session-tree-rewind.md §5.4). start_message() refuses while
+    # the PARENT (session-rewind.md §5.4). start_message() refuses while
     # set; cleared in fork_session's finally. A real mutex even though
     # start_message sets _active_task without holding _lock.
     _forking: bool = field(default=False, repr=False)
@@ -293,7 +293,7 @@ class SessionManager:
             session._message_count = await db.count_messages(session.id)
             self.sessions[session.id] = session
         logger.info("Loaded %d sessions from database", len(rows))
-        # Sweep forks left mid-saga by a crash (session-tree-rewind.md §5.6.7).
+        # Sweep forks left mid-saga by a crash (session-rewind.md §5.6.7).
         await self._recover_incomplete_forks()
         # Sweep delegation children orphaned by a restart (agent-collaboration.md §5.2).
         await self._recover_orphaned_delegations()
@@ -318,7 +318,7 @@ class SessionManager:
         return self.sessions.get(session_id)
 
     async def _recover_incomplete_forks(self) -> None:
-        """Sweep forks left mid-saga by a crash (session-tree-rewind.md §5.6.7).
+        """Sweep forks left mid-saga by a crash (session-rewind.md §5.6.7).
         Dispatch on `fork_status`:
           - 'initializing': PURGE in order — (1) call the harness cleanup hook
             so backend-specific artifacts go via the harness (no reach into
@@ -382,7 +382,7 @@ class SessionManager:
                 self.sessions.pop(fork_id, None)
                 # A /fork duplicate owns a private working-dir copy under
                 # ~/.octopus/fork/ — remove it too so an abandoned saga doesn't
-                # leak the copied tree (session-fork-copy.md). A /rewind fork
+                # leak the copied tree (session-fork.md). A /rewind fork
                 # shares the parent's dir, which `_is_fork_copy_dir` excludes.
                 if self._is_fork_copy_dir(row["working_dir"]):
                     shutil.rmtree(row["working_dir"], ignore_errors=True)
@@ -462,13 +462,13 @@ class SessionManager:
     # Durable fork_metadata keys that survive first-turn cleanup. `full_copy`
     # (+ its `duplicated_from` companion) is a permanent identity of a /fork
     # copy-dir duplicate — it drives the UI banner/badge for the session's whole
-    # life (session-fork-copy.md). Everything else in the blob (e.g.
+    # life (session-fork.md). Everything else in the blob (e.g.
     # `prefilled_prompt`) is ephemeral first-turn state.
     _DURABLE_FORK_META_KEYS = ("full_copy", "duplicated_from")
 
     async def _clear_fork_first_turn_state(self, session: Session) -> None:
         """Drop the ephemeral fork state once the fork's first turn produces a
-        `result` (session-tree-rewind.md §5.3.2/§5.6.5): clear
+        `result` (session-rewind.md §5.3.2/§5.6.5): clear
         `fork_needs_replay` (so turn 2+ isn't wrapped) and the ephemeral
         `fork_metadata` keys (so the chat input doesn't re-prefill), while
         PRESERVING durable keys like `full_copy` (Vera review). `fork_revert_record`
@@ -502,7 +502,7 @@ class SessionManager:
     ) -> Session:
         """Fork `parent_id` by rewinding to *before* the user message at
         `seq=rewind_to_msg_seq` and re-spawning as a new branch
-        (session-tree-rewind.md §5.1). Returns the new fork Session. The saga is
+        (session-rewind.md §5.1). Returns the new fork Session. The saga is
         ordered (NOT a single transaction — SQLite rollback can't undo FS/git):
         validate → lock+`_forking` → classify → DB-only insert → `prepare_fork`
         (with compensation) → stamp ephemeral metadata → optional safe-revert.
@@ -744,13 +744,13 @@ class SessionManager:
 
     @staticmethod
     def _fork_copy_base() -> str:
-        """Base dir holding every /fork working-dir copy (session-fork-copy.md)."""
+        """Base dir holding every /fork working-dir copy (session-fork.md)."""
         return os.path.expanduser(os.path.join("~", ".octopus", "fork"))
 
     @staticmethod
     def _fork_copy_dest(src_working_dir: str, fork_id: str) -> str:
         """Destination for a /fork working-dir copy: ~/.octopus/fork/<name>-<id>
-        (session-fork-copy.md). Keeps the project basename for readability +
+        (session-fork.md). Keeps the project basename for readability +
         the fork id for uniqueness. Creates the base dir."""
         base = SessionManager._fork_copy_base()
         os.makedirs(base, exist_ok=True)
@@ -783,7 +783,7 @@ class SessionManager:
         self, parent_id: str, *, label: str | None = None
     ) -> Session:
         """`/fork`: duplicate `parent_id` at HEAD onto an INDEPENDENT full copy
-        of its working directory (session-fork-copy.md). The new session carries
+        of its working directory (session-fork.md). The new session carries
         the parent's whole conversation and continues it at the copied path; the
         PARENT is left untouched (not archived). Distinct from `fork_session`
         (/rewind), which rewinds to a message and archives the parent."""
@@ -900,7 +900,7 @@ class SessionManager:
 
             # 3. Native-copy the parent's real transcript so the fork resumes
             #    with the WHOLE conversation as genuine context — no history
-            #    replay dumped into the first prompt (session-fork-copy.md). On a
+            #    replay dumped into the first prompt (session-fork.md). On a
             #    backend/parent with no transcript yet, the harness returns
             #    needs_replay=True and we fall back to the replay path.
             try:
@@ -965,7 +965,7 @@ class SessionManager:
 
     async def _archive_forked_parent(self, parent: Session, fork: Session) -> None:
         """Archive a fork's parent so the fork takes its place as the live
-        thread — the rewind model (session-tree-rewind.md): a fork REPLACES its
+        thread — the rewind model (session-rewind.md): a fork REPLACES its
         origin rather than living alongside it.
 
         This is `archive_session`'s tail without the fresh-successor step — the
@@ -1005,7 +1005,7 @@ class SessionManager:
         self, parent_id: str, rewind_to_msg_seq: int
     ) -> dict[str, Any]:
         """Run the side-effect classifier + revert preflight for the popover
-        WITHOUT committing anything (session-tree-rewind.md §5.6.2). Powers
+        WITHOUT committing anything (session-rewind.md §5.6.2). Powers
         `GET /api/sessions/{id}/fork-preview`."""
         parent = self.sessions.get(parent_id)
         if parent is None:
@@ -1455,7 +1455,7 @@ class SessionManager:
     async def fork_ancestor_ids(self, session_id: str) -> list[str]:
         """The `forked_from_session_id` chain above `session_id` (nearest
         first), reading archived rows too so the walk survives parent archive
-        (session-tree-rewind.md §5.1 step 5.2 read-time fallback). Visited-set
+        (session-rewind.md §5.1 step 5.2 read-time fallback). Visited-set
         guarded against corrupted pointers."""
         if self.db is None:
             return []
@@ -1474,7 +1474,7 @@ class SessionManager:
 
     async def fork_descendant_ids(self, session_id: str) -> list[str]:
         """Every fork descending from `session_id` at ANY depth (breadth-first,
-        visited-set guard — session-tree-rewind.md §5.5). Uncapped depth: fork
+        visited-set guard — session-rewind.md §5.5). Uncapped depth: fork
         chains are a static DAG of past branches, so 'don't loop' is the only
         invariant worth enforcing."""
         if self.db is None:
@@ -1503,7 +1503,7 @@ class SessionManager:
     async def _blit_attachments_to_descendant_forks(self, session_id: str) -> None:
         """Before a session's attachment dir is removed, materialize into each
         descendant fork's own dir any attachment file the fork references only
-        by metadata (session-tree-rewind.md §5.5) — keeping the read-time
+        by metadata (session-rewind.md §5.5) — keeping the read-time
         fallback valid after this parent is gone."""
         if self.db is None:
             return
@@ -1573,7 +1573,7 @@ class SessionManager:
         after a reconnect.
 
         `git_head` / `git_status_clean` are the turn-start anchor captured for
-        user-message rows (session-tree-rewind.md §5.6.3); None elsewhere.
+        user-message rows (session-rewind.md §5.6.3); None elsewhere.
         """
         if not self.db:
             return None
@@ -1639,7 +1639,7 @@ class SessionManager:
 
         # Idle path: the session lock is free (send_message only holds it during
         # a turn), so acquiring it here is non-blocking and gives a real mutex
-        # against a racing fork_session (session-tree-rewind.md §5.4). Under the
+        # against a racing fork_session (session-rewind.md §5.4). Under the
         # lock: refuse if a fork is mid-saga, re-check for a turn another
         # coroutine may have started while we waited, then claim `_active_task`.
         async with session._lock:
@@ -1830,7 +1830,7 @@ class SessionManager:
                 attachment_paths.append(str(path))
 
             # Capture the turn-start git anchor onto the user-message row
-            # (session-tree-rewind.md §5.6.3): this row's git state IS the
+            # (session-rewind.md §5.6.3): this row's git state IS the
             # branch-point state if the user later forks here. (None, None)
             # when working_dir isn't a git repo.
             git_head, git_status_clean = await fork_helpers.capture_git_anchor(
@@ -1877,7 +1877,7 @@ class SessionManager:
             )
 
             # Fork first-turn replay (HISTORY_REPLAY backends, e.g. Codex —
-            # session-tree-rewind.md §3.5/§5.3.2). DISPATCH-ONLY: the raw user
+            # session-rewind.md §3.5/§5.3.2). DISPATCH-ONLY: the raw user
             # text was persisted/broadcast above; only the prompt the backend
             # subprocess sees is wrapped with the truncated parent transcript
             # (the fork's own copied prefix, seq <= fork_after_seq). The flag
@@ -2171,7 +2171,7 @@ class SessionManager:
                                 )
                         # First fork turn produced a result: drop the ephemeral
                         # fork state so turn 2+ behaves like a normal resumed
-                        # session (session-tree-rewind.md §5.3.2/§5.6.5).
+                        # session (session-rewind.md §5.3.2/§5.6.5).
                         await self._clear_fork_first_turn_state(session)
 
                     # Capture terminal-error text (a failed `result` or an
@@ -2427,7 +2427,7 @@ class SessionManager:
             agent_memory.ensure_agent_dirs(session.agent_id)
             memory_dir = str(agent_memory.agent_memory_dir(session.agent_id))
 
-        # Fork first-turn note (session-tree-rewind.md §5.6.4): present while
+        # Fork first-turn note (session-rewind.md §5.6.4): present while
         # the fork's ephemeral fork_metadata is set (i.e. before its first
         # result clears it), so it appears on turn 1 only — framing, not
         # transcript. The replay block lives in the user channel, not here.

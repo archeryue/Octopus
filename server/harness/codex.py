@@ -417,7 +417,7 @@ async def _fork_prepare_replay(
     resume_id_hint: str | None,
     fork_id: str,
 ) -> "Any":
-    """No on-disk work (session-tree-rewind.md §5.3.2). Codex's resume state is
+    """No on-disk work (session-rewind.md §5.3.2). Codex's resume state is
     internal to the binary and has no transcript codec, so the first fork turn
     instead carries the truncated history wrapped into its USER PROMPT (done in
     `SessionManager.send_message`). `thread.started` captures the real resume id
@@ -486,7 +486,7 @@ async def _fork_copy(
     dest_working_dir: str,  # unused: codex rollouts are keyed by id, not cwd
     new_resume_id: str,
 ) -> "Any":
-    """Full-copy fork (session-fork-copy.md): copy the parent's rollout to a new
+    """Full-copy fork (session-fork.md): copy the parent's rollout to a new
     rollout file under the SAME CODEX_HOME with `session_meta.id` rewritten to
     `new_resume_id`, so the fork resumes the whole conversation natively — no
     history replay. Codex resume is by id (cwd-independent), so the copied

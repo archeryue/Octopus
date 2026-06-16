@@ -1,4 +1,4 @@
-"""Fork contract DTOs for the harness layer (session-tree-rewind.md §3).
+"""Fork contract DTOs for the harness layer (session-rewind.md §3).
 
 A fork makes a parent session re-spawnable from a chosen branch point. The
 *one* backend-specific concern is "synthesize a resumable transcript in this

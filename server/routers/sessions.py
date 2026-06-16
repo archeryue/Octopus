@@ -205,7 +205,7 @@ async def fork_preview(
     _: str = Depends(verify_token),
 ):
     """Side-effect classification + revert preflight for the fork-confirm
-    popover (session-tree-rewind.md §5.6.2). Commits nothing."""
+    popover (session-rewind.md §5.6.2). Commits nothing."""
     try:
         return await session_manager.fork_preview(session_id, rewind_to_msg_seq)
     except ForkError as e:
@@ -224,7 +224,7 @@ async def fork_session(
     req: ForkSessionRequest,
     _: str = Depends(verify_token),
 ):
-    """Fork a session at a chosen user message (session-tree-rewind.md §5.1).
+    """Fork a session at a chosen user message (session-rewind.md §5.1).
     409 responses carry a structured `{reason, backend}` body."""
     try:
         fork = await session_manager.fork_session(
@@ -259,7 +259,7 @@ async def duplicate_session(
     _: str = Depends(verify_token),
 ):
     """`/fork`: duplicate a session onto an independent full copy of its working
-    directory (session-fork-copy.md). The parent is left untouched. 409
+    directory (session-fork.md). The parent is left untouched. 409
     responses carry a structured `{reason}` / `{reason, backend}` body."""
     try:
         fork = await session_manager.duplicate_session(session_id, label=req.label)

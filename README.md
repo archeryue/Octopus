@@ -94,6 +94,19 @@ Phone / Browser / Telegram
   reconnect (with a `POST /api/sessions/{id}/reset` escape hatch); mid-turn
   interrupt (Esc) + message queue; virtualized, lazy-loaded chat that stays
   light on thousand-message sessions.
+- **Session branching** — Two commands for exploring alternatives without
+  losing context:
+  - **`/rewind`** (also `/tree`) — rewind a conversation to any prior user
+    message and re-issue it (edited, redone, or replaced). A sidebar tree shows
+    branches; a confirm popover discloses side effects (file edits, bg tasks,
+    irreversible tool calls) and optionally reverts file edits via `git stash`
+    when the working tree is clean. Design:
+    [`docs/plans/session-rewind.md`](docs/plans/session-rewind.md).
+  - **`/fork [name]`** — duplicate the **current** session onto an independent
+    full copy of its working directory, leaving the original untouched. The fork
+    resumes the real conversation history (native transcript copy), so the model
+    sees full context. Design:
+    [`docs/plans/session-fork.md`](docs/plans/session-fork.md).
 - **Local handoff** — `octopus handoff` imports local Claude Code sessions;
   `octopus pull` exports a session as JSONL for local `claude --resume`.
 - **Persistence** — SQLite (WAL, batched commits per turn); sessions, messages,

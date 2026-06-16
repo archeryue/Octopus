@@ -1,5 +1,5 @@
 /**
- * Renderer tests for the fork-confirm view (session-tree-rewind.md §5.6.2).
+ * Renderer tests for the fork-confirm view (session-rewind.md §5.6.2).
  * Drives the presentational `ForkConfirmView` directly so we don't have to
  * mock the two-step fetch flow: it must render the three-class side-effect
  * summary and gate the single revert checkbox on the preflight result.

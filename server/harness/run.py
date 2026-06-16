@@ -158,7 +158,7 @@ class RunConfig:
     # Per-agent native memory (docs/plans/memory.md). None when there's no
     # owning agent (legacy/tests) → memory wiring is fully inert.
     memory_dir: str | None = None
-    # Fork first-turn context note (session-tree-rewind.md §5.6.4): framing
+    # Fork first-turn context note (session-rewind.md §5.6.4): framing
     # appended to the system addendum on a fork's first turn only. None
     # otherwise. NOT the replay transcript (that lives in the user channel).
     fork_note: str | None = None

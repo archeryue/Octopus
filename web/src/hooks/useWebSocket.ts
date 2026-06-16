@@ -319,7 +319,7 @@ function handleWsMessage(data: Record<string, unknown>) {
       break;
     }
     case "session_forked": {
-      // A /fork duplicate was created (session-fork-copy.md). The parent is
+      // A /fork duplicate was created (session-fork.md). The parent is
       // untouched, so we only ADD the new session to the list. The initiating
       // tab already added + switched to it via handleDuplicated; dedupe by id
       // so this broadcast is a no-op there and a plain add elsewhere. We don't

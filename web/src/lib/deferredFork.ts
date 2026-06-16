@@ -1,4 +1,4 @@
-// Pure helpers for the deferred-/fork flow (session-fork-copy.md). A working-
+// Pure helpers for the deferred-/fork flow (session-fork.md). A working-
 // dir copy + resume transcript needs a settled session, so `/fork` can't run
 // mid-turn. Instead of refusing, the UI defers the intent and fires it once the
 // session is idle AND fully drained. Kept pure + separate so the eligibility

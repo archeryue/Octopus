@@ -44,7 +44,7 @@ export interface Message {
   attachments?: AttachmentMetadata[];
   // Per-session sequence number, present on messages loaded from the
   // session detail snapshot. Used as the rewind target for "Fork from here"
-  // (session-tree-rewind.md §6.1). Absent on freshly-streamed messages until
+  // (session-rewind.md §6.1). Absent on freshly-streamed messages until
   // the next detail reload.
   seq?: number;
 }
@@ -138,7 +138,7 @@ interface SessionStore {
   dequeuePending: (sessionId: string) => void;
   clearPending: (sessionId: string) => void;
 
-  // Deferred /fork requests (session-fork-copy.md). When `/fork` is typed
+  // Deferred /fork requests (session-fork.md). When `/fork` is typed
   // while a session is busy, we record the intent here instead of erroring;
   // a watcher fires the duplicate once the session goes idle + drained.
   // Keyed by the PARENT session id → the requested label (null = default

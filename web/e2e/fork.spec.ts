@@ -1,6 +1,6 @@
 import { test, expect, type Page, type APIRequestContext } from "@playwright/test";
 
-// Pure-UI e2e for session tree-rewind / fork (session-tree-rewind.md §6).
+// Pure-UI e2e for session tree-rewind / fork (session-rewind.md §6).
 // No real LLM turn: we import a parent session, drive the per-message "Fork
 // from here" → confirm dialog → create flow, and assert the fork opens with
 // its banner + prefilled input. A fork is a rewind, not a branch: it inherits

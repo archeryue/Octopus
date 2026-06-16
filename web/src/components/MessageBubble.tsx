@@ -35,7 +35,7 @@ interface MessageBubbleProps {
   // session has no owning agent.
   agentName?: string;
   agentAvatar?: string | null;
-  // "Fork from here" affordance (session-tree-rewind.md §6.1): rendered on
+  // "Fork from here" affordance (session-rewind.md §6.1): rendered on
   // user messages when set + the message has a known seq. Called with the
   // rewind target seq.
   onFork?: (seq: number) => void;

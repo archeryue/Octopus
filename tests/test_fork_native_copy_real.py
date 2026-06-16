@@ -1,4 +1,4 @@
-"""Gated real-CLI tests for the full-copy fork strategy (session-fork-copy.md).
+"""Gated real-CLI tests for the full-copy fork strategy (session-fork.md).
 
 Each asserts the END-TO-END truth the unit tests can't: that the real CLI
 actually RESUMES a transcript the harness copied to a new id/location and recalls

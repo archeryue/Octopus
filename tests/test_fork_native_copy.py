@@ -1,4 +1,4 @@
-"""Unit tests for the full-copy fork strategy (session-fork-copy.md): each
+"""Unit tests for the full-copy fork strategy (session-fork.md): each
 harness copies its NATIVE transcript into a fresh resume id so a `/fork`
 duplicate continues with real context instead of replaying history.
 

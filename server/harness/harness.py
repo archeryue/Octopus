@@ -110,7 +110,7 @@ class Harness:
         fork_id: str,
     ):
         """Prepare backend-specific state so a new fork session can spawn at the
-        branch point (session-tree-rewind.md §3.1). Returns a `ForkArtifact`.
+        branch point (session-rewind.md §3.1). Returns a `ForkArtifact`.
 
         NATIVE_TRANSCRIPT (Claude) synthesizes a resumable transcript on disk
         named by `resume_id_hint`; HISTORY_REPLAY (Codex) returns
@@ -133,7 +133,7 @@ class Harness:
         dest_working_dir: str,
         new_resume_id: str,
     ):
-        """Full-copy fork (session-fork-copy.md): copy the backend's NATIVE
+        """Full-copy fork (session-fork.md): copy the backend's NATIVE
         transcript (the parent's real conversation, identified by
         `parent_resume_id`) into `new_resume_id` at `dest_working_dir`, so a
         `/fork` duplicate resumes with real context — no history replay into the
@@ -163,7 +163,7 @@ class Harness:
         credential=None,
     ) -> None:
         """Sweep any backend-specific files a fork strategy may have left when a
-        saga didn't complete (session-tree-rewind.md §3.1, session-fork-copy.md).
+        saga didn't complete (session-rewind.md §3.1, session-fork.md).
         Idempotent — safe on every boot for every 'initializing' row. No-op when
         the backend has no on-disk fork artifacts to sweep. `credential` lets a
         directory-backed backend (Codex / CODEX_HOME) locate its rollout store."""

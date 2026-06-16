@@ -394,7 +394,7 @@ class _JsonlTranscriptCodec:
 
 # ------------------------------------------------------------------ fork (HISTORY_REPLAY)
 #
-# Claude forks use HISTORY_REPLAY, NOT NATIVE_TRANSCRIPT (session-tree-rewind.md
+# Claude forks use HISTORY_REPLAY, NOT NATIVE_TRANSCRIPT (session-rewind.md
 # §5.3 + Phase-5 finding). We originally synthesized a resumable JSONL on disk
 # and spawned `claude --resume <id>`, but the real CLI resolves `--resume`
 # against a session-discovery path that does NOT reliably see an externally
@@ -445,7 +445,7 @@ async def _fork_copy(
     dest_working_dir: str,
     new_resume_id: str,
 ) -> "Any":
-    """Full-copy fork (session-fork-copy.md): copy the parent's REAL transcript
+    """Full-copy fork (session-fork.md): copy the parent's REAL transcript
     into the fork's project slug under `new_resume_id`, rewriting each line's
     `cwd` -> dest and `sessionId` -> new id. The fork then resumes natively with
     the whole conversation as real context — no history replay. Verified: the
@@ -497,7 +497,7 @@ async def _fork_cleanup(
     credential: Any = None,
 ) -> None:
     """Remove a copied transcript left by an incomplete full-copy saga
-    (session-fork-copy.md). The transcript lives under ~/.claude/projects, NOT
+    (session-fork.md). The transcript lives under ~/.claude/projects, NOT
     inside the working dir, so removing the fork's copied dir doesn't reach it —
     this does. No-op for /rewind (replay leaves no transcript: the file named by
     the unused hint doesn't exist)."""
@@ -619,7 +619,7 @@ CLAUDE_CODE = RuntimeProfile(
     # critically — made `--resume` of a freshly-synthesized fork transcript
     # fail ~all the time with "No conversation found" (a discovery race the
     # open-stdin wait widened). Closing stdin gives immediate EOF: no wait, and
-    # synth resume becomes reliable (session-tree-rewind.md Phase 5).
+    # synth resume becomes reliable (session-rewind.md Phase 5).
     close_stdin_after_start=True,
     build_turn_argv=build_turn_argv,
     new_event_parser=ClaudeEventParser,

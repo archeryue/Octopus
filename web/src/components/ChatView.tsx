@@ -87,7 +87,7 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
-  // Fork dialog (session-tree-rewind.md §6.1-6.2). `null` = closed; `{}` = the
+  // Fork dialog (session-rewind.md §6.1-6.2). `null` = closed; `{}` = the
   // /fork picker; `{ seq }` = the per-message "Fork from here" confirm step.
   const [forkDialog, setForkDialog] = useState<{ seq?: number } | null>(null);
   // Slash-command autocomplete: which item is highlighted, and whether the
@@ -165,7 +165,7 @@ export function ChatView({
     virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
   }, [activeSessionId, hasMessages]);
 
-  // Prefilled chat input on fork open (session-tree-rewind.md §6.1). When the
+  // Prefilled chat input on fork open (session-rewind.md §6.1). When the
   // active session carries a non-null fork_prefilled_prompt (the rewound user
   // message text, set in fork_metadata until the first turn), populate the
   // input once. The ref keeps us from clobbering the user's edits, and once
@@ -521,7 +521,7 @@ export function ChatView({
       return;
     }
 
-    // /rewind — open the rewind picker (session-tree-rewind.md §6.2). Message
+    // /rewind — open the rewind picker (session-rewind.md §6.2). Message
     // selection + confirmation happen in the dialog. (The underlying mechanism
     // is still a "fork"/branch internally; only the command name is /rewind.)
     if (trimmed.toLowerCase() === "/rewind") {
@@ -531,7 +531,7 @@ export function ChatView({
     }
 
     // /fork [name] — duplicate the whole session onto an INDEPENDENT full copy
-    // of its working dir (session-fork-copy.md). A consistent copy + resume
+    // of its working dir (session-fork.md). A consistent copy + resume
     // transcript needs a SETTLED session, so we can't fork mid-turn. Rather
     // than refuse, we ALWAYS record the intent and let the single watcher fire
     // it: immediately if idle, or once the session goes idle + its queue drains
@@ -959,7 +959,7 @@ export function ChatView({
   );
 
   // Fork sessions get a banner mirroring the delegation one
-  // (session-tree-rewind.md §6.4): "Forked from <parent> at message N".
+  // (session-rewind.md §6.4): "Forked from <parent> at message N".
   // The parent may be deleted (dangling ref) → "(deleted session)".
   const forkParentSession = useMemo(
     () =>
@@ -981,7 +981,7 @@ export function ChatView({
 
   // A fork was just created: add it to the store, switch to it (the prefilled
   // input effect populates the composer from fork_prefilled_prompt), and load
-  // its copied history. (session-tree-rewind.md §6.1)
+  // its copied history. (session-rewind.md §6.1)
   const handleForked = async (fork: SessionInfo) => {
     const store = useSessionStore.getState();
     // A fork is a rewind: it replaces its parent, which the backend archives.
@@ -1022,7 +1022,7 @@ export function ChatView({
     }
   };
 
-  // A /fork duplicate was just created (session-fork-copy.md): unlike a rewind,
+  // A /fork duplicate was just created (session-fork.md): unlike a rewind,
   // the parent is UNTOUCHED, so we only add the new session to the list. When
   // `switchTo` (the foreground case — the user just typed /fork here), we also
   // make it active and load its carried-over history; when false (a deferred
@@ -1122,7 +1122,7 @@ export function ChatView({
     }
   };
 
-  // Deferred-fork watcher (session-fork-copy.md): the SOLE executor of every
+  // Deferred-fork watcher (session-fork.md): the SOLE executor of every
   // /fork — the command handler only records the intent in `pendingForks`, and
   // this fires it the moment its session is idle AND its queue / question
   // prompts drain. Re-runs whenever a session's status / queue changes, or a

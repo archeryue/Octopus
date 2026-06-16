@@ -1,4 +1,4 @@
-"""Real-CLI fork tests (session-tree-rewind.md Phase 5 / §8).
+"""Real-CLI fork tests (session-rewind.md Phase 5 / §8).
 
 Auto-skipped when the relevant binary (`claude` / `codex`) isn't on PATH.
 These prove the things only a real CLI can: that Claude resumes natively from

@@ -50,7 +50,7 @@ interface UserMsg {
 }
 
 /**
- * Presentational confirm view (session-tree-rewind.md §5.6.2). Pure — takes a
+ * Presentational confirm view (session-rewind.md §5.6.2). Pure — takes a
  * fetched preview + controlled checkbox/label, renders the three-class
  * side-effect summary and the single revert affordance (disabled with the
  * preflight reason as a tooltip when revert isn't available). Exported so the
@@ -192,7 +192,7 @@ export function ForkConfirmView({
 }
 
 /**
- * Full fork flow (session-tree-rewind.md §5.6.2 / §6.1-6.2). Self-sufficient:
+ * Full fork flow (session-rewind.md §5.6.2 / §6.1-6.2). Self-sufficient:
  * fetches the session detail to build the user-message picker, then the
  * `/fork-preview` for the chosen message, then POSTs `/fork`. When
  * `initialSeq` is given (the per-message "Fork from here" button) it jumps

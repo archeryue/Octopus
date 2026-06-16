@@ -1,4 +1,4 @@
-"""Unit tests for the pure fork helpers (session-tree-rewind.md §5.6 / §5.3.2).
+"""Unit tests for the pure fork helpers (session-rewind.md §5.6 / §5.3.2).
 
 Covers the side-effect classifier (incl. the bg_tasks live-state join), the
 replay-prompt wrapper, the first-turn note, git-anchor capture, and the

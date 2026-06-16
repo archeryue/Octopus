@@ -1,4 +1,4 @@
-"""Integration tests for the fork saga (session-tree-rewind.md §5.1).
+"""Integration tests for the fork saga (session-rewind.md §5.1).
 
 Drives `SessionManager.fork_session` against a real in-memory DB with both
 backends (Claude NATIVE_TRANSCRIPT synthesizing a JSONL under a temp HOME, and

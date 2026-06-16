@@ -116,7 +116,7 @@ async def download_attachment(
     # the chip / thumbnail even if the session was just archived. Hard
     # delete wipes the files, so a missing file naturally 404s below.
     #
-    # Fork fallback (session-tree-rewind.md §5.1 step 5.2): a fork copies only
+    # Fork fallback (session-rewind.md §5.1 step 5.2): a fork copies only
     # attachment metadata, so resolve from the fork's own dir first, then walk
     # its `forked_from_session_id` ancestors.
     path = get_path(session_id, attachment_id)

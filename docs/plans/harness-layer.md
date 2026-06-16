@@ -6,8 +6,8 @@ Status: implemented (2026-05-23) — single `Harness` + `RuntimeProfile` model,
 zero feature-code `claude`/`codex` spawns outside `server/harness/`. The
 shared auth modules (`oauth_login`/`oauth_providers`, also used by connectors)
 stay top-level, *wrapped* by the harness login drivers — not relocated.
-Verified green: 632 backend tests + real-CLI (claude & codex) + 34 frontend +
-tsc + 59 e2e (2 load-timing flakes confirmed passing in isolation).
+Verified green at implementation time; current suite counts: ~764 backend
+tests + 64 frontend (vitest) + tsc + 62 e2e (Playwright).
 
 ## 0. Why this exists
 

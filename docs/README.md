@@ -26,6 +26,24 @@ design rationale. **Code comments cite these by filename + section** (e.g.
 - **[plans/agent-collaboration.md](plans/agent-collaboration.md)** —
   agent-to-agent delegation (the `mcp__ask_agent__*` tools). Reverses
   the explicit "no A2A" carve-out in `agent-refactor.md` §40-41.
+- **[plans/session-rewind.md](plans/session-rewind.md)** — `/rewind`
+  (also `/tree`): branch a conversation to any prior user message, with optional
+  git revert of the working tree. The conversation-rewind feature.
+- **[plans/session-fork.md](plans/session-fork.md)** — `/fork`
+  filesystem copy: duplicate the current session onto an independent full copy
+  of its working directory.
+- **[plans/turn-safety.md](plans/turn-safety.md)** — per-turn watchdog (idle +
+  overall timeout) and process-group reaping so a wedged tool can't hang a
+  session forever.
+- **[plans/harness-credential-reauth.md](plans/harness-credential-reauth.md)**
+  — reactive 401 detection: flag a bound credential as `needs_reconnect` on a
+  mid-turn auth failure and surface a re-authorize affordance.
+- **[plans/harness-transient-retry.md](plans/harness-transient-retry.md)** —
+  bounded automatic retry on transient backend errors (5xx / overloaded /
+  dropped stream), distinct from auth failures and quota errors.
+- **[plans/native-deep-research.md](plans/native-deep-research.md)** —
+  Octopus-orchestrated deep research: harness-agnostic fan-out of scoped
+  web-search sub-turns with progress, cancellation, and synthesis.
 
 ## Reference notes
 

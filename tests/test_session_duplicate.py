@@ -1,4 +1,4 @@
-"""Integration tests for the /fork copy-dir saga (session-fork-copy.md).
+"""Integration tests for the /fork copy-dir saga (session-fork.md).
 
 Drives `SessionManager.duplicate_session` against a real in-memory DB. Unlike
 `fork_session` (/rewind), `duplicate_session` copies the WHOLE conversation onto

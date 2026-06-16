@@ -411,7 +411,7 @@ class BridgeManager:
 
         elif command in ("/fork", "/tree"):
             # Forking needs a message picker / confirm popover that only the
-            # browser UI provides (session-tree-rewind.md §6.2). Intercept here
+            # browser UI provides (session-rewind.md §6.2). Intercept here
             # so the CLI doesn't eat it as an unknown command.
             await bridge.send_text(
                 chat_id,

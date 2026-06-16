@@ -152,7 +152,7 @@ def compose_system_prompt(
     """persona (if any) ahead of the harness's in-app-tools blurb, then the
     connectors blurb (if any), then the memory blurb (when the harness has no
     native memory and an agent memory dir exists), then the fork first-turn
-    note (session-tree-rewind.md §5.6.4 — framing the model needs to read the
+    note (session-rewind.md §5.6.4 — framing the model needs to read the
     forked world correctly). Re-sent every turn — the CLIs don't persist system
     prompts across resume."""
     from ..connectors.base import render_connectors_blurb

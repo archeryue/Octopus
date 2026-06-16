@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- render "Octo asked: «…»" without rummaging through the first message.
     -- NULL on every non-delegation session.
     delegation_request TEXT,
-    -- Session tree-rewind / fork (session-tree-rewind.md §4). A fork is a
+    -- Session tree-rewind / fork (session-rewind.md §4). A fork is a
     -- clone of a parent session up to (but not including) a chosen user
     -- message. All NULL/0 on non-fork sessions. forked_from_session_id is a
     -- PLAIN reference (no FK action): parent delete leaves it dangling so the
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS messages (
     cost REAL,
     attachments TEXT,                       -- JSON list[AttachmentMetadata], null when none
     -- Per-turn git anchor captured when a user message row is written
-    -- (session-tree-rewind.md §4 + §5.6.3). Powers the safe-revert preflight.
+    -- (session-rewind.md §4 + §5.6.3). Powers the safe-revert preflight.
     git_head TEXT,                          -- `git rev-parse HEAD`; NULL when not a git repo
     git_status_clean INTEGER,               -- 1 iff `git status --porcelain` was empty
     FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -464,7 +464,7 @@ class Database:
             except Exception:
                 pass
 
-        # Session tree-rewind / fork (session-tree-rewind.md §4). Six nullable
+        # Session tree-rewind / fork (session-rewind.md §4). Six nullable
         # columns on sessions + two on messages, all additive. forked_from has
         # no FK action on purpose (dangling reference survives parent delete).
         for ddl in (
@@ -806,14 +806,14 @@ class Database:
         fork_after_seq: int,
         fork_metadata: str | None = None,
     ) -> None:
-        """The DB-only half of the fork saga (session-tree-rewind.md §5.1 step
+        """The DB-only half of the fork saga (session-rewind.md §5.1 step
         5): INSERT the fork `sessions` row (origin='fork',
         fork_status='initializing', pre-minted resume id) and INSERT-SELECT the
         parent's messages with ``seq <= fork_after_seq`` — copied verbatim,
         including their git anchors. For M=0 (`fork_after_seq == -1`) the SELECT
         matches nothing. `fork_metadata` is written at INSERT (not deferred) so a
         /fork duplicate's cleanup-credential pin survives a prepare failure
-        (session-fork-copy.md). No FS, no git, no shell here — a clean rollback
+        (session-fork.md). No FS, no git, no shell here — a clean rollback
         unit: the two writes are wrapped so a failed message-copy rolls back the
         row insert rather than leaving an open transaction a later commit would
         flush (Vera review SHOULD-FIX #1)."""
@@ -1704,7 +1704,7 @@ class Database:
 
     async def load_incomplete_forks(self) -> list[dict[str, Any]]:
         """Fork rows whose §5.1 saga didn't reach 'ready' — startup recovery
-        dispatches on `fork_status` (session-tree-rewind.md §5.6.7). The
+        dispatches on `fork_status` (session-rewind.md §5.6.7). The
         resume id rides in `claude_session_id` (the pre-minted handle stored in
         the saga's step-5 INSERT)."""
         await self._ensure_connected()
@@ -1743,7 +1743,7 @@ class Database:
             "agent_id",
             "origin",
             "backend",
-            # Fork columns (session-tree-rewind.md §4). fork_metadata is
+            # Fork columns (session-rewind.md §4). fork_metadata is
             # nullable+clearable (set to None to clear after first turn);
             # the others are written across the §5.1 saga.
             "forked_from_session_id",

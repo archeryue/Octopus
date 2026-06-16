@@ -163,7 +163,7 @@ def get_path_with_fork_fallback(
     session_ids: list[str], attachment_id: str
 ) -> Path | None:
     """Resolve an attachment id, trying each session id in order
-    (session-tree-rewind.md §5.1 step 5.2). A fork copies only attachment
+    (session-rewind.md §5.1 step 5.2). A fork copies only attachment
     *metadata*, not files — so at read time we fall back from the fork's own
     dir to its `forked_from_session_id` ancestors. `session_ids` should be
     `[this_session, *ancestor_chain]`."""
@@ -176,7 +176,7 @@ def get_path_with_fork_fallback(
 
 def blit_attachment(dest_session_id: str, src_path: Path) -> None:
     """Copy `src_path` into `dest_session_id`'s own attachment dir, preserving
-    the `<id>__<filename>` on-disk name (session-tree-rewind.md §5.5). Used on
+    the `<id>__<filename>` on-disk name (session-rewind.md §5.5). Used on
     parent-delete to materialize files a descendant fork only referenced by
     metadata, before the parent's dir is removed. No-op if already present."""
     try:

@@ -176,7 +176,8 @@ hidden. `/verbose` and `/quiet` toggle this per chat (persisted in
 **Slash commands:** `/new [name]`, `/agent <name|id>`, `/sessions` (tappable
 switch buttons), `/switch <id>`, `/current`, `/quiet`, `/verbose`, `/showme`
 (intercepted with a "browser-only" notice — the viewer modal can't render in
-Telegram), `/help`.
+Telegram), `/fork` / `/rewind` / `/tree` (intercepted with a "browser-only"
+notice — fork requires a scroll-able message picker), `/help`.
 
 ### Frontend (`web/src/`)
 
@@ -186,7 +187,7 @@ React 19 + TypeScript (strict) + Vite + zustand + Tailwind v4 + Radix.
 |---|---|
 | Shell | `App.tsx`, `components/AccountDropdown.tsx`, `OctopusLogo.tsx`, `SettingsDialog.tsx` |
 | Agents | `AgentList.tsx` (two-pane sidebar: pick agent → see its sessions), `AgentSettings.tsx` (prompt/model/backend/credential/tools/connectors) |
-| Sessions & chat | `SessionList.tsx`, `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint), `MessageBubble.tsx`, `SlashCommandMenu.tsx`, `ArchivedSessionsDialog.tsx` |
+| Sessions & chat | `SessionList.tsx` (sidebar with fork-tree disclosure; forks nest under root sessions), `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint, per-user-message "Fork from here" button), `MessageBubble.tsx`, `SlashCommandMenu.tsx` (`/rewind`, `/fork`, `/tree`, `/showme` slash commands), `ForkDialog.tsx` (message picker + confirm popover with side-effect summary + optional git-revert checkbox), `ArchivedSessionsDialog.tsx` |
 | In-app tools | `FileViewerDialog.tsx` (viewer), `BgTaskChip.tsx` (bg task status), `QuestionPrompt.tsx` (ask form), `ToolApproval.tsx` (approval prompt), `AgentDelegationRequestCard.tsx` (live status next to a `mcp__ask_agent__ask` tool_use), `AgentDelegationEventCard.tsx` (renders the `[agent-reply|question|error:…]` injected turns as collapsible cards with deep-links into the child session) |
 | Schedules | `ScheduleList.tsx`, `SchedulesDialog.tsx` (all-agents overview) |
 | Connectors / creds | `ConnectorList.tsx`, `CredentialList.tsx` |
@@ -309,6 +310,8 @@ POST/GET           /api/sessions/{id}/delegations           # ask_agent: start, 
 POST               /api/sessions/{id}/delegations/{did}/follow-up # ask_agent: continue same child session
 POST               /api/sessions/{id}/delegations/{did}/cancel  # stop a delegation (cascades to descendants)
 POST               /api/sessions/{id}/delegations/{did}/answer   # answer a child's question
+POST               /api/sessions/{id}/fork                       # /rewind: fork conversation to a prior message
+POST               /api/sessions/{id}/duplicate                  # /fork: filesystem copy onto a new working dir
 
 # Schedules (interval + cron), credentials, connectors, notifiers
 GET/POST           /api/schedules
@@ -334,13 +337,23 @@ migrations (never re-create or duplicate the schema in docs).
   credential, `mcp_servers`, tool allow/deny, `is_system`, `archived`). Owns the rest.
 - **`sessions`** — one thread: `working_dir`, `claude_session_id` (backend
   resume id, name kept for back-compat), `agent_id`, `origin`
-  (`user`|`schedule`|`bridge`|`delegation`), `backend`, `credential_id`,
+  (`user`|`schedule`|`bridge`|`delegation`|`fork`), `backend`, `credential_id`,
   `archived`. Delegation rows additionally carry `parent_session_id`
   (the caller session, `ON DELETE SET NULL` — orphaning beats
   mass-delete) and `delegation_request` (the verbatim original prompt
   for UI display) — see [`plans/agent-collaboration.md`](plans/agent-collaboration.md) §4.
+  Fork rows additionally carry `forked_from_session_id` (the session that was
+  branched), `fork_after_seq` (last copied message seq; the rewound message
+  is at seq+1 on the parent), `fork_needs_replay` (Codex: wrap history into
+  first turn), `fork_metadata` (ephemeral: prefilled prompt + first-turn note,
+  cleared after first result), `fork_revert_record` (durable: git-stash outcome
+  and stash ref), and `fork_status` (`initializing`|`reverting`|`ready`) for
+  crash recovery — see [`plans/session-rewind.md`](plans/session-rewind.md) §4 and
+  [`plans/session-fork.md`](plans/session-fork.md).
 - **`messages`** — ordered history per session (`role`, `type`, `content`, tool
-  fields, `cost`, `attachments`).
+  fields, `cost`, `attachments`). User-message rows additionally record
+  `git_head` and `git_status_clean` (captured at turn-start) so the fork
+  safe-revert preflight can verify the working tree was clean at the branch point.
 - **`schedules`** — recurring prompts owned by an agent: `interval_seconds` **or**
   `cron`+`timezone`, `recurrence_label`, `origin_session_id`, `enabled`.
 - **`bridge_mappings`** — `(platform, chat_id)` → `agent_id` + sticky `session_id`
@@ -402,6 +415,35 @@ provisioned on agent create, kept on archive, removed on hard delete.
   bridge/scheduled sessions where no human may be watching.
 - **Quiet bridges.** Telegram chats see only the agent's replies by default;
   tool chatter is opt-in via `/verbose` (persisted per chat).
+- **Session branching — two commands.** `/rewind` (also `/tree`) forks a
+  conversation to any prior user message; the harness layer owns the per-backend
+  resume strategy (both Claude and Codex use HISTORY_REPLAY: wrap the truncated
+  transcript into the first turn's user-message channel; turn 2+ resumes natively).
+  `/fork [name]` duplicates the current session onto an independent full copy of
+  the working directory using a native transcript copy (Claude: copy the JSONL
+  and rewrite session id + cwd; Codex: copy the rollout file) so the fork resumes
+  with genuine context. Both commands produce `origin='fork'` session rows with a
+  `forked_from_session_id` pointer; the sidebar builds a disclosure tree from this
+  DAG. File revert on `/rewind` uses `git stash` gated on a strict preflight (clean
+  tree at branch point, matching HEAD, only agent-touched files dirty). Designs:
+  [`plans/session-rewind.md`](plans/session-rewind.md) and
+  [`plans/session-fork.md`](plans/session-fork.md).
+- **Per-turn safety net.** Every harness turn runs with a configurable idle
+  timeout (`turn_idle_timeout_seconds`, default 300 s) and an overall cap
+  (`turn_max_seconds`, default 1800 s). The child subprocess is spawned in its
+  own process group (`start_new_session=True`) so `stop()` kills the whole
+  group, not just the direct child. A timed-out turn surfaces a `turn_timeout`
+  error and never enters premature-exit recovery or transient retry. Design:
+  [`plans/turn-safety.md`](plans/turn-safety.md).
+- **Three-tier failed-turn disposition.** After a turn fails, the run loop
+  classifies the error: (1) auth-credential rejection (401/revoked/expired) →
+  flag the bound credential `needs_reconnect` and stop — re-auth won't fix
+  itself; (2) transient backend error (5xx/overloaded/dropped stream) →
+  bounded exponential retry (max 2, resumes from captured session id when
+  output was already streamed); (3) everything else (quota/credit/billing) →
+  surface as-is. Classifiers are backend-declared pattern sets in
+  `RuntimeProfile`. Designs: [`plans/harness-credential-reauth.md`](plans/harness-credential-reauth.md)
+  and [`plans/harness-transient-retry.md`](plans/harness-transient-retry.md).
 - **Hardened bg pipeline.** Large prompts spill to a file (`E2BIG` guard),
   premature CLI exit after a tool use auto-respawns once, and an idle watchdog
   reaps silent bg tasks. See [`post-mortems/2026-05-18-bg-pipeline-hardening.md`](post-mortems/2026-05-18-bg-pipeline-hardening.md).

@@ -1,4 +1,4 @@
-"""Pure helpers for session tree-rewind / fork (session-tree-rewind.md).
+"""Pure helpers for session tree-rewind / fork (session-rewind.md).
 
 Everything here is backend-agnostic and side-effect-contained:
   - git-anchor capture at turn-start (§4, §5.6.3)
@@ -97,7 +97,7 @@ async def capture_git_anchor(working_dir: str) -> tuple[str | None, bool | None]
 
 def _bash_write_targets(command: str) -> list[str]:
     """Best-effort extraction of file paths a Bash command writes
-    (session-tree-rewind.md §5.6.1: `>` / `mv` / `rm`). Deliberately
+    (session-rewind.md §5.6.1: `>` / `mv` / `rm`). Deliberately
     conservative — it misses `python build.py` writes (disclosed as a Bash
     command instead) and can overcount; documented as best-effort, NOT
     authoritative tracking."""
@@ -140,7 +140,7 @@ def _parse_bg_task_id(content: Any) -> str | None:
 async def classify_side_effects(db, parent_id: str, from_seq: int) -> dict[str, Any]:
     """Bin the parent's tool activity from the rewound user message onward
     (rows with ``seq >= from_seq``) into file edits / background tasks / other
-    irreversible calls (session-tree-rewind.md §5.6.1).
+    irreversible calls (session-rewind.md §5.6.1).
 
     Reads two sources: ``messages`` for the tool calls, and ``bg_tasks``
     directly for live run state (a `tool_use` records that a bg task was
@@ -290,7 +290,7 @@ def render_replay_history(parent_messages: list[MessageContent]) -> str:
 def wrap_for_fork_replay(prompt: str, parent_messages: list[MessageContent]) -> str:
     """Wrap a fork's first-turn user prompt with the parent transcript, in the
     USER-MESSAGE channel with strict transcript-not-instructions framing
-    (session-tree-rewind.md §3.5, §5.3.2). This is what the Codex subprocess
+    (session-rewind.md §3.5, §5.3.2). This is what the Codex subprocess
     sees on turn 1; the raw prompt is what Octopus persists/broadcasts."""
     body = render_replay_history(parent_messages)
     block = (
@@ -311,7 +311,7 @@ def render_first_turn_note(
     *, parent_label: str, n: int, summary: dict[str, Any], reverted: bool
 ) -> str:
     """The ~150-token system-addendum note the fork's first turn carries so the
-    model knows the world moved on (session-tree-rewind.md §5.6.4)."""
+    model knows the world moved on (session-rewind.md §5.6.4)."""
     phrases: list[str] = []
     fe = summary.get("file_edits") or []
     if fe:
@@ -374,7 +374,7 @@ async def safe_revert_preflight(
     fork_head: str | None,
     fork_clean: bool | None,
 ) -> tuple[bool, str | None, list[str]]:
-    """The strict 4-check preflight (session-tree-rewind.md §5.6.3), anchored on
+    """The strict 4-check preflight (session-rewind.md §5.6.3), anchored on
     message M's captured git state. Returns (available, refused_reason,
     dirty_paths_to_revert). All four must hold; otherwise refuse with a precise
     reason and the fork still creates without a revert."""

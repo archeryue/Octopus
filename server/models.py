@@ -32,7 +32,7 @@ class CreateSessionRequest(BaseModel):
 
 
 class ForkSessionRequest(BaseModel):
-    """Body for `POST /api/sessions/{id}/fork` (session-tree-rewind.md §5.1).
+    """Body for `POST /api/sessions/{id}/fork` (session-rewind.md §5.1).
     Rewind to *before* the user message at `rewind_to_msg_seq` and re-spawn."""
 
     rewind_to_msg_seq: int
@@ -41,7 +41,7 @@ class ForkSessionRequest(BaseModel):
 
 
 class DuplicateSessionRequest(BaseModel):
-    """Body for `POST /api/sessions/{id}/duplicate` (session-fork-copy.md).
+    """Body for `POST /api/sessions/{id}/duplicate` (session-fork.md).
     Fork the whole session onto an independent full copy of its working dir."""
 
     label: str | None = None
@@ -58,7 +58,7 @@ class ImportSessionRequest(BaseModel):
 
 
 class ForkRevertRecord(BaseModel):
-    """Durable record of a fork's safe-revert outcome (session-tree-rewind.md
+    """Durable record of a fork's safe-revert outcome (session-rewind.md
     §5.6.5). Mirrors the `fork_revert_record` JSON column; surfaced on
     SessionInfo so the UI can render "files were restored / revert refused".
     """
@@ -93,7 +93,7 @@ class SessionInfo(BaseModel):
     # (agent-collaboration.md §4.1)
     parent_session_id: str | None = None
     delegation_request: str | None = None
-    # Session tree-rewind / fork (session-tree-rewind.md §4). Exactly five
+    # Session tree-rewind / fork (session-rewind.md §4). Exactly five
     # fork-related fields are exposed; fork_status, fork_needs_replay and the
     # raw fork_metadata blob are server-internal.
     #   - can_fork: backend capability flag (harness profile)

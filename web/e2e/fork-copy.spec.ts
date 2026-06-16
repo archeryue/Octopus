@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-// Pure-UI e2e for the /fork copy-dir duplicate (session-fork-copy.md). No real
+// Pure-UI e2e for the /fork copy-dir duplicate (session-fork.md). No real
 // LLM turn: we import a parent session pointing at a SMALL temp working dir,
 // run `/fork copy`, and assert a NEW session appears + becomes active with the
 // "full copy" banner while the ORIGINAL session stays put (not archived).

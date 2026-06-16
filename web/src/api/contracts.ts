@@ -184,7 +184,7 @@ export interface paths {
         /**
          * Fork Preview
          * @description Side-effect classification + revert preflight for the fork-confirm
-         *     popover (session-tree-rewind.md §5.6.2). Commits nothing.
+         *     popover (session-rewind.md §5.6.2). Commits nothing.
          */
         get: operations["fork_preview_api_sessions__session_id__fork_preview_get"];
         put?: never;
@@ -206,7 +206,7 @@ export interface paths {
         put?: never;
         /**
          * Fork Session
-         * @description Fork a session at a chosen user message (session-tree-rewind.md §5.1).
+         * @description Fork a session at a chosen user message (session-rewind.md §5.1).
          *     409 responses carry a structured `{reason, backend}` body.
          */
         post: operations["fork_session_api_sessions__session_id__fork_post"];
@@ -228,7 +228,7 @@ export interface paths {
         /**
          * Duplicate Session
          * @description `/fork`: duplicate a session onto an independent full copy of its working
-         *     directory (session-fork-copy.md). The parent is left untouched. 409
+         *     directory (session-fork.md). The parent is left untouched. 409
          *     responses carry a structured `{reason}` / `{reason, backend}` body.
          */
         post: operations["duplicate_session_api_sessions__session_id__duplicate_post"];
@@ -1685,7 +1685,7 @@ export interface components {
         };
         /**
          * DuplicateSessionRequest
-         * @description Body for `POST /api/sessions/{id}/duplicate` (session-fork-copy.md).
+         * @description Body for `POST /api/sessions/{id}/duplicate` (session-fork.md).
          *     Fork the whole session onto an independent full copy of its working dir.
          */
         DuplicateSessionRequest: {
@@ -1708,7 +1708,7 @@ export interface components {
         };
         /**
          * ForkRevertRecord
-         * @description Durable record of a fork's safe-revert outcome (session-tree-rewind.md
+         * @description Durable record of a fork's safe-revert outcome (session-rewind.md
          *     §5.6.5). Mirrors the `fork_revert_record` JSON column; surfaced on
          *     SessionInfo so the UI can render "files were restored / revert refused".
          */
@@ -1734,7 +1734,7 @@ export interface components {
         };
         /**
          * ForkSessionRequest
-         * @description Body for `POST /api/sessions/{id}/fork` (session-tree-rewind.md §5.1).
+         * @description Body for `POST /api/sessions/{id}/fork` (session-rewind.md §5.1).
          *     Rewind to *before* the user message at `rewind_to_msg_seq` and re-spawn.
          */
         ForkSessionRequest: {

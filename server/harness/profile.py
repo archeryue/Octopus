@@ -164,7 +164,7 @@ class RuntimeProfile:
     # writes the canonical dir with file tools by instruction). Claude: False
     # (native memory, pointed at the canonical dir via an env override).
     injects_memory_prompt: bool = False
-    # Whether this backend can be forked (session-tree-rewind.md §3). A
+    # Whether this backend can be forked (session-rewind.md §3). A
     # backend supplies `prepare_fork` + a working resume strategy
     # (NATIVE_TRANSCRIPT or HISTORY_REPLAY). Both v1 backends set True; a
     # future backend with no strategy leaves it False and the "Fork from
@@ -173,14 +173,14 @@ class RuntimeProfile:
     # Collaborators (optional features):
     login: LoginDriver | None = None
     transcript_codec: TranscriptCodec | None = None
-    # Fork strategy collaborators (session-tree-rewind.md §3). `fork_prepare`
+    # Fork strategy collaborators (session-rewind.md §3). `fork_prepare`
     # synthesizes backend-specific resume state and returns a `ForkArtifact`;
     # `fork_cleanup` sweeps any partial artifacts left by an incomplete saga.
     # Both async. None on a backend with no fork strategy (can_fork stays
     # False). Typed as Any to avoid importing the fork DTOs into this module.
     fork_prepare: Callable[..., Any] | None = None
     fork_cleanup: Callable[..., Any] | None = None
-    # Full-copy fork (session-fork-copy.md): copy the backend's NATIVE
+    # Full-copy fork (session-fork.md): copy the backend's NATIVE
     # transcript (the parent's real conversation file) into a fresh resumable id
     # at the fork's location, so a `/fork` duplicate continues with real context
     # instead of replaying the whole history into the first prompt. Returns a
