@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -417,13 +418,102 @@ async def _fork_prepare_replay(
     """No on-disk work. The first fork turn's user prompt is wrapped with the
     truncated history (in SessionManager.send_message); `session_started`
     captures claude's real session id on turn 1; turn 2+ uses native resume of
-    that own-session id. The `resume_id_hint` is ignored."""
+    that own-session id. The `resume_id_hint` is ignored. Used by /rewind."""
     from .fork import ForkArtifact
 
     return ForkArtifact(resume_id=None, needs_replay=True)
 
 
-# No fork_cleanup for Claude: HISTORY_REPLAY leaves no on-disk artifacts.
+def _claude_project_dir(working_dir: str) -> Path:
+    """Claude stores each session transcript under
+    ``~/.claude/projects/<cwd-slug>/<session_id>.jsonl``, where the slug is the
+    absolute cwd with EVERY non-alphanumeric character replaced by ``-`` —
+    verified against the real CLI: ``/`` ``\\`` ``.`` ``_`` etc. all map to ``-``
+    (``/home/u/.octopus/fork/my_proj`` -> ``-home-u--octopus-fork-my-proj``),
+    with no run-collapsing. Honors CLAUDE_CONFIG_DIR if set, else ~/.claude."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", working_dir)
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = Path(cfg) if cfg else Path.home() / ".claude"
+    return base / "projects" / slug
+
+
+async def _fork_copy(
+    *,
+    parent_working_dir: str,
+    parent_resume_id: str | None,
+    parent_credential: Any = None,  # unused: Claude transcripts live under ~/.claude
+    dest_working_dir: str,
+    new_resume_id: str,
+) -> "Any":
+    """Full-copy fork (session-fork-copy.md): copy the parent's REAL transcript
+    into the fork's project slug under `new_resume_id`, rewriting each line's
+    `cwd` -> dest and `sessionId` -> new id. The fork then resumes natively with
+    the whole conversation as real context — no history replay. Verified: the
+    CLI resumes such a copied (own-format) transcript reliably; the earlier
+    'No conversation found' was specific to SYNTHESIZED transcripts. Falls back
+    to replay when the parent has no transcript yet (never ran a turn)."""
+    from .fork import ForkArtifact
+
+    if not parent_resume_id:
+        return ForkArtifact(resume_id=None, needs_replay=True)
+    src = _claude_project_dir(parent_working_dir) / f"{parent_resume_id}.jsonl"
+    if not src.is_file():
+        return ForkArtifact(resume_id=None, needs_replay=True)
+
+    dest_dir = _claude_project_dir(dest_working_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{new_resume_id}.jsonl"
+    # Write to a temp file then atomically rename, so a crash mid-copy can't
+    # leave a half-written transcript that later looks resumable (Vera review).
+    tmp = dest.with_suffix(".jsonl.tmp")
+    try:
+        with src.open() as fin, tmp.open("w") as fout:
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    fout.write(line + "\n")
+                    continue
+                if d.get("sessionId") == parent_resume_id:
+                    d["sessionId"] = new_resume_id
+                if d.get("cwd"):
+                    d["cwd"] = dest_working_dir
+                fout.write(json.dumps(d) + "\n")
+        os.replace(tmp, dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)  # don't leave partial temp junk behind
+        raise
+    return ForkArtifact(resume_id=new_resume_id, needs_replay=False)
+
+
+async def _fork_cleanup(
+    working_dir: str,
+    resume_id_hint: str | None,
+    fork_id: str,
+    *,
+    credential: Any = None,
+) -> None:
+    """Remove a copied transcript left by an incomplete full-copy saga
+    (session-fork-copy.md). The transcript lives under ~/.claude/projects, NOT
+    inside the working dir, so removing the fork's copied dir doesn't reach it —
+    this does. No-op for /rewind (replay leaves no transcript: the file named by
+    the unused hint doesn't exist)."""
+    if not resume_id_hint:
+        return
+    f = _claude_project_dir(working_dir) / f"{resume_id_hint}.jsonl"
+    try:
+        f.unlink()
+    except FileNotFoundError:
+        pass  # already gone — idempotent
+    except OSError:
+        # RE-RAISE: callers (compensation / startup sweep) treat a returning
+        # cleanup as success and then delete the DB row, which would strand this
+        # transcript forever. Surfacing keeps the row for a later retry (Vera).
+        logger.exception("fork %s: failed to remove copied transcript %s", fork_id, f)
+        raise
 
 
 # ------------------------------------------------------------------ login driver
@@ -539,8 +629,10 @@ CLAUDE_CODE = RuntimeProfile(
     # canonical per-agent dir via CLAUDE_COWORK_MEMORY_PATH_OVERRIDE in
     # build_turn_argv, so no system-prompt blurb is needed.
     injects_memory_prompt=False,
-    can_fork=True,  # HISTORY_REPLAY strategy (session-tree-rewind.md §5.3 + Phase 5)
+    can_fork=True,  # /rewind: HISTORY_REPLAY; /fork: native transcript copy
     fork_prepare=_fork_prepare_replay,
+    fork_copy=_fork_copy,
+    fork_cleanup=_fork_cleanup,
     login=_OAuthLoginDriver(),
     transcript_codec=_JsonlTranscriptCodec(),
 )

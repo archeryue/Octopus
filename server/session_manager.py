@@ -341,8 +341,35 @@ class SessionManager:
             if status == "initializing":
                 try:
                     harness = get_harness(row["backend"])
+                    # Codex needs the credential to find its CODEX_HOME rollout
+                    # store; Claude ignores it. Prefer the FORK-TIME effective
+                    # credential pinned in fork_metadata (so an agent whose
+                    # credential changed after the fork doesn't send cleanup to
+                    # the wrong CODEX_HOME — Vera review); else fall back to the
+                    # row's credential_id, else its agent's. require_auth=False
+                    # so a since-revoked login still yields its home dir.
+                    eff_cred_id = None
+                    if row.get("fork_metadata"):
+                        try:
+                            eff_cred_id = json.loads(
+                                row["fork_metadata"]
+                            ).get("cleanup_credential_id")
+                        except (json.JSONDecodeError, AttributeError):
+                            eff_cred_id = None
+                    if not eff_cred_id:
+                        eff_cred_id = row.get("credential_id")
+                    if not eff_cred_id and row.get("agent_id") and self.db:
+                        ag = await self.db.get_agent(row["agent_id"])
+                        eff_cred_id = ag.get("credential_id") if ag else None
+                    cred = await self.resolve_credential_by_id(
+                        eff_cred_id,
+                        style=harness.profile.credential_style,
+                        context=f"fork recovery {fork_id}",
+                        require_auth=False,
+                    )
                     await harness.cleanup_incomplete_fork_artifacts(
-                        row["working_dir"], row["resume_id"], fork_id
+                        row["working_dir"], row["resume_id"], fork_id,
+                        credential=cred,
                     )
                 except Exception:
                     logger.exception(
@@ -802,6 +829,19 @@ class SessionManager:
             # pre-turn message list. With the guard held, both are consistent.
             messages = await self.db.load_messages(parent_id) if self.db else []
             last_seq = max((m["seq"] for m in messages), default=-1)
+            # Resolve the EFFECTIVE credential (session override, else agent's)
+            # only to locate the backend's on-disk transcript store for the copy
+            # + cleanup — Codex needs its CODEX_HOME; Claude needs none (→ None).
+            # require_auth=False: the rollout must be locatable even if the login
+            # later lapses, and we make no API call here (Vera review).
+            agent = await self._load_agent(parent)
+            eff_cred_id = parent.credential_id or (
+                agent.get("credential_id") if agent else None
+            )
+            parent_cred = await self.resolve_credential_by_id(
+                eff_cred_id, style=harness.profile.credential_style,
+                context=f"fork {parent.id}", require_auth=False,
+            )
 
             # 1. Full literal copy of the working dir (large/slow → off-thread).
             #    copytree can leave a partial dir behind on a mid-copy error, so
@@ -817,6 +857,20 @@ class SessionManager:
 
             now = datetime.now(timezone.utc).isoformat()
             fork_name = label or f"{parent.name} (fork)"
+            # The fork's metadata, written at INSERT so it survives a prepare
+            # failure: `full_copy`/`duplicated_from` drive the UI, and
+            # `cleanup_credential_id` pins the FORK-TIME effective credential so
+            # the startup sweep finds the right CODEX_HOME even if the agent's
+            # credential later changes (Vera review). Omitted when there's none.
+            fork_meta_dict: dict[str, Any] = {
+                "full_copy": True, "duplicated_from": parent.name,
+            }
+            # Pin only when the backend has a per-credential on-disk store to
+            # clean up (parent_cred resolved → home_dir-style, i.e. Codex);
+            # Claude's transcript isn't credential-scoped, so no pin.
+            if eff_cred_id and parent_cred is not None:
+                fork_meta_dict["cleanup_credential_id"] = eff_cred_id
+            fork_meta = json.dumps(fork_meta_dict)
             # 2. DB-only: insert the fork row + copy ALL messages (seq<=last).
             #    fork_after_seq = last_seq is the replay cutoff (it's also what
             #    HISTORY_REPLAY backends inject on turn 1 — so it MUST stay set,
@@ -829,6 +883,7 @@ class SessionManager:
                     created_at=now, parent_id=parent_id, backend=parent.backend,
                     agent_id=parent.agent_id, credential_id=parent.credential_id,
                     resume_id=resume_id_hint, fork_after_seq=last_seq,
+                    fork_metadata=fork_meta,
                 )
             except Exception:
                 shutil.rmtree(dest, ignore_errors=True)
@@ -838,16 +893,23 @@ class SessionManager:
                 claude_session_id=resume_id_hint, credential_id=parent.credential_id,
                 agent_id=parent.agent_id, origin="fork", backend=parent.backend,
                 forked_from_session_id=parent_id, fork_after_seq=last_seq,
-                fork_status="initializing",
+                fork_metadata=fork_meta, fork_status="initializing",
             )
             fork._message_count = last_seq + 1
             self.sessions[fork_id] = fork
 
-            # 3. prepare_fork against the COPIED dir → resume targets the copy.
+            # 3. Native-copy the parent's real transcript so the fork resumes
+            #    with the WHOLE conversation as genuine context — no history
+            #    replay dumped into the first prompt (session-fork-copy.md). On a
+            #    backend/parent with no transcript yet, the harness returns
+            #    needs_replay=True and we fall back to the replay path.
             try:
-                artifact = await harness.prepare_fork(
-                    [MessageContent(**m) for m in messages], dest,
-                    resume_id_hint, fork_id,
+                artifact = await harness.prepare_fork_copy(
+                    parent_working_dir=parent.working_dir,
+                    parent_resume_id=parent.claude_session_id,
+                    parent_credential=parent_cred,
+                    dest_working_dir=dest,
+                    new_resume_id=resume_id_hint,
                 )
             except Exception:
                 # Compensate in order (mirrors fork_session): cleanup artifacts
@@ -859,7 +921,7 @@ class SessionManager:
                 # review). The sweep rmtrees the copied dir once cleanup wins.
                 try:
                     await harness.cleanup_incomplete_fork_artifacts(
-                        dest, resume_id_hint, fork_id
+                        dest, resume_id_hint, fork_id, credential=parent_cred
                     )
                 except Exception:
                     logger.exception(
@@ -880,15 +942,13 @@ class SessionManager:
             fork.claude_session_id = artifact.resume_id
             fork.fork_needs_replay = artifact.needs_replay
             fork.fork_status = "ready"
-            fork.fork_metadata = json.dumps(
-                {"full_copy": True, "duplicated_from": parent.name}
-            )
+            # fork_metadata already holds full_copy/duplicated_from/cleanup id
+            # from the INSERT — only the resume state + status change here.
             await self.db.update_session_field(
                 fork_id,
                 claude_session_id=artifact.resume_id,
                 fork_needs_replay=artifact.needs_replay,
                 fork_status="ready",
-                fork_metadata=fork.fork_metadata,
             )
 
             # 5. Parent is left untouched (NOT archived). Announce the new fork
@@ -2414,7 +2474,12 @@ class SessionManager:
         )
 
     async def resolve_credential_by_id(
-        self, cred_id: str | None, *, style: str = "env_secret", context: str = ""
+        self,
+        cred_id: str | None,
+        *,
+        style: str = "env_secret",
+        context: str = "",
+        require_auth: bool = True,
     ) -> HarnessCredential | None:
         """Resolve a credential id into a `HarnessCredential` of the shape the
         harness needs (`style`). Returns None when there's no id, the row is
@@ -2426,7 +2491,13 @@ class SessionManager:
           with no DB read and require a completed login (auth.json present).
         - ``env_secret`` (Claude): decrypt the secret; refresh an OAuth bundle
           if near expiry, else use the long-lived key as-is.
-        """
+
+        `require_auth=False` resolves the credential only for locating on-disk
+        artifacts (e.g. fork transcript copy/cleanup), NOT for making API calls:
+        a directory-backed credential returns its home dir even with a
+        missing/revoked `auth.json` (the rollout still lives there and must be
+        cleaned up — Vera review), and a secret-backed credential returns None
+        (its transcripts aren't keyed by credential, so no home to locate)."""
         if not cred_id:
             return None
 
@@ -2434,9 +2505,14 @@ class SessionManager:
             from .codex_login import codex_home_for
 
             home = codex_home_for(cred_id)
-            if not os.path.exists(os.path.join(home, "auth.json")):
+            if require_auth and not os.path.exists(os.path.join(home, "auth.json")):
                 return None  # inherit the host default ~/.codex (option A)
             return HarnessCredential(backend="codex", auth_type="oauth", home_dir=home)
+
+        if not require_auth:
+            # Secret-backed (Claude): no per-credential on-disk artifact store to
+            # locate, so artifact copy/cleanup needs no credential.
+            return None
 
         if self.db is None:
             return None

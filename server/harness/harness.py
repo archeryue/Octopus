@@ -124,19 +124,54 @@ class Harness:
             messages, working_dir, resume_id_hint, fork_id
         )
 
+    async def prepare_fork_copy(
+        self,
+        *,
+        parent_working_dir: str,
+        parent_resume_id: str | None,
+        parent_credential=None,
+        dest_working_dir: str,
+        new_resume_id: str,
+    ):
+        """Full-copy fork (session-fork-copy.md): copy the backend's NATIVE
+        transcript (the parent's real conversation, identified by
+        `parent_resume_id`) into `new_resume_id` at `dest_working_dir`, so a
+        `/fork` duplicate resumes with real context — no history replay into the
+        first prompt. Returns a `ForkArtifact`. Falls back to
+        `needs_replay=True` when the backend has no native-copy strategy or the
+        parent has no transcript yet (e.g. it never ran a turn)."""
+        from .fork import BackendForkNotSupported, ForkArtifact
+
+        if not self.profile.can_fork:
+            raise BackendForkNotSupported(self.backend)
+        if self.profile.fork_copy is None:
+            return ForkArtifact(resume_id=None, needs_replay=True)
+        return await self.profile.fork_copy(
+            parent_working_dir=parent_working_dir,
+            parent_resume_id=parent_resume_id,
+            parent_credential=parent_credential,
+            dest_working_dir=dest_working_dir,
+            new_resume_id=new_resume_id,
+        )
+
     async def cleanup_incomplete_fork_artifacts(
         self,
         working_dir: str,
         resume_id_hint: str | None,
         fork_id: str,
+        *,
+        credential=None,
     ) -> None:
-        """Sweep any backend-specific files `prepare_fork` may have left when a
-        fork saga didn't complete (session-tree-rewind.md §3.1). Idempotent —
-        safe on every boot for every 'initializing' row. No-op when the backend
-        has no on-disk fork artifacts (Codex / HISTORY_REPLAY)."""
+        """Sweep any backend-specific files a fork strategy may have left when a
+        saga didn't complete (session-tree-rewind.md §3.1, session-fork-copy.md).
+        Idempotent — safe on every boot for every 'initializing' row. No-op when
+        the backend has no on-disk fork artifacts to sweep. `credential` lets a
+        directory-backed backend (Codex / CODEX_HOME) locate its rollout store."""
         if self.profile.fork_cleanup is None:
             return
-        await self.profile.fork_cleanup(working_dir, resume_id_hint, fork_id)
+        await self.profile.fork_cleanup(
+            working_dir, resume_id_hint, fork_id, credential=credential
+        )
 
     # ------------------------------------------------------------------ one-shot
 

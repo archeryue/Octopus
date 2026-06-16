@@ -804,15 +804,18 @@ class Database:
         credential_id: str | None,
         resume_id: str | None,
         fork_after_seq: int,
+        fork_metadata: str | None = None,
     ) -> None:
         """The DB-only half of the fork saga (session-tree-rewind.md §5.1 step
         5): INSERT the fork `sessions` row (origin='fork',
         fork_status='initializing', pre-minted resume id) and INSERT-SELECT the
         parent's messages with ``seq <= fork_after_seq`` — copied verbatim,
         including their git anchors. For M=0 (`fork_after_seq == -1`) the SELECT
-        matches nothing. No FS, no git, no shell here — a clean rollback unit:
-        the two writes are wrapped so a failed message-copy rolls back the row
-        insert rather than leaving an open transaction a later commit would
+        matches nothing. `fork_metadata` is written at INSERT (not deferred) so a
+        /fork duplicate's cleanup-credential pin survives a prepare failure
+        (session-fork-copy.md). No FS, no git, no shell here — a clean rollback
+        unit: the two writes are wrapped so a failed message-copy rolls back the
+        row insert rather than leaving an open transaction a later commit would
         flush (Vera review SHOULD-FIX #1)."""
         await self._ensure_connected()
         try:
@@ -821,11 +824,13 @@ class Database:
                 "(id, name, working_dir, created_at, claude_session_id, "
                 " credential_id, agent_id, origin, backend, "
                 " forked_from_session_id, fork_after_seq, fork_needs_replay, "
-                " fork_status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, 0, 'initializing')",
+                " fork_status, fork_metadata) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, 0, "
+                " 'initializing', ?)",
                 (
                     fork_id, name, working_dir, created_at, resume_id,
                     credential_id, agent_id, backend, parent_id, fork_after_seq,
+                    fork_metadata,
                 ),
             )
             await self._conn.execute(
@@ -1705,7 +1710,8 @@ class Database:
         await self._ensure_connected()
         cursor = await self._conn.execute(
             "SELECT id, forked_from_session_id, working_dir, backend, "
-            "claude_session_id, fork_status, fork_revert_record "
+            "claude_session_id, fork_status, fork_revert_record, credential_id, "
+            "agent_id, fork_metadata "
             "FROM sessions WHERE origin = 'fork' AND fork_status IN "
             "('initializing', 'reverting')"
         )
@@ -1719,6 +1725,9 @@ class Database:
                 "resume_id": r[4],
                 "fork_status": r[5],
                 "fork_revert_record": r[6],
+                "credential_id": r[7],
+                "agent_id": r[8],
+                "fork_metadata": r[9],
             }
             for r in rows
         ]

@@ -349,7 +349,7 @@ async def test_recover_purges_initializing(manager, monkeypatch):
     harness = get_harness("claude-code")
     seen = {}
 
-    async def fake_cleanup(working_dir, resume_id_hint, fork_id):
+    async def fake_cleanup(working_dir, resume_id_hint, fork_id, *, credential=None):
         seen["args"] = (working_dir, resume_id_hint, fork_id)
 
     monkeypatch.setattr(harness, "cleanup_incomplete_fork_artifacts", fake_cleanup)

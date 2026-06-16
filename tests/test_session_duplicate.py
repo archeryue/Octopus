@@ -101,6 +101,60 @@ async def test_duplicate_copies_dir_and_history(manager, tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_native_copy_when_parent_has_transcript(manager, tmp_path, monkeypatch):
+    # When the parent has a real Claude transcript, the fork copies it and
+    # resumes natively (no history replay): fork_needs_replay is False and the
+    # fork gets a fresh resume id pointing at the copied transcript.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    from server.harness import claude_code as cc
+
+    repo = _repo(tmp_path)
+    parent = await _seed_parent(manager, repo)
+    # Pretend the parent ran turns: give it a resume id + a native transcript.
+    parent.claude_session_id = "parent-sid"
+    await manager.db.update_session_field(parent.id, claude_session_id="parent-sid")
+    pdir = cc._claude_project_dir(str(repo))
+    pdir.mkdir(parents=True, exist_ok=True)
+    (pdir / "parent-sid.jsonl").write_text(
+        json.dumps({"type": "user", "sessionId": "parent-sid", "cwd": str(repo),
+                    "message": "remember X"}) + "\n"
+    )
+
+    fork = await manager.duplicate_session(parent.id)
+
+    assert fork.fork_needs_replay is False
+    assert fork.claude_session_id not in (None, "parent-sid")
+    # The copied transcript exists at the fork's own slug under its new id.
+    copied = cc._claude_project_dir(fork.working_dir) / f"{fork.claude_session_id}.jsonl"
+    assert copied.is_file()
+    rows = [json.loads(l) for l in copied.read_text().splitlines() if l]
+    assert {r["sessionId"] for r in rows} == {fork.claude_session_id}
+    assert {r["cwd"] for r in rows if "cwd" in r} == {fork.working_dir}
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pins_cleanup_credential_for_codex(manager, tmp_path, monkeypatch):
+    # A Codex fork pins the fork-time effective credential id in fork_metadata so
+    # the startup sweep can find the right CODEX_HOME even if the agent's
+    # credential later changes. Claude (no per-credential store) does NOT pin.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    repo = _repo(tmp_path)
+    cx_parent = await _seed_parent(manager, repo, backend="codex")
+    cx_parent.credential_id = "cred-1"
+    await manager.db.update_session_field(cx_parent.id, credential_id="cred-1")
+    cx_fork = await manager.duplicate_session(cx_parent.id)
+    assert json.loads(cx_fork.fork_metadata)["cleanup_credential_id"] == "cred-1"
+
+    b = tmp_path / "b"; b.mkdir()
+    cl_parent = await _seed_parent(manager, _repo(b), backend="claude-code")
+    cl_parent.credential_id = "cred-2"
+    await manager.db.update_session_field(cl_parent.id, credential_id="cred-2")
+    cl_fork = await manager.duplicate_session(cl_parent.id)
+    assert "cleanup_credential_id" not in json.loads(cl_fork.fork_metadata)
+
+
+@pytest.mark.asyncio
 async def test_duplicate_leaves_parent_untouched(manager, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     repo = _repo(tmp_path)
@@ -211,7 +265,7 @@ async def test_duplicate_prepare_fork_failure_compensates(manager, tmp_path, mon
     async def fake_cleanup(*a, **k):
         return None
 
-    monkeypatch.setattr(harness, "prepare_fork", boom)
+    monkeypatch.setattr(harness, "prepare_fork_copy", boom)
     monkeypatch.setattr(harness, "cleanup_incomplete_fork_artifacts", fake_cleanup)
 
     with pytest.raises(RuntimeError):
@@ -359,7 +413,7 @@ async def test_duplicate_cleanup_failure_leaves_row_and_dir(manager, tmp_path, m
     async def cleanup_boom(*a, **k):
         raise RuntimeError("cleanup blew up too")
 
-    monkeypatch.setattr(harness, "prepare_fork", boom)
+    monkeypatch.setattr(harness, "prepare_fork_copy", boom)
     monkeypatch.setattr(harness, "cleanup_incomplete_fork_artifacts", cleanup_boom)
 
     with pytest.raises(RuntimeError):
@@ -403,6 +457,27 @@ async def test_recover_removes_abandoned_fork_copy_dir(manager, tmp_path, monkey
     rows = await manager.db.load_sessions(include_archived=True)
     assert not any(r["id"] == "deadbeef0001" for r in rows)
     assert not copied.exists()  # private copy removed
+
+
+@pytest.mark.asyncio
+async def test_resolve_credential_require_auth_false(manager, tmp_path, monkeypatch):
+    # For artifact cleanup/copy we need the Codex home dir even when auth.json is
+    # absent/revoked (the rollout still lives there); a secret-backed (Claude)
+    # credential has no per-credential store, so it resolves to None (Vera).
+    from server.codex_login import codex_home_for
+
+    cid = "cred-xyz"
+    home = codex_home_for(cid)
+    # No auth.json on disk → require_auth=True yields None, =False yields the dir.
+    assert await manager.resolve_credential_by_id(cid, style="home_dir") is None
+    cred = await manager.resolve_credential_by_id(
+        cid, style="home_dir", require_auth=False
+    )
+    assert cred is not None and cred.home_dir == home
+    # Secret-backed: no on-disk store keyed by credential → None for cleanup.
+    assert await manager.resolve_credential_by_id(
+        cid, style="env_secret", require_auth=False
+    ) is None
 
 
 def test_is_fork_copy_dir(monkeypatch, tmp_path):

@@ -428,8 +428,139 @@ async def _fork_prepare_replay(
     return ForkArtifact(resume_id=None, needs_replay=True)
 
 
-# No fork_cleanup for Codex: HISTORY_REPLAY leaves no on-disk artifacts, so the
-# Harness cleanup hook is a no-op (profile.fork_cleanup stays None).
+def _codex_sessions_dir(credential: Any) -> "Path":
+    """CODEX_HOME/sessions — codex's rollout store (date-partitioned files named
+    ``rollout-<ts>-<id>.jsonl``). The id is cwd-independent, so a copy resumes
+    from anywhere. Uses the credential's CODEX_HOME, else the host default
+    ~/.codex."""
+    from pathlib import Path
+
+    home = (
+        credential.home_dir
+        if credential is not None and getattr(credential, "home_dir", None)
+        else os.path.join(os.path.expanduser("~"), ".codex")
+    )
+    return Path(home) / "sessions"
+
+
+def _rollout_meta_id(p: "Path") -> "str | None":
+    """The `session_meta.payload.id` of a rollout (its first line), or None."""
+    try:
+        with p.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                d = json.loads(line)
+                if d.get("type") == "session_meta":
+                    return (d.get("payload") or {}).get("id")
+                return None  # session_meta is the first record
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _find_rollout(sessions_dir: "Path", resume_id: str) -> "Path | None":
+    """Locate the rollout whose `session_meta.id` == resume_id. The filename
+    usually embeds the id, but since this also drives DELETION we CONFIRM against
+    session_meta before returning a match (Vera review) — never delete on a mere
+    filename-substring hit."""
+    if not sessions_dir.is_dir():
+        return None
+    # Fast path: filename contains the id — confirm before trusting it.
+    for p in sessions_dir.rglob(f"*{resume_id}*.jsonl"):
+        if _rollout_meta_id(p) == resume_id:
+            return p
+    # Fallback: scan every rollout's session_meta.
+    for p in sessions_dir.rglob("rollout-*.jsonl"):
+        if _rollout_meta_id(p) == resume_id:
+            return p
+    return None
+
+
+async def _fork_copy(
+    *,
+    parent_working_dir: str,
+    parent_resume_id: str | None,
+    parent_credential: Any = None,
+    dest_working_dir: str,  # unused: codex rollouts are keyed by id, not cwd
+    new_resume_id: str,
+) -> "Any":
+    """Full-copy fork (session-fork-copy.md): copy the parent's rollout to a new
+    rollout file under the SAME CODEX_HOME with `session_meta.id` rewritten to
+    `new_resume_id`, so the fork resumes the whole conversation natively — no
+    history replay. Codex resume is by id (cwd-independent), so the copied
+    working dir is irrelevant here. Falls back to replay when the parent has no
+    rollout yet (never ran a turn)."""
+    from .fork import ForkArtifact
+
+    if not parent_resume_id:
+        return ForkArtifact(resume_id=None, needs_replay=True)
+    sessions = _codex_sessions_dir(parent_credential)
+    src = _find_rollout(sessions, parent_resume_id)
+    if src is None:
+        return ForkArtifact(resume_id=None, needs_replay=True)
+
+    dest = src.parent / f"rollout-fork-{new_resume_id}.jsonl"
+    # Temp + atomic rename so a crash mid-copy can't leave a half-written
+    # rollout that later looks resumable (Vera review).
+    tmp = dest.with_suffix(".jsonl.tmp")
+    try:
+        with src.open() as fin, tmp.open("w") as fout:
+            for line in fin:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    fout.write(line + "\n")
+                    continue
+                if d.get("type") == "session_meta" and isinstance(d.get("payload"), dict):
+                    if d["payload"].get("id") == parent_resume_id:
+                        d["payload"]["id"] = new_resume_id
+                fout.write(json.dumps(d) + "\n")
+        os.replace(tmp, dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)  # don't leave partial temp junk behind
+        raise
+    return ForkArtifact(resume_id=new_resume_id, needs_replay=False)
+
+
+async def _fork_cleanup(
+    working_dir: str,  # unused: rollouts live under CODEX_HOME, not the cwd
+    resume_id_hint: str | None,
+    fork_id: str,
+    *,
+    credential: Any = None,
+) -> None:
+    """Remove a copied rollout left by an incomplete full-copy saga. Rollouts
+    live under CODEX_HOME (not the working dir), so this needs the credential to
+    locate the store. No-op for /rewind (replay copies no rollout — nothing
+    named by the hint exists)."""
+    if not resume_id_hint:
+        return
+    sessions = _codex_sessions_dir(credential)
+    # Target the COPY's deterministic name (`_fork_copy` wrote
+    # rollout-fork-<id>.jsonl) directly — NOT the read-based `_find_rollout`,
+    # whose session_meta read could fail and make a present-but-unreadable
+    # rollout look absent, so cleanup "succeeds" and the row is deleted, leaking
+    # it (Vera review). A name match needs no read.
+    if not sessions.is_dir():
+        return
+    for copied in sessions.rglob(f"rollout-fork-{resume_id_hint}.jsonl"):
+        try:
+            copied.unlink()
+        except FileNotFoundError:
+            pass  # already gone — idempotent
+        except OSError:
+            # RE-RAISE: a returning cleanup is read as success and the caller
+            # then deletes the DB row, which would strand this rollout. Keep the
+            # row by surfacing the failure for a later retry.
+            logger.exception(
+                "fork %s: failed to remove copied rollout %s", fork_id, copied
+            )
+            raise
 
 
 # ------------------------------------------------------------------ login driver
@@ -547,8 +678,10 @@ CODEX = RuntimeProfile(
     # (docs/plans/memory.md §3). Memory is decoupled from CODEX_HOME; the
     # canonical dir is ensured by session_manager.
     injects_memory_prompt=True,
-    can_fork=True,  # HISTORY_REPLAY strategy (session-tree-rewind.md §5.3.2)
+    can_fork=True,  # /rewind: HISTORY_REPLAY; /fork: native rollout copy
     fork_prepare=_fork_prepare_replay,
+    fork_copy=_fork_copy,
+    fork_cleanup=_fork_cleanup,
     login=_DeviceLoginDriver(),
     transcript_codec=None,  # Codex has no handoff/pull transcript format
 )
