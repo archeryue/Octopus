@@ -9,6 +9,9 @@ import {
 } from "@tabler/icons-react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import {
   useSessionStore,
   type AttachmentMetadata,
@@ -178,7 +181,10 @@ export function MessageBubble({
             <span>{assistantLabel}</span>
           </div>
           <div className="msg-content markdown rounded-lg border border-border bg-card px-4 py-3 text-sm leading-relaxed">
-            <Markdown remarkPlugins={[remarkGfm]}>
+            <Markdown
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+            >
               {message.content || ""}
             </Markdown>
           </div>

@@ -660,13 +660,37 @@ class DelegationManager:
         misleading absolute path that doesn't exist on disk.
 
         We do NOT include any of the parent's transcript — that's a
-        deliberate scope/privacy boundary (plan §2)."""
+        deliberate scope/privacy boundary (plan §2).
+
+        IMPORTANT — single-turn delivery contract: the child's entire
+        response (all assistant_text blocks) is concatenated and injected
+        into the parent's session as ONE turn when this turn ends.  There
+        is no mechanism for subsequent turns on the child session to reach
+        the parent.  The delegation protocol note below tells the child
+        agent about this so it completes all work in this turn rather than
+        sending a preliminary "I'll start" reply and deferring to a second
+        turn that will never be delivered."""
         from pathlib import Path
 
         lines = [
             f"You were asked by agent **{parent_name}** "
-            f"(session `{parent_session_id}`).",
-            "Their request follows.",
+            f"(session `{parent_session_id}`) to handle a task on their behalf.",
+            "",
+            "**Delegation protocol — read before responding:**",
+            "- This is a **single-turn delegation**. When your turn ends, "
+            "everything you have written is delivered to the caller as one "
+            "reply. There is no follow-up turn.",
+            "- **Do the work now, in this turn.** Do not send a preliminary "
+            '"I\'ll start reviewing…" message and stop — that preamble would '
+            "become the entire reply the caller receives.",
+            "- Use your tools (read files, run commands, etc.) to complete the "
+            "task fully before writing your response. Do **not** use "
+            "`mcp__bg__run` for the core work — background tasks run after your "
+            "turn ends and their results will not reach the caller.",
+            "- End with a clear, self-contained summary of your findings or "
+            "output so the caller can act on it without needing to ask again.",
+            "",
+            f"The request from **{parent_name}** follows.",
             "",
             "---",
             request.strip(),
