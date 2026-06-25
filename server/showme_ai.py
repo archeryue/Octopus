@@ -1,6 +1,6 @@
 """Resolve a `/showme <reference>` user input to a concrete file path.
 
-Three layers, cheapest first:
+Four layers, cheapest first:
 
   1. **Exact-path short-circuit.** If `<reference>` is already a real file in
      the session's working directory, return it directly — no model call.
@@ -12,9 +12,16 @@ Three layers, cheapest first:
      rather than JSON, accept it. Lots of one-shot replies look like
      `README.md` rather than `{"path":"README.md"}` and that's a legit
      resolution.
+  4. **Not-found retry.** If Layers 2/3 produced a path that doesn't exist
+     on disk, make a second model call telling it the path doesn't exist and
+     letting it reconsider. No directory listing is injected — the model
+     reasons from conversation context alone, and may ask for clarification
+     when it can't do better.
 
 Layer 3 is what saved us from breaking on `/showme the readme` — the model
 often replies with just the path even when told to use JSON.
+Layer 4 handles the common case where the model knows the reference but
+guessed the wrong location (e.g. `app/ideas.md` vs `docs/ideas.md`).
 """
 
 from __future__ import annotations
@@ -135,6 +142,42 @@ def _build_prompt(text: str, working_dir: str, session_name: str | None, message
     )
 
 
+def _build_retry_prompt(
+    text: str,
+    working_dir: str,
+    session_name: str | None,
+    messages_blurb: str,
+    tried_path: str,
+) -> str:
+    return (
+        "Resolve the user's `/showme` reference to a concrete file path.\n"
+        "\n"
+        f'A previous attempt identified "{tried_path}" but that file does not '
+        "exist in the working directory. Please reconsider — based on the "
+        "reference and the recent conversation, what is the actual file the "
+        "user is referring to?\n"
+        "\n"
+        "Respond with a valid JSON object ONLY — no prose before or after, "
+        "no markdown fences. Choose exactly ONE shape:\n"
+        '  {"path": "<relative path inside the working directory>"}\n'
+        '  {"message": "<short clarifying question if you cannot determine the file>"}\n'
+        "\n"
+        "Rules:\n"
+        "- Paths are RELATIVE to the working directory.\n"
+        "- Do not repeat the path that already failed.\n"
+        '- Use {"message": ...} if you genuinely cannot identify a better candidate.\n'
+        "\n"
+        f"Working directory: {working_dir}\n"
+        f"Session: {session_name or '(unnamed)'}\n"
+        f"User reference: {text}\n"
+        "\n"
+        "Recent conversation:\n"
+        f"{messages_blurb or '(none)'}\n"
+        "\n"
+        "Your JSON response:"
+    )
+
+
 async def resolve_showme_reference(
     text: str,
     *,
@@ -146,8 +189,8 @@ async def resolve_showme_reference(
     session_name: str | None = None,
 ) -> ShowMeResolution:
     """Resolve a human file reference to a concrete path. See module docstring
-    for the three layers (exact-path short-circuit, model call, path-shaped
-    fallback)."""
+    for the four layers (exact-path short-circuit, model call, path-shaped
+    fallback, not-found retry)."""
     # Layer 1 — exact-path short-circuit. Saves a model call for the common
     # case and means `/showme README.md` can't fail just because the model
     # got chatty.
@@ -156,15 +199,16 @@ async def resolve_showme_reference(
         return ShowMeResolution(path=direct)
 
     # Layer 2 — one-shot model call.
-    prompt = _build_prompt(text, working_dir, session_name, _format_messages(messages))
+    messages_blurb = _format_messages(messages)
+    prompt = _build_prompt(text, working_dir, session_name, messages_blurb)
     ctx = OneShotContext(
         prompt=prompt, model=model, credential=credential, working_dir=working_dir
     )
     out = await harness.run_oneshot(ctx)
 
     # Track whatever path the model identified, even if it turns out not to
-    # exist on disk — lets us emit a precise "file not found" message rather
-    # than the generic "couldn't pin down a file" fallback.
+    # exist on disk — used to drive the Layer 4 retry and to produce a precise
+    # error message if even the retry fails.
     candidate_path: str | None = None
 
     obj = extract_json(out)
@@ -175,8 +219,7 @@ async def resolve_showme_reference(
             candidate_path = path.strip()
             if resolve_local_path(candidate_path, working_dir) is not None:
                 return ShowMeResolution(path=candidate_path)
-            # Path from model doesn't exist on disk — fall through to the
-            # "file not found" error below; don't try bare-path on the same out.
+            # Path from model doesn't exist on disk — fall through to retry.
         elif isinstance(message, str) and message.strip():
             return ShowMeResolution(path=None, message=message.strip())
 
@@ -190,18 +233,45 @@ async def resolve_showme_reference(
             candidate_path = bare
             if resolve_local_path(bare, working_dir) is not None:
                 return ShowMeResolution(path=bare)
-            # Bare path doesn't exist either — fall through.
+            # Bare path doesn't exist either — fall through to retry.
 
     if candidate_path is not None:
+        # Layer 4 — not-found retry. Tell the model the path it identified
+        # doesn't exist and let it reconsider using conversation context alone.
+        retry_prompt = _build_retry_prompt(
+            text, working_dir, session_name, messages_blurb, candidate_path
+        )
+        retry_ctx = OneShotContext(
+            prompt=retry_prompt, model=model, credential=credential, working_dir=working_dir
+        )
+        retry_out = await harness.run_oneshot(retry_ctx)
+
+        retry_obj = extract_json(retry_out)
+        if retry_obj is not None:
+            retry_path = retry_obj.get("path")
+            retry_message = retry_obj.get("message")
+            if isinstance(retry_path, str) and retry_path.strip():
+                validated = resolve_local_path(retry_path.strip(), working_dir)
+                if validated is not None:
+                    return ShowMeResolution(path=validated)
+            if isinstance(retry_message, str) and retry_message.strip():
+                return ShowMeResolution(path=None, message=retry_message.strip())
+
+        retry_bare = _bare_path_fallback(retry_out)
+        if retry_bare is not None:
+            validated = resolve_local_path(retry_bare, working_dir)
+            if validated is not None:
+                return ShowMeResolution(path=validated)
+
         logger.warning(
-            "showme: model returned non-existent path (text=%r, path=%r, wd=%r)",
+            "showme: retry also failed (text=%r, candidate=%r, wd=%r)",
             text,
             candidate_path,
             working_dir,
         )
         return ShowMeResolution(
             path=None,
-            message=f'Couldn\'t find "{candidate_path}" in the working directory. Try giving the path directly.',
+            message=f'Couldn\'t find a file matching that reference (tried "{candidate_path}"). Try giving the path directly.',
         )
 
     logger.warning(

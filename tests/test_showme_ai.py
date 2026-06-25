@@ -12,13 +12,21 @@ from server.showme_ai import (
 
 
 class FakeHarness:
-    def __init__(self, out: str):
-        self.out = out
+    """Fake harness for unit tests.
+
+    Pass a single string to return the same reply for every call, or a list
+    of strings to return each in turn (last entry is repeated if calls exceed
+    the list length).
+    """
+
+    def __init__(self, out: str | list[str]):
+        self._replies = [out] if isinstance(out, str) else list(out)
         self.calls = []
 
     async def run_oneshot(self, ctx):
         self.calls.append(ctx)
-        return self.out
+        idx = min(len(self.calls) - 1, len(self._replies) - 1)
+        return self._replies[idx]
 
 
 async def _run(harness: FakeHarness, text: str = "this file", messages=None, **kwargs):
@@ -161,21 +169,53 @@ async def test_bare_token_response_resolves_as_path(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_json_path_nonexistent_returns_message(tmp_path):
-    # Model confidently returns a path that doesn't exist on disk.
+async def test_json_path_nonexistent_triggers_retry_and_fails(tmp_path):
+    # Layer 2 returns a nonexistent path; retry (Layer 4) also fails → message.
     harness = FakeHarness('{"path":"app/ideas.md"}')
     result = await _run(harness, working_dir=str(tmp_path))
     assert result.path is None
     assert "app/ideas.md" in (result.message or "")
+    assert len(harness.calls) == 2  # initial call + retry
 
 
 @pytest.mark.asyncio
-async def test_bare_fallback_nonexistent_returns_message(tmp_path):
-    # Model replies with just a bare path token, but the file doesn't exist.
+async def test_bare_fallback_nonexistent_triggers_retry_and_fails(tmp_path):
+    # Layer 3 returns a nonexistent bare path; retry also fails → message.
     harness = FakeHarness("src/missing.ts")
     result = await _run(harness, working_dir=str(tmp_path))
     assert result.path is None
     assert "src/missing.ts" in (result.message or "")
+    assert len(harness.calls) == 2  # initial call + retry
+
+
+# --- Layer 4: not-found retry ---
+
+
+@pytest.mark.asyncio
+async def test_retry_resolves_correct_path(tmp_path):
+    # Layer 2 guesses wrong; Layer 4 retry corrects itself to the real file.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "ideas.md").write_text("ideas")
+    harness = FakeHarness([
+        '{"path":"app/ideas.md"}',       # Layer 2: wrong path
+        '{"path":"docs/ideas.md"}',      # Layer 4 retry: correct path
+    ])
+    result = await _run(harness, text="ideas file", working_dir=str(tmp_path))
+    assert result.path == "docs/ideas.md"
+    assert len(harness.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_clarification_message_passes_through(tmp_path):
+    # Layer 4 retry returns a clarification question rather than another path.
+    harness = FakeHarness([
+        '{"path":"wrong/path.md"}',
+        '{"message":"Did you mean the ideas doc or the notes doc?"}',
+    ])
+    result = await _run(harness, text="that file", working_dir=str(tmp_path))
+    assert result.path is None
+    assert "ideas doc" in (result.message or "")
+    assert len(harness.calls) == 2
 
 
 # --- Unrecoverable response ---
