@@ -101,7 +101,9 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 | `connector_manager.py` + `connectors/` | Connector framework (see below). |
 | `credentials` (`oauth_login.py`, `oauth_providers.py`, `oauth_errors.py`, `codex_login.py`) | Stored backend credentials: API keys, OAuth logins, and Codex device-auth in-app login. |
 | `tunnel.py` | `cloudflared tunnel --url` subprocess manager; parses the public URL, monitors, stops gracefully. |
-| `notifiers.py` | Notification destinations (webhook), pluggable. |
+| `notifiers/` | Notification destinations (webhook), pluggable. |
+| `fork_helpers.py` | Pure helpers for `/rewind`: git-anchor capture at turn-start, side-effect classification over parent rows, safe-revert preflight + git-stash execution. |
+| `research/` | Native deep research orchestration (see below). |
 | `cli.py` | `octopus serve` (`--tunnel`), `octopus handoff`, `octopus pull`. |
 
 ### Harness layer (`server/harness/`)
@@ -137,6 +139,7 @@ Every turn injects a small set of stdio MCP servers into the CLI's
 | `connectors/github.py`, `gmail.py` | typed API tools | Built-in connector tools (see Connectors). |
 | `connectors/custom.py` | generic `request(method, path, …)` | One tool for any user-defined OAuth2 API. |
 | `connectors/_shared.py` | — | Token fetch+cache, 401→reconnect, 32 KB truncation. |
+| `research.py` | `mcp__research__deep_research(question)` | Start a native deep-research job. Thin HTTP shim to `/api/sessions/{sid}/research`; returns `research_id` immediately so the model's turn ends cleanly. See Native Deep Research below. |
 
 ### Connector system (`server/connectors/` + `connector_manager.py`)
 
@@ -176,8 +179,8 @@ hidden. `/verbose` and `/quiet` toggle this per chat (persisted in
 **Slash commands:** `/new [name]`, `/agent <name|id>`, `/sessions` (tappable
 switch buttons), `/switch <id>`, `/current`, `/quiet`, `/verbose`, `/showme`
 (intercepted with a "browser-only" notice — the viewer modal can't render in
-Telegram), `/fork` / `/rewind` / `/tree` (intercepted with a "browser-only"
-notice — fork requires a scroll-able message picker), `/help`.
+Telegram), `/rewind` / `/fork` / `/research` (intercepted with a "browser-only"
+notice — these require the browser UI), `/help`.
 
 ### Frontend (`web/src/`)
 
@@ -187,7 +190,7 @@ React 19 + TypeScript (strict) + Vite + zustand + Tailwind v4 + Radix.
 |---|---|
 | Shell | `App.tsx`, `components/AccountDropdown.tsx`, `OctopusLogo.tsx`, `SettingsDialog.tsx` |
 | Agents | `AgentList.tsx` (two-pane sidebar: pick agent → see its sessions), `AgentSettings.tsx` (prompt/model/backend/credential/tools/connectors) |
-| Sessions & chat | `SessionList.tsx` (sidebar with fork-tree disclosure; forks nest under root sessions), `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint, per-user-message "Fork from here" button), `MessageBubble.tsx`, `SlashCommandMenu.tsx` (`/rewind`, `/fork`, `/tree`, `/showme` slash commands), `ForkDialog.tsx` (message picker + confirm popover with side-effect summary + optional git-revert checkbox), `ArchivedSessionsDialog.tsx` |
+| Sessions & chat | `SessionList.tsx` (sidebar with fork-tree disclosure; forks nest under root sessions), `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint, per-user-message "Fork from here" button), `MessageBubble.tsx`, `SlashCommandMenu.tsx` (`/schedule`, `/remember`, `/research`, `/showme`, `/rewind`, `/fork`, `/archive`, `/reset` slash commands), `ForkDialog.tsx` (message picker + confirm popover with side-effect summary + optional git-revert checkbox), `ArchivedSessionsDialog.tsx` |
 | In-app tools | `FileViewerDialog.tsx` (viewer), `BgTaskChip.tsx` (bg task status), `QuestionPrompt.tsx` (ask form), `ToolApproval.tsx` (approval prompt), `AgentDelegationRequestCard.tsx` (live status next to a `mcp__ask_agent__ask` tool_use), `AgentDelegationEventCard.tsx` (renders the `[agent-reply|question|error:…]` injected turns as collapsible cards with deep-links into the child session) |
 | Schedules | `ScheduleList.tsx`, `SchedulesDialog.tsx` (all-agents overview) |
 | Connectors / creds | `ConnectorList.tsx`, `CredentialList.tsx` |
@@ -255,6 +258,41 @@ turns; when it exits, Octopus injects a follow-up turn carrying the captured
 output (spilled to a file first if large). An idle watchdog SIGTERMs tasks that
 go silent after producing output. Details: [`post-mortems/2026-05-18-bg-pipeline-hardening.md`](post-mortems/2026-05-18-bg-pipeline-hardening.md).
 
+### Native Deep Research (`server/research/`)
+
+`/research <question>` (or the `mcp__research__deep_research` MCP tool) starts a
+multi-phase orchestrated research job managed entirely by Octopus — no dependence
+on the Claude Code `/deep-research` workflow skill (which hangs inside a headless
+turn). Design: [`plans/native-deep-research.md`](plans/native-deep-research.md).
+
+**Pipeline phases (asyncio, all within Octopus):**
+
+1. **Scope** — `run_oneshot` (tool-free) decomposes the question into 3–6 angles.
+2. **Search + gather** — one scoped harness sub-turn per angle (parallel,
+   semaphore-bounded), allowed only the harness's native web tools. The leaf
+   executor (`research/leaf.py`) resolves the agent's credential, runs a throwaway
+   `HarnessRun` with a minimal config (no MCP servers, no connectors, no memory dir),
+   captures the final text as JSON findings, and discards the sub-turn.
+3. **Dedup + rank** — pure Python over the returned `{claim, url}` findings.
+4. **Verify** — top-ranked claims each get K independent web sub-turns
+   (adversarial "try to refute"; majority-refute kills the claim).
+5. **Synthesize** — `run_oneshot` merges survivors into a cited report.
+
+**Concurrency and safety:** a per-job semaphore (configurable, default ~4–6) plus
+a global cross-job cap (`research_max_concurrent_jobs`) bound all sub-turns. A
+hard overall timeout and idle heartbeat prevent the hanging that plagued the CLI
+Workflow. Cancellation reaps all in-flight `HarnessRun` subprocesses. A boot sweep
+marks any `running` job `interrupted`.
+
+**Delivery:** the report is written to `<working_dir>/research/<id>.md` and
+injected into the session as a follow-up turn (`[deep-research:<id>] …report…`),
+the same path bg-task delivery uses. A `ResearchCard` in the UI tracks phase
+progress and exposes a cancel button.
+
+**Backend-agnostic:** both Claude Code (`WebSearch`/`WebFetch`) and Codex
+(`web_search`, enabled via `-c tools.web_search=true`) support research leaves.
+A backend without web tools simply returns an "unavailable" message.
+
 ## WebSocket protocol (`/ws`)
 
 **Client → Server**
@@ -312,6 +350,10 @@ POST               /api/sessions/{id}/delegations/{did}/cancel  # stop a delegat
 POST               /api/sessions/{id}/delegations/{did}/answer   # answer a child's question
 POST               /api/sessions/{id}/fork                       # /rewind: fork conversation to a prior message
 POST               /api/sessions/{id}/duplicate                  # /fork: filesystem copy onto a new working dir
+POST               /api/sessions/{id}/research                   # /research: start a deep-research job
+GET                /api/sessions/{id}/research                   # list jobs for this session
+GET                /api/sessions/{id}/research/{rid}             # job detail + phase progress
+POST               /api/sessions/{id}/research/{rid}/cancel      # cancel in-flight job
 
 # Schedules (interval + cron), credentials, connectors, notifiers
 GET/POST           /api/schedules
@@ -366,6 +408,7 @@ migrations (never re-create or duplicate the schema in docs).
 - **`notifiers`** — notification destinations.
 - **`bg_tasks`** — cross-turn background task state (`status`, `exit_code`,
   captured stdio, timestamps).
+- **`research_jobs`** — native deep-research job state: `question`, `status` (`running`|`completed`|`cancelled`|`failed`|`interrupted`), `phase`, `completed_at`, `injection_status` / `injected_at` / `delivery_error` (delivery tracked separately from completion so a job can be "done but report queued"), `report_path`, and per-phase progress counters. A boot sweep marks any `running` row `interrupted`.
 
 ## Memory
 
@@ -396,6 +439,7 @@ provisioned on agent create, kept on archive, removed on hard delete.
 | `ask_user_question_timeout_seconds` | `1800` | Auto-answer an unanswered question (so headless sessions don't wedge). |
 | `public_base_url` | computed | Stable public host for connector OAuth redirect URIs (tunnel). |
 | `gmail_/github_oauth_client_id`/`_secret` | — | Optional env fallback for connector OAuth clients (in-app config takes precedence). |
+| `research_max_concurrent_jobs` | `2` | Max simultaneous deep-research jobs across all sessions. |
 
 ## Key design decisions
 
@@ -415,7 +459,7 @@ provisioned on agent create, kept on archive, removed on hard delete.
   bridge/scheduled sessions where no human may be watching.
 - **Quiet bridges.** Telegram chats see only the agent's replies by default;
   tool chatter is opt-in via `/verbose` (persisted per chat).
-- **Session branching — two commands.** `/rewind` (also `/tree`) forks a
+- **Session branching — two commands.** `/rewind` forks a
   conversation to any prior user message; the harness layer owns the per-backend
   resume strategy (both Claude and Codex use HISTORY_REPLAY: wrap the truncated
   transcript into the first turn's user-message channel; turn 2+ resumes natively).
@@ -487,8 +531,8 @@ octopus pull SESSION_ID [--cwd DIR]            # export a session to local JSONL
 ## Tests
 
 ```bash
-.venv/bin/pytest tests/ -v        # 881 backend (real-CLI tests run when claude/codex on PATH)
+.venv/bin/pytest tests/ -v        # 882 backend (real-CLI tests run when claude/codex on PATH)
 cd web && bun run test            # 84 frontend unit (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 62 Playwright e2e (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI)
+cd web && bun run test:e2e        # 67 Playwright e2e (35 fast UI-only + 32 real-CLI @llm)
 ```

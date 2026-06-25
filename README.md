@@ -96,17 +96,27 @@ Phone / Browser / Telegram
   light on thousand-message sessions.
 - **Session branching** — Two commands for exploring alternatives without
   losing context:
-  - **`/rewind`** (also `/tree`) — rewind a conversation to any prior user
-    message and re-issue it (edited, redone, or replaced). A sidebar tree shows
-    branches; a confirm popover discloses side effects (file edits, bg tasks,
-    irreversible tool calls) and optionally reverts file edits via `git stash`
-    when the working tree is clean. Design:
+  - **`/rewind`** — rewind a conversation to any prior user message and
+    re-issue it (edited, redone, or replaced). A sidebar tree shows branches; a
+    confirm popover discloses side effects (file edits, bg tasks, irreversible
+    tool calls) and optionally reverts file edits via `git stash` when the
+    working tree is clean. Design:
     [`docs/plans/session-rewind.md`](docs/plans/session-rewind.md).
   - **`/fork [name]`** — duplicate the **current** session onto an independent
     full copy of its working directory, leaving the original untouched. The fork
     resumes the real conversation history (native transcript copy), so the model
     sees full context. Design:
     [`docs/plans/session-fork.md`](docs/plans/session-fork.md).
+- **Native deep research** — `/research <question>` (or the
+  `mcp__research__deep_research` MCP tool, which agents can call themselves)
+  starts a multi-phase Octopus-orchestrated research job: scope decompose →
+  parallel web-search sub-turns per angle → dedup + rank → adversarial verify →
+  final synthesis into a cited report. Octopus owns the fan-out,
+  concurrency limits, cancellation, and persistence; web access comes from the
+  harness's own native tools (`WebSearch`/`WebFetch` for Claude; `web_search` for
+  Codex). A `ResearchCard` in the chat tracks phase progress and exposes a cancel
+  button; the final report arrives as a follow-up turn the agent can act on.
+  Design: [`docs/plans/native-deep-research.md`](docs/plans/native-deep-research.md).
 - **Local handoff** — `octopus handoff` imports local Claude Code sessions;
   `octopus pull` exports a session as JSONL for local `claude --resume`.
 - **Persistence** — SQLite (WAL, batched commits per turn); sessions, messages,
@@ -165,10 +175,10 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 881 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
+.venv/bin/pytest tests/ -v        # 882 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
 cd web && bun run test            # 84 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 62 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI). Split into `:fast` (UI-only, ~16s) and `:llm` (real Claude/Codex, ~3min) for dev iteration.
+cd web && bun run test:e2e        # 67 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI). Split into `:fast` (35 UI-only, ~16s) and `:llm` (32 real Claude/Codex, ~3min) for dev iteration.
 ```
 
 ### Pre-commit hooks (optional)

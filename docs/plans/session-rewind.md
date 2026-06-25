@@ -1,4 +1,4 @@
-# Session Tree-Rewind — Tech Plan (`/fork` / `/tree`)
+# Session Tree-Rewind — Tech Plan (`/rewind`)
 
 > **Draft (2026-06-06).** Inspired by Pi agent's `/tree`: rewind a
 > conversation to a prior user message and try again — edited,
@@ -9,8 +9,8 @@
 > saga + classifier + safe-revert + crash recovery + REST routes +
 > attachment fallback/blit) and frontend (store `buildForkTree`,
 > sidebar fork tree, fork banner, prefilled input, `ForkDialog`
-> picker/confirm, per-message "Fork from here" button, `/fork`+`/tree`
-> slash commands, Telegram browser-only notice) are implemented and
+> picker/confirm, per-message "Fork from here" button, `/rewind` slash
+> command, Telegram browser-only notice) are implemented and
 > tested (`tests/test_fork_helpers.py`, `tests/test_session_fork.py`,
 > `tests/test_session_fork_real.py`, `web/src/lib/forkTree.test.ts`,
 > `web/src/components/ForkDialog.test.tsx`, `web/e2e/fork.spec.ts`).
@@ -95,9 +95,8 @@ capability.
 
 ## 1. Goals
 
-- Browser command `/fork` (alias `/tree`) and a per-user-message
-  "Fork from here" affordance — both call the same backend
-  endpoint.
+- Browser command `/rewind` and a per-user-message "Fork from here"
+  affordance — both call the same backend endpoint.
 - Picker rows = user messages. Hovering / selecting one means
   "rewind to **before** this user message and let me redo it".
 - A forked session opens immediately, agent-attached, with the
@@ -125,7 +124,7 @@ capability.
   agents mid-fork is just "create a new session with that agent" —
   no shared semantics needed.
 - **Forking inside bridges (Telegram).** v1 is browser-only. A
-  bridge `/fork` would need a way to pick the message id without a
+  bridge `/rewind` would need a way to pick the message id without a
   scroll UI, which is its own problem.
 - **Backing out a fork (un-fork).** The fork is a session; delete
   it like any session.
@@ -642,16 +641,16 @@ used.
 
 ### 5.2 Forking from the chat as a slash command
 
-`/fork` (and `/tree`) is intercepted client-side. Two forms:
+`/rewind` is intercepted client-side. Two forms:
 
-- `/fork` typed with no argument while a message is in scroll-focus
+- `/rewind` typed with no argument while a message is in scroll-focus
   → forks at that message's seq.
-- `/fork @<message-id>` typed anywhere → forks at the referenced
+- `/rewind @<message-id>` typed anywhere → forks at the referenced
   message. (`@<id>` resolves via the existing message-anchor
   scheme.)
 
 Both POST to the same `/fork` route. The Telegram bridge
-intercepts `/fork` with a "browser-only" notice, matching how
+intercepts `/rewind` with a "browser-only" notice, matching how
 `/showme` already handles that case.
 
 ### 5.3 Both backends in v1: two strategies, one contract
@@ -942,7 +941,7 @@ the user is rewinding past.
 #### 5.6.2 The fork-confirm popover
 
 Triggered by either the per-message Fork button (§6.1) or the
-`/fork` picker (§6.2). Once a fork-point is chosen, the popover
+`/rewind` picker (§6.2). Once a fork-point is chosen, the popover
 shows three sections:
 
 ```
@@ -1218,15 +1217,14 @@ capability flag plumbed onto `SessionInfo` — see §5.3.3). When
 naming the reason. The frontend never reads `session.backend` to
 decide whether to show the button.
 
-### 6.2 The `/fork` picker
+### 6.2 The `/rewind` picker
 
-`SlashCommandMenu` registers `/fork` (with `/tree` as alias for
-muscle-memory from Pi). Typing `/fork` and pressing Enter opens an
-**inline picker** in the same surface the slash menu already uses
-(no full modal, no route change):
+`SlashCommandMenu` registers `/rewind`. Typing `/rewind` and pressing
+Enter opens an **inline picker** in the same surface the slash menu
+already uses (no full modal, no route change):
 
 ```
-/fork
+/rewind
 ─────────────────────────────────────────────────────────────────
  Pick a user message to rewind to and redo:
 
@@ -1255,7 +1253,7 @@ pre-filled — same popover the per-message button opens, so the
 disclosure + revert-checkbox affordances are identical
 regardless of entry point.
 
-The Telegram bridge intercepts `/fork` with a "browser-only"
+The Telegram bridge intercepts `/rewind` with a "browser-only"
 notice, matching how `/showme` already handles that case
 (`server/bridges/telegram.py` is the precedent).
 
@@ -1580,9 +1578,9 @@ Five phases, each ends with the full verification suite green.
 - Fork banner in `ChatView`.
 - Vitest unit tests for the tree builder + banner.
 
-### Phase 4 — `/fork` picker + per-user-message button + confirm popover + prefilled-input wiring
-- `SlashCommandMenu` registers `/fork` (alias `/tree`); the inline
-  picker described in §6.2 fetches `/fork-preview` per row.
+### Phase 4 — `/rewind` picker + per-user-message button + confirm popover + prefilled-input wiring
+- `SlashCommandMenu` registers `/rewind`; the inline picker described
+  in §6.2 fetches `/fork-preview` per row.
 - `ChatView` user-message hover-action wires to the same
   fork-confirm popover.
 - Fork-confirm popover component (`ForkConfirmDialog.tsx`) renders
@@ -1595,7 +1593,7 @@ Five phases, each ends with the full verification suite green.
   with that text. Once the user sends, the harness call clears
   `fork_metadata` on the backend (so the prefill doesn't re-appear
   on subsequent loads of the same session).
-- Telegram bridge intercepts `/fork` with a browser-only notice
+- Telegram bridge intercepts `/rewind` with a browser-only notice
   (mirror `/showme`).
 
 ### Phase 5 — Real-CLI verification (both backends) + Playwright e2e

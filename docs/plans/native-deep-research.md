@@ -1,5 +1,14 @@
 # Octopus-native deep research
 
+> **Implementation status: SHIPPED.** The full pipeline described in this plan
+> is implemented and running: `server/research/` (manager, orchestrator, leaf
+> executor, schemas), `server/routers/research.py`, `server/mcp_servers/research.py`,
+> and the `ResearchCard` frontend component. The `research_jobs` table is in the
+> schema. The §1a prerequisites (process-group reaping, tool-policy renderer) were
+> resolved as part of the turn-safety and harness work. This doc now serves as
+> design reference; the §9 test suite is in `tests/test_research*.py` and
+> `web/e2e/research.spec.ts`.
+
 ## 1. Why native (not the harness skill)
 
 The Claude Code `/deep-research` skill is a background, multi-agent
@@ -13,10 +22,9 @@ schedules, bg-tasks and delegations do. We own the fan-out, the limits, the
 progress, the cancellation, and the persistence — and it works identically on
 claude-code and codex.
 
-## 1a. Prerequisites — BLOCKING (Vera review)
+## 1a. Prerequisites — resolved before ship
 
-Two harness-layer gaps must be closed *before* research leaves are safe;
-neither is optional:
+Two harness-layer concerns were addressed before research shipped:
 
 1. **Per-turn lifecycle / process-group reaping ("Layer 1").** `HarnessRun`
    spawns without `start_new_session=True` (`run.py:225`) and `stop()` only
