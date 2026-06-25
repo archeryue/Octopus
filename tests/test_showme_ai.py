@@ -102,12 +102,15 @@ def test_extract_json_returns_none_for_no_object():
 
 
 @pytest.mark.asyncio
-async def test_json_object_in_prose_resolves():
+async def test_json_object_in_prose_resolves(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "plan.md").write_text("the plan")
     harness = FakeHarness(
         'Looking at the conversation:\n\n{"path":"docs/plan.md"}\n\nDone.'
     )
     result = await _run(
         harness,
+        working_dir=str(tmp_path),
         messages=[{"role": "user", "type": "text", "content": "open the plan"}],
     )
     assert result.path == "docs/plan.md"
@@ -149,11 +152,30 @@ def test_bare_path_fallback_rejects_without_extension():
 
 
 @pytest.mark.asyncio
-async def test_bare_token_response_resolves_as_path():
+async def test_bare_token_response_resolves_as_path(tmp_path):
     # `claude --print` very commonly replies with just the path token.
+    (tmp_path / "README.md").write_text("hi")
     harness = FakeHarness("README.md")
-    result = await _run(harness)
+    result = await _run(harness, working_dir=str(tmp_path))
     assert result.path == "README.md"
+
+
+@pytest.mark.asyncio
+async def test_json_path_nonexistent_returns_message(tmp_path):
+    # Model confidently returns a path that doesn't exist on disk.
+    harness = FakeHarness('{"path":"app/ideas.md"}')
+    result = await _run(harness, working_dir=str(tmp_path))
+    assert result.path is None
+    assert "app/ideas.md" in (result.message or "")
+
+
+@pytest.mark.asyncio
+async def test_bare_fallback_nonexistent_returns_message(tmp_path):
+    # Model replies with just a bare path token, but the file doesn't exist.
+    harness = FakeHarness("src/missing.ts")
+    result = await _run(harness, working_dir=str(tmp_path))
+    assert result.path is None
+    assert "src/missing.ts" in (result.message or "")
 
 
 # --- Unrecoverable response ---

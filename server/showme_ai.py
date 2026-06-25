@@ -162,20 +162,47 @@ async def resolve_showme_reference(
     )
     out = await harness.run_oneshot(ctx)
 
+    # Track whatever path the model identified, even if it turns out not to
+    # exist on disk — lets us emit a precise "file not found" message rather
+    # than the generic "couldn't pin down a file" fallback.
+    candidate_path: str | None = None
+
     obj = extract_json(out)
     if obj is not None:
         path = obj.get("path")
         message = obj.get("message")
         if isinstance(path, str) and path.strip():
-            return ShowMeResolution(path=path.strip())
-        if isinstance(message, str) and message.strip():
+            candidate_path = path.strip()
+            if resolve_local_path(candidate_path, working_dir) is not None:
+                return ShowMeResolution(path=candidate_path)
+            # Path from model doesn't exist on disk — fall through to the
+            # "file not found" error below; don't try bare-path on the same out.
+        elif isinstance(message, str) and message.strip():
             return ShowMeResolution(path=None, message=message.strip())
 
     # Layer 3 — bare-path fallback. The model often replies with just the
     # path as a single token instead of the requested JSON wrapper; accept it.
-    bare = _bare_path_fallback(out)
-    if bare is not None:
-        return ShowMeResolution(path=bare)
+    # Only reached when JSON extraction found nothing (obj is None, or the
+    # object had neither a valid path nor a clarifying message).
+    if candidate_path is None:
+        bare = _bare_path_fallback(out)
+        if bare is not None:
+            candidate_path = bare
+            if resolve_local_path(bare, working_dir) is not None:
+                return ShowMeResolution(path=bare)
+            # Bare path doesn't exist either — fall through.
+
+    if candidate_path is not None:
+        logger.warning(
+            "showme: model returned non-existent path (text=%r, path=%r, wd=%r)",
+            text,
+            candidate_path,
+            working_dir,
+        )
+        return ShowMeResolution(
+            path=None,
+            message=f'Couldn\'t find "{candidate_path}" in the working directory. Try giving the path directly.',
+        )
 
     logger.warning(
         "showme: couldn't parse model output (text=%r, len=%d): %r",
