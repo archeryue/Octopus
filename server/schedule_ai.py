@@ -52,6 +52,7 @@ class ParsedSchedule:
     cron: str | None
     timezone: str | None
     recurrence_label: str
+    run_at: str | None = None  # ISO datetime for one-time schedules
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +77,8 @@ def recurrence_label_for(row: dict) -> str:
     label = (row.get("recurrence_label") or "").strip()
     if label:
         return label
+    if row.get("run_at"):
+        return f"Once at {row['run_at']}"
     if row.get("cron"):
         return f"Cron: {row['cron']}"
     interval = row.get("interval_seconds")
@@ -162,18 +165,22 @@ def build_parse_prompt(text: str, now_iso: str, tz: str) -> str:
         f"Local timezone: {tz}\n\n"
         "Return ONLY a JSON object (no prose, no markdown fences) with keys:\n"
         '- "name": a short label (max ~6 words) for the schedule.\n'
-        '- "prompt": the task to run on each fire, as a clear instruction with '
-        "the timing/recurrence words removed.\n"
+        '- "prompt": the task to run, as a clear instruction with the '
+        "timing/recurrence words removed.\n"
         '- "recurrence": exactly one of:\n'
+        '    {"kind":"once","run_at_iso":"<YYYY-MM-DDTHH:MM:SS>"} — for a '
+        "single one-time run at a specific date/time (\"at 3pm tomorrow\", "
+        "\"next Monday at 2pm\"). The datetime is in the LOCAL timezone above. "
+        "Use this ONLY when the user clearly wants a single execution.\n"
         '    {"kind":"cron","cron":"<min> <hour> <day-of-month> <month> '
-        '<day-of-week>"} — for clock-time / day-of-week schedules (every '
-        "morning, weekdays 9am, every Monday). Standard 5-field crontab "
+        '<day-of-week>"} — for recurring clock-time / day-of-week schedules '
+        "(every morning, weekdays 9am, every Monday). Standard 5-field crontab "
         "interpreted in the LOCAL timezone above; day-of-week 0=Sunday..6="
         "Saturday.\n"
         '    {"kind":"interval","interval_seconds":<int>} — for "every N '
         'minutes/hours" with no specific clock time. Minimum 60.\n'
         '- "recurrence_label": a short human description, e.g. "Every day at '
-        '9:00 AM".\n\n'
+        '9:00 AM" or "Once on Monday at 2:00 PM".\n\n'
         f"Request: {text}"
     )
 
@@ -233,6 +240,32 @@ def validate_parsed(obj: dict, *, default_tz: str, original_text: str) -> Parsed
             cron=None,
             timezone=None,
             recurrence_label=label or f"Every {format_interval(seconds)}",
+        )
+
+    if kind == "once":
+        run_at_str = str(rec.get("run_at_iso") or "").strip()
+        if not run_at_str:
+            raise ScheduleParseError(
+                "Couldn't work out the one-time date/time. Try rephrasing."
+            )
+        tz = normalize_timezone(default_tz)
+        try:
+            dt = datetime.fromisoformat(run_at_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=ZoneInfo(tz))
+            run_at = dt.isoformat()
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ScheduleParseError(
+                "Couldn't work out the one-time date/time. Try rephrasing."
+            )
+        return ParsedSchedule(
+            name=name,
+            prompt=prompt,
+            interval_seconds=None,
+            cron=None,
+            timezone=tz,
+            recurrence_label=label or f"Once at {run_at_str}",
+            run_at=run_at,
         )
 
     if kind == "cron":

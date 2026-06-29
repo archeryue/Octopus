@@ -125,6 +125,7 @@ def test_validate_interval():
     )
     assert p.interval_seconds == 1800
     assert p.recurrence_label == "Every 30m"
+    assert p.run_at is None
 
 
 def test_validate_cron():
@@ -142,6 +143,64 @@ def test_validate_cron():
     assert p.timezone == "America/Los_Angeles"
     assert p.recurrence_label == "Every day at 9:00 AM"
     assert p.interval_seconds is None
+    assert p.run_at is None
+
+
+def test_validate_once_naive_datetime():
+    """kind=once with a naive datetime gets the default_tz applied."""
+    p = validate_parsed(
+        {
+            "name": "Remind me",
+            "prompt": "send reminder",
+            "recurrence": {"kind": "once", "run_at_iso": "2030-06-15T15:00:00"},
+            "recurrence_label": "Once on June 15 at 3:00 PM",
+        },
+        default_tz="America/New_York",
+        original_text="remind me at 3pm on June 15",
+    )
+    assert p.run_at is not None
+    assert "2030-06-15" in p.run_at
+    assert "15:00:00" in p.run_at
+    assert p.interval_seconds is None
+    assert p.cron is None
+    assert p.recurrence_label == "Once on June 15 at 3:00 PM"
+
+
+def test_validate_once_aware_datetime():
+    """kind=once with a timezone-aware ISO string is preserved as-is."""
+    p = validate_parsed(
+        {
+            "name": "One-time task",
+            "prompt": "do the thing",
+            "recurrence": {"kind": "once", "run_at_iso": "2030-07-04T10:00:00+05:30"},
+        },
+        default_tz="UTC",
+        original_text="do the thing at 10am IST on July 4",
+    )
+    assert p.run_at is not None
+    assert "2030-07-04" in p.run_at
+    assert "10:00:00" in p.run_at
+    assert p.recurrence_label == "Once at 2030-07-04T10:00:00+05:30"
+
+
+def test_validate_once_missing_run_at_raises():
+    """kind=once without run_at_iso raises ScheduleParseError."""
+    with pytest.raises(ScheduleParseError):
+        validate_parsed(
+            {"prompt": "x", "recurrence": {"kind": "once"}},
+            default_tz="UTC",
+            original_text="x",
+        )
+
+
+def test_validate_once_invalid_datetime_raises():
+    """kind=once with an unparseable datetime raises ScheduleParseError."""
+    with pytest.raises(ScheduleParseError):
+        validate_parsed(
+            {"prompt": "x", "recurrence": {"kind": "once", "run_at_iso": "not-a-date"}},
+            default_tz="UTC",
+            original_text="x",
+        )
 
 
 @pytest.mark.parametrize(
@@ -151,6 +210,8 @@ def test_validate_cron():
         {"prompt": "x", "recurrence": {"kind": "interval", "interval_seconds": 30}},
         {"prompt": "x", "recurrence": {"kind": "cron", "cron": "nonsense"}},
         {"prompt": "x", "recurrence": {"kind": "cron", "cron": "99 99 * * *"}},
+        {"prompt": "x", "recurrence": {"kind": "once"}},
+        {"prompt": "x", "recurrence": {"kind": "once", "run_at_iso": "not-a-date"}},
         {"prompt": "x", "recurrence": {"kind": "weekly"}},
         {"prompt": "x"},
     ],

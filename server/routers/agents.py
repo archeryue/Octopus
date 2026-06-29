@@ -225,5 +225,6 @@ async def create_agent_schedule_from_text(
         tz=parsed.timezone,
         recurrence_label=parsed.recurrence_label,
         origin_session_id=req.session_id,
+        run_at=parsed.run_at,
     )
     return to_schedule_info(row)

@@ -235,6 +235,133 @@ async def test_cron_schedule_registers_cron_trigger(setup):
 
 
 @pytest.mark.asyncio
+async def test_initialize_deletes_missed_run_at_schedules(setup):
+    """On startup, run_at schedules whose fire time has already passed (missed
+    while the server was down) are deleted from the DB rather than silently
+    dropped by APScheduler."""
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+
+    # A one-time schedule with a fire time in the distant past.
+    await db.save_schedule(
+        schedule_id="missed1",
+        agent_id=agent["id"],
+        name="missed",
+        prompt="should have run already",
+        created_at="2026-01-01T00:00:00+00:00",
+        run_at="2020-01-01T09:00:00+00:00",
+        recurrence_label="Once on Jan 1 2020",
+    )
+    # A normal interval schedule that should survive.
+    await db.save_schedule(
+        schedule_id="recurring1",
+        agent_id=agent["id"],
+        name="recurring",
+        prompt="keep going",
+        created_at="2026-01-01T00:00:00+00:00",
+        interval_seconds=3600,
+    )
+    assert len(await db.load_schedules()) == 2
+
+    await runner.initialize()
+
+    remaining = await db.load_schedules()
+    assert [r["id"] for r in remaining] == ["recurring1"]
+    assert runner._scheduler.get_job("missed1") is None
+    assert runner._scheduler.get_job("recurring1") is not None
+
+
+@pytest.mark.asyncio
+async def test_run_at_schedule_registers_date_trigger(setup):
+    """A schedule with run_at registers an APScheduler DateTrigger."""
+    from apscheduler.triggers.date import DateTrigger
+
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+    run_at = "2030-01-15T09:00:00+00:00"
+    await db.save_schedule(
+        schedule_id="once1",
+        agent_id=agent["id"],
+        name="one-time",
+        prompt="do it once",
+        created_at="2026-01-01T00:00:00+00:00",
+        run_at=run_at,
+        recurrence_label="Once on Jan 15 at 9:00 AM",
+    )
+    row = (await db.load_schedules())[0]
+    await runner.add(row)
+
+    job = runner._scheduler.get_job("once1")
+    assert job is not None
+    assert isinstance(job.trigger, DateTrigger)
+    # run_at is threaded into args so _fire knows to delete after firing.
+    assert job.args[4] == run_at
+
+
+@pytest.mark.asyncio
+async def test_run_at_schedule_deleted_after_fire(setup, monkeypatch):
+    """After a one-time (run_at) schedule fires, its DB row is deleted."""
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+
+    async def fake_send(session_id, prompt):
+        if False:
+            yield
+
+    monkeypatch.setattr(mgr, "send_message", fake_send)
+
+    await db.save_schedule(
+        schedule_id="once2",
+        agent_id=agent["id"],
+        name="one-time",
+        prompt="do it once",
+        created_at="2026-01-01T00:00:00+00:00",
+        run_at="2030-01-15T09:00:00+00:00",
+        recurrence_label="Once on Jan 15 at 9:00 AM",
+    )
+    assert len(await db.load_schedules()) == 1
+
+    # Simulate fire: _fire deletes the row regardless of success.
+    await runner._fire("once2", agent["id"], "do it once", run_at="2030-01-15T09:00:00+00:00")
+
+    # Row gone from DB.
+    assert await db.load_schedules() == []
+
+
+@pytest.mark.asyncio
+async def test_run_at_schedule_deleted_after_fire_with_origin_session(setup, monkeypatch):
+    """One-time schedule fires into an origin session and is deleted from DB."""
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+    origin = await mgr.create_session(agent["id"], name="chat")
+
+    started: dict = {}
+
+    async def fake_start(session_id, prompt):
+        started["session_id"] = session_id
+
+    monkeypatch.setattr(mgr, "start_message", fake_start)
+
+    await db.save_schedule(
+        schedule_id="once3",
+        agent_id=agent["id"],
+        name="one-time",
+        prompt="remind me",
+        created_at="2026-01-01T00:00:00+00:00",
+        run_at="2030-01-15T09:00:00+00:00",
+        recurrence_label="Once on Jan 15 at 9:00 AM",
+        origin_session_id=origin.id,
+    )
+    assert len(await db.load_schedules()) == 1
+
+    await runner._fire("once3", agent["id"], "remind me", origin.id, "2030-01-15T09:00:00+00:00")
+
+    assert started["session_id"] == origin.id
+    # DB row auto-deleted after the one-time fire.
+    assert await db.load_schedules() == []
+
+
+@pytest.mark.asyncio
 async def test_repoint_schedules_origin():
     """repoint_schedules_origin moves only schedules anchored to the old session
     and returns those (post-update) rows; unrelated schedules stay put."""
@@ -298,6 +425,32 @@ async def test_schedule_recurrence_columns_roundtrip():
         assert row["timezone"] == "UTC"
         assert row["recurrence_label"] == "Every 15 minutes"
         assert row["interval_seconds"] is None
+        assert row["run_at"] is None
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_at_column_roundtrip():
+    """run_at persists and loads correctly; cron/interval stay NULL."""
+    db = Database(":memory:")
+    await db.initialize()
+    try:
+        agent = await db.get_system_agent()
+        run_at = "2030-01-15T09:00:00+00:00"
+        await db.save_schedule(
+            schedule_id="once-db",
+            agent_id=agent["id"],
+            name="one-time task",
+            prompt="do it once",
+            created_at="t",
+            run_at=run_at,
+            recurrence_label="Once on Jan 15 at 9:00 AM",
+        )
+        row = (await db.load_schedules())[0]
+        assert row["run_at"] == run_at
+        assert row["interval_seconds"] is None
+        assert row["cron"] is None
     finally:
         await db.close()
 
@@ -336,6 +489,7 @@ async def test_migrate_schedule_recurrence_from_legacy_shape():
         assert not await db._has_column("schedules", "cron")
 
         await db._migrate_schedule_recurrence()
+        await db._migrate_schedule_run_at()
 
         assert await db._has_column("schedules", "cron")
         rows = await db.load_schedules()
@@ -344,6 +498,7 @@ async def test_migrate_schedule_recurrence_from_legacy_shape():
         assert rows[0]["interval_seconds"] == 120
         assert rows[0]["cron"] is None
         assert rows[0]["recurrence_label"] is None
+        assert rows[0]["run_at"] is None
 
         # A cron schedule can now be inserted (interval_seconds nullable).
         await db.save_schedule(
@@ -359,5 +514,56 @@ async def test_migrate_schedule_recurrence_from_legacy_shape():
         # Idempotent: re-running the migration is a no-op.
         await db._migrate_schedule_recurrence()
         assert len(await db.load_schedules()) == 2
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_migrate_schedule_run_at_from_legacy_shape():
+    """_migrate_schedule_run_at adds run_at to a pre-existing table that lacks
+    it, preserving existing rows, and is idempotent on re-run."""
+    db = Database(":memory:")
+    await db.initialize()
+    try:
+        agent = await db.get_system_agent()
+        conn = db._conn
+        # Simulate a pre-run_at table by dropping and recreating without run_at.
+        await conn.executescript(
+            """
+            DROP TABLE schedules;
+            CREATE TABLE schedules (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,
+                origin_session_id TEXT,
+                name TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                interval_seconds INTEGER,
+                cron TEXT,
+                timezone TEXT,
+                recurrence_label TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_run_at TEXT
+            );
+            """
+        )
+        await conn.execute(
+            "INSERT INTO schedules (id, agent_id, name, prompt, interval_seconds, "
+            "enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            ("old1", agent["id"], "old", "do it", 120, "t"),
+        )
+        await conn.commit()
+        assert not await db._has_column("schedules", "run_at")
+
+        await db._migrate_schedule_run_at()
+
+        assert await db._has_column("schedules", "run_at")
+        rows = await db.load_schedules()
+        assert len(rows) == 1
+        assert rows[0]["run_at"] is None
+
+        # Idempotent.
+        await db._migrate_schedule_run_at()
+        assert await db._has_column("schedules", "run_at")
     finally:
         await db.close()

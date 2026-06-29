@@ -1925,6 +1925,8 @@ export interface components {
             last_run_at?: string | null;
             /** Origin Session Id */
             origin_session_id?: string | null;
+            /** Run At — ISO datetime for one-time schedules; null for recurring. */
+            run_at?: string | null;
         };
         /** SessionDetail */
         SessionDetail: {

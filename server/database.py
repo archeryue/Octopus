@@ -142,7 +142,8 @@ CREATE TABLE IF NOT EXISTS schedules (
     recurrence_label TEXT,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
-    last_run_at TEXT
+    last_run_at TEXT,
+    run_at TEXT  -- nullable ISO datetime; when set, fires once at that time then auto-deletes
 );
 
 -- (platform, chat_id) binds durably to an AGENT. session_id is demoted to a
@@ -424,6 +425,7 @@ class Database:
 
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
+        await self._migrate_schedule_run_at()
 
         # agents.backend — default harness for an agent's new sessions. DEFAULT
         # backfills existing agents to claude-code → no behavior change.
@@ -565,6 +567,15 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE schedules ADD COLUMN origin_session_id TEXT"
             )
+
+    async def _migrate_schedule_run_at(self) -> None:
+        """Add run_at column to schedules (one-time schedule support). Fresh DBs
+        already have it from _SCHEMA; re-runs are no-ops."""
+        if not await self._has_column("schedules", "run_at"):
+            await self._conn.execute(
+                "ALTER TABLE schedules ADD COLUMN run_at TEXT"
+            )
+            await self._conn.commit()
 
     async def _column_info(self, table: str) -> list[tuple[Any, ...]]:
         cursor = await self._conn.execute(f"PRAGMA table_info({table})")
@@ -1093,16 +1104,17 @@ class Database:
         recurrence_label: str | None = None,
         enabled: bool = True,
         origin_session_id: str | None = None,
+        run_at: str | None = None,
     ) -> None:
-        """Persist a schedule. Exactly one of `interval_seconds` or `cron`
-        (with `timezone`) defines the recurrence; the caller validates that.
+        """Persist a schedule. Recurrence is one of `interval_seconds`, `cron`
+        (with `timezone`), or `run_at` (ISO datetime, fires once then auto-deletes).
         `origin_session_id`, when set, is the session the `/schedule` command was
         typed in — fires append into it instead of a throwaway session."""
         await self._ensure_connected()
         await self._conn.execute(
             "INSERT INTO schedules (id, agent_id, origin_session_id, name, prompt, "
             "interval_seconds, cron, timezone, recurrence_label, enabled, "
-            "created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 schedule_id,
                 agent_id,
@@ -1115,6 +1127,7 @@ class Database:
                 recurrence_label,
                 int(enabled),
                 created_at,
+                run_at,
             ),
         )
         await self._conn.commit()
@@ -1123,8 +1136,8 @@ class Database:
         await self._ensure_connected()
         cursor = await self._conn.execute(
             "SELECT id, agent_id, name, prompt, interval_seconds, cron, timezone, "
-            "recurrence_label, enabled, created_at, last_run_at, origin_session_id "
-            "FROM schedules"
+            "recurrence_label, enabled, created_at, last_run_at, origin_session_id, "
+            "run_at FROM schedules"
         )
         rows = await cursor.fetchall()
         return [
@@ -1141,6 +1154,7 @@ class Database:
                 "created_at": row[9],
                 "last_run_at": row[10],
                 "origin_session_id": row[11],
+                "run_at": row[12],
             }
             for row in rows
         ]

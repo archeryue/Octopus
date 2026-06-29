@@ -42,17 +42,19 @@ async def create_schedule_for_agent(
     tz: str | None = None,
     recurrence_label: str | None = None,
     origin_session_id: str | None = None,
+    run_at: str | None = None,
 ) -> dict:
     """Persist a schedule owned by `agent_id` and register its job. Recurrence
-    is exactly one of `interval_seconds` or `cron` (+`timezone`). Shared by the
-    standalone `/api/schedules` route, the agent-scoped
-    `/api/agents/{id}/schedules` route, and the natural-language `from_text`
-    route. `origin_session_id` (the session the command was issued from) makes
-    each fire append into that conversation instead of a throwaway session."""
+    is one of `interval_seconds`, `cron` (+`timezone`), or `run_at` (ISO
+    datetime, fires once and auto-deletes). Shared by the standalone
+    `/api/schedules` route, the agent-scoped `/api/agents/{id}/schedules`
+    route, and the natural-language `from_text` route. `origin_session_id` (the
+    session the command was issued from) makes each fire append into that
+    conversation instead of a throwaway session."""
     schedule_id = uuid.uuid4().hex[:12]
     now = datetime.now(timezone.utc).isoformat()
     label = recurrence_label or recurrence_label_for(
-        {"interval_seconds": interval_seconds, "cron": cron}
+        {"interval_seconds": interval_seconds, "cron": cron, "run_at": run_at}
     )
     row = {
         "id": schedule_id,
@@ -67,6 +69,7 @@ async def create_schedule_for_agent(
         "enabled": True,
         "created_at": now,
         "last_run_at": None,
+        "run_at": run_at,
     }
     await _get_db().save_schedule(
         schedule_id=schedule_id,
@@ -79,6 +82,7 @@ async def create_schedule_for_agent(
         timezone=tz,
         recurrence_label=label,
         origin_session_id=origin_session_id,
+        run_at=run_at,
     )
     await _get_runner().add(row)
     return row

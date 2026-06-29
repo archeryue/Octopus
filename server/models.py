@@ -216,6 +216,9 @@ class ScheduleInfo(BaseModel):
     # live, each fire appends into that conversation; otherwise a fresh
     # schedule-origin session is materialized. Null for agent/API-created ones.
     origin_session_id: str | None = None
+    # One-time schedule: fire once at this ISO datetime then auto-delete.
+    # Null for recurring schedules (interval or cron).
+    run_at: str | None = None
 
 
 class CreateScheduleRequest(BaseModel):
