@@ -5,6 +5,7 @@ import { AgentList } from "./components/AgentList";
 import { AgentSettings } from "./components/AgentSettings";
 import { ArchivedSessionsDialog } from "./components/ArchivedSessionsDialog";
 import { ChatView } from "./components/ChatView";
+import { ApplicationList } from "./components/ApplicationList";
 import { ConnectorList } from "./components/ConnectorList";
 import { CredentialList } from "./components/CredentialList";
 // SessionList is rendered inside AgentList (nested under the active agent),
@@ -150,6 +151,7 @@ function AuthenticatedApp({
         <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3">
           <AgentList onCreateAgent={openCreateAgent} />
           <ScheduleList onOpen={() => setSchedulesOpen(true)} />
+          <ApplicationList onAdd={() => {}} />
           <ConnectorList />
           <CredentialList />
         </nav>
