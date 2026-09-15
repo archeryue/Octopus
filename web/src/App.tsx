@@ -36,12 +36,9 @@ function App() {
     return (
       <div className="login-screen flex min-h-screen items-center justify-center bg-gray-50 p-6">
         <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-card p-8 shadow-[0_24px_60px_-28px_rgba(28,44,72,0.28)]">
-          <div className="mb-6 flex items-center gap-2.5">
-            <OctopusLogo size={26} className="text-primary" />
-            <h1 className="text-[21px] font-bold tracking-tight text-gray-950">
-              Octopus
-            </h1>
-          </div>
+          <h1 className="mb-6 text-2xl font-bold tracking-tight text-gray-950">
+            Octopus
+          </h1>
           <p className="mb-6 text-sm leading-relaxed text-gray-800">
             Enter your access token to continue.
           </p>
@@ -101,10 +98,11 @@ function AuthenticatedApp({
         className={`sidebar ${sidebarOpen ? "open" : ""}`}
         aria-label="Sidebar"
       >
-        {/* Brand lockup — the logo is unchanged; only its setting follows the
-         * console design (28px mark, 17px wordmark, hairline-free header). */}
-        <div className="flex shrink-0 items-center gap-2.5 px-[18px] pb-3.5 pt-5">
-          <OctopusLogo size={28} className="shrink-0 text-primary" />
+        {/* Brand lockup. The mark is untouched — same artwork, same 22px, same
+         * brand navy it has always been; only the wordmark beside it follows
+         * the console design. */}
+        <div className="flex h-12 shrink-0 items-center gap-2.5 px-[18px]">
+          <OctopusLogo size={22} className="shrink-0" />
           <span className="truncate text-[17px] font-bold text-gray-950">
             Octopus
           </span>

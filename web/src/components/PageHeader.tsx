@@ -31,11 +31,11 @@ export function PageHeader({
 }) {
   return (
     <div
-      className={`page-header flex h-[60px] shrink-0 items-center gap-2.5 border-b border-gray-200 px-6 ${className}`}
+      className={`page-header flex h-12 shrink-0 items-center gap-2.5 border-b border-gray-200 px-5 ${className}`}
     >
       {onToggleSidebar && (
         <button
-          className="btn btn-menu -ml-2 inline-flex size-9 items-center justify-center rounded-lg text-gray-900 hover:bg-gray-100 md:hidden"
+          className="btn btn-menu -ml-1.5 inline-flex size-8 items-center justify-center rounded-lg text-gray-900 hover:bg-gray-100 md:hidden"
           onClick={onToggleSidebar}
           aria-label="Toggle sidebar"
         >

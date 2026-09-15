@@ -142,7 +142,7 @@ body {
   gap: 6px;
   font-family: var(--font-family-mono);
   font-size: 11.5px;
-  padding: 5px 9px;
+  padding: 4px 9px;
   border-radius: 7px;
   border: 1px solid transparent;
   white-space: nowrap;

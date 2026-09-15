@@ -17,6 +17,7 @@ import {
 import { ForkDialog } from "./ForkDialog";
 import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
+import { OctopusLogo } from "./OctopusLogo";
 import { PageHeader } from "./PageHeader";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
@@ -1277,6 +1278,9 @@ export function ChatView({
         {header}
         {delegationBanner}
         <div className="chat-empty flex flex-1 flex-col items-center justify-center gap-2 text-gray-700">
+          {/* The one place the mark gets room to be itself — nothing else is
+            * competing for attention on an empty canvas. */}
+          <OctopusLogo size={44} className="mb-2" />
           <h2 className="text-[22px] font-bold tracking-tight text-gray-950">
             Octopus
           </h2>

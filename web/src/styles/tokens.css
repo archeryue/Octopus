@@ -76,6 +76,11 @@
   --color-tile-warm: hsl(var(--tile-warm));
   --color-tile-warm-2: hsl(var(--tile-warm-2));
   --color-surface-alt: hsl(var(--surface-alt));
+
+  /* The brand mark. Deliberately NOT --primary: the logo is fixed artwork,
+   * and pointing it at a UI token means the next palette change silently
+   * recolors the brand (which is exactly what happened once). */
+  --color-logo: hsl(var(--logo));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -191,6 +196,12 @@
     --tile-warm:      29 59% 85.5%;    /* #f0d9c4 */
     --tile-warm-2:    42 41% 92.0%;    /* #f3eee2 */
     --surface-alt:    220 43% 98.6%;   /* #fafbfd */
+
+    /* Brand navy — the exact triplet the logo has rendered in since it was
+     * drawn (it used to ride on --primary-700, whose comment mis-stated the
+     * hex as #133E8B; the value has always resolved to #123587). Never
+     * derived from a UI token again. */
+    --logo:           222 76% 30%;     /* #123587 */
   }
 
   body {
