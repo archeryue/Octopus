@@ -355,6 +355,21 @@ def test_is_auth_error_codex_matches_and_is_case_insensitive():
     assert not h.is_auth_error("")
 
 
+def test_is_auth_error_codex_matches_a_lapsed_chatgpt_login():
+    """The verbatim `turn.failed` message a dead ChatGPT login produces. It
+    used to match nothing, so the credential was never flagged and the user got
+    a generic error instead of a Re-authorize prompt — it only *looked* handled
+    because the CLI's stderr happens to carry a websocket "401 Unauthorized"
+    alongside it (harness-credential-reauth.md §3)."""
+    h = get_harness("codex")
+    assert h.is_auth_error(
+        "Your access token could not be refreshed. Please log out and sign in again."
+    )
+    # Each half stands on its own — the CLI words this differently by channel.
+    assert h.is_auth_error("access token could not be refreshed")
+    assert h.is_auth_error("Please log out and sign in again")
+
+
 def test_is_auth_error_codex_ignores_bare_unauthorized_from_tools():
     """A non-auth failure that merely contains "unauthorized" (an MCP/connector
     401, a tool error) must NOT be read as a harness-credential failure — the

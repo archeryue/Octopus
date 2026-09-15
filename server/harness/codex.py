@@ -623,6 +623,14 @@ _CODEX_AUTH_ERROR_PATTERNS = (
     "please run `codex login`",
     "please run codex login",
     "not logged in",
+    # What a lapsed ChatGPT login actually says, verbatim, in `turn.failed`:
+    # "Your access token could not be refreshed. Please log out and sign in
+    # again." Without these the message only matched via the CLI's stderr
+    # (which happens to carry a websocket "401 Unauthorized"), so the
+    # structured error alone read as a generic failure and the user got no
+    # Re-authorize prompt. Both phrases are auth-specific, per the note below.
+    "access token could not be refreshed",
+    "log out and sign in again",
     # NB: deliberately NOT a bare "unauthorized" / "token has expired" — those
     # appear in non-auth failures (an MCP/connector 401, a tool's "GitHub
     # Unauthorized") that escalate to a Codex `error`/`turn.failed`, and would
