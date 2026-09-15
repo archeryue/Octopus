@@ -10,6 +10,10 @@ system works today; the rest is design history and reference.
   WebSocket protocol, the data model, and key decisions. The doc to read first.
 - **[connectors-setup.md](connectors-setup.md)** — user how-to for setting up
   GitHub / Gmail / custom OAuth connectors entirely from the browser.
+- **[backup-and-migrate.md](backup-and-migrate.md)** — what state a deployment
+  has and where it lives. State is spread across several places, and the two
+  that matter most (the database, and the engine's own transcripts) are not
+  under `~/.octopus/` — so backing up that one directory is not enough.
 
 ## Design records — [`plans/`](plans/)
 
