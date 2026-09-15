@@ -88,13 +88,17 @@ export function SidebarAgents() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
-  // Keep a valid agent selected, and unfold it so its sessions are visible.
+  // Keep a valid agent selected — but do NOT unfold it. Every agent starts
+  // folded, on every load: the sidebar's job at rest is to show what agents
+  // exist, not to spill one agent's sessions just because it happens to sort
+  // first. Unfolding is always something the user did (clicking the row, or
+  // the "+" that opens the create row), never something the app decided.
+  // `expanded` is deliberately not persisted, so a reload returns to folded.
   useEffect(() => {
     if (!agents.length) return;
     if (activeAgentId && agents.some((a) => a.id === activeAgentId)) return;
     const def = agents.find((a) => a.is_system) ?? agents[0];
     setActiveAgentId(def.id);
-    setExpanded((prev) => new Set(prev).add(def.id));
   }, [agents, activeAgentId, setActiveAgentId]);
 
   const toggleExpand = (id: string) =>

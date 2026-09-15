@@ -83,6 +83,22 @@ async function login(page: Page) {
   // would silently lose its prompt and then time out waiting for a turn that
   // never started. Wait for the header's connected indicator first.
   await expect(page.locator(".conn-status.on")).toBeVisible({ timeout: 15_000 });
+  // Sessions live behind a folded agent row; open the default
+  // agent's rail so they're reachable.
+  await openSessionRail(page);
+}
+
+/** Open an agent's session rail. Every agent's session list starts folded
+ * (SidebarAgents keeps the fold state empty on load and never unfolds by
+ * itself), so reaching a session means clicking its agent first — exactly
+ * what a user does. Idempotent: a rail that's already open is left open. */
+async function openSessionRail(page: Page, agentName = "Octo") {
+  const row = page.locator(".agent-item", { hasText: agentName });
+  await expect(row).toBeVisible();
+  if ((await row.locator(".agent-fold.rotate-90").count()) === 0) {
+    await row.click();
+    await expect(row.locator(".agent-fold.rotate-90")).toBeVisible();
+  }
 }
 
 async function createSessionApi(
@@ -1805,6 +1821,8 @@ test.describe("File attachments", () => {
     // and lands straight on the session list.
     await page.reload();
     await expect(page.locator(".agent-list-header")).toBeVisible();
+    // A reload returns the sidebar to all-folded — open the rail again.
+    await openSessionRail(page);
     await page
       .locator(".session-item .session-name", {
         hasText: "Attachment History Test",
