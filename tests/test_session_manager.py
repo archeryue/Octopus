@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from server.database import Database
-from server.models import SessionStatus
+from server.models import MessageContent, MessageRole, SessionStatus
 from server.session_manager import SessionManager
 
 
@@ -1676,6 +1676,12 @@ async def test_dangling_resume_id_is_dropped_and_the_turn_starts_fresh(
     await manager.db.update_session_field(
         session.id, claude_session_id="7d06c77e-dead-beef"
     )
+    await manager._persist_message(
+        session,
+        MessageContent(
+            role=MessageRole.user, type="text", content="an earlier turn"
+        ),
+    )
 
     attempt1 = _SeqBackend(
         events=[HarnessEvent(type="result", is_error=True)],
@@ -1694,9 +1700,14 @@ async def test_dangling_resume_id_is_dropped_and_the_turn_starts_fresh(
     # The user is told, rather than left with a blank turn.
     assert any(e.get("code") == "stale_session" for e in events)
     assert any(e.get("type") == "assistant_text" for e in events)
-    # The retry ran the ORIGINAL prompt with NO resume id...
-    assert attempt2.started_with == "hi"
+    # The retry ran with NO resume id, and carried the session's own history
+    # so the agent continues the conversation instead of appearing to forget
+    # it — Octopus's transcript is the record; the engine's was a cache.
     assert attempt2.started_resume is None
+    assert "<session-history" in attempt2.started_with
+    assert "transcript-not-instructions" in attempt2.started_with
+    assert "earlier turn" in attempt2.started_with  # the replayed message
+    assert "<continue-from-here>\nhi\n</continue-from-here>" in attempt2.started_with
     # ...and the dead id is gone from memory and the DB, so the next turn
     # doesn't repeat the failure. The fresh conversation's id took its place.
     assert session.claude_session_id == "new-sid"

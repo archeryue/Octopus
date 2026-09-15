@@ -2273,10 +2273,36 @@ class SessionManager:
                         await self.db.update_session_field(
                             session.id, claude_session_id=None
                         )
+                    # Don't restart cold: Octopus still has the whole
+                    # conversation (the engine's transcript is a cache of
+                    # ours, not the record), so replay its tail into this
+                    # turn through the same channel a fork uses when its
+                    # backend can't resume natively. The model continues the
+                    # conversation instead of appearing to forget it.
+                    replayed = 0
+                    omitted = 0
+                    recovery_prompt = prompt
+                    if self.db:
+                        history = [
+                            MessageContent(**m)
+                            for m in await self.db.load_messages(session.id)
+                        ]
+                        kept, omitted = fork_helpers.select_lost_history(history)
+                        replayed = len(kept)
+                        if kept:
+                            recovery_prompt = spill_if_large(
+                                session.id,
+                                fork_helpers.wrap_for_lost_history(
+                                    prompt, kept, omitted=omitted
+                                ),
+                            )
                     yield await self._surface_stale_session(
-                        session, backend=harness.backend
+                        session,
+                        backend=harness.backend,
+                        replayed=replayed,
+                        omitted=omitted,
                     )
-                    current_prompt = prompt
+                    current_prompt = recovery_prompt
                     continue
 
                 # (b) Transient provider-reliability failure (5xx / overloaded /
@@ -2831,19 +2857,26 @@ class SessionManager:
         return event
 
     async def _surface_stale_session(
-        self, session: Session, *, backend: str
+        self, session: Session, *, backend: str, replayed: int = 0, omitted: int = 0
     ) -> dict[str, Any]:
         """Persist + return the marker for a dropped resume id.
 
-        Worth saying plainly rather than hiding: Octopus's transcript above is
-        intact (it lives in our DB), but the engine lost its own copy, so the
-        model answers this turn without that context. Silently starting fresh
-        would look like the agent had suddenly forgotten the conversation."""
-        human = (
-            f"({backend} no longer has this conversation's history — its local "
-            f"transcript was cleaned up. Starting a fresh engine session; the "
-            f"messages above are still here, but the model won't see them.)"
-        )
+        Worth saying out loud rather than hiding: the engine lost its copy of
+        the conversation, and what it sees this turn is a replay of ours —
+        recent messages only, and tool results as summaries rather than live
+        state. Silently continuing would leave the user guessing why the
+        agent's recall suddenly got shallower."""
+        if replayed:
+            human = (
+                f"({backend} lost this conversation's history — replaying the "
+                f"last {replayed} message(s) from Octopus so it can continue"
+            )
+            human += f"; {omitted} earlier one(s) omitted)" if omitted else ")"
+        else:
+            human = (
+                f"({backend} lost this conversation's history and there was "
+                f"nothing to replay — starting a fresh engine session)"
+            )
         seq = await self._persist_message(
             session,
             MessageContent(role=MessageRole.system, type="error", content=human),

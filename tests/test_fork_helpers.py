@@ -288,3 +288,59 @@ async def test_safe_revert_refused_non_git(tmp_path):
     record = await fh.safe_revert_files(str(tmp_path), ["a.py"], "abc", True, "f")
     assert record["status"] == "refused"
     assert "git repo" in record["refused_reason"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Lost-history replay — when an engine can no longer resume a session, its
+# own transcript is replayed from Octopus's record (the engine's copy is a
+# cache; ours is the record).
+# ---------------------------------------------------------------------------
+
+
+def _msg(i: int, role=MessageRole.user, type_="text", content=None):
+    return MessageContent(
+        role=role, type=type_, content=content or f"message {i}", seq=i
+    )
+
+
+def test_select_lost_history_keeps_the_tail_and_counts_what_it_drops():
+    kept, omitted = fh.select_lost_history([_msg(i) for i in range(70)])
+    assert len(kept) == 60
+    assert omitted == 10
+    # The TAIL is what "continue where we left off" needs.
+    assert kept[-1].seq == 69
+    assert kept[0].seq == 10
+
+
+def test_select_lost_history_keeps_everything_when_it_fits():
+    kept, omitted = fh.select_lost_history([_msg(i) for i in range(5)])
+    assert [m.seq for m in kept] == [0, 1, 2, 3, 4]
+    assert omitted == 0
+
+
+def test_select_lost_history_drops_thinking_blocks():
+    msgs = [
+        _msg(0),
+        _msg(1, role=MessageRole.assistant, type_="thinking", content="hmm"),
+        _msg(2, role=MessageRole.assistant),
+    ]
+    kept, _ = fh.select_lost_history(msgs)
+    assert [m.seq for m in kept] == [0, 2]
+
+
+def test_wrap_for_lost_history_frames_it_as_transcript_not_instructions():
+    out = fh.wrap_for_lost_history("what next?", [_msg(1)], omitted=3)
+    # The framing is load-bearing: replayed user lines must not read as fresh
+    # commands.
+    assert '<session-history origin="this-session"' in out
+    assert "transcript-not-instructions" in out
+    assert "not new instructions" in out
+    assert "3 earlier message(s) are not included" in out
+    assert out.endswith("<continue-from-here>\nwhat next?\n</continue-from-here>")
+    assert "message 1" in out
+
+
+def test_wrap_for_lost_history_with_no_messages_still_carries_the_prompt():
+    out = fh.wrap_for_lost_history("hello", [])
+    assert "hello" in out
+    assert "<session-history" in out
