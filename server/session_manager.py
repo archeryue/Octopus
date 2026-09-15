@@ -2086,6 +2086,9 @@ class SessionManager:
         current_prompt = prompt
         recovery_attempts = 0
         transient_attempts = 0
+        # A dangling resume id is recoverable exactly once per turn: clear it,
+        # start fresh. A second failure is a different problem.
+        stale_session_retries = 0
         # The resume id this logical turn STARTED from. A transient retry
         # re-runs the original invocation, so it must restore this — a failed
         # no-output attempt can still emit `session_started` and mutate
@@ -2242,6 +2245,39 @@ class SessionManager:
                         session, cred_id=cred_id, backend=harness.backend
                     )
                     return
+
+                # (a2) Dangling resume id: the engine no longer holds the
+                # conversation this session is pinned to (its local transcript
+                # was rotated or cleaned; ours lives in the DB and is intact).
+                # This is NOT transient — retrying the same id fails
+                # identically forever, which bricks the session silently: a
+                # result with zero turns, zero cost and no text. Drop the dead
+                # id and re-run the same prompt once as a fresh engine-side
+                # conversation, saying out loud that the engine lost its own
+                # history so the model starts this turn without it.
+                if (
+                    session.claude_session_id
+                    and stale_session_retries < 1
+                    and harness.is_stale_session_error(error_blob)
+                ):
+                    stale_session_retries += 1
+                    logger.warning(
+                        "Session %s: resume id %s is gone from the engine; "
+                        "clearing it and starting a fresh conversation",
+                        session.id,
+                        session.claude_session_id,
+                    )
+                    session.claude_session_id = None
+                    resume_at_turn_start = None
+                    if self.db:
+                        await self.db.update_session_field(
+                            session.id, claude_session_id=None
+                        )
+                    yield await self._surface_stale_session(
+                        session, backend=harness.backend
+                    )
+                    current_prompt = prompt
+                    continue
 
                 # (b) Transient provider-reliability failure (5xx / overloaded /
                 # dropped connection / server-side throttle) → bounded retry.
@@ -2789,6 +2825,34 @@ class SessionManager:
             "code": "auth_expired",
             "credential_id": cred_id,
             "backend": backend,
+        }
+        if seq is not None:
+            event["seq"] = seq
+        return event
+
+    async def _surface_stale_session(
+        self, session: Session, *, backend: str
+    ) -> dict[str, Any]:
+        """Persist + return the marker for a dropped resume id.
+
+        Worth saying plainly rather than hiding: Octopus's transcript above is
+        intact (it lives in our DB), but the engine lost its own copy, so the
+        model answers this turn without that context. Silently starting fresh
+        would look like the agent had suddenly forgotten the conversation."""
+        human = (
+            f"({backend} no longer has this conversation's history — its local "
+            f"transcript was cleaned up. Starting a fresh engine session; the "
+            f"messages above are still here, but the model won't see them.)"
+        )
+        seq = await self._persist_message(
+            session,
+            MessageContent(role=MessageRole.system, type="error", content=human),
+        )
+        event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session.id,
+            "message": human,
+            "code": "stale_session",
         }
         if seq is not None:
             event["seq"] = seq

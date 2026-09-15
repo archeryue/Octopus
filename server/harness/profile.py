@@ -159,6 +159,14 @@ class RuntimeProfile:
     # turn matching these is retried with backoff. Must stay free of auth
     # phrases (handled separately) and quota/credit phrases (never retried).
     transient_error_patterns: tuple[str, ...] = ()
+
+    # Phrases meaning "the resume id this session is pinned to no longer
+    # exists on this engine" — its local transcript was rotated, cleaned or
+    # written by another machine. Distinct from auth (the credential is fine)
+    # and from transient (retrying the same id fails forever): the only way
+    # out is to drop the id and start a fresh engine-side conversation, which
+    # `SessionManager._run_backend` does exactly once per turn.
+    stale_session_patterns: tuple[str, ...] = ()
     # Whether the composed system prompt should carry the agent-memory blurb
     # (docs/plans/memory.md §3). Codex: True (no native memory — it reads/
     # writes the canonical dir with file tools by instruction). Claude: False

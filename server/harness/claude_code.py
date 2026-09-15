@@ -600,6 +600,15 @@ class _OAuthLoginDriver:
 # Phrases the Claude CLI / Anthropic API emit when the credential is bad —
 # a revoked/rotated key or an expired OAuth token (harness-credential-reauth.md
 # §3). Specific enough to not fire on an unrelated 401 a *tool* surfaces.
+# What the CLI prints on stderr when `--resume <id>` names a conversation it
+# doesn't have: "No conversation found with session ID: <uuid>". It exits 1
+# with a `result` of subtype `error_during_execution`, zero turns and zero
+# cost — a silent, permanent failure for that session until the id is cleared.
+_CLAUDE_STALE_SESSION_PATTERNS = (
+    "no conversation found with session id",
+    "no conversation found with session_id",
+)
+
 _CLAUDE_AUTH_ERROR_PATTERNS = (
     "invalid authentication credentials",
     "authentication_error",
@@ -651,6 +660,7 @@ CLAUDE_CODE = RuntimeProfile(
     credential_style="env_secret",
     premature_exit_recovery=True,
     auth_error_patterns=_CLAUDE_AUTH_ERROR_PATTERNS,
+    stale_session_patterns=_CLAUDE_STALE_SESSION_PATTERNS,
     transient_error_patterns=_CLAUDE_TRANSIENT_ERROR_PATTERNS,
     web=WebCapability(tool_names=("WebSearch", "WebFetch"), combined=False),
     # Close stdin right after spawn. `claude --print` takes its prompt from

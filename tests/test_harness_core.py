@@ -355,6 +355,22 @@ def test_is_auth_error_codex_matches_and_is_case_insensitive():
     assert not h.is_auth_error("")
 
 
+def test_is_stale_session_error_claude():
+    """The CLI's wording when `--resume <id>` names a conversation it no longer
+    has. Distinct from auth (the credential is fine) and from transient
+    (retrying the same id fails forever)."""
+    h = get_harness("claude-code")
+    assert h.is_stale_session_error(
+        "No conversation found with session ID: 7d06c77e-7541-43fe-a7cc-5ed5c98eca52"
+    )
+    assert not h.is_stale_session_error("API Error: 529 Overloaded")
+    assert not h.is_stale_session_error("")
+    # Codex declares no pattern, so it never claims this failure mode.
+    assert not get_harness("codex").is_stale_session_error(
+        "No conversation found with session ID: x"
+    )
+
+
 def test_is_auth_error_codex_matches_a_lapsed_chatgpt_login():
     """The verbatim `turn.failed` message a dead ChatGPT login produces. It
     used to match nothing, so the credential was never flagged and the user got

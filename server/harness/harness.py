@@ -59,6 +59,17 @@ class Harness:
         low = text.lower()
         return any(p in low for p in self.profile.auth_error_patterns)
 
+    def is_stale_session_error(self, text: str) -> bool:
+        """Whether `text` says the engine has no such conversation — i.e. the
+        session's stored resume id is dangling. Same case-insensitive
+        substring match as the other predicates; pure, no I/O. Callers gate on
+        the turn having failed AND a resume id being set, so a tool echoing
+        the phrase can't trip it."""
+        if not text or not self.profile.stale_session_patterns:
+            return False
+        low = text.lower()
+        return any(p in low for p in self.profile.stale_session_patterns)
+
     def is_transient_error(self, text: str) -> bool:
         """Whether `text` (a failed turn's combined error output + stderr) looks
         like a TRANSIENT provider-reliability failure — a 5xx / overloaded /

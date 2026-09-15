@@ -1655,6 +1655,105 @@ async def test_transient_error_retries_same_prompt_then_succeeds(manager, monkey
 
 
 @pytest.mark.asyncio
+async def test_dangling_resume_id_is_dropped_and_the_turn_starts_fresh(
+    manager, monkeypatch
+):
+    """The engine lost the conversation this session is pinned to.
+
+    Claude prints "No conversation found with session ID: <uuid>" on stderr and
+    exits with a zero-turn, zero-cost error result. Retrying the same id fails
+    identically forever, so the session is bricked — silently, with an empty
+    turn — until the id is cleared. We clear it, say so, and re-run the same
+    prompt once as a fresh engine-side conversation.
+    """
+    from server.harness import HarnessEvent
+
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "Stale", None, backend="claude-code"
+    )
+    session.claude_session_id = "7d06c77e-dead-beef"
+    await manager.db.update_session_field(
+        session.id, claude_session_id="7d06c77e-dead-beef"
+    )
+
+    attempt1 = _SeqBackend(
+        events=[HarnessEvent(type="result", is_error=True)],
+        stderr_text="No conversation found with session ID: 7d06c77e-dead-beef",
+    )
+    attempt2 = _SeqBackend(
+        events=[
+            HarnessEvent(type="text", content="fresh start"),
+            HarnessEvent(type="result", is_error=False, session_id="new-sid"),
+        ]
+    )
+    monkeypatch.setattr(manager, "_make_run", _seq_factory([attempt1, attempt2]))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    # The user is told, rather than left with a blank turn.
+    assert any(e.get("code") == "stale_session" for e in events)
+    assert any(e.get("type") == "assistant_text" for e in events)
+    # The retry ran the ORIGINAL prompt with NO resume id...
+    assert attempt2.started_with == "hi"
+    assert attempt2.started_resume is None
+    # ...and the dead id is gone from memory and the DB, so the next turn
+    # doesn't repeat the failure. The fresh conversation's id took its place.
+    assert session.claude_session_id == "new-sid"
+    rows = {r["id"]: r for r in await manager.db.load_sessions()}
+    assert rows[session.id]["claude_session_id"] == "new-sid"
+
+
+@pytest.mark.asyncio
+async def test_stale_resume_recovery_only_fires_once_per_turn(manager, monkeypatch):
+    """If the fresh conversation fails the same way, something else is wrong —
+    don't spin."""
+    from server.harness import HarnessEvent
+
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "Stale twice", None, backend="claude-code"
+    )
+    session.claude_session_id = "dead-1"
+    stale = lambda: _SeqBackend(  # noqa: E731 - table of identical attempts
+        events=[HarnessEvent(type="result", is_error=True)],
+        stderr_text="No conversation found with session ID: dead-1",
+    )
+    attempts = [stale(), stale(), stale()]
+    monkeypatch.setattr(manager, "_make_run", _seq_factory(attempts))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+
+    assert sum(1 for e in events if e.get("code") == "stale_session") == 1
+    # Exactly two attempts: the original and one fresh retry.
+    assert attempts[2].started_with is None
+
+
+@pytest.mark.asyncio
+async def test_stale_pattern_does_not_fire_without_a_resume_id(manager, monkeypatch):
+    """No id to drop means this isn't the dangling-resume case — don't retry
+    on a stray mention of the phrase."""
+    from server.harness import HarnessEvent
+
+    agent = await manager.db.get_system_agent()
+    session = await manager.create_session(
+        agent["id"], "No resume", None, backend="claude-code"
+    )
+    attempts = [
+        _SeqBackend(
+            events=[HarnessEvent(type="result", is_error=True)],
+            stderr_text="No conversation found with session ID: whatever",
+        ),
+        _SeqBackend(events=[HarnessEvent(type="result", is_error=False)]),
+    ]
+    monkeypatch.setattr(manager, "_make_run", _seq_factory(attempts))
+
+    events = [e async for e in manager._run_backend(session, "hi")]
+    assert not any(e.get("code") == "stale_session" for e in events)
+    assert attempts[1].started_with is None
+
+
+@pytest.mark.asyncio
 async def test_transient_retry_ignores_failed_attempts_resume_id(manager, monkeypatch):
     """Vera review: a failed no-output attempt can still emit `session_started`
     and mutate session.claude_session_id. The retry must re-run the ORIGINAL
