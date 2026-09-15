@@ -359,13 +359,16 @@ CREATE TABLE IF NOT EXISTS applications (
     entrypoint TEXT NOT NULL DEFAULT 'index.html',
     status TEXT NOT NULL DEFAULT 'building',  -- building|ready|failed
     error TEXT,
+    -- Archived applications leave the sidebar but keep their row AND their
+    -- files, so the create page's Archived tab can put them back.
+    archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     last_built_at TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique
-  ON applications(name COLLATE NOCASE);
+  ON applications(name COLLATE NOCASE) WHERE archived = 0;
 """
 
 
@@ -449,6 +452,35 @@ class Database:
             )
         except Exception:
             pass
+
+        # applications.archived — added with the archived/restore flow. The
+        # DEFAULT backfills existing rows to "live", so no behavior change.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE applications ADD COLUMN "
+                "archived INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+
+        # The applications name index was originally unconditional, which
+        # reserved a name forever once used — archiving an app would then
+        # block re-using its name. Rebuild it as live-only (same rule as
+        # agents). Cheap and idempotent: the schema recreates it right after.
+        try:
+            cur = await self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' "
+                "AND name = 'applications_name_unique'"
+            )
+            row = await cur.fetchone()
+            if row and row[0] and "archived" not in row[0]:
+                await self._conn.execute("DROP INDEX applications_name_unique")
+                await self._conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique"
+                    " ON applications(name COLLATE NOCASE) WHERE archived = 0"
+                )
+        except Exception:
+            logger.exception("applications name-index migration failed")
 
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
@@ -2020,6 +2052,18 @@ class Database:
         )
         await self._conn.commit()
 
+    async def unarchive_agent(self, agent_id: str) -> None:
+        """Restore an archived agent. Its sessions stay archived: they were
+        archived as a cascade, and silently reviving a dozen old threads is
+        not what "restore this agent" means — the archived-sessions page is
+        where a session comes back from."""
+        await self._ensure_connected()
+        await self._conn.execute(
+            "UPDATE agents SET archived = 0, updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), agent_id),
+        )
+        await self._conn.commit()
+
     async def delete_agent(self, agent_id: str) -> bool:
         """Hard-delete an agent. FK ON DELETE CASCADE removes its sessions,
         schedules and bridge bindings — guarded by AgentManager so this is
@@ -2299,7 +2343,8 @@ class Database:
 
     _APPLICATION_COLS = (
         "id, name, description, icon, agent_id, session_id, app_dir, "
-        "entrypoint, status, error, created_at, updated_at, last_built_at"
+        "entrypoint, status, error, archived, created_at, updated_at, "
+        "last_built_at"
     )
 
     @staticmethod
@@ -2315,9 +2360,10 @@ class Database:
             "entrypoint": row[7],
             "status": row[8],
             "error": row[9],
-            "created_at": row[10],
-            "updated_at": row[11],
-            "last_built_at": row[12],
+            "archived": bool(row[10]),
+            "created_at": row[11],
+            "updated_at": row[12],
+            "last_built_at": row[13],
         }
 
     async def save_application(
@@ -2357,10 +2403,17 @@ class Database:
         )
         await self._conn.commit()
 
-    async def load_applications(self) -> list[dict[str, Any]]:
+    async def load_applications(
+        self, *, include_archived: bool = False, only_archived: bool = False
+    ) -> list[dict[str, Any]]:
         await self._ensure_connected()
+        where = ""
+        if only_archived:
+            where = " WHERE archived = 1"
+        elif not include_archived:
+            where = " WHERE archived = 0"
         cursor = await self._conn.execute(
-            f"SELECT {self._APPLICATION_COLS} FROM applications "
+            f"SELECT {self._APPLICATION_COLS} FROM applications{where} "
             "ORDER BY created_at ASC"
         )
         rows = await cursor.fetchall()
@@ -2375,13 +2428,20 @@ class Database:
         row = await cursor.fetchone()
         return self._row_to_application(row) if row else None
 
-    async def get_application_by_name(self, name: str) -> dict[str, Any] | None:
+    async def get_application_by_name(
+        self, name: str, *, include_archived: bool = False
+    ) -> dict[str, Any] | None:
+        """Live applications only by default — an archived app doesn't hold its
+        name (the unique index is live-only), so creating a replacement with
+        the same name is allowed."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        query = (
             f"SELECT {self._APPLICATION_COLS} FROM applications "
-            "WHERE name = ? COLLATE NOCASE",
-            (name,),
+            "WHERE name = ? COLLATE NOCASE"
         )
+        if not include_archived:
+            query += " AND archived = 0"
+        cursor = await self._conn.execute(query, (name,))
         row = await cursor.fetchone()
         return self._row_to_application(row) if row else None
 
@@ -2406,7 +2466,8 @@ class Database:
         await self._ensure_connected()
         allowed = {
             "name", "description", "icon", "agent_id", "session_id",
-            "entrypoint", "status", "error", "updated_at", "last_built_at",
+            "entrypoint", "status", "error", "archived", "updated_at",
+            "last_built_at",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:

@@ -150,8 +150,12 @@ class ApplicationManager:
 
     # ------------------------------------------------------------------ reads
 
-    async def list_applications(self) -> list[dict[str, Any]]:
-        return await self._require_db().load_applications()
+    async def list_applications(
+        self, *, include_archived: bool = False, only_archived: bool = False
+    ) -> list[dict[str, Any]]:
+        return await self._require_db().load_applications(
+            include_archived=include_archived, only_archived=only_archived
+        )
 
     async def get_application(self, app_id: str) -> dict[str, Any]:
         row = await self._require_db().get_application(app_id)
@@ -351,6 +355,38 @@ class ApplicationManager:
             await self._evaluate(app_id, broadcast=False)
         updated = await db.get_application(app_id)
         await self._broadcast_application("application_updated", updated)
+        return updated
+
+    # ---------------------------------------------------------------- archive
+
+    async def set_archived(self, app_id: str, archived: bool) -> dict[str, Any]:
+        """Archive an application (it leaves the sidebar) or restore it.
+
+        Archiving keeps the row AND the files, so restoring is instant and the
+        app renders exactly as it did — that's the whole point of archiving
+        rather than deleting. A restore refuses a name a live application has
+        taken since, matching create's uniqueness rule.
+        """
+        db = self._require_db()
+        row = await self.get_application(app_id)
+        if bool(row["archived"]) == archived:
+            return row
+        if not archived:
+            clash = await db.get_application_by_name(row["name"])
+            if clash is not None and clash["id"] != app_id:
+                raise ApplicationError(
+                    f"An application named {row['name']!r} already exists — "
+                    f"rename it before restoring this one",
+                    status_code=409,
+                )
+        await db.update_application(
+            app_id, archived=1 if archived else 0, updated_at=_now()
+        )
+        updated = await db.get_application(app_id)
+        await self._broadcast_application(
+            "application_archived" if archived else "application_updated",
+            updated,
+        )
         return updated
 
     # ----------------------------------------------------------------- delete

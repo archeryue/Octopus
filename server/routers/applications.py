@@ -66,8 +66,13 @@ def _http_error(e: ApplicationError) -> HTTPException:
 
 
 @router.get("", response_model=list[ApplicationRead])
-async def list_applications(_: str = Depends(verify_token)):
-    return [ApplicationRead(**a) for a in await _get_manager().list_applications()]
+async def list_applications(
+    archived: bool = False, _: str = Depends(verify_token)
+):
+    """Live applications by default; `?archived=true` returns only the
+    archived ones (what the create page's Archived tab lists)."""
+    rows = await _get_manager().list_applications(only_archived=archived)
+    return [ApplicationRead(**a) for a in rows]
 
 
 @router.post("", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
@@ -112,6 +117,22 @@ async def build_application(
     except ApplicationError as e:
         raise _http_error(e)
     return ApplicationRead(**row)
+
+
+@router.post("/{app_id}/archive", response_model=ApplicationRead)
+async def archive_application(app_id: str, _: str = Depends(verify_token)):
+    try:
+        return ApplicationRead(**await _get_manager().set_archived(app_id, True))
+    except ApplicationError as e:
+        raise _http_error(e)
+
+
+@router.post("/{app_id}/unarchive", response_model=ApplicationRead)
+async def unarchive_application(app_id: str, _: str = Depends(verify_token)):
+    try:
+        return ApplicationRead(**await _get_manager().set_archived(app_id, False))
+    except ApplicationError as e:
+        raise _http_error(e)
 
 
 @router.delete("/{app_id}", status_code=status.HTTP_204_NO_CONTENT)

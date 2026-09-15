@@ -463,6 +463,49 @@ async def test_entrypoint_change_re_derives_status(am, db, mgr, sent):
 
 
 @pytest.mark.asyncio
+async def test_archive_hides_it_but_keeps_row_and_files(am, db, sent):
+    row = await _create_app(am, db)
+    open(os.path.join(row["app_dir"], "index.html"), "w").write("<h1>hi</h1>")
+
+    archived = await am.set_archived(row["id"], True)
+    assert archived["archived"] is True
+    assert [a["id"] for a in await am.list_applications()] == []
+    assert [a["id"] for a in await am.list_applications(only_archived=True)] == [
+        row["id"]
+    ]
+    # The whole point of archiving over deleting: the app is still on disk.
+    assert os.path.isfile(os.path.join(row["app_dir"], "index.html"))
+
+    restored = await am.set_archived(row["id"], False)
+    assert restored["archived"] is False
+    assert [a["id"] for a in await am.list_applications()] == [row["id"]]
+
+
+@pytest.mark.asyncio
+async def test_archiving_twice_is_a_no_op(am, db, sent):
+    row = await _create_app(am, db)
+    await am.set_archived(row["id"], True)
+    again = await am.set_archived(row["id"], True)
+    assert again["archived"] is True
+
+
+@pytest.mark.asyncio
+async def test_restore_refuses_a_name_taken_since(am, db, sent):
+    agent = await _make_agent(db)
+    row = await am.create_application(
+        name="Tracker", description="d", agent_id=agent["id"]
+    )
+    await am.set_archived(row["id"], True)
+    # The unique index only covers live rows, so the name is free again.
+    await am.create_application(
+        name="Tracker", description="d2", agent_id=agent["id"]
+    )
+    with pytest.raises(ApplicationError) as e:
+        await am.set_archived(row["id"], False)
+    assert e.value.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_delete_removes_row_and_directory(am, db, sent):
     row = await _create_app(am, db)
     await am.delete_application(row["id"])
@@ -628,6 +671,30 @@ async def test_api_patch_and_build_and_delete(client):
     )
     assert resp.status_code == 204
     assert (await client.get("/api/applications", headers=HEADERS)).json() == []
+
+
+@pytest.mark.asyncio
+async def test_api_archive_and_restore(client):
+    created = await _api_create(client, name="Archivable")
+
+    resp = await client.post(
+        f"/api/applications/{created['id']}/archive", headers=HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.json()["archived"] is True
+    assert (await client.get("/api/applications", headers=HEADERS)).json() == []
+    archived = await client.get(
+        "/api/applications", params={"archived": "true"}, headers=HEADERS
+    )
+    assert [a["id"] for a in archived.json()] == [created["id"]]
+
+    resp = await client.post(
+        f"/api/applications/{created['id']}/unarchive", headers=HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.json()["archived"] is False
+    live = (await client.get("/api/applications", headers=HEADERS)).json()
+    assert [a["id"] for a in live] == [created["id"]]
 
 
 @pytest.mark.asyncio

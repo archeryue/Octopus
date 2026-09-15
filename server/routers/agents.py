@@ -90,6 +90,18 @@ async def archive_agent(agent_id: str, _: str = Depends(verify_token)):
     return AgentRead(**agent)
 
 
+@router.post("/{agent_id}/unarchive", response_model=AgentRead)
+async def unarchive_agent(agent_id: str, _: str = Depends(verify_token)):
+    """Restore an archived agent (the create page's Archived tab). Its
+    sessions stay archived — those come back from the archived-sessions
+    page individually."""
+    try:
+        agent = await _get_manager().unarchive_agent(agent_id)
+    except AgentError as e:
+        raise _agent_http_error(e)
+    return AgentRead(**agent)
+
+
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_agent(agent_id: str, _: str = Depends(verify_token)):
     try:

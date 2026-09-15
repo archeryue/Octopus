@@ -28,8 +28,18 @@ def _get_runner():
 
 def to_schedule_info(row: dict) -> ScheduleInfo:
     """Build the API model from a DB/row dict, always populating the
-    human-readable recurrence label (derived for legacy rows that predate it)."""
-    return ScheduleInfo(**{**row, "recurrence_label": recurrence_label_for(row)})
+    human-readable recurrence label (derived for legacy rows that predate it)
+    and the live next-fire time from the scheduler."""
+    next_run_at = None
+    if _runner is not None:
+        next_run_at = _runner.next_run_at(row["id"])
+    return ScheduleInfo(
+        **{
+            **row,
+            "recurrence_label": recurrence_label_for(row),
+            "next_run_at": next_run_at,
+        }
+    )
 
 
 async def create_schedule_for_agent(

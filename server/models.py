@@ -219,6 +219,10 @@ class ScheduleInfo(BaseModel):
     # One-time schedule: fire once at this ISO datetime then auto-delete.
     # Null for recurring schedules (interval or cron).
     run_at: str | None = None
+    # When this schedule fires next, read from APScheduler's live trigger
+    # state. Null when disabled (no job registered). The UI shows it in the
+    # sidebar summary row and the Schedules page header.
+    next_run_at: str | None = None
 
 
 class CreateScheduleRequest(BaseModel):
@@ -541,6 +545,9 @@ class ApplicationRead(BaseModel):
     entrypoint: str = "index.html"
     status: ApplicationStatus = ApplicationStatus.building
     error: str | None = None
+    # Archived applications leave the sidebar but keep their row and files;
+    # the create page's Archived tab restores them.
+    archived: bool = False
     created_at: str
     updated_at: str
     last_built_at: str | None = None

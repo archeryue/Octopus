@@ -399,3 +399,49 @@ async def test_schedule_from_text_unknown_agent(client):
         headers=HEADERS,
     )
     assert resp.status_code == 404
+
+
+# --- Archive / restore ---
+
+
+@pytest.mark.asyncio
+async def test_unarchive_restores_an_agent(client):
+    a = await _create_agent(client, name="Retired")
+    assert (
+        await client.post(f"/api/agents/{a['id']}/archive", headers=HEADERS)
+    ).status_code == 200
+    assert [x["id"] for x in (await client.get("/api/agents", headers=HEADERS)).json()
+            if x["id"] == a["id"]] == []
+
+    # The Archived tab lists it...
+    archived = (
+        await client.get(
+            "/api/agents", params={"include_archived": "true"}, headers=HEADERS
+        )
+    ).json()
+    assert any(x["id"] == a["id"] and x["archived"] for x in archived)
+
+    # ...and restores it.
+    resp = await client.post(f"/api/agents/{a['id']}/unarchive", headers=HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["archived"] is False
+    live = (await client.get("/api/agents", headers=HEADERS)).json()
+    assert any(x["id"] == a["id"] for x in live)
+
+
+@pytest.mark.asyncio
+async def test_unarchive_refuses_when_the_name_was_taken(client):
+    a = await _create_agent(client, name="Scout")
+    await client.post(f"/api/agents/{a['id']}/archive", headers=HEADERS)
+    # The live-only unique index frees the name while it's archived.
+    await _create_agent(client, name="Scout")
+
+    resp = await client.post(f"/api/agents/{a['id']}/unarchive", headers=HEADERS)
+    assert resp.status_code == 400
+    assert "already exists" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_unarchive_unknown_agent_is_404(client):
+    resp = await client.post("/api/agents/ghost/unarchive", headers=HEADERS)
+    assert resp.status_code == 404

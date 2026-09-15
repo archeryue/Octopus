@@ -107,6 +107,27 @@ class AgentManager:
             raise AgentError("The Default Agent cannot be archived")
         await self.db.archive_agent(agent_id)
 
+    async def unarchive_agent(self, agent_id: str) -> dict[str, Any]:
+        """Bring an archived agent back. Refuses if a live agent has taken the
+        name in the meantime — the unique index only covers live rows, so two
+        live agents could otherwise share one."""
+        agent = await self.db.get_agent(agent_id)
+        if agent is None:
+            raise AgentError("Agent not found")
+        if not agent["archived"]:
+            return agent
+        clash = await self.db.get_agent_by_name(agent["name"])
+        if clash is not None and clash["id"] != agent_id:
+            raise AgentError(
+                f"An agent named {agent['name']!r} already exists — rename it "
+                f"before restoring this one"
+            )
+        await self.db.unarchive_agent(agent_id)
+        agent_memory.ensure_agent_dirs(agent_id)
+        restored = await self.db.get_agent(agent_id)
+        assert restored is not None
+        return restored
+
     async def delete_agent(self, agent_id: str) -> None:
         agent = await self.db.get_agent(agent_id)
         if agent is None:

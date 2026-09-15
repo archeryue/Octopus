@@ -22,6 +22,18 @@ class ScheduleRunner:
         self._session_mgr = session_mgr
         self._db = db
 
+    def next_run_at(self, schedule_id: str) -> str | None:
+        """ISO timestamp of the next fire, straight from APScheduler's own
+        trigger state — the only place that knows it for a cron in an
+        arbitrary timezone. None when the schedule is disabled (no job) or the
+        scheduler hasn't started yet."""
+        try:
+            job = self._scheduler.get_job(schedule_id)
+        except Exception:
+            return None
+        run_time = getattr(job, "next_run_time", None) if job else None
+        return run_time.isoformat() if run_time else None
+
     async def initialize(self) -> None:
         now = datetime.now(timezone.utc)
         for row in await self._db.load_schedules():
