@@ -10,6 +10,7 @@ import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { AppIcon } from "./AppIcon";
 
 type Tab = "archived" | "create";
 
@@ -329,7 +330,7 @@ function ArchivedGrid({
       {items.map((app) => (
         <div key={app.id} className="archived-item card flex flex-col px-5 py-4">
           <div className="flex items-center gap-2.5">
-            <span className="tile tile-lg tile-plain">{app.icon || "🪟"}</span>
+            <AppIcon app={app} size="lg" />
             <span className="truncate text-[15px] font-semibold text-gray-950">
               {app.name}
             </span>

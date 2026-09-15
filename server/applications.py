@@ -125,6 +125,109 @@ def resolve_within(app_dir: str, rel_path: str) -> str | None:
     return target
 
 
+# Icon discovery (feature request: "let an Application supply its own icon").
+#
+# Two sources, because neither alone covers how apps actually ship a logo:
+# a conventional file at the root (what `compose_build_prompt` now asks agents
+# to write), and the `<link rel="icon">` the app already declares in its own
+# entry point. Real apps overwhelmingly do the second — one points at a file in
+# a subdirectory, another inlines a `data:` SVG — and a convention-only
+# implementation would light up neither.
+_ICON_CANDIDATES = (
+    "icon.svg",
+    "icon.png",
+    "favicon.svg",
+    "favicon.png",
+    "apple-touch-icon.png",
+    "favicon.ico",
+)
+
+# A file this big isn't a sidebar icon. Skipping it keeps a stray large asset
+# from being fetched on every render.
+_MAX_ICON_BYTES = 512 * 1024
+
+# A `data:` icon is stored inline on the row and shipped in every API response,
+# so it has to stay small. A real inline SVG favicon is well under a kilobyte.
+_MAX_DATA_ICON_CHARS = 64 * 1024
+
+_ICON_LINK_RE = re.compile(
+    r"""<link\b[^>]*\brel\s*=\s*["'][^"']*\bicon\b[^"']*["'][^>]*>""",
+    re.IGNORECASE,
+)
+# Capture the opening quote and stop only at the MATCHING one: a data: URI
+# routinely contains the other quote character (`<svg xmlns='…'>` inside a
+# double-quoted href), and a naive [^"']+ truncates it mid-payload.
+_HREF_RE = re.compile(r"""\bhref\s*=\s*(["'])(.*?)\1""", re.IGNORECASE | re.DOTALL)
+
+
+def _usable_icon_file(app_dir: str, rel_path: str) -> str | None:
+    """`rel_path` if it's a sane icon file inside `app_dir`, else None.
+
+    Goes through `resolve_within`, so `..` and symlinks pointing outside are
+    rejected exactly as they are for the static route — an icon is just another
+    file the app asked us to serve.
+    """
+    target = resolve_within(app_dir, rel_path)
+    if target is None or not os.path.isfile(target):
+        return None
+    try:
+        if os.path.getsize(target) > _MAX_ICON_BYTES:
+            logger.info("icon candidate %s is too large; skipping", rel_path)
+            return None
+    except OSError:
+        return None
+    return rel_path.lstrip("/")
+
+
+def discover_icon_src(app_dir: str, entrypoint: str) -> str | None:
+    """What the UI should put in an `<img src>` for this app, or None.
+
+    Returns either a path relative to the app directory (served through
+    `/apps/{id}/…`) or a `data:` URI to use verbatim. Server-owned: callers
+    never pass this in, so a rebuild can refresh it and a deleted icon clears
+    it, without ever touching the emoji a user typed.
+    """
+    for candidate in _ICON_CANDIDATES:
+        found = _usable_icon_file(app_dir, candidate)
+        if found:
+            return found
+
+    # Fall back to whatever the page itself declares.
+    entry = resolve_within(app_dir, entrypoint)
+    if entry is None or not os.path.isfile(entry):
+        return None
+    try:
+        # The link lives in <head>; no need to read a large document.
+        with open(entry, "r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(64 * 1024)
+    except OSError:
+        return None
+
+    for tag in _ICON_LINK_RE.findall(head):
+        match = _HREF_RE.search(tag)
+        if not match:
+            continue
+        href = match.group(2).strip()
+        if not href:
+            continue
+        low = href.lower()
+        if low.startswith("data:"):
+            # Inline SVG/PNG favicons are common and are the app's real mark.
+            # Rendered through <img src>, so scripts inside an SVG don't run.
+            if not low.startswith("data:image/"):
+                continue
+            if len(href) > _MAX_DATA_ICON_CHARS:
+                logger.info("inline icon for %s is too large; skipping", app_dir)
+                continue
+            return href
+        if "://" in low or low.startswith("//"):
+            continue  # remote icon: not ours to serve, and not always reachable
+        found = _usable_icon_file(app_dir, href.split("?")[0].split("#")[0])
+        if found:
+            return found
+    return None
+
+
 class ApplicationManager:
     """App-lifetime singleton; bound in main.py's lifespan."""
 
@@ -421,6 +524,36 @@ class ApplicationManager:
         path = self.entrypoint_path(row)
         return bool(path) and os.path.isfile(path)
 
+    async def refresh_icons(self) -> int:
+        """Re-discover every live application's own icon. Returns how many changed.
+
+        Discovery otherwise only happens in `_evaluate`, i.e. after a build —
+        which would leave every application that already exists showing the
+        generic fallback until someone happened to rebuild it. Running this at
+        startup means an app that already ships a logo picks it up with no user
+        action, and one whose icon was deleted outside a build stops pointing at
+        a file that isn't there.
+
+        Touches only `icon_src`; a user's emoji and the app's status are left
+        exactly as they are.
+        """
+        db = self._require_db()
+        changed = 0
+        for row in await db.load_applications(include_archived=False):
+            try:
+                found = discover_icon_src(row["app_dir"], row["entrypoint"])
+            except Exception:
+                logger.exception(
+                    "icon refresh failed for application %s", row["id"]
+                )
+                continue
+            if found != row.get("icon_src"):
+                await db.update_application(row["id"], icon_src=found)
+                changed += 1
+        if changed:
+            logger.info("refreshed the icon on %d application(s)", changed)
+        return changed
+
     async def _evaluate(
         self, app_id: str, *, error: str | None = None, broadcast: bool = True
     ) -> dict[str, Any] | None:
@@ -448,6 +581,16 @@ class ApplicationManager:
                     f"written. Ask for changes to try again."
                 ),
             }
+        # Re-discover the app's own icon on every evaluation, including a
+        # failed one: an agent can write a perfectly good logo in a build that
+        # also errored, and an icon deleted since the last build must clear
+        # rather than linger. Never touches `icon` — a user's typed emoji is
+        # theirs and always wins in the UI.
+        try:
+            fields["icon_src"] = discover_icon_src(row["app_dir"], row["entrypoint"])
+        except Exception:
+            logger.exception("icon discovery failed for application %s", app_id)
+
         fields["updated_at"] = _now()
         await db.update_application(app_id, **fields)
         updated = await db.get_application(app_id)
@@ -540,7 +683,12 @@ class ApplicationManager:
             f"must look right on both a wide desktop pane and a ~400px phone "
             f"width.\n"
             f"- Make it genuinely good: real layout, real styling, real empty "
-            f"states. Not a wireframe.\n\n"
+            f"states. Not a wireframe.\n"
+            f"- Give it an icon: either `icon.svg` at the root (square, and "
+            f"legible at 22px), or a `<link rel=\"icon\">` in "
+            f"`{entrypoint}` pointing at a file in this directory. Octopus "
+            f"picks it up automatically and shows it in the sidebar, so the "
+            f"app isn't anonymous there.\n\n"
             f"When you're done, verify `{entrypoint}` exists in that directory "
             f"and end with a one-paragraph summary of what you built."
         )

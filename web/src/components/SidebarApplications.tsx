@@ -3,6 +3,7 @@ import { IconPlus, IconTrash } from "@tabler/icons-react";
 import { deleteApplication, fetchApplications } from "../api/applications";
 import { useSessionStore } from "../stores/sessionStore";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
+import { AppIcon } from "./AppIcon";
 
 /** The APPLICATIONS section — agent-built web apps, one row each.
  *
@@ -81,9 +82,7 @@ export function SidebarApplications() {
               onClick={() => openApplication(app.id)}
               title={app.description || app.name}
             >
-              <span className="application-icon tile tile-plain shrink-0">
-                {app.icon || "🪟"}
-              </span>
+              <AppIcon app={app} className="application-icon shrink-0" />
               <span
                 className={`application-name truncate text-[13.5px] ${
                   isActive

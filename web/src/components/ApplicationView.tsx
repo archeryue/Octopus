@@ -17,6 +17,7 @@ import { selectSession } from "../lib/selectSession";
 import { useSessionStore } from "../stores/sessionStore";
 import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
+import { AppIcon } from "./AppIcon";
 
 /** The main pane for one application (applications.md §7) — the browser-tab
  * view. Renders the app's own document in an iframe once it's `ready`, shows
@@ -146,9 +147,7 @@ export function ApplicationView({
       <PageHeader
         onToggleSidebar={onToggleSidebar}
         icon={
-          <span className="tile tile-plain shrink-0" aria-hidden>
-            {app.icon || "🪟"}
-          </span>
+          <AppIcon app={app} className="shrink-0" />
         }
         crumbs={["Applications", <span key="name" className="application-title">{app.name}</span>]}
         meta={statusBadge}

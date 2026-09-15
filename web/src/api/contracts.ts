@@ -1581,6 +1581,8 @@ export interface components {
             description: string;
             /** Icon */
             icon?: string | null;
+            /** Icon Src */
+            icon_src?: string | null;
             /** Agent Id */
             agent_id?: string | null;
             /** Session Id */

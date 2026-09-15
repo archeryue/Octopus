@@ -136,6 +136,16 @@ body {
   font-size: 16px;
 }
 
+/* An application's own icon, rendered as an <img> rather than a glyph. The
+ * tile sizes are set for a character, so the image has to be told to fill the
+ * box and keep its aspect — a logo is rarely square, and a stretched one looks
+ * broken in a way an emoji never does. */
+.tile-img {
+  object-fit: contain;
+  border-radius: 4px;
+  padding: 1px;
+}
+
 .tile-blue {
   background: hsl(var(--gray-200));
   color: hsl(var(--primary-500));

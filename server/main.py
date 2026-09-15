@@ -97,6 +97,10 @@ async def lifespan(app: FastAPI):
     # so a build session's turns drive each application's building/ready/failed
     # status.
     application_manager.bind(session_mgr=session_manager, db=db)
+    # Pick up icons for applications that already exist. Discovery otherwise
+    # only runs after a build, so an app that already ships a logo would keep
+    # showing the generic fallback until someone rebuilt it.
+    await application_manager.refresh_icons()
 
     # Native deep research (native-deep-research.md). Tracks research jobs as
     # async tasks; injects the final report back into the session.

@@ -557,6 +557,12 @@ class ApplicationRead(BaseModel):
     name: str
     description: str = ""
     icon: str | None = None
+    # The app's own icon, discovered from its files after each build: either a
+    # path relative to the app dir (served via `/apps/{id}/…`) or a `data:`
+    # URI to use verbatim. **Server-owned** — absent from Create and Update, so
+    # a rebuild can refresh it and a removed icon can clear it without ever
+    # overwriting the emoji a user typed. The UI prefers `icon` when set.
+    icon_src: str | None = None
     # The agent that built it and the session its build turns run in. Both
     # nullable: an application outlives the agent and the conversation
     # (ON DELETE SET NULL), it just can't be rebuilt without a new one.

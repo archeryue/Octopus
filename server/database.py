@@ -353,6 +353,7 @@ CREATE TABLE IF NOT EXISTS applications (
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     icon TEXT,                             -- emoji shown in the sidebar
+    icon_src TEXT,                         -- server-owned: the app's own icon
     agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
     session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
     app_dir TEXT NOT NULL,                 -- absolute path to the app root
@@ -459,6 +460,16 @@ class Database:
             await self._conn.execute(
                 "ALTER TABLE applications ADD COLUMN "
                 "archived INTEGER NOT NULL DEFAULT 0"
+            )
+        except Exception:
+            pass
+
+        # applications.icon_src — the app's own icon, discovered from its files
+        # after each build. Nullable with no default: an existing row simply has
+        # no discovered icon until its next build re-evaluates it.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE applications ADD COLUMN icon_src TEXT"
             )
         except Exception:
             pass
@@ -2367,9 +2378,9 @@ class Database:
     # ------------------------------------------------------------ applications
 
     _APPLICATION_COLS = (
-        "id, name, description, icon, agent_id, session_id, app_dir, "
-        "entrypoint, status, error, archived, created_at, updated_at, "
-        "last_built_at"
+        "id, name, description, icon, icon_src, agent_id, session_id, "
+        "app_dir, entrypoint, status, error, archived, created_at, "
+        "updated_at, last_built_at"
     )
 
     @staticmethod
@@ -2379,16 +2390,17 @@ class Database:
             "name": row[1],
             "description": row[2],
             "icon": row[3],
-            "agent_id": row[4],
-            "session_id": row[5],
-            "app_dir": row[6],
-            "entrypoint": row[7],
-            "status": row[8],
-            "error": row[9],
-            "archived": bool(row[10]),
-            "created_at": row[11],
-            "updated_at": row[12],
-            "last_built_at": row[13],
+            "icon_src": row[4],
+            "agent_id": row[5],
+            "session_id": row[6],
+            "app_dir": row[7],
+            "entrypoint": row[8],
+            "status": row[9],
+            "error": row[10],
+            "archived": bool(row[11]),
+            "created_at": row[12],
+            "updated_at": row[13],
+            "last_built_at": row[14],
         }
 
     async def save_application(
@@ -2486,13 +2498,19 @@ class Database:
         return [self._row_to_application(r) for r in rows]
 
     async def update_application(self, app_id: str, **fields: Any) -> None:
-        """Patch any of: name, description, icon, agent_id, session_id,
-        entrypoint, status, error, updated_at, last_built_at."""
+        """Patch any of: name, description, icon, icon_src, agent_id,
+        session_id, entrypoint, status, error, updated_at, last_built_at.
+
+        Anything not on the list is ignored rather than written — which is why
+        `icon_src` has to be added here explicitly even though only `_evaluate`
+        ever sets it. (The API models keep it out of Create/Update, so this
+        list is not the thing protecting it from clients.)
+        """
         await self._ensure_connected()
         allowed = {
-            "name", "description", "icon", "agent_id", "session_id",
-            "entrypoint", "status", "error", "archived", "updated_at",
-            "last_built_at",
+            "name", "description", "icon", "icon_src", "agent_id",
+            "session_id", "entrypoint", "status", "error", "archived",
+            "updated_at", "last_built_at",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:

@@ -19,6 +19,7 @@ is what's asserted, exactly like the delegation suite.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -807,3 +808,250 @@ async def test_static_bare_app_url_redirects_to_a_trailing_slash(client):
     resp = await client.get(f"/apps/{created['id']}", headers=HEADERS)
     assert resp.status_code in (307, 308)
     assert resp.headers["location"] == f"/apps/{created['id']}/"
+
+
+# --------------------------------------------------------------------------- #
+# Icon discovery — an application supplying its own icon
+# --------------------------------------------------------------------------- #
+
+
+def _app(tmp_path, name="app"):
+    d = tmp_path / name
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
+
+def test_icon_found_by_convention_at_the_root(tmp_path):
+    """`icon.svg` at the root is what compose_build_prompt asks agents for."""
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    (Path(d) / "index.html").write_text("<html></html>")
+    (Path(d) / "icon.svg").write_text("<svg/>")
+    assert discover_icon_src(d, "index.html") == "icon.svg"
+
+
+def test_convention_candidates_are_tried_in_priority_order(tmp_path):
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    (Path(d) / "index.html").write_text("<html></html>")
+    (Path(d) / "favicon.png").write_text("x")
+    (Path(d) / "apple-touch-icon.png").write_text("x")
+    assert discover_icon_src(d, "index.html") == "favicon.png"
+    (Path(d) / "icon.svg").write_text("<svg/>")
+    assert discover_icon_src(d, "index.html") == "icon.svg"
+
+
+def test_icon_found_via_the_link_tag_in_a_subdirectory(tmp_path):
+    """The case a convention-only implementation misses. Real apps declare
+    their mark with <link rel="icon"> and keep it in a subdirectory — both apps
+    on the machine this feature was requested from do exactly that."""
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    (Path(d) / "assets").mkdir()
+    (Path(d) / "assets" / "mark.svg").write_text("<svg/>")
+    (Path(d) / "index.html").write_text(
+        '<html><head><link rel="icon" href="assets/mark.svg" '
+        'type="image/svg+xml" /></head></html>'
+    )
+    assert discover_icon_src(d, "index.html") == "assets/mark.svg"
+
+
+def test_inline_data_uri_icon_is_kept_verbatim(tmp_path):
+    """An inline SVG favicon IS the app's real mark. Rendered through <img
+    src>, so scripts inside the SVG don't execute."""
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    uri = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E"
+    (Path(d) / "index.html").write_text(
+        f'<html><head><link rel="icon" href="{uri}"></head></html>'
+    )
+    assert discover_icon_src(d, "index.html") == uri
+
+
+def test_non_image_data_uri_is_rejected(tmp_path):
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    (Path(d) / "index.html").write_text(
+        '<html><head><link rel="icon" href="data:text/html,<script>alert(1)</script>">'
+        "</head></html>"
+    )
+    assert discover_icon_src(d, "index.html") is None
+
+
+def test_remote_icon_is_not_adopted(tmp_path):
+    """Not ours to serve, and not always reachable."""
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    (Path(d) / "index.html").write_text(
+        '<html><head><link rel="icon" href="https://example.com/i.png"></head></html>'
+    )
+    assert discover_icon_src(d, "index.html") is None
+
+
+def test_icon_escaping_the_app_dir_is_rejected(tmp_path):
+    """Same guard as the static route: `..` and symlinks pointing out are
+    refused, so an app can't nominate a file it was never given."""
+    from server.applications import discover_icon_src
+
+    outside = tmp_path / "secret.svg"
+    outside.write_text("<svg/>")
+    d = _app(tmp_path, "escaper")
+    (Path(d) / "index.html").write_text(
+        '<html><head><link rel="icon" href="../secret.svg"></head></html>'
+    )
+    assert discover_icon_src(d, "index.html") is None
+
+    # ...and via a symlink that points outside.
+    d2 = _app(tmp_path, "linker")
+    (Path(d2) / "index.html").write_text(
+        '<html><head><link rel="icon" href="link.svg"></head></html>'
+    )
+    os.symlink(str(outside), str(Path(d2) / "link.svg"))
+    assert discover_icon_src(d2, "index.html") is None
+
+
+def test_oversized_icon_file_is_skipped(tmp_path):
+    """A stray large asset isn't a sidebar icon, and would be fetched on every
+    render of every row."""
+    from server.applications import discover_icon_src, _MAX_ICON_BYTES
+
+    d = _app(tmp_path)
+    (Path(d) / "index.html").write_text("<html></html>")
+    (Path(d) / "icon.png").write_bytes(b"x" * (_MAX_ICON_BYTES + 1))
+    assert discover_icon_src(d, "index.html") is None
+
+
+def test_oversized_inline_icon_is_skipped(tmp_path):
+    """An inline icon ships in every API response, so it has to stay small."""
+    from server.applications import discover_icon_src, _MAX_DATA_ICON_CHARS
+
+    d = _app(tmp_path)
+    huge = "data:image/svg+xml," + ("a" * (_MAX_DATA_ICON_CHARS + 1))
+    (Path(d) / "index.html").write_text(
+        f'<html><head><link rel="icon" href="{huge}"></head></html>'
+    )
+    assert discover_icon_src(d, "index.html") is None
+
+
+def test_no_icon_anywhere_is_none(tmp_path):
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    (Path(d) / "index.html").write_text("<html><head></head></html>")
+    assert discover_icon_src(d, "index.html") is None
+
+
+def test_missing_entrypoint_does_not_throw(tmp_path):
+    """Discovery runs even for a failed build, where the entrypoint may never
+    have been written."""
+    from server.applications import discover_icon_src
+
+    d = _app(tmp_path)
+    assert discover_icon_src(d, "index.html") is None
+    (Path(d) / "icon.svg").write_text("<svg/>")
+    assert discover_icon_src(d, "index.html") == "icon.svg"
+
+
+async def test_existing_database_migrates_to_icon_src(tmp_path):
+    """An existing deployment gains the column on the next start, and its rows
+    survive untouched — nullable with no default, so a row simply has no
+    discovered icon until its next build.
+
+    The "old" database is built by running the real schema and then dropping
+    the column, rather than pasting a hand-written copy of last release's
+    schema: a hand-written one drifts, and a drifted one tests nothing.
+    """
+    db_file = str(tmp_path / "old.db")
+    seed = Database(db_file)
+    await seed.initialize()
+    await seed._conn.execute(
+        "INSERT INTO applications (id, name, app_dir, entrypoint, status,"
+        " created_at, updated_at) VALUES"
+        " ('a1', 'Legacy', '/tmp/legacy', 'index.html', 'ready', 't', 't')"
+    )
+    await seed._conn.commit()
+    await seed._conn.execute("ALTER TABLE applications DROP COLUMN icon_src")
+    await seed._conn.commit()
+    cur = await seed._conn.execute("PRAGMA table_info(applications)")
+    assert "icon_src" not in [r[1] for r in await cur.fetchall()]
+    await seed.close()
+
+    # Restart against that database: the migration runs.
+    db = Database(db_file)
+    await db.initialize()
+    try:
+        cur = await db._conn.execute("PRAGMA table_info(applications)")
+        assert "icon_src" in [r[1] for r in await cur.fetchall()]
+        row = await db.get_application("a1")
+        assert row is not None
+        assert row["name"] == "Legacy"    # the old row survived
+        assert row["icon_src"] is None    # and simply has no icon yet
+    finally:
+        await db.close()
+
+
+async def test_evaluate_discovers_and_clears_the_icon(am, db, sent):
+    """The icon refreshes on every evaluation: it appears when the agent writes
+    one, and clears when the file is removed — without ever touching the emoji
+    a user typed."""
+    app = await _create_app(am, db, name="Iconic")
+    app_dir = app["app_dir"]
+    Path(app_dir, "index.html").write_text("<html></html>")
+    Path(app_dir, "icon.svg").write_text("<svg/>")
+
+    await am._evaluate(app["id"], broadcast=False)
+    assert (await db.get_application(app["id"]))["icon_src"] == "icon.svg"
+
+    # Agent removes it in a later build → the record must not keep pointing at
+    # a file that no longer exists.
+    os.remove(Path(app_dir, "icon.svg"))
+    await am._evaluate(app["id"], broadcast=False)
+    assert (await db.get_application(app["id"]))["icon_src"] is None
+
+
+async def test_discovered_icon_never_overwrites_a_user_emoji(am, db, sent):
+    """`icon` is the user's; `icon_src` is the app's. A rebuild touches only
+    the second."""
+    app = await _create_app(am, db, name="Emoji Keeper", icon="💠")
+    Path(app["app_dir"], "index.html").write_text("<html></html>")
+    Path(app["app_dir"], "icon.svg").write_text("<svg/>")
+
+    await am._evaluate(app["id"], broadcast=False)
+    row = await db.get_application(app["id"])
+    assert row["icon"] == "💠"          # untouched
+    assert row["icon_src"] == "icon.svg"  # and the file was still found
+
+
+async def test_refresh_icons_backfills_existing_applications(am, db, sent):
+    """Discovery otherwise only runs after a build, which would leave every
+    application that already exists showing the generic fallback until someone
+    happened to rebuild it. The acceptance criterion is "with no user action"."""
+    app = await _create_app(am, db, name="Already Built")
+    Path(app["app_dir"], "index.html").write_text("<html></html>")
+    Path(app["app_dir"], "icon.svg").write_text("<svg/>")
+    assert (await db.get_application(app["id"]))["icon_src"] is None
+
+    assert await am.refresh_icons() == 1
+    assert (await db.get_application(app["id"]))["icon_src"] == "icon.svg"
+
+    # Idempotent: nothing changed, nothing rewritten.
+    assert await am.refresh_icons() == 0
+
+
+async def test_refresh_icons_leaves_the_emoji_and_status_alone(am, db, sent):
+    app = await _create_app(am, db, name="Untouched", icon="💠")
+    Path(app["app_dir"], "index.html").write_text("<html></html>")
+    Path(app["app_dir"], "icon.svg").write_text("<svg/>")
+    before = await db.get_application(app["id"])
+
+    await am.refresh_icons()
+    after = await db.get_application(app["id"])
+    assert after["icon"] == "💠"
+    assert after["status"] == before["status"]
+    assert after["icon_src"] == "icon.svg"

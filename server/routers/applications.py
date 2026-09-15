@@ -181,12 +181,20 @@ async def _serve(request: Request, app_id: str, path: str) -> FileResponse:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Not found")
 
     media_type = mimetypes.guess_type(target)[0] or "application/octet-stream"
+    # App content is `no-store`: the whole point is that a rebuild shows up on
+    # reload, and a cached index.html would show yesterday's app.
+    #
+    # The discovered icon is the exception. It's fetched on every render of
+    # every sidebar row, so `no-store` means a re-download and a visible
+    # flicker each time. It's allowed to be briefly stale instead — and the
+    # client appends `?v=<last_built_at>`, so a rebuild busts it immediately.
+    cache = "no-store"
+    if row.get("icon_src") and path.lstrip("/") == row["icon_src"].lstrip("/"):
+        cache = "public, max-age=300"
     return FileResponse(
         target,
         media_type=media_type,
-        # The whole point is that a rebuild shows up on reload; a cached
-        # index.html would show yesterday's app.
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": cache},
     )
 
 
