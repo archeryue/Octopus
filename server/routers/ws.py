@@ -59,8 +59,15 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
                     continue
 
                 try:
+                    # The only steerable caller: this is a person typing.
+                    # Everything else that injects a turn (bg results,
+                    # delegation replies, schedules, research) needs its own
+                    # turn, not to land inside an unrelated one.
                     await session_manager.start_message(
-                        session_id, content, attachment_ids=attachment_ids
+                        session_id,
+                        content,
+                        attachment_ids=attachment_ids,
+                        steerable=True,
                     )
                 except ValueError as e:
                     await ws.send_json(

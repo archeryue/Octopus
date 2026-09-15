@@ -44,6 +44,11 @@ export interface Message {
   // messages that the user attached files to (image, PDF, anything).
   // The chat UI renders thumbnails / file chips below the message text.
   attachments?: AttachmentMetadata[];
+  // True for a message handed to a turn that was already running
+  // (inline-steering.md §12) rather than queued behind it. Live-only: on a
+  // reload it's an ordinary user message, which is what it is in the
+  // transcript — the distinction only matters while you're watching.
+  steered?: boolean;
   // Per-session sequence number, present on messages loaded from the
   // session detail snapshot. Used as the rewind target for "Fork from here"
   // (session-rewind.md §6.1). Absent on freshly-streamed messages until

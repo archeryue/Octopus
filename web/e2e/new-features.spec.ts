@@ -335,6 +335,71 @@ test.describe("Streaming assistant text @llm", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Inline steering (inline-steering.md §8)
+// ---------------------------------------------------------------------------
+
+test.describe("Inline steering @llm", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  test("a message typed mid-turn reaches the running agent and redirects it", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Steer Test");
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Steer Test" })
+      .click();
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
+      "Steer Test"
+    );
+
+    const input = page.locator(".chat-input-bar textarea");
+    // Sequential tool calls: the CLI delivers a steer at the next tool-result
+    // boundary, so the turn needs boundaries to land on.
+    await input.fill(
+      "Use the Bash tool to run these ONE AT A TIME, reporting after each: " +
+        "`sleep 4; echo STEP1`, `sleep 4; echo STEP2`, `sleep 4; echo STEP3`, " +
+        "`sleep 4; echo STEP4`. Do all four, then summarise."
+    );
+    await page.locator("button.btn-send").click();
+
+    // Wait until it's genuinely working, then steer.
+    await expect(page.locator(".session-item.active .session-status")).toHaveText(
+      "running",
+      { timeout: 30_000 }
+    );
+    await page.waitForTimeout(5_000);
+    await input.fill(
+      "CHANGE OF PLAN: stop after the current command. Run no more sleeps. " +
+        "Reply with exactly: HALTED"
+    );
+    await page.locator("button.btn-send").click();
+
+    // It went INTO the turn, not into the queue.
+    await expect(page.locator(".msg-steered-marker").last()).toContainText(
+      "sent to the running turn",
+      { timeout: 20_000 }
+    );
+
+    await expect(page.locator(".session-item.active .session-status")).toHaveText(
+      "idle",
+      { timeout: 150_000 }
+    );
+
+    // The agent obeyed mid-flight. Count the Bash calls it actually made
+    // rather than searching the transcript for "STEP4" — the prompt itself
+    // names all four steps, so the text is there whether or not they ran.
+    const transcript = (await page.locator(".chat-messages").textContent()) ?? "";
+    expect(transcript).toContain("HALTED");
+    const bashCalls = await page
+      .locator(".msg-tool .tool-name", { hasText: "Bash" })
+      .count();
+    expect(bashCalls).toBeLessThan(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Message queue + interrupt
 // ---------------------------------------------------------------------------
 
@@ -342,7 +407,7 @@ test.describe("Message Queue & Interrupt @llm", () => {
   // Real Claude turns — give them time. Queue scenarios run two turns.
   test.describe.configure({ timeout: 180_000 });
 
-  test("send while running queues the message, which fires after current turn", async ({
+  test("a message with an attachment queues while running, then fires as its own turn", async ({
     page,
     request,
   }) => {
@@ -373,16 +438,32 @@ test.describe("Message Queue & Interrupt @llm", () => {
       page.locator(".status-badge.status-running")
     ).toBeVisible({ timeout: 60_000 });
 
-    // Send button switches its semantic label to "Queue message" while a
-    // turn is running. The button is icon-only (post-VM0-style redesign),
-    // so we check the accessibility label, which is the source of truth
-    // either way for screen readers.
+    // On a steerable backend a mid-turn message goes INTO the turn, so the
+    // button says so. (Inline steering has its own test; this one is about
+    // the path that still queues.)
+    await expect(page.locator("button.btn-send")).toHaveAttribute(
+      "aria-label",
+      "Send to running turn"
+    );
+
+    // Attach a file: the frame channel carries text only, so a message with
+    // an attachment always queues and runs as its own turn. The label follows
+    // the real behaviour rather than promising one thing and doing another.
+    const chooser = page.waitForEvent("filechooser");
+    await page.locator(".btn-attach").click();
+    await (await chooser).setFiles({
+      name: "note.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("just a note"),
+    });
+    await expect(
+      page.locator(".chat-attachment-chips .attachment-pending")
+    ).toHaveCount(1);
     await expect(page.locator("button.btn-send")).toHaveAttribute(
       "aria-label",
       "Queue message"
     );
 
-    // Queue a second message while the first is still running
     await input.fill("And what is 50 * 50? Reply with just the number.");
     await page.locator("button.btn-send").click();
 

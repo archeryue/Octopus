@@ -4,6 +4,7 @@ import {
   IconChevronRight,
   IconTool,
   IconFile,
+  IconArrowBarToRight,
   IconGitFork,
   IconRobot,
 } from "@tabler/icons-react";
@@ -170,6 +171,19 @@ export function MessageBubble({
               <div className="msg-content inline-block whitespace-pre-wrap break-words rounded-[14px] rounded-br-[4px] bg-primary px-4 py-3 text-[14px] leading-relaxed text-white">
                 {message.content}
               </div>
+              {message.steered && (
+                /* Sent INTO the turn that was already running, rather than
+                 * queued behind it (inline-steering.md §12). Worth saying so:
+                 * the two look identical in the transcript but behave very
+                 * differently, and knowing which you got is the whole point of
+                 * having pressed enter mid-turn. */
+                <div className="msg-steered-marker flex justify-end">
+                  <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-primary-300">
+                    <IconArrowBarToRight size={11} />
+                    sent to the running turn
+                  </span>
+                </div>
+              )}
               {message.attachments && message.attachments.length > 0 && (
                 <AttachmentList
                   attachments={message.attachments}

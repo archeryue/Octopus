@@ -157,6 +157,9 @@ async def test_claude_fork_resumes_pre_branch_context(tmp_path, monkeypatch):
         assert fork.fork_needs_replay is False
         assert fork.claude_session_id, "session_started didn't capture a resume id"
     finally:
+        # Release any CLI process a finished turn is holding, or each test
+        # leaves ~255MB of live `claude` behind for the rest of the run.
+        await mgr.stop_all_held_processes()
         await db.close()
 
 
@@ -210,6 +213,9 @@ async def test_codex_fork_history_replay_then_native_resume(tmp_path, monkeypatc
             f"native resume lost the fork-prefix context: {reply2!r}"
         )
     finally:
+        # Release any CLI process a finished turn is holding, or each test
+        # leaves ~255MB of live `claude` behind for the rest of the run.
+        await mgr.stop_all_held_processes()
         await db.close()
 
 
@@ -261,4 +267,7 @@ async def test_claude_fork_safe_revert_real_repo(tmp_path, monkeypatch):
                                capture_output=True, text=True).stdout
         assert f"octopus: pre-fork stash {fork.id}" in stash
     finally:
+        # Release any CLI process a finished turn is holding, or each test
+        # leaves ~255MB of live `claude` behind for the rest of the run.
+        await mgr.stop_all_held_processes()
         await db.close()

@@ -2216,6 +2216,11 @@ export interface components {
             /** Delegation Request */
             delegation_request?: string | null;
             /**
+             * Can Steer
+             * @default false
+             */
+            can_steer: boolean;
+            /**
              * Can Fork
              * @default false
              */
@@ -2291,6 +2296,11 @@ export interface components {
             parent_session_id?: string | null;
             /** Delegation Request */
             delegation_request?: string | null;
+            /**
+             * Can Steer
+             * @default false
+             */
+            can_steer: boolean;
             /**
              * Can Fork
              * @default false

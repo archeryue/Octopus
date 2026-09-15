@@ -66,6 +66,9 @@ _MAX_HELD_PROCESSES = 4
 _REAPER_INTERVAL_SECONDS = 30.0
 # How long to wait for one held process to die before giving up on it.
 _HELD_STOP_TIMEOUT = 2.0
+# How many un-written steers a single turn will hold. It's a person typing;
+# beyond this the message queues for the next turn instead of being refused.
+_MAX_PENDING_STEERS = 8
 
 
 class ForkError(Exception):
@@ -271,6 +274,19 @@ class Session:
     _pending_question_answers: dict[str, str] = field(default_factory=dict, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _pending_queue: list[QueuedPrompt] = field(default_factory=list, repr=False)
+    # Steers: messages typed while THIS turn is running, to be handed to the
+    # CLI mid-turn rather than queued behind the turn (inline-steering.md §8).
+    # The turn's writer task drains this; `_steer_ready` is how it learns
+    # there's something to write without waiting for the next event — during a
+    # long tool call no events arrive at all, and a slow tool is exactly when
+    # someone reaches for the keyboard.
+    _steer_queue: list[QueuedPrompt] = field(default_factory=list, repr=False)
+    _steer_ready: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    # Set while a turn can still accept a steer: from the moment the stream
+    # starts until `result` is seen. Checked under `_steer_lock` so accepting a
+    # steer and closing the window can't interleave.
+    _steer_open: bool = field(default=False, repr=False)
+    _steer_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 class SessionManager:
@@ -1629,6 +1645,8 @@ class SessionManager:
         session_id: str,
         prompt: str,
         attachment_ids: list[str] | None = None,
+        *,
+        steerable: bool = False,
     ) -> None:
         """Kick off a message, or queue it if the session is already running.
 
@@ -1636,6 +1654,15 @@ class SessionManager:
         `POST /api/sessions/{id}/attachments`). They're carried with the
         prompt through the queue and resolved to absolute paths at spawn
         time so the agent's `Read` tool can open them.
+
+        `steerable` says this message may be handed to a turn already running
+        instead of queueing behind it (inline-steering.md §8). It defaults to
+        **False** and only the WebSocket composer passes True, because this is
+        the injection path for bg-task results, delegation replies, schedules,
+        application builds and research reports — each of which is a turn in
+        its own right, with a marker prefix the model is expected to read as a
+        fresh instruction. Steering one of those into the middle of an
+        unrelated turn delivers it somewhere it was never meant to land.
         """
         session = self.sessions.get(session_id)
         if session is None:
@@ -1648,11 +1675,14 @@ class SessionManager:
 
         queued = QueuedPrompt(prompt=prompt, attachment_ids=list(attachment_ids or []))
 
-        # Busy path: a turn is in flight → just queue. A fork can never be in
-        # flight here, because fork_session only sets `_forking` against a
-        # quiescent parent (no `_active_task`), so a running turn implies
-        # not-forking — no `_forking` check needed on this branch.
+        # Busy path. First chance: steer — hand the message to the turn that's
+        # already running instead of queueing behind it (inline-steering.md §8).
+        # A fork can never be in flight here, because fork_session only sets
+        # `_forking` against a quiescent parent (no `_active_task`), so a
+        # running turn implies not-forking — no `_forking` check needed.
         if session._active_task and not session._active_task.done():
+            if steerable and await self._try_steer(session, queued):
+                return
             session._pending_queue.append(queued)
             await self._broadcast(
                 {
@@ -2137,6 +2167,21 @@ class SessionManager:
             reused = self._reusable_run(
                 session, session.working_dir, credential, agent, connectors
             )
+            if reused is None and session._backend is not None:
+                # Declining to reuse (config changed, or a turn still in
+                # flight) must not simply overwrite the handle: that orphans a
+                # live ~255MB process that nothing points at any more, so
+                # neither the reaper nor shutdown can ever reach it. Let it go
+                # properly first.
+                stale = session._backend
+                session._backend = None
+                session._held_run_at = None
+                try:
+                    await asyncio.wait_for(stale.stop(), timeout=_HELD_STOP_TIMEOUT)
+                except (asyncio.TimeoutError, Exception):
+                    logger.warning(
+                        "session %s: abandoning a process we couldn't stop", session.id
+                    )
             backend = reused or self._make_run(session, agent, connectors)
             session._backend = backend
             saw_result = False
@@ -2174,6 +2219,20 @@ class SessionManager:
                         session.working_dir,
                         session.claude_session_id,
                         credential=credential,
+                    )
+
+                # The steering window is open from here until `result`
+                # (inline-steering.md §8). Only a backend that takes input on
+                # stdin can be steered; everything else keeps queueing.
+                steer_writer: asyncio.Task[int] | None = None
+                if backend.reusable:
+                    async with session._steer_lock:
+                        session._steer_open = True
+                        if session._steer_queue:
+                            session._steer_ready.set()
+                    steer_writer = asyncio.create_task(
+                        self._steer_writer(session, backend),
+                        name=f"steer-writer-{session.id}",
                     )
 
                 async for event in backend.stream():
@@ -2240,6 +2299,11 @@ class SessionManager:
                     # CLI reissued a different one mid-stream).
                     if event.type == "result":
                         saw_result = True
+                        # Shut the steering window first: past this point the
+                        # CLI is idle, and a frame written now would start a
+                        # fresh turn rather than steer this one.
+                        async with session._steer_lock:
+                            session._steer_open = False
                         if event.session_id and session.claude_session_id != event.session_id:
                             session.claude_session_id = event.session_id
                             if self.db:
@@ -2272,6 +2336,29 @@ class SessionManager:
                             ws_event["seq"] = msg_seq
                         yield ws_event
             finally:
+                # Close the steering window and stop the writer before
+                # anything else touches the process. Whatever it didn't get to
+                # write becomes a normal queued prompt — a steer that missed
+                # its turn still runs, just as the next one (§9).
+                async with session._steer_lock:
+                    session._steer_open = False
+                if steer_writer is not None and not steer_writer.done():
+                    steer_writer.cancel()
+                    try:
+                        await steer_writer
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                async with session._steer_lock:
+                    if session._steer_queue:
+                        logger.info(
+                            "session %s: %d steer(s) missed the turn; queuing them",
+                            session.id,
+                            len(session._steer_queue),
+                        )
+                        session._pending_queue.extend(session._steer_queue)
+                        session._steer_queue.clear()
+                    session._steer_ready.clear()
+
                 if watchdog is not None:
                     watchdog.cancel()
                     try:
@@ -2549,6 +2636,84 @@ class SessionManager:
             self._run_config(session, agent, connectors)
         )
 
+    async def _try_steer(self, session: "Session", queued: QueuedPrompt) -> bool:
+        """Offer a message to the running turn. True if it was accepted.
+
+        Everything that isn't accepted falls through to the normal queue, so
+        the message always runs — the only question is whether it reaches the
+        agent mid-turn or as the next turn. Refused when the window is shut
+        (the turn is finishing), when the backlog is full, or when the message
+        carries attachments, which the frame channel doesn't take.
+        """
+        if queued.attachment_ids:
+            return False
+        async with session._steer_lock:
+            if not session._steer_open:
+                return False
+            if len(session._steer_queue) >= _MAX_PENDING_STEERS:
+                logger.info(
+                    "session %s: steer backlog full, queueing instead", session.id
+                )
+                return False
+            session._steer_queue.append(queued)
+            session._steer_ready.set()
+        return True
+
+    async def _steer_writer(self, session: "Session", backend: HarnessRun) -> int:
+        """The turn's only writer of mid-turn user frames.
+
+        Waits on `_steer_ready` rather than on the event stream, because during
+        a long tool call no events arrive and a steer would otherwise sit
+        unwritten for exactly as long as the tool runs. Returns when cancelled;
+        the count of frames written is tracked on the session so the run loop
+        can tell whether anything was delivered after `result`.
+        """
+        written = 0
+        while True:
+            await session._steer_ready.wait()
+            session._steer_ready.clear()
+            while True:
+                # The lock is held ACROSS the write, not just around the pop.
+                # Closing the window takes the same lock, so a close can never
+                # interleave with a write already under way: the frame is
+                # either fully delivered while the turn was live, or never
+                # written at all. Without that, a half-written frame could land
+                # after the CLI went idle and be taken as a whole new turn,
+                # whose reply nobody is reading.
+                async with session._steer_lock:
+                    if not session._steer_open or not session._steer_queue:
+                        break
+                    queued = session._steer_queue[0]
+                    try:
+                        await backend.send_user_frame(queued.prompt)
+                    except Exception:
+                        logger.exception(
+                            "failed writing steer for session %s; it will be "
+                            "queued as the next turn instead",
+                            session.id,
+                        )
+                        # Left in the queue: the turn's cleanup moves it to the
+                        # normal pending queue, so the message still runs.
+                        return written
+                    session._steer_queue.pop(0)
+                written += 1
+                # Persist + broadcast only once it's actually been handed over,
+                # so the transcript order matches what the engine saw.
+                await self._persist_message(
+                    session,
+                    MessageContent(
+                        role=MessageRole.user, type="text", content=queued.prompt
+                    ),
+                )
+                await self._broadcast(
+                    {
+                        "type": "steered",
+                        "session_id": session.id,
+                        "content": queued.prompt,
+                    }
+                )
+        return written
+
     async def _enforce_held_cap(self, *, keep_session_id: str | None = None) -> int:
         """Drop least-recently-used held processes until at most
         `_MAX_HELD_PROCESSES` remain, never touching `keep_session_id` (the
@@ -2709,6 +2874,16 @@ class SessionManager:
         """
         held = session._backend
         if held is None or not held.reusable or not held.is_alive():
+            return None
+        # Never hand a process that's mid-turn to a second turn. `start_message`
+        # normally prevents concurrent turns, but reuse makes a live process
+        # reachable from more paths than before, and two turns sharing one
+        # stdin would interleave their prompts into one conversation.
+        if session._steer_open:
+            logger.warning(
+                "session %s: refusing to reuse a process with a turn in flight",
+                session.id,
+            )
             return None
         want = self._make_run(session, agent, connectors).spawn_signature(
             working_dir, credential

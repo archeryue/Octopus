@@ -107,6 +107,13 @@ class SessionInfo(BaseModel):
     # (agent-collaboration.md §4.1)
     parent_session_id: str | None = None
     delegation_request: str | None = None
+    # Whether a message typed while this session is running can be handed to
+    # the turn in flight instead of queueing behind it (inline-steering.md §8).
+    # A backend capability, like `can_fork` below: only a harness that takes
+    # input on stdin can be steered. The composer reads it to say what the
+    # send button will actually do — claiming "Queue message" when the message
+    # will steer is worse than not saying anything.
+    can_steer: bool = False
     # Session tree-rewind / fork (session-rewind.md §4). Exactly five
     # fork-related fields are exposed; fork_status, fork_needs_replay and the
     # raw fork_metadata blob are server-internal.

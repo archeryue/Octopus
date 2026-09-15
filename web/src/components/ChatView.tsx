@@ -188,6 +188,12 @@ export function ChatView({
   }, [activeSessionId, activeSession?.fork_prefilled_prompt]);
 
   const isRunning = activeSession?.status === "running";
+  // Whether a message typed right now goes INTO the running turn or queues
+  // behind it. A harness capability the server reports per session
+  // (inline-steering.md §12) — the button must not promise one and do the
+  // other. Attachments always queue, so the label follows that too.
+  const canSteer =
+    !!activeSession?.can_steer && pendingAttachments.length === 0;
 
   const isWaitingForResponse = useMemo(() => {
     if (isRunning || activeSession?.status !== "idle") return false;
@@ -1526,8 +1532,20 @@ export function ChatView({
                     hasUploadInFlight ||
                     (!input.trim() && readyAttachmentIds.length === 0)
                   }
-                  aria-label={isRunning ? "Queue message" : "Send message"}
-                  title={isRunning ? "Queue (current turn is running)" : "Send"}
+                  aria-label={
+                    isRunning
+                      ? canSteer
+                        ? "Send to running turn"
+                        : "Queue message"
+                      : "Send message"
+                  }
+                  title={
+                    isRunning
+                      ? canSteer
+                        ? "Send into the running turn — the agent gets it at its next step"
+                        : "Queue (current turn is running)"
+                      : "Send"
+                  }
                 >
                   <IconArrowUp size={16} />
                 </Button>

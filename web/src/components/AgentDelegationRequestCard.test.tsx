@@ -212,6 +212,7 @@ describe("AgentDelegationRequestCard", () => {
           delegation_request: "review the readme",
           backend: "claude-code",
           can_fork: true,
+          can_steer: false,
           fork_is_full_copy: false,
           archived: false,
         },

@@ -2276,3 +2276,217 @@ async def test_interrupt_releases_the_session_handle_immediately(manager):
         if not session._inner_task.done():
             session._inner_task.cancel()
         await asyncio.sleep(0.3)
+
+
+# --------------------------------------------------------------------------- #
+# Inline steering (inline-steering.md §8-§9)
+# --------------------------------------------------------------------------- #
+
+
+def _steerable_session(mgr, open_window=True, session_id="s-steer"):
+    from server.session_manager import Session
+
+    sess = Session(id=session_id, name="steer", working_dir="/tmp")
+    sess._steer_open = open_window
+    mgr.sessions[session_id] = sess
+    return sess
+
+
+async def test_steer_accepted_while_the_window_is_open():
+    from server.session_manager import QueuedPrompt
+
+    mgr = SessionManager()
+    sess = _steerable_session(mgr)
+    accepted = await mgr._try_steer(sess, QueuedPrompt(prompt="not that file", attachment_ids=[]))
+    assert accepted is True
+    assert [q.prompt for q in sess._steer_queue] == ["not that file"]
+    assert sess._steer_ready.is_set()
+
+
+async def test_steer_refused_once_the_window_shuts():
+    """Past `result` the CLI is idle, so a frame would start a whole new turn
+    rather than steer this one. Refusing here sends it to the normal queue."""
+    from server.session_manager import QueuedPrompt
+
+    mgr = SessionManager()
+    sess = _steerable_session(mgr, open_window=False)
+    assert await mgr._try_steer(sess, QueuedPrompt(prompt="too late", attachment_ids=[])) is False
+    assert sess._steer_queue == []
+
+
+async def test_steer_backlog_is_bounded():
+    """It's a person typing. Past the cap the message queues for the next turn
+    instead of being refused outright — it still runs."""
+    from server.session_manager import QueuedPrompt, _MAX_PENDING_STEERS
+
+    mgr = SessionManager()
+    sess = _steerable_session(mgr)
+    for i in range(_MAX_PENDING_STEERS):
+        assert await mgr._try_steer(sess, QueuedPrompt(prompt=f"m{i}", attachment_ids=[])) is True
+    assert await mgr._try_steer(sess, QueuedPrompt(prompt="overflow", attachment_ids=[])) is False
+    assert len(sess._steer_queue) == _MAX_PENDING_STEERS
+
+
+async def test_a_message_with_attachments_is_never_steered():
+    """The frame channel carries text. A message with files queues, so the
+    agent sees the same prompt shape it would have seen as its own turn."""
+    from server.session_manager import QueuedPrompt
+
+    mgr = SessionManager()
+    sess = _steerable_session(mgr)
+    queued = QueuedPrompt(prompt="look at this", attachment_ids=["a1"])
+    assert await mgr._try_steer(sess, queued) is False
+
+
+async def test_writer_delivers_steers_and_persists_them_after_the_write():
+    """A steer is persisted when it's actually handed over, so the transcript
+    order matches what the engine saw — not when it was typed."""
+    from server.session_manager import QueuedPrompt
+
+    mgr = SessionManager()
+    sess = _steerable_session(mgr)
+    written: list[str] = []
+    persisted: list[str] = []
+    broadcast: list[dict] = []
+
+    class _Backend(FakeRunBase):
+        reusable = True
+
+        async def send_user_frame(self, text, frame_uuid=None):
+            written.append(text)
+            return "uuid"
+
+    async def fake_persist(session, content):
+        persisted.append(content.content)
+        return len(persisted)
+
+    mgr._persist_message = fake_persist
+    mgr._broadcast = lambda ev: broadcast.append(ev) or asyncio.sleep(0)
+
+    await mgr._try_steer(sess, QueuedPrompt(prompt="stop that", attachment_ids=[]))
+    task = asyncio.create_task(mgr._steer_writer(sess, _Backend()))
+    await asyncio.sleep(0.05)
+    async with sess._steer_lock:
+        sess._steer_open = False
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+    assert written == ["stop that"]
+    assert persisted == ["stop that"]
+    assert [e["type"] for e in broadcast] == ["steered"]
+
+
+async def test_writer_wakes_without_waiting_for_an_event():
+    """The writer waits on the steer queue, not on the event stream. During a
+    long tool call no events arrive at all, and that is exactly when someone
+    reaches for the keyboard."""
+    from server.session_manager import QueuedPrompt
+
+    mgr = SessionManager()
+    sess = _steerable_session(mgr)
+    delivered = asyncio.Event()
+
+    class _Backend(FakeRunBase):
+        reusable = True
+
+        async def send_user_frame(self, text, frame_uuid=None):
+            delivered.set()
+            return "uuid"
+
+    mgr._persist_message = lambda s, c: asyncio.sleep(0)
+    mgr._broadcast = lambda ev: asyncio.sleep(0)
+
+    task = asyncio.create_task(mgr._steer_writer(sess, _Backend()))
+    await asyncio.sleep(0.02)          # writer is idle, no events anywhere
+    await mgr._try_steer(sess, QueuedPrompt(prompt="stop", attachment_ids=[]))
+    await asyncio.wait_for(delivered.wait(), timeout=1.0)   # woke on its own
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
+async def test_a_process_mid_turn_is_never_reused(monkeypatch):
+    """Reuse makes a live process reachable from more paths than before. Two
+    turns sharing one stdin would interleave their prompts into a single
+    conversation, so a process with a turn in flight is never handed out."""
+    mgr = SessionManager()
+    backend = _FakeBackend([], reusable=True)
+    sess = _held_session(mgr, backend)
+    monkeypatch.setattr(mgr, "_make_run", lambda *a, **k: _FakeBackend([], reusable=True))
+
+    sess._steer_open = True          # a turn is running
+    assert mgr._reusable_run(sess, "/tmp", None, None, None) is None
+    sess._steer_open = False         # turn over
+    assert mgr._reusable_run(sess, "/tmp", None, None, None) is backend
+
+
+async def test_declining_reuse_stops_the_old_process(manager, monkeypatch):
+    """Declining to reuse must not just overwrite the handle. The old process
+    is live and ~255MB; if nothing points at it, neither the reaper nor
+    shutdown can reach it, and a suite of such turns exhausts the machine —
+    which is exactly how the backend suite got OOM-killed twice."""
+    session = await _new(manager, "Respawn")
+
+    stopped: list[str] = []
+
+    class _Old(FakeRunBase):
+        reusable = True
+
+        async def stop(self):
+            stopped.append("old")
+
+    class _New(FakeRunBase):
+        async def start(self, *a, **k):
+            pass
+
+        def stream(self):
+            async def _gen():
+                from server.harness import HarnessEvent
+                yield HarnessEvent(type="result", session_id="sid")
+            return _gen()
+
+        async def stop(self):
+            stopped.append("new")
+
+    session._backend = _Old()
+    session._held_run_at = 1.0
+    # Config moved, so reuse is refused.
+    monkeypatch.setattr(manager, "_reusable_run", lambda *a, **k: None)
+    monkeypatch.setattr(manager, "_make_run", lambda *a, **k: _New())
+
+    async for _ in manager._run_backend(session, "hello"):
+        pass
+
+    assert "old" in stopped, "the orphaned process was never stopped"
+
+
+async def test_injected_turns_are_never_steered(manager):
+    """bg-task results, delegation replies, schedules, application builds and
+    research reports all arrive through `start_message`. Each is a turn in its
+    own right, carrying a marker prefix the model reads as a fresh instruction
+    — steering one into the middle of an unrelated turn delivers it somewhere
+    it was never meant to land. Only the composer opts in."""
+    session = await _new(manager, "Injected")
+    session._steer_open = True
+
+    async def busy():
+        await asyncio.sleep(30)
+
+    session._active_task = asyncio.create_task(busy())
+    try:
+        await manager.start_message(session.id, "[bg-task-result] output here")
+        assert session._steer_queue == []
+        assert [q.prompt for q in session._pending_queue] == [
+            "[bg-task-result] output here"
+        ]
+
+        # The composer's own path does steer.
+        await manager.start_message(session.id, "actually, stop", steerable=True)
+        assert [q.prompt for q in session._steer_queue] == ["actually, stop"]
+    finally:
+        session._active_task.cancel()

@@ -43,3 +43,29 @@ describe("MessageBubble plain mode", () => {
     expect(container.querySelector("h1")?.textContent).toBe("Heading");
   });
 });
+
+describe("steered marker", () => {
+  it("marks a message that was sent into the running turn", () => {
+    const { container } = render(
+      <MessageBubble
+        message={{ role: "user", type: "text", content: "not that file", steered: true }}
+        sessionId="s1"
+      />
+    );
+    expect(container.querySelector(".msg-steered-marker")?.textContent).toContain(
+      "sent to the running turn"
+    );
+  });
+
+  it("leaves an ordinary user message unmarked", () => {
+    // A queued message and a steered one look identical in the transcript but
+    // behave very differently; only the steered one says so.
+    const { container } = render(
+      <MessageBubble
+        message={{ role: "user", type: "text", content: "do this next" }}
+        sessionId="s1"
+      />
+    );
+    expect(container.querySelector(".msg-steered-marker")).toBeNull();
+  });
+});

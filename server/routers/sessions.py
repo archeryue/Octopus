@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
-from ..harness import BackendForkNotSupported
+from ..harness import BackendForkNotSupported, StdinMode, get_harness
 from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus, SessionUpdate
 from ..session_manager import ForkError, fork_info_fields, session_manager
 
@@ -17,6 +17,19 @@ def _fork_fields(s) -> dict:
         fork_metadata=s.fork_metadata,
         fork_revert_record=s.fork_revert_record,
     )
+
+
+def _can_steer(backend: str) -> bool:
+    """Whether a turn on this backend can take a message mid-flight.
+
+    A harness capability, derived the same way `can_fork` is: only a backend
+    that takes its input on stdin has a channel to steer through
+    (inline-steering.md §8). Codex keeps queue-until-idle.
+    """
+    try:
+        return get_harness(backend).profile.stdin_mode is StdinMode.STREAM_JSON
+    except Exception:
+        return False
 
 
 def _to_session_info(
@@ -37,6 +50,7 @@ def _to_session_info(
         parent_session_id=s.parent_session_id,
         delegation_request=s.delegation_request,
         archived=archived,
+        can_steer=_can_steer(s.backend),
         **_fork_fields(s),
     )
 

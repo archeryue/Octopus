@@ -172,6 +172,18 @@ function handleWsMessage(data: Record<string, unknown>) {
       });
       break;
 
+    // A message handed to the turn already running, rather than queued behind
+    // it. Rendered immediately so you can see it landed mid-turn.
+    case "steered":
+      addMessage(sessionId, {
+        role: "user",
+        type: "text",
+        content: data.content as string,
+        steered: true,
+        seq: seq ?? undefined,
+      });
+      break;
+
     case "user_message":
       addMessage(sessionId, {
         role: "user",
@@ -338,6 +350,9 @@ function handleWsMessage(data: Record<string, unknown>) {
           origin: prev?.origin ?? "user",
           backend: prev?.backend ?? "claude-code",
           can_fork: prev?.can_fork ?? true,
+          // Carried from the session it replaces: same agent, same backend,
+          // so the same harness capability.
+          can_steer: prev?.can_steer ?? false,
           fork_is_full_copy: false,
           archived: false,
         });

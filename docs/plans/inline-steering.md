@@ -1,6 +1,6 @@
 # Inline steering — and the turn latency that pays for it
 
-> **Implementation status: STAGE 1 SHIPPED; S2/S3 planned.** Three staged
+> **Implementation status: ALL THREE STAGES SHIPPED.** Three staged
 > changes (§4). Every CLI behaviour and every number below is *measured*
 > against our own `claude 2.1.272`, not assumed.
 >
@@ -119,9 +119,13 @@ with no visible stepping. The completed answer renders exactly once.
   change forces a respawn, and an idle reaper bounds memory (§7). −1.5s per
   turn after the first.
 
-**S3 — steer.** The accept path (§8), the echo classifier (§9), the composer
-change (§12). Nearly free once S2 exists — S2 is what makes the channel
-writable mid-turn.
+**S3 — steer. SHIPPED.** The accept path (§8), the writer task (§9) and the
+composer marker (§12). Nearly free once S2 exists, because S2 is what makes the
+channel writable mid-turn.
+
+Proven against the real CLI through the session manager: a turn running four
+sequential `sleep 4` commands was steered at 6.0s and replied `HALTED` at 9.8s,
+never reaching the later steps. The e2e drives the same thing from a browser.
 
 ## 5. Prior art: vm0's "active input"
 
@@ -316,7 +320,37 @@ next"). On other backends nothing changes.
   the probe-2 shape (steer a multi-tool turn, assert the later tools never ran
   and `turns == 2`); an e2e steering a live session.
 
-## 14. What this defers
+## 14. What building it taught (keep these)
+
+Three bugs here were mine, each invisible in a short session and each a slow
+leak or a silent slowdown in a long one. They're recorded because the next
+person to touch this code can reintroduce any of them.
+
+* **Every frame uuid must be unique.** The CLI reports ours back as
+  `command_uuid` and deduplicates on it. A uuid derived from (session, turn
+  index) repeated on every turn, so the second turn of a resumed session hung
+  with nothing on stderr — and produced a convincing false diagnosis that
+  `--resume` and stream-json input were incompatible.
+
+* **Declining to reuse must release the old process.** `backend = reused or
+  self._make_run(...)` overwrote `session._backend` while a live ~255MB process
+  was still attached, so nothing pointed at it and neither the reaper nor
+  shutdown could reach it. It OOM-killed the backend suite twice before the
+  cause was found; adding the mid-turn guard made reuse decline more often,
+  which made it fire sooner.
+
+* **A bound enforced only by a periodic task isn't a bound.** The held-process
+  cap originally lived in the reaper, which doesn't run in tests and ticks
+  every 30s in production. It's enforced synchronously at the moment a process
+  is held, and the reaper only handles the idle case.
+
+And one about identity: `spawn_signature` keyed on the connector *object*,
+whose default repr carries a memory address, so every turn looked like a config
+change and reuse would silently never have happened for an agent with a
+connector — leaving only the extra shutdown cost. Signatures must be built from
+content, never from object identity.
+
+## 15. What this defers
 
 * **Steering a tool-free turn.** No boundary to land on (§2), so it waits for the
   turn to end. Redirecting a monologue needs interrupt-and-resume — a different
