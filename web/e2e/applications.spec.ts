@@ -92,7 +92,7 @@ test.describe("Applications UI", () => {
     // Chat is hidden, not unmounted — it keeps its composer draft/scroll.
     await expect(page.locator(".main-pane")).toHaveClass(/hidden/);
 
-    // "Build it" stays disabled until there's both a name and a brief.
+    // "Start Build" stays disabled until there's both a name and a brief.
     const submit = page.locator("button.btn-application-create");
     await expect(submit).toBeDisabled();
     await page.locator("#app-name").fill("Draft Only");
@@ -102,6 +102,11 @@ test.describe("Applications UI", () => {
 
     // The agent picker is populated from the agent list.
     await expect(page.locator("#app-agent option")).not.toHaveCount(0);
+
+    // The Archived tab is where an archived app comes back from.
+    await page.locator(".btn-tab-archived").click();
+    await expect(page.locator(".archived-empty, .archived-grid")).toBeVisible();
+    await page.locator(".btn-tab-create").click();
 
     // Closing returns the pane to chat without creating anything.
     await page.locator(".btn-application-create-close").click();
@@ -155,7 +160,10 @@ test.describe("Applications @llm", () => {
     const frame = page.locator("iframe.application-frame");
     await expect(frame).toBeVisible({ timeout: 300_000 });
     await expect(view.locator(".app-status-ready").first()).toBeVisible();
-    await expect(row.locator(".app-status-ready")).toHaveCount(1);
+    // The sidebar row shows a dot only while something is unfinished — a
+    // ready app is just a row, per the design.
+    await expect(row.locator(".app-status-building")).toHaveCount(0);
+    await expect(row.locator(".app-status-failed")).toHaveCount(0);
 
     await expect(
       page.frameLocator("iframe.application-frame").locator("h1")

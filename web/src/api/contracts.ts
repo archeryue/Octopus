@@ -58,6 +58,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unarchive Agent
+         * @description Restore an archived agent (the create page's Archived tab). Its
+         *     sessions stay archived — those come back from the archived-sessions
+         *     page individually.
+         */
+        post: operations["unarchive_agent_api_agents__agent_id__unarchive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/sessions": {
         parameters: {
             query?: never;
@@ -128,7 +150,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Applications */
+        /**
+         * List Applications
+         * @description Live applications by default; `?archived=true` returns only the
+         *     archived ones (what the create page's Archived tab lists).
+         */
         get: operations["list_applications_api_applications_get"];
         put?: never;
         /** Create Application */
@@ -172,6 +198,40 @@ export interface paths {
          * @description Run another build turn in the application's build session.
          */
         post: operations["build_application_api_applications__app_id__build_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Application */
+        post: operations["archive_application_api_applications__app_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/unarchive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unarchive Application */
+        post: operations["unarchive_application_api_applications__app_id__unarchive_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1525,6 +1585,11 @@ export interface components {
             status: components["schemas"]["ApplicationStatus"];
             /** Error */
             error?: string | null;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -2103,6 +2168,8 @@ export interface components {
             origin_session_id?: string | null;
             /** Run At */
             run_at?: string | null;
+            /** Next Run At */
+            next_run_at?: string | null;
         };
         /** SessionDetail */
         SessionDetail: {
@@ -2544,6 +2611,37 @@ export interface operations {
             };
         };
     };
+    unarchive_agent_api_agents__agent_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_agent_sessions_api_agents__agent_id__sessions_get: {
         parameters: {
             query?: never;
@@ -2713,7 +2811,9 @@ export interface operations {
     };
     list_applications_api_applications_get: {
         parameters: {
-            query?: never;
+            query?: {
+                archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2727,6 +2827,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApplicationRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -2875,6 +2984,68 @@ export interface operations {
                 "application/json": components["schemas"]["ApplicationBuildRequest"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_application_api_applications__app_id__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unarchive_application_api_applications__app_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

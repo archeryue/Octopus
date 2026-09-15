@@ -95,7 +95,7 @@ test("/fork duplicates onto a copied dir; the original session stays", async ({
   await page
     .locator(".session-item .session-name", { hasText: "Fork-Copy E2E Parent" })
     .click();
-  await expect(page.locator(".chat-header h3")).toHaveText("Fork-Copy E2E Parent");
+  await expect(page.locator(".chat-header .crumb-current")).toHaveText("Fork-Copy E2E Parent");
 
   // Type "/fork copy" and send. With a space after the command the slash menu
   // hides, so a single Enter sends the line.
@@ -108,7 +108,7 @@ test("/fork duplicates onto a copied dir; the original session stays", async ({
   await expect(page.locator('[data-testid="fork-banner"]')).toContainText(
     "full copy of the working dir"
   );
-  await expect(page.locator(".chat-header h3")).toHaveText("copy");
+  await expect(page.locator(".chat-header .crumb-current")).toHaveText("copy");
 
   // The ORIGINAL parent is untouched — still listed alongside the fork.
   // (Exact matches: "copy" is a substring of "Fork-Copy E2E Parent", so a
@@ -153,7 +153,7 @@ test.describe("Deferred /fork @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Deferred Fork Parent" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Deferred Fork Parent");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Deferred Fork Parent");
 
     const input = page.locator(".chat-input-bar textarea");
     // Force a tool-use turn with sleeps so the run is genuinely still going
@@ -188,6 +188,6 @@ test.describe("Deferred /fork @llm", () => {
     await expect(page.locator('[data-testid="fork-banner"]')).toContainText(
       "full copy of the working dir"
     );
-    await expect(page.locator(".chat-header h3")).toHaveText("deferred-fork");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("deferred-fork");
   });
 });

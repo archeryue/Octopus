@@ -118,16 +118,15 @@ test.describe("Scheduled Tasks UI @llm", () => {
     page,
   }) => {
     await login(page);
-    // The section is always present now (not agent-scoped) and is the entry
-    // point to the overview dialog.
-    await expect(page.locator(".schedule-section")).toBeVisible();
-    await expect(page.locator(".schedule-title")).toHaveText("Schedules");
+    // The MANAGE group carries the summary row; clicking it opens the page.
+    await expect(page.locator(".manage-section")).toBeVisible();
+    await expect(page.locator(".btn-manage-schedules")).toContainText("Schedules");
 
-    await page.locator(".schedule-header").click();
-    await expect(page.locator(".schedules-dialog")).toBeVisible();
-    await expect(
-      page.locator(".schedules-dialog", { hasText: "Recurring prompts" })
-    ).toBeVisible();
+    await page.locator(".btn-manage-schedules").click();
+    await expect(page.locator(".schedules-page")).toBeVisible();
+    await expect(page.locator(".schedules-page .page-header")).toContainText(
+      "Schedules"
+    );
   });
 
   test("/schedule command creates a schedule shown in the overview; toggle + delete", async ({
@@ -141,7 +140,7 @@ test.describe("Scheduled Tasks UI @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Schedule Cmd Test" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText(
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
       "Schedule Cmd Test"
     );
 
@@ -166,9 +165,9 @@ test.describe("Scheduled Tasks UI @llm", () => {
     });
 
     // Open the overview and find our schedule (scope by its unique prompt).
-    await page.locator(".schedule-header").click();
-    await expect(page.locator(".schedules-dialog")).toBeVisible();
-    const row = page.locator(".schedules-dialog .schedule-item", {
+    await page.locator(".btn-manage-schedules").click();
+    await expect(page.locator(".schedules-page")).toBeVisible();
+    const row = page.locator(".schedules-page .schedule-item", {
       hasText: PROMPT,
     });
     await expect(row).toHaveCount(1);
@@ -181,10 +180,12 @@ test.describe("Scheduled Tasks UI @llm", () => {
     await expect(row.locator(".btn-toggle")).toHaveClass(/off/);
     await expect(row).toHaveClass(/disabled/);
 
-    // Delete it — the row leaves the overview.
+    // Delete it — the row leaves the overview. Deleting a schedule confirms
+    // first, so accept the prompt.
+    page.once("dialog", (d) => d.accept());
     await row.locator(".btn-delete").click();
     await expect(
-      page.locator(".schedules-dialog .schedule-item", { hasText: PROMPT })
+      page.locator(".schedules-page .schedule-item", { hasText: PROMPT })
     ).toHaveCount(0);
   });
 });
@@ -211,7 +212,7 @@ test.describe("Interactive Input Hint", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Waiting Hint Yes" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Waiting Hint Yes");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Waiting Hint Yes");
 
     await expect(page.locator(".waiting-hint")).toBeVisible();
     await expect(page.locator(".waiting-hint")).toContainText(
@@ -236,7 +237,7 @@ test.describe("Interactive Input Hint", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Waiting Hint No" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Waiting Hint No");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Waiting Hint No");
 
     // Confirm the assistant message is rendered, then assert the hint is absent
     await expect(page.locator(".msg-assistant .msg-content")).toContainText(
@@ -268,7 +269,7 @@ test.describe("Message Queue & Interrupt @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Queue Test" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Queue Test");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Queue Test");
 
     const input = page.locator(".chat-input-bar textarea");
 
@@ -351,7 +352,7 @@ test.describe("Message Queue & Interrupt @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Interrupt Test" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Interrupt Test");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Interrupt Test");
 
     const input = page.locator(".chat-input-bar textarea");
 
@@ -410,7 +411,7 @@ test.describe("Virtualized Chat", () => {
         hasText: "Virtuoso Long Session",
       })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText(
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
       "Virtuoso Long Session"
     );
 
@@ -488,16 +489,19 @@ test.describe("Credentials Panel", () => {
 
     await login(page);
 
-    await expect(page.locator(".credential-title")).toHaveText("Harness");
+    await page.locator(".btn-manage-harness").click();
+    await expect(page.locator(".harness-page .page-header")).toContainText(
+      "Harness"
+    );
 
     const item = page.locator(".credential-item", { hasText: "E2E Cred" });
     await expect(item).toBeVisible();
     await expect(
       item.locator(".credential-badge.backend-claude-code")
-    ).toHaveText("Claude");
-    await expect(item.locator(".credential-badge.auth-api_key")).toHaveText(
-      "Key"
-    );
+    ).toBeVisible();
+    // The card spells the engine + auth out in full now, instead of badges.
+    await expect(item).toContainText("Claude Code");
+    await expect(item).toContainText("API key");
 
     // Delete it via the UI
     await item.locator(".btn-delete").click();
@@ -532,10 +536,8 @@ test.describe("Credentials Panel", () => {
     await login(page);
     // Click the "+" button in the Harness section header, then pick Claude
     // Code in the backend chooser.
-    await page
-      .locator(".credential-section .btn-credential-add")
-      .first()
-      .click();
+    await page.locator(".btn-manage-harness").click();
+    await page.locator(".btn-credential-add").first().click();
     await page.locator(".btn-choose-claude").click();
 
     // The sign-in dialog opens
@@ -603,10 +605,8 @@ test.describe("Credentials Panel", () => {
     });
 
     await login(page);
-    await page
-      .locator(".credential-section .btn-credential-add")
-      .first()
-      .click();
+    await page.locator(".btn-manage-harness").click();
+    await page.locator(".btn-credential-add").first().click();
 
     // Pick Codex in the chooser, name it, continue.
     await page.locator(".btn-choose-codex").click();
@@ -628,9 +628,8 @@ test.describe("Credentials Panel", () => {
     await expect(dialog).toHaveCount(0, { timeout: 6000 });
     const item = page.locator(".credential-item", { hasText: "ChatGPT E2E" });
     await expect(item).toBeVisible();
-    await expect(item.locator(".credential-badge.backend-codex")).toHaveText(
-      "Codex"
-    );
+    await expect(item.locator(".credential-badge.backend-codex")).toBeVisible();
+    await expect(item).toContainText("Codex");
   });
 
   test("create-session form shows credential selector when credentials exist", async ({
@@ -654,15 +653,16 @@ test.describe("Credentials Panel", () => {
 
     await login(page);
 
-    // Open the create-session form via the default agent's "+" button.
+    // Open the inline create row via the default agent's "+" button, then
+    // unfold the overrides — a session inherits the agent's engine and
+    // credential unless you say otherwise, so they're one click in.
     await addOctoSession(page);
+    await page.locator(".btn-session-advanced").click();
 
-    // Selector is rendered, default option is "Default auth (CLI login)",
-    // and our seeded credential is selectable.
     const selector = page.locator(".session-credential-select");
     await expect(selector).toBeVisible();
     await expect(selector.locator("option")).toContainText([
-      "Default auth (CLI login)",
+      "Agent's credential",
       "E2E Cred Renamed",
     ]);
   });
@@ -706,7 +706,7 @@ test.describe("AskUserQuestion rendering @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Asked Question" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Asked Question");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Asked Question");
 
     // The historical question renders as the dashed-border summary,
     // attributed to the owning agent (default "Octo"), not "Claude".
@@ -744,7 +744,7 @@ test.describe("Real CLI end-to-end @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Real Q Session" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Real Q Session");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Real Q Session");
 
     // The built-in AskUserQuestion is disabled in Octopus (--disallowedTools
     // in claude_code.py). Nudge the model toward the MCP replacement
@@ -832,7 +832,7 @@ test.describe("Real CLI end-to-end @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Bad Cred Session" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Bad Cred Session");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Bad Cred Session");
 
     // Send a prompt — should fail because the bogus key overrides the
     // (otherwise-working) default OAuth, proving the env-var injection
@@ -872,7 +872,7 @@ test.describe("Real CLI end-to-end @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Resume Session" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Resume Session");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Resume Session");
 
     // Turn 1 — plant a fact, wait for the result badge.
     await page
@@ -956,7 +956,7 @@ test.describe("AskUserQuestion edge cases (real CLI) @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Q Re-render A" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Q Re-render A");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Q Re-render A");
 
     await page.locator(".chat-input-bar textarea").fill(ASK_QUESTION_PROMPT);
     await page.locator("button.btn-send").click();
@@ -972,14 +972,14 @@ test.describe("AskUserQuestion edge cases (real CLI) @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Q Re-render B" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Q Re-render B");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Q Re-render B");
     // Confirm we're really on B (no form here)
     await expect(page.locator(".msg-question")).toHaveCount(0);
 
     await page
       .locator(".session-item .session-name", { hasText: "Q Re-render A" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Q Re-render A");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Q Re-render A");
 
     // The interactive form must come back — NOT the greyed "Claude asked"
     // summary. Use :not(.msg-question-done) to assert the live variant.
@@ -1012,7 +1012,7 @@ test.describe("AskUserQuestion edge cases (real CLI) @llm", () => {
         hasText: "Q Interrupt Recovery",
       })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText(
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
       "Q Interrupt Recovery"
     );
 
@@ -1066,7 +1066,7 @@ test.describe("AskUserQuestion edge cases (real CLI) @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Q Auto Answer" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Q Auto Answer");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Q Auto Answer");
 
     await page.locator(".chat-input-bar textarea").fill(ASK_QUESTION_PROMPT);
     await page.locator("button.btn-send").click();
@@ -1118,7 +1118,7 @@ test.describe("/reset slash command", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Reset Slash Cmd" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Reset Slash Cmd");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Reset Slash Cmd");
 
     // Capture the POST so we can assert it actually fired (not just
     // that the input cleared). The server's reset_session is idempotent
@@ -1168,9 +1168,11 @@ test.describe("agent-name message labels @llm", () => {
     await expect(page.locator(".msg-assistant .msg-content")).toContainText(
       "hello back"
     );
-    const label = page.locator(".msg-assistant .msg-label");
-    await expect(label).toContainText("Octo");
-    await expect(label).not.toContainText("Claude");
+    // Attribution moved from a label row onto the turn's identity tile, so
+    // the agent's name rides on the tile rather than above the prose.
+    const tile = page.locator('.msg-assistant [aria-label="Octo"]').first();
+    await expect(tile).toBeVisible();
+    await expect(page.locator(".msg-assistant")).not.toContainText("Claude");
   });
 });
 
@@ -1189,7 +1191,7 @@ test.describe("slash-command autocomplete", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Slash Menu Probe" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Slash Menu Probe");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Slash Menu Probe");
 
     const input = page.locator(".chat-input-bar textarea");
     const menu = page.locator(".slash-menu");
@@ -1833,7 +1835,7 @@ test.describe("Cross-turn bg tasks @llm", () => {
       await page
         .locator(".session-item .session-name", { hasText: "Bg Run E2E" })
         .click();
-      await expect(page.locator(".chat-header h3")).toHaveText("Bg Run E2E");
+      await expect(page.locator(".chat-header .crumb-current")).toHaveText("Bg Run E2E");
 
       // Be explicit so the model actually calls bg_run rather than
       // running the shell inline via the regular Bash tool. The system
@@ -1909,7 +1911,7 @@ test.describe("Cross-turn bg tasks @llm", () => {
           hasText: "Bg Idle Watchdog",
         })
         .click();
-      await expect(page.locator(".chat-header h3")).toHaveText(
+      await expect(page.locator(".chat-header .crumb-current")).toHaveText(
         "Bg Idle Watchdog"
       );
 
@@ -2008,7 +2010,7 @@ test.describe("Bg-task pipeline hardening @llm", () => {
       await page
         .locator(".session-item .session-name", { hasText: "Bg Spill Pipeline" })
         .click();
-      await expect(page.locator(".chat-header h3")).toHaveText(
+      await expect(page.locator(".chat-header .crumb-current")).toHaveText(
         "Bg Spill Pipeline"
       );
 
@@ -2090,7 +2092,7 @@ test.describe("File viewer (/showme) @llm", () => {
           hasText: "Viewer Showme Test",
         })
         .click();
-      await expect(page.locator(".chat-header h3")).toHaveText(
+      await expect(page.locator(".chat-header .crumb-current")).toHaveText(
         "Viewer Showme Test"
       );
 

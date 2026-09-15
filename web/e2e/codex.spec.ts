@@ -56,18 +56,18 @@ test("create a Codex session via the UI and get a real response @llm", async ({
   await page.locator("button.btn-login").click();
   await expect(page.locator(".agent-list-header")).toBeVisible();
 
-  // The create form shows the Claude/Codex selector when codex is available.
+  // The inline create row keeps the engine + working-dir overrides one click
+  // in (the console design keeps them out of sight until asked for).
   await addOctoSession(page);
+  await page.locator(".btn-session-advanced").click();
   await expect(page.locator(".session-backend-select")).toBeVisible();
-  await page.locator(".btn-backend-codex").click();
+  await page.locator(".session-backend-select").selectOption("codex");
   await page
     .locator('.session-create input[placeholder="Session name"]')
     .fill("Codex E2E");
-  await page
-    .locator('.session-create input[placeholder*="Working directory"]')
-    .fill("/tmp");
+  await page.locator(".session-working-dir").fill("/tmp");
   await page.locator("button.btn-create").click();
-  await expect(page.locator(".chat-header h3")).toHaveText("Codex E2E");
+  await expect(page.locator(".chat-header .crumb-current")).toHaveText("Codex E2E");
 
   // It was created as a codex-backed session.
   const sessions = await (

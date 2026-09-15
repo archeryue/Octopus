@@ -140,24 +140,26 @@ export function MessageBubble({
           return <AgentDelegationEventCard event={delegationEvent} />;
         }
         return (
+          /* No "You" label: the design says who spoke with the bubble's side
+             and fill, and a label on every turn doubles the vertical noise in
+             a long transcript. Rewind stays, revealed on hover. */
           <div className="msg msg-user group flex justify-end">
-            <div className="max-w-[85%] space-y-1">
-              <div className="msg-label flex items-center justify-end gap-2 text-xs font-semibold text-muted-foreground">
-                {onFork && typeof message.seq === "number" && (
+            <div className="max-w-[64%] space-y-1">
+              {onFork && typeof message.seq === "number" && (
+                <div className="flex justify-end">
                   <button
                     type="button"
                     data-testid="fork-from-here"
-                    className="fork-from-here inline-flex items-center gap-1 font-normal text-muted-foreground/70 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
+                    className="fork-from-here inline-flex items-center gap-1 text-[11px] text-gray-700 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
                     title="Rewind to this message and redo it"
                     onClick={() => onFork(message.seq as number)}
                   >
                     <IconGitFork size={12} />
                     Rewind to here
                   </button>
-                )}
-                <span>You</span>
-              </div>
-              <div className="msg-content inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground whitespace-pre-wrap break-words">
+                </div>
+              )}
+              <div className="msg-content inline-block whitespace-pre-wrap break-words rounded-[14px] rounded-br-[4px] bg-primary px-4 py-3 text-[14px] leading-relaxed text-white">
                 {message.content}
               </div>
               {message.attachments && message.attachments.length > 0 && (
@@ -171,16 +173,17 @@ export function MessageBubble({
         );
       }
       return (
-        <div className="msg msg-assistant space-y-1">
-          <div className="msg-label flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-            {assistantAvatar && (
-              <span aria-hidden className="text-sm leading-none">
-                {assistantAvatar}
-              </span>
-            )}
-            <span>{assistantLabel}</span>
-          </div>
-          <div className="msg-content markdown rounded-lg border border-border bg-card px-4 py-3 text-sm leading-relaxed">
+        /* The agent speaks as the page: an identity tile in the left gutter
+           and plain prose beside it — no card, no name row. */
+        <div className="msg msg-assistant flex gap-3">
+          <span
+            className="tile tile-lg tile-warm mt-0.5"
+            title={assistantLabel}
+            aria-label={assistantLabel}
+          >
+            {assistantAvatar || "🐙"}
+          </span>
+          <div className="msg-content markdown min-w-0 flex-1 text-[14px] leading-[1.65] text-gray-900">
             <Markdown
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex]}
@@ -208,7 +211,7 @@ export function MessageBubble({
             <div className="msg-label text-xs font-semibold text-muted-foreground text-right">
               You
             </div>
-            <div className="msg-content msg-question-answer inline-block rounded-lg border border-primary/60 bg-card px-4 py-3 text-sm text-foreground italic whitespace-pre-wrap break-words">
+            <div className="msg-content msg-question-answer inline-block whitespace-pre-wrap break-words rounded-[14px] rounded-br-[4px] bg-primary px-4 py-3 text-[14px] italic leading-relaxed text-white">
               {message.content}
             </div>
           </div>
@@ -218,7 +221,7 @@ export function MessageBubble({
     case "result":
       return (
         <div className="msg msg-system flex justify-center py-1">
-          <span className="result-badge text-[10px] font-medium uppercase tracking-wider text-muted-foreground bg-muted px-2 py-0.5 rounded-full">
+          <span className="result-badge rounded-full bg-gray-100 px-3 py-1 font-mono text-[11px] uppercase tracking-wider text-gray-700">
             Done{message.cost != null ? ` · $${message.cost.toFixed(4)}` : ""}
           </span>
         </div>
@@ -248,7 +251,7 @@ export function MessageBubble({
           <div className="msg-label text-xs font-semibold text-destructive">
             Error
           </div>
-          <div className="msg-content rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive whitespace-pre-wrap break-words">
+          <div className="msg-content whitespace-pre-wrap break-words rounded-xl border border-danger-border bg-danger-bg px-4 py-3 text-[13.5px] text-destructive">
             {message.content}
           </div>
         </div>
@@ -317,17 +320,17 @@ function ToolUseBlock({
 
   return (
     <div className="space-y-1.5">
-      <div className="msg msg-tool rounded-lg border border-border bg-card overflow-hidden">
+      <div className="msg msg-tool overflow-hidden rounded-lg border border-gray-300 bg-gray-50">
         <button
           type="button"
-          className="tool-header w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
+          className="tool-header flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[12px] transition-colors hover:bg-gray-100"
           onClick={() => setExpanded(!expanded)}
         >
           <span className="tool-icon text-muted-foreground shrink-0">
             {expanded ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
           </span>
           <IconTool size={14} className="text-primary shrink-0" />
-          <span className="tool-name font-medium text-primary shrink-0">
+          <span className="tool-name shrink-0 font-medium text-primary">
             {message.tool_name}
           </span>
           {preview && (
@@ -337,7 +340,7 @@ function ToolUseBlock({
           )}
         </button>
         {expanded && (
-          <pre className="tool-detail border-t border-border bg-muted/40 px-4 py-2.5 text-xs font-mono text-foreground overflow-x-auto whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+          <pre className="tool-detail max-h-80 overflow-x-auto overflow-y-auto whitespace-pre-wrap break-words border-t border-gray-300 bg-card px-4 py-2.5 font-mono text-[11.5px] text-gray-900">
             {inputStr}
           </pre>
         )}

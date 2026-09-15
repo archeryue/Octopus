@@ -228,7 +228,7 @@ test.describe("Handoff & Pull CLI @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Handoff E2E" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Handoff E2E");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Handoff E2E");
 
     // Verify messages
     await expect(page.locator(".msg-user .msg-content")).toContainText(
@@ -289,11 +289,11 @@ test.describe("Handoff & Pull CLI @llm", () => {
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Pull Test");
-    await page
-      .locator('.session-create input[placeholder*="Working directory"]')
-      .fill("/tmp");
+    // Working dir is an override now — unfold the create row's extras first.
+    await page.locator(".btn-session-advanced").click();
+    await page.locator(".session-working-dir").fill("/tmp");
     await page.locator("button.btn-create").click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Pull Test");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Pull Test");
 
     const input = page.locator(".chat-input-bar textarea");
     await input.fill("What is 2+2? Reply with just the number.");
@@ -366,11 +366,11 @@ test.describe("Handoff & Pull CLI @llm", () => {
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Roundtrip Source");
-    await page
-      .locator('.session-create input[placeholder*="Working directory"]')
-      .fill("/tmp");
+    // Working dir is an override now — unfold the create row's extras first.
+    await page.locator(".btn-session-advanced").click();
+    await page.locator(".session-working-dir").fill("/tmp");
     await page.locator("button.btn-create").click();
-    await expect(page.locator(".chat-header h3")).toHaveText(
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
       "Roundtrip Source"
     );
 
@@ -435,7 +435,7 @@ test.describe("Handoff & Pull CLI @llm", () => {
         hasText: "Roundtrip Re-imported",
       })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText(
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
       "Roundtrip Re-imported"
     );
 

@@ -26,8 +26,41 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function fetchApplications(token: string): Promise<ApplicationRead[]> {
-  return json(await fetch(`${API}/api/applications`, { headers: authHeaders(token) }));
+export async function fetchApplications(
+  token: string,
+  opts: { archived?: boolean } = {}
+): Promise<ApplicationRead[]> {
+  const query = opts.archived ? "?archived=true" : "";
+  return json(
+    await fetch(`${API}/api/applications${query}`, { headers: authHeaders(token) })
+  );
+}
+
+/** Archive an application: it leaves the sidebar but keeps its row and its
+ * files, so restoring from the create page's Archived tab puts it back
+ * exactly as it was. */
+export async function archiveApplication(
+  token: string,
+  id: string
+): Promise<ApplicationRead> {
+  return json(
+    await fetch(`${API}/api/applications/${id}/archive`, {
+      method: "POST",
+      headers: authHeaders(token),
+    })
+  );
+}
+
+export async function unarchiveApplication(
+  token: string,
+  id: string
+): Promise<ApplicationRead> {
+  return json(
+    await fetch(`${API}/api/applications/${id}/unarchive`, {
+      method: "POST",
+      headers: authHeaders(token),
+    })
+  );
 }
 
 /** The create body as callers actually write it. `instructions` and

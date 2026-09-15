@@ -68,7 +68,18 @@ export interface PendingQuestion {
   questions: QuestionItem[];
 }
 
-export type MainView = "chat" | "application" | "application-create";
+/** What the main pane shows. Octopus has no URL router, so this is the
+ * routing state. The manage views (schedules/connectors/harness) are full
+ * pages in the main area rather than dialogs, and the create views are
+ * full-page forms — both per the console design. */
+export type MainView =
+  | "chat"
+  | "application"
+  | "application-create"
+  | "agent-form"
+  | "schedules"
+  | "connectors"
+  | "harness";
 
 interface SessionStore {
   token: string;
@@ -99,8 +110,12 @@ interface SessionStore {
   // that selects a session gets the behavior for free.
   mainView: MainView;
   activeApplicationId: string | null;
+  // Which agent the agent form is editing; null = the new-agent draft.
+  editingAgentId: string | null;
   openApplication: (id: string) => void;
   openApplicationCreate: () => void;
+  openAgentForm: (agentId?: string | null) => void;
+  openManage: (view: "schedules" | "connectors" | "harness") => void;
   showChat: () => void;
 
   // Which AI backends this host can run (GET /api/backends). 'claude-code'
@@ -319,10 +334,14 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   mainView: "chat",
   activeApplicationId: null,
+  editingAgentId: null,
   openApplication: (id) =>
     set({ activeApplicationId: id, mainView: "application" }),
   openApplicationCreate: () =>
     set({ activeApplicationId: null, mainView: "application-create" }),
+  openAgentForm: (agentId = null) =>
+    set({ mainView: "agent-form", editingAgentId: agentId, activeApplicationId: null }),
+  openManage: (view) => set({ mainView: view, activeApplicationId: null }),
   showChat: () => set({ mainView: "chat", activeApplicationId: null }),
 
   availableBackends: ["claude-code"],

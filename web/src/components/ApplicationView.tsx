@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   IconAlertTriangle,
+  IconArchive,
   IconArrowUp,
   IconExternalLink,
-  IconMenu2,
   IconMessage,
   IconRefresh,
 } from "@tabler/icons-react";
 import {
   applicationUrl,
+  archiveApplication,
   buildApplication,
   primeAppCookie,
 } from "../api/applications";
 import { selectSession } from "../lib/selectSession";
 import { useSessionStore } from "../stores/sessionStore";
+import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 
 /** The main pane for one application (applications.md §7) — the browser-tab
@@ -30,6 +32,7 @@ export function ApplicationView({
   const activeApplicationId = useSessionStore((s) => s.activeApplicationId);
   const agents = useSessionStore((s) => s.agents);
   const upsertApplication = useSessionStore((s) => s.upsertApplication);
+  const removeApplication = useSessionStore((s) => s.removeApplication);
 
   const app = applications.find((a) => a.id === activeApplicationId) ?? null;
   const agent = agents.find((a) => a.id === app?.agent_id) ?? null;
@@ -82,6 +85,22 @@ export function ApplicationView({
     );
   }
 
+  const archive = async () => {
+    if (
+      !window.confirm(
+        `Archive "${app.name}"? It leaves the sidebar but keeps its files — ` +
+          `restore it any time from the Archived tab.`
+      )
+    )
+      return;
+    try {
+      await archiveApplication(token, app.id);
+      removeApplication(app.id);
+    } catch {
+      // The WS event would have done this too; leave the view as-is.
+    }
+  };
+
   const openBuildSession = () => {
     if (app.session_id) selectSession(app.session_id, app.agent_id);
   };
@@ -103,80 +122,79 @@ export function ApplicationView({
 
   const statusBadge = (
     <span
-      className={`app-status-badge app-status-${app.status} inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium shrink-0 ${
+      className={`app-status-badge app-status-${app.status} pill ${
         app.status === "building"
-          ? "bg-primary/10 text-primary"
+          ? "pill-neutral text-primary"
           : app.status === "failed"
-          ? "bg-destructive/10 text-destructive"
-          : "bg-muted text-muted-foreground"
+          ? "pill-warn"
+          : "pill-success"
       }`}
     >
       <span
-        className={`inline-block size-1.5 rounded-full ${
-          app.status === "building"
-            ? "bg-primary animate-pulse"
-            : app.status === "failed"
-            ? "bg-destructive"
-            : "bg-green-500"
-        }`}
+        className={`dot ${app.status === "building" ? "animate-pulse" : ""}`}
       />
       {app.status === "building"
         ? "Building"
         : app.status === "failed"
         ? "Build failed"
-        : "Ready"}
+        : `Built by ${agent?.name ?? "an agent"}`}
     </span>
   );
 
   return (
     <div className="application-view flex-1 flex flex-col min-h-0">
-      <div className="application-header-bar flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-sidebar">
-        <button
-          className="btn btn-menu inline-flex items-center justify-center size-9 rounded-lg text-foreground hover:bg-accent md:hidden"
-          onClick={onToggleSidebar}
-          aria-label="Toggle sidebar"
-        >
-          <IconMenu2 size={18} />
-        </button>
-        <span aria-hidden className="text-base leading-none shrink-0">
-          {app.icon || "🪟"}
-        </span>
-        <h3 className="application-title text-[15px] font-semibold text-foreground truncate">
-          {app.name}
-        </h3>
-        {statusBadge}
-
-        <div className="ml-auto flex items-center gap-1 shrink-0">
-          <button
-            className="btn-application-reload inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-            onClick={() => setNonce((n) => n + 1)}
-            title="Reload the app"
-            aria-label="Reload the app"
-          >
-            <IconRefresh size={16} />
-          </button>
-          <a
-            className="btn-application-open-tab inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-            href={applicationUrl(app.id)}
-            target="_blank"
-            rel="noreferrer"
-            title="Open in a new tab"
-            aria-label="Open in a new tab"
-          >
-            <IconExternalLink size={16} />
-          </a>
-          {app.session_id && (
+      <PageHeader
+        onToggleSidebar={onToggleSidebar}
+        icon={
+          <span className="tile tile-blue shrink-0" aria-hidden>
+            {app.icon || "🪟"}
+          </span>
+        }
+        crumbs={["Applications", <span key="name" className="application-title">{app.name}</span>]}
+        meta={statusBadge}
+        actions={
+          <>
             <button
-              className="btn-application-open-session inline-flex items-center gap-1.5 h-8 rounded-lg px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-              onClick={openBuildSession}
-              title={`Open the build session${agent ? ` with ${agent.name}` : ""}`}
+              className="btn-application-reload inline-flex size-8 items-center justify-center rounded-lg text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-950"
+              onClick={() => setNonce((n) => n + 1)}
+              title="Reload the app"
+              aria-label="Reload the app"
             >
-              <IconMessage size={15} />
-              <span className="hidden sm:inline">Build session</span>
+              <IconRefresh size={16} />
             </button>
-          )}
-        </div>
-      </div>
+            <a
+              className="btn-application-open-tab inline-flex size-8 items-center justify-center rounded-lg text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-950"
+              href={applicationUrl(app.id)}
+              target="_blank"
+              rel="noreferrer"
+              title="Open in a new tab"
+              aria-label="Open in a new tab"
+            >
+              <IconExternalLink size={16} />
+            </a>
+            <button
+              className="btn-application-archive inline-flex size-8 items-center justify-center rounded-lg text-gray-700 transition-colors hover:bg-warn-bg hover:text-warn-foreground"
+              onClick={archive}
+              title="Archive this application"
+              aria-label="Archive this application"
+            >
+              <IconArchive size={16} />
+            </button>
+            {app.session_id && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="btn-application-open-session"
+                onClick={openBuildSession}
+                title={`Open the build session${agent ? ` with ${agent.name}` : ""}`}
+              >
+                <IconMessage size={15} />
+                <span className="hidden sm:inline">Build session</span>
+              </Button>
+            )}
+          </>
+        }
+      />
 
       <div className="application-frame-wrap flex-1 min-h-0 bg-background relative">
         {app.status === "ready" ? (

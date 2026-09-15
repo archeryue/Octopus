@@ -76,8 +76,10 @@ body {
 }
 
 .sidebar {
-  width: 260px;
-  min-width: 260px;
+  /* 270px is the console design's sidebar; the two-level agent rows need
+     the extra width for a session name plus its status. */
+  width: 270px;
+  min-width: 270px;
   background-color: hsl(var(--sidebar));
   border-right: 0.7px solid hsl(var(--sidebar-border));
   display: flex;
@@ -94,6 +96,119 @@ body {
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Design primitives shared by the sidebar, headers and pages.
+ * ------------------------------------------------------------------------- */
+
+/* Identity tiles — the small rounded squares that stand in for an agent, an
+ * application or a credential. Warm fills read as identity; blue-grey fills
+ * read as system. Never used for status, which is always a dot or a pill. */
+.tile {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tile-lg {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 14px;
+}
+
+.tile-warm {
+  background: hsl(var(--tile-warm));
+}
+
+.tile-blue {
+  background: hsl(var(--gray-200));
+  color: hsl(var(--primary-500));
+  font-size: 12px;
+}
+
+/* Status pills. One shape, four tints — the dot carries the state and the
+ * text stays readable at 11px because the fill is a tint, never the base. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-family-mono);
+  font-size: 11.5px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.pill-neutral {
+  color: hsl(var(--gray-900));
+  background: hsl(var(--gray-100));
+  border-color: hsl(var(--gray-400));
+}
+
+.pill-success {
+  color: hsl(var(--success-fg));
+  background: hsl(var(--success-bg));
+  border-color: hsl(var(--success-border));
+}
+
+.pill-warn {
+  color: hsl(var(--warn-fg));
+  background: hsl(var(--warn-bg));
+  border-color: hsl(var(--warn-border));
+}
+
+.pill .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+/* A delegation running under an agent — violet, so it never reads as either
+ * "healthy" or "broken". */
+.badge-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-family-mono);
+  font-size: 10px;
+  color: hsl(var(--running));
+  background: hsl(var(--running-bg));
+  border: 1px solid hsl(var(--running-border));
+  padding: 1px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+.badge-running .dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Page scaffolding for the main-area manage/create pages. */
+.page-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 30px 40px;
+}
+
+.card {
+  border: 1px solid hsl(var(--gray-400));
+  border-radius: 12px;
+  background: hsl(var(--color-card, 0 0% 100%));
 }
 
 /* Virtuoso spacing hooks — target data attributes the lib renders. */

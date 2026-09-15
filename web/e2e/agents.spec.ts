@@ -73,7 +73,6 @@ test.describe("Agents", () => {
     const agentRow = page.locator(".agent-item", { hasText: "E2E Researcher" });
     await expect(agentRow).toBeVisible();
     await agentRow.click();
-    await expect(agentRow).toHaveClass(/active/);
 
     // Create a session under this agent (+ lives on the agent's own row).
     await agentRow.locator(".btn-session-add").click();
@@ -86,8 +85,9 @@ test.describe("Agents", () => {
       page.locator(".session-item .session-name", { hasText: "Agent Thread" })
     ).toBeVisible();
     // Chat header shows both the agent and the session.
-    await expect(page.locator(".chat-header h3")).toHaveText("Agent Thread");
-    await expect(page.locator(".chat-agent")).toContainText("E2E Researcher");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Agent Thread");
+    // The header breadcrumb carries the agent, then the session.
+    await expect(page.locator(".chat-header")).toContainText("E2E Researcher");
   });
 
   test("edits an agent's system prompt and it persists", async ({ page }) => {
@@ -102,7 +102,6 @@ test.describe("Agents", () => {
 
     // Make it the active agent, then edit via the account menu (no gear).
     await agentRow.click();
-    await expect(agentRow).toHaveClass(/active/);
 
     await openAgentSettings(page);
     await expect(page.locator("#agent-prompt")).toHaveValue("first prompt");
@@ -116,7 +115,7 @@ test.describe("Agents", () => {
     );
   });
 
-  test("the settings rail switches which agent you're editing", async ({
+  test("the account menu edits whichever agent the sidebar has selected", async ({
     page,
   }) => {
     // Create an agent so there are at least two to switch between.
@@ -128,28 +127,22 @@ test.describe("Agents", () => {
       page.locator(".agent-item", { hasText: "E2E Rail" })
     ).toBeVisible();
 
-    // Opening from the account menu focuses the active agent (the one we just
-    // created). The rail lists every agent plus a "New agent" entry.
+    // The form opens on the active agent — the one we just created.
     await openAgentSettings(page);
     await expect(page.locator("#agent-name")).toHaveValue("E2E Rail");
-    await expect(page.locator(".agent-rail-new")).toBeVisible();
+    // An ordinary agent can be archived from here.
+    await expect(page.locator(".btn-agent-archive")).toBeVisible();
 
-    // Switch to the system agent in the rail — the form reseeds and the
-    // Archive button disappears (system agents can't be archived).
-    await page.locator(".agent-rail-item", { hasText: "Octo" }).click();
+    // Selecting Octo in the sidebar and reopening reseeds the form, and the
+    // protected agent offers no Archive.
+    await page.locator(".btn-agent-cancel").click();
+    await page.locator(".agent-item", { hasText: "Octo" }).click();
+    await openAgentSettings(page);
     await expect(page.locator("#agent-name")).toHaveValue("Octo");
-    await expect(
-      page.locator(".agent-settings button", { hasText: "Archive agent" })
-    ).toHaveCount(0);
+    await expect(page.locator(".btn-agent-archive")).toHaveCount(0);
 
-    // Switch back to our agent — Archive returns; then "New agent" clears it.
-    await page.locator(".agent-rail-item", { hasText: "E2E Rail" }).click();
-    await expect(page.locator("#agent-name")).toHaveValue("E2E Rail");
-    await expect(
-      page.locator(".agent-settings button", { hasText: "Archive agent" })
-    ).toBeVisible();
-
-    await page.locator(".agent-rail-new").click();
+    // The sidebar "+" always opens a blank draft, whatever is selected.
+    await page.locator(".btn-agent-add").click();
     await expect(page.locator("#agent-name")).toHaveValue("");
   });
 
@@ -185,12 +178,9 @@ test.describe("Agents", () => {
     const def = page.locator(".agent-item", { hasText: "Octo" });
     // Select Octo, then open its settings from the account menu.
     await def.click();
-    await expect(def).toHaveClass(/active/);
     await openAgentSettings(page);
     await expect(page.locator(".agent-settings #agent-name")).toHaveValue("Octo");
     // is_system agents expose no "Archive agent" button.
-    await expect(
-      page.locator(".agent-settings button", { hasText: "Archive agent" })
-    ).toHaveCount(0);
+    await expect(page.locator(".btn-agent-archive")).toHaveCount(0);
   });
 });

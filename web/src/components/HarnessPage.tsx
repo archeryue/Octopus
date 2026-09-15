@@ -10,6 +10,7 @@ import {
   useSessionStore,
   type CredentialInfo,
 } from "../stores/sessionStore";
+import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -73,10 +74,17 @@ type FlowState =
   | { kind: "codex_device"; loginId: string; url: string; code: string }
   | { kind: "error"; message: string };
 
-export function CredentialList() {
+export function HarnessPage({
+  onToggleSidebar,
+}: {
+  onToggleSidebar: () => void;
+}) {
   const token = useSessionStore((s) => s.token);
   const credentials = useSessionStore((s) => s.credentials);
   const setCredentials = useSessionStore((s) => s.setCredentials);
+  // Which agents a credential is bound to — the design puts "in use by Agent"
+  // on every card, because that's what makes an expired token urgent.
+  const agents = useSessionStore((s) => s.agents);
 
   const [open, setOpen] = useState(false);
   const [flow, setFlow] = useState<FlowState>({ kind: "idle" });
@@ -349,80 +357,146 @@ export function CredentialList() {
 
   // --------------------------------------------------------------- Render
 
-  return (
-    <div className="credential-section shrink-0">
-      <div className="credential-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
-        <span className="credential-title text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
-          Harness
-        </span>
-        <button
-          className="btn-credential-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
-          onClick={openChooser}
-          title="Add credential"
-          aria-label="Add credential"
-        >
-          <IconPlus size={14} />
-        </button>
-      </div>
+  const brokenCount = credentials.filter(
+    (c) => c.needs_reconnect
+  ).length;
+  const agentsUsing = (credentialId: string) =>
+    agents.filter((a) => a.credential_id === credentialId).map((a) => a.name);
 
-      <div className="credential-list flex flex-col gap-0.5 mt-1">
-        {credentials.map((c) => (
-          <div
-            className="credential-item group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
-            key={c.id}
-          >
-            {/* Both Claude and Codex are harness backends → same blue badge.
-                (Connectors use the gray/secondary badge to set them apart.) */}
-            <span
-              className={`credential-badge backend-${c.backend} text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 bg-primary-100 text-primary-700`}
-            >
-              {c.backend === "claude-code" ? "Claude" : "Codex"}
-            </span>
-            <span className="credential-label truncate flex-1">{c.label}</span>
-            {c.needs_reconnect ? (
-              <>
-                {/* Reactive 401: the sign-in expired/was revoked mid-turn
-                    (harness-credential-reauth.md §6). Surface a re-authorize
-                    affordance, mirroring the connectors' reconnect button. */}
-                <span
-                  className="credential-badge auth-expired text-[10px] font-medium uppercase tracking-wider shrink-0 text-destructive"
-                  title={
-                    c.last_refresh_error_code
-                      ? `Sign-in invalid (${c.last_refresh_error_code})`
-                      : "Sign-in invalid"
-                  }
-                >
-                  expired
-                </span>
-                <button
-                  className="btn-credential-reauth inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider shrink-0 text-destructive hover:underline"
-                  onClick={() => reauthCredential(c)}
-                  title="Re-authorize this credential"
-                >
-                  <IconRefresh size={12} /> reauth
-                </button>
-              </>
-            ) : (
-              <span
-                className={`credential-badge auth-${c.auth_type} text-[10px] font-medium uppercase tracking-wider shrink-0 ${
-                  c.auth_type === "oauth"
-                    ? "text-primary-700"
-                    : "text-sidebar-foreground/50"
+  return (
+    <div className="harness-page flex min-h-0 flex-1 flex-col">
+      <PageHeader
+        crumbs={["Harness"]}
+        meta={
+          <>
+            {credentials.length} engine credential
+            {credentials.length === 1 ? "" : "s"}
+            {brokenCount > 0 && ` · ${brokenCount} needs reconnect`}
+          </>
+        }
+        onToggleSidebar={onToggleSidebar}
+        actions={
+          <Button className="btn-credential-add" size="sm" onClick={openChooser}>
+            + Connect engine
+          </Button>
+        }
+      />
+
+      <div className="page-body">
+        <div className="credential-list flex flex-col gap-3.5">
+          {credentials.map((c) => {
+            const broken = c.needs_reconnect;
+            const users = agentsUsing(c.id);
+            return (
+              <div
+                key={c.id}
+                className={`credential-item group card px-5 py-4 ${
+                  broken ? "border-warn-border bg-warn-bg/40" : ""
                 }`}
-                title={c.auth_type === "oauth" ? "Signed in" : "API key"}
               >
-                {c.auth_type === "oauth" ? "OAuth" : "Key"}
-              </span>
-            )}
+                <div className="flex items-start gap-3.5">
+                  <span
+                    className={`tile tile-lg credential-badge backend-${c.backend} ${
+                      c.backend === "claude-code" ? "tile-warm" : "tile-blue"
+                    }`}
+                  >
+                    {c.backend === "claude-code" ? "◲" : "◼"}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="credential-label truncate text-[15px] font-semibold text-gray-950">
+                      {c.label}
+                    </div>
+                    <div className="mt-1 font-mono text-[11.5px] text-gray-700">
+                      {c.backend === "claude-code" ? "Claude Code" : "Codex"} ·{" "}
+                      {c.auth_type === "oauth" ? "OAuth" : "API key"}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2.5">
+                    {broken ? (
+                      <>
+                        <span
+                          className="pill pill-warn credential-badge auth-expired"
+                          title={
+                            c.last_refresh_error_code
+                              ? `Sign-in invalid (${c.last_refresh_error_code})`
+                              : "Sign-in invalid"
+                          }
+                        >
+                          token expired
+                        </span>
+                        <button
+                          className="btn-credential-reauth pill bg-warn text-white"
+                          onClick={() => reauthCredential(c)}
+                          title="Re-authorize this credential"
+                        >
+                          Re-authorize →
+                        </button>
+                      </>
+                    ) : (
+                      <span className="pill pill-success">
+                        <span className="dot" />
+                        Connected
+                      </span>
+                    )}
+                    <button
+                      className="btn-delete inline-flex size-8 items-center justify-center rounded-lg text-gray-600 opacity-0 transition-opacity hover:bg-danger-bg hover:text-destructive group-hover:opacity-100"
+                      onClick={() => remove(c.id)}
+                      title="Delete credential"
+                      aria-label={`Delete ${c.label}`}
+                    >
+                      <IconX size={15} />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex flex-wrap items-baseline gap-x-10 gap-y-2 border-t border-gray-300 pt-3.5">
+                  <div>
+                    <div className="font-mono text-[11px] text-gray-700">
+                      in use by Agent
+                    </div>
+                    <div className="mt-1 text-[13px] text-gray-900">
+                      {users.length ? users.join(" · ") : "—"}
+                    </div>
+                  </div>
+                  {broken && users.length > 0 && (
+                    <div className="ml-auto text-[12.5px] text-warn-foreground">
+                      ⚠ {users.length} agent{users.length === 1 ? "" : "s"} can't
+                      start new sessions
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {credentials.length === 0 && (
             <button
-              className="btn-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => remove(c.id)}
-              title="Delete credential"
+              type="button"
+              className="btn-credential-add-card flex min-h-[120px] flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-gray-400 text-gray-700 transition-colors hover:border-primary-200 hover:text-primary"
+              onClick={openChooser}
             >
-              <IconX size={14} />
+              <span className="inline-flex size-8 items-center justify-center rounded-lg bg-gray-100">
+                <IconPlus size={16} />
+              </span>
+              <span className="text-[13px]">
+                Sign in to Claude Code or Codex
+              </span>
             </button>
-          </div>
-        ))}
+          )}
+        </div>
+
+        <div className="mt-5 flex items-start gap-3 rounded-xl border border-primary-100 bg-primary-50/60 px-5 py-4">
+          <span className="tile tile-lg bg-primary text-white">
+            <IconRefresh size={15} />
+          </span>
+          <p className="text-[13px] leading-relaxed text-gray-900">
+            <span className="font-semibold text-primary">
+              Engines are decoupled from agents.
+            </span>{" "}
+            Memory, sessions and history live on the agent — swap an agent from
+            Claude Code to Codex without losing any of it.
+          </p>
+        </div>
       </div>
 
       <Dialog open={open} onOpenChange={handleOpenChange}>

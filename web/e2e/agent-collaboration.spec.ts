@@ -143,7 +143,7 @@ test.describe("Agent-to-agent delegation @llm", () => {
     await page
       .locator(".session-item .session-name", { hasText: "Delegation E2E" })
       .click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Delegation E2E");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Delegation E2E");
 
     // Force the model to invoke `mcp__ask_agent__ask` directly. The
     // request to Vera asks for the exact sentinel so the [agent-reply]
@@ -207,7 +207,7 @@ test.describe("Agent-to-agent delegation @llm", () => {
 
     // 5. Clicking "Open parent" returns to Octo's session.
     await banner.getByRole("button", { name: /open parent/i }).click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Delegation E2E");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Delegation E2E");
 
     // 6. Sidebar: the new delegation session is hidden by default.
     //    Under the target agent's row the "+1 delegations hidden"

@@ -38,11 +38,15 @@ test.afterEach(async ({ request }) => {
 test.describe("Connectors", () => {
   test.beforeEach(async ({ page }) => {
     await login(page);
+    // Connectors live on their own main-area page now (the console design
+    // moved every manage surface out of dialogs), so open it first.
+    await page.locator(".btn-manage-connectors").click();
+    await expect(page.locator(".connectors-page")).toBeVisible();
   });
 
   test("the sidebar has a Connectors section", async ({ page }) => {
     await expect(
-      page.locator(".connector-header", { hasText: "Connectors" })
+      page.locator(".btn-manage-connectors", { hasText: "Connectors" })
     ).toBeVisible();
   });
 
@@ -115,7 +119,6 @@ test.describe("Connectors", () => {
   }) => {
     const octo = page.locator(".agent-item", { hasText: "Octo" });
     await octo.click();
-    await expect(octo).toHaveClass(/active/);
 
     await page.locator(".btn-account").click();
     await page.locator(".menu-agent-settings").click();

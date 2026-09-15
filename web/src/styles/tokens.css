@@ -53,6 +53,29 @@
   --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  /* Status palette from the console design: healthy/connected green,
+   * warm amber for "needs attention" (expired token, failed handshake),
+   * red for destructive, violet for a running delegation. Each carries a
+   * base (dot/stroke), a tinted fill and a border so the pill styles are
+   * one token set, not ad-hoc color-mix. */
+  --color-success: hsl(var(--success));
+  --color-success-bg: hsl(var(--success-bg));
+  --color-success-border: hsl(var(--success-border));
+  --color-success-foreground: hsl(var(--success-fg));
+  --color-warn: hsl(var(--warn));
+  --color-warn-bg: hsl(var(--warn-bg));
+  --color-warn-border: hsl(var(--warn-border));
+  --color-warn-foreground: hsl(var(--warn-fg));
+  --color-danger-bg: hsl(var(--danger-bg));
+  --color-danger-border: hsl(var(--danger-border));
+  --color-running: hsl(var(--running));
+  --color-running-bg: hsl(var(--running-bg));
+  --color-running-border: hsl(var(--running-border));
+  /* Agent avatar tiles — warm fills that read as "identity", not status. */
+  --color-tile-warm: hsl(var(--tile-warm));
+  --color-tile-warm-2: hsl(var(--tile-warm-2));
+  --color-surface-alt: hsl(var(--surface-alt));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -70,11 +93,15 @@
   --radius-sm: calc(var(--radius) - 4px);
 
   /* Typography */
+  /* The console design sets its interface in Hanken Grotesk and every
+   * technical string — ids, counts, cron, costs, command names — in IBM
+   * Plex Mono. Noto Sans SC carries CJK in both. */
   --font-family-sans:
-    "Noto Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    "Hanken Grotesk", "Noto Sans SC", system-ui, -apple-system, "Segoe UI",
+    Roboto, sans-serif;
   --font-family-mono:
-    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Monaco, Consolas,
-    monospace;
+    "IBM Plex Mono", "Noto Sans SC", ui-monospace, "SF Mono", Menlo, Monaco,
+    Consolas, monospace;
 
   /* Tabler icons — consistent stroke weight across the app */
   --icon-stroke-width: 1.5;
@@ -82,35 +109,35 @@
 
 @layer base {
   :root {
-    /* Gray scale — cool neutral, lifted verbatim from vm0/globals.css */
-    --gray-0:   210 25% 98%;  /* #FAFBFC */
-    --gray-50:  216 26% 96%;  /* #F3F5F8 */
-    --gray-100: 213 23% 92%;  /* #E7EBF0 */
-    --gray-200: 215 21% 89%;  /* #DCE1E8 */
-    --gray-300: 216 19% 85%;  /* #D1D7E0 */
-    --gray-400: 217 18% 80%;  /* #C2C9D4 — borders on buttons/inputs/menus */
-    --gray-500: 218 17% 74%;  /* #B2BAC8 */
-    --gray-600: 220 14% 65%;  /* #9BA3B3 */
-    --gray-700: 219 11% 52%;  /* #788192 */
-    --gray-800: 215 12% 36%;  /* #525B68 */
-    --gray-900: 220 19% 13%;  /* #1A1E26 */
-    --gray-950: 220 18% 10%;  /* #14171D */
+    /* Neutrals — the console design's blue-greys, not a true gray: every
+     * step carries the same 213-223° hue as the primary so surfaces,
+     * borders and text sit in one family. */
+    --gray-0:   220 60% 99.0%;   /* #fbfcfe */
+    --gray-50:  216 45% 97.8%;   /* #f7f9fc — sidebar ground */
+    --gray-100: 213 47% 96.3%;   /* #f1f5fa — row hover */
+    --gray-200: 217 42% 93.9%;   /* #e9eef6 — subtle fill */
+    --gray-300: 218 42% 92.5%;   /* #e4eaf4 — hairline borders */
+    --gray-400: 215 33% 90.0%;   /* #dde4ee — input/card borders */
+    --gray-500: 217 23% 78.0%;   /* #bac4d4 */
+    --gray-600: 218 19% 66.7%;   /* #9aa6ba — dots, disabled */
+    --gray-700: 218 15% 56.3%;   /* #7f8ba0 — section labels, meta */
+    --gray-800: 219 15% 43.5%;   /* #5e6a80 — secondary text */
+    --gray-900: 212 13% 19.4%;   /* #2b3138 — body text */
+    --gray-950: 223 9% 15.5%;    /* #24262b — headings */
 
-    /* Primary scale — dark blue (user requested white + dark blue). Hue
-     * locked around 220° (true blue, not teal/violet); the 700 stop is
-     * the brand accent used on filled buttons, focus rings, and active
-     * pills. Lighter stops are used for tinted backgrounds + avatar
-     * tiles. */
-    --primary-50:  214 100% 97%;  /* #EEF5FE */
-    --primary-100: 213 100% 93%;  /* #DCEAFD */
-    --primary-200: 214 100% 88%;  /* #C2DCFB */
-    --primary-300: 215  92% 80%;  /* #A2C5F4 */
-    --primary-500: 218  72% 56%;  /* #4A82DA */
-    --primary-600: 219  78% 42%;  /* #1B53BC */
-    --primary-700: 222  76% 30%;  /* #133E8B — the brand dark blue */
+    /* Primary — the design's #2563b8 as the 600 stop (filled buttons, the
+     * user bubble, selected rows, links), with tints for fills and two
+     * darker steps for hover/pressed. */
+    --primary-50:  215 68% 95.1%;  /* #eaf1fb — selected row */
+    --primary-100: 216 67% 90.4%;  /* #d6e3f7 — accent borders */
+    --primary-200: 213 69% 80.0%;  /* #a9c8ef */
+    --primary-300: 216 40% 53.9%;  /* #5b80b8 */
+    --primary-500: 216 48% 45.9%;  /* #3d69ad */
+    --primary-600: 215 67% 43.3%;  /* #2563b8 — the brand blue */
+    --primary-700: 219 69% 36.7%;  /* #1d4a9e — hover/pressed */
 
     /* Semantic mappings (light theme) */
-    --background:           214 20% 98.5%;
+    --background:           0 0% 100%;
     --foreground:           var(--gray-950);
 
     --card:                 0 0% 100%;
@@ -119,22 +146,22 @@
     --popover:              0 0% 100%;
     --popover-foreground:   var(--gray-950);
 
-    --primary:              var(--primary-700);
+    --primary:              var(--primary-600);
     --primary-foreground:   0 0% 100%;
 
     --secondary:            var(--gray-100);
     --secondary-foreground: var(--gray-950);
 
     --muted:                var(--gray-100);
-    --muted-foreground:     var(--gray-800);
+    --muted-foreground:     var(--gray-700);
 
     --accent:               var(--gray-100);
     --accent-foreground:    var(--gray-950);
 
-    --destructive:          0 84% 60%;
+    --destructive:          10 47% 43.1%;   /* #a24b3a */
     --destructive-foreground: 0 0% 100%;
 
-    --border:               var(--gray-200);
+    --border:               var(--gray-300);
     --input:                0 0% 100%;
     --ring:                 var(--primary-600);
 
@@ -142,9 +169,28 @@
     --sidebar-foreground:         var(--gray-950);
     --sidebar-accent:             var(--gray-100);
     --sidebar-accent-foreground:  var(--gray-950);
-    --sidebar-border:             var(--gray-200);
+    --sidebar-border:             var(--gray-300);
 
-    --radius: 0.5rem;
+    /* The design draws rows at 9-10px, cards at 12px, chips at 6px. */
+    --radius: 0.625rem;
+
+    /* Status ramps (see @theme above for the exposed utilities). */
+    --success:        148 43% 43.1%;   /* #3f9d6b */
+    --success-bg:     135 31% 94.9%;   /* #eef6f0 */
+    --success-border: 140 34% 88.0%;   /* #d6ebdd */
+    --success-fg:     146 39% 30.0%;   /* #2f6a49 */
+    --warn:           21 55% 51.6%;    /* #c8703f */
+    --warn-bg:        28 82% 91.2%;    /* #fbe7d6 */
+    --warn-border:    26 67% 82.0%;    /* #f0cdb2 */
+    --warn-fg:        26 58% 43.7%;    /* #b0672f */
+    --danger-bg:      9 77% 93.1%;     /* #fbe4e0 */
+    --danger-border:  9 63% 83.9%;     /* #f0c4bc */
+    --running:        264 33% 56.9%;   /* #8a6db5 */
+    --running-bg:     261 50% 94.5%;   /* #efeaf8 */
+    --running-border: 256 39% 90.4%;   /* #e2ddf0 */
+    --tile-warm:      29 59% 85.5%;    /* #f0d9c4 */
+    --tile-warm-2:    42 41% 92.0%;    /* #f3eee2 */
+    --surface-alt:    220 43% 98.6%;   /* #fafbfd */
   }
 
   body {

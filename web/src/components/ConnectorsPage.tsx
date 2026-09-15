@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconArrowLeft, IconPlus, IconRefresh, IconX } from "@tabler/icons-react";
+import { IconArrowLeft, IconBolt, IconPlus, IconX } from "@tabler/icons-react";
 import {
   cancelConnectorOAuth,
   createCustomConnector,
@@ -13,6 +13,7 @@ import {
   startConnectorOAuth,
 } from "../api/connectors";
 import { useSessionStore } from "../stores/sessionStore";
+import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import {
   Dialog,
@@ -34,10 +35,19 @@ type View = "catalog" | "setup" | "custom";
 
 const REDIRECT_PATH = "/api/connectors/oauth/callback";
 
-/** The CONNECTORS sidebar section (connectors.md). Everything is browser-only:
- * install (OAuth popup), configure a built-in connector's OAuth client, and
- * define a brand-new custom connector — no server access needed. */
-export function ConnectorList() {
+/** The Connectors manage page (connectors.md), rendered in the main area.
+ *
+ * One card per installed connector — kind, account, health dot and its scope
+ * tags — with a dashed "add" card closing the grid. Everything stays
+ * browser-only: install (OAuth popup), configure a built-in connector's OAuth
+ * client, and define a brand-new custom connector, all through the dialog
+ * kept below. The page is the design; the flows are the ones that already
+ * work. */
+export function ConnectorsPage({
+  onToggleSidebar,
+}: {
+  onToggleSidebar: () => void;
+}) {
   const token = useSessionStore((s) => s.token);
   const catalog = useSessionStore((s) => s.connectorCatalog);
   const setCatalog = useSessionStore((s) => s.setConnectorCatalog);
@@ -244,57 +254,122 @@ export function ConnectorList() {
     </div>
   );
 
-  return (
-    <div className="connector-section shrink-0">
-      <div className="connector-header group flex h-8 items-center justify-between rounded-lg px-2 hover:bg-sidebar-accent transition-colors">
-        <span className="text-[13px] font-medium leading-4 text-sidebar-foreground/50 group-hover:text-sidebar-foreground transition-colors uppercase tracking-wide">
-          Connectors
-        </span>
-        <button
-          className="btn-connector-add inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/70 hover:bg-[hsl(var(--gray-200))] hover:text-sidebar-foreground transition-colors"
-          onClick={() => {
-            resetDialog();
-            setOpen(true);
-          }}
-          title="Add connector"
-          aria-label="Add connector"
-        >
-          <IconPlus size={14} />
-        </button>
-      </div>
+  const errorCount = installations.filter((i) => i.needs_reconnect).length;
 
-      <div className="connector-list flex flex-col gap-0.5 mt-1">
-        {installations.map((inst) => (
-          <div
-            key={inst.id}
-            className="connector-item group flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm text-sidebar-foreground hover:bg-sidebar-accent transition-colors"
+  return (
+    <div className="connectors-page flex min-h-0 flex-1 flex-col">
+      <PageHeader
+        crumbs={["Connectors"]}
+        meta={
+          <>
+            {installations.length} · {installations.length - errorCount} healthy
+            {errorCount > 0 && ` · ${errorCount} error`}
+          </>
+        }
+        onToggleSidebar={onToggleSidebar}
+        actions={
+          <Button
+            className="btn-connector-add"
+            size="sm"
+            onClick={() => {
+              resetDialog();
+              setOpen(true);
+            }}
           >
-            <span className="connector-kind text-[10px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0 bg-secondary text-secondary-foreground">
-              {inst.kind}
-            </span>
-            <span className="connector-label truncate flex-1">{inst.label}</span>
-            {inst.needs_reconnect && (
-              <button
-                className="btn-connector-reconnect inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wider text-destructive shrink-0 hover:underline"
-                onClick={() => {
-                  resetDialog();
-                  setOpen(true);
-                  connect(inst.kind);
-                }}
-                title="Reconnect"
-              >
-                <IconRefresh size={12} /> reconnect
-              </button>
-            )}
-            <button
-              className="btn-connector-delete inline-flex h-6 w-6 items-center justify-center rounded-md text-sidebar-foreground/60 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => disconnect(inst.id)}
-              title="Disconnect"
+            + New Connector
+          </Button>
+        }
+      />
+
+      <div className="page-body">
+        <div className="connector-list grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {installations.map((inst) => (
+            <div
+              key={inst.id}
+              className={`connector-item group card px-5 py-4 transition-colors ${
+                inst.needs_reconnect ? "border-warn-border bg-warn-bg/40" : ""
+              }`}
             >
-              <IconX size={14} />
-            </button>
-          </div>
-        ))}
+              <div className="flex items-center gap-2.5">
+                <span className="tile tile-lg tile-blue font-mono text-[10px] uppercase">
+                  {inst.kind.slice(0, 2)}
+                </span>
+                <span className="connector-label truncate text-[15px] font-semibold text-gray-950">
+                  {inst.label}
+                </span>
+                <span
+                  className={`ml-auto inline-block size-2 shrink-0 rounded-full ${
+                    inst.needs_reconnect ? "bg-warn" : "bg-success"
+                  }`}
+                  aria-label={inst.needs_reconnect ? "needs reconnect" : "healthy"}
+                />
+              </div>
+
+              <div className="connector-kind mt-3 font-mono text-[11.5px] text-gray-700">
+                <span className="text-primary-300">{inst.kind}</span>
+                {inst.external_account_id && ` · ${inst.external_account_id}`}
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                {inst.needs_reconnect ? (
+                  <>
+                    <span className="pill pill-warn text-[10.5px]">
+                      needs reconnect
+                    </span>
+                    <button
+                      className="btn-connector-reconnect pill bg-warn text-[10.5px] text-white"
+                      onClick={() => {
+                        resetDialog();
+                        setOpen(true);
+                        connect(inst.kind);
+                      }}
+                    >
+                      Reconnect →
+                    </button>
+                  </>
+                ) : (
+                  <span className="pill pill-success text-[10.5px]">
+                    <span className="dot" />
+                    connected
+                  </span>
+                )}
+                <button
+                  className="btn-connector-delete ml-auto inline-flex size-7 items-center justify-center rounded-md text-gray-600 opacity-0 transition-opacity hover:bg-danger-bg hover:text-destructive group-hover:opacity-100"
+                  onClick={() => disconnect(inst.id)}
+                  title="Disconnect"
+                  aria-label={`Disconnect ${inst.label}`}
+                >
+                  <IconX size={15} />
+                </button>
+              </div>
+            </div>
+          ))}
+
+          <button
+            type="button"
+            className="btn-connector-add-card flex min-h-[132px] flex-col items-center justify-center gap-2.5 rounded-xl border border-dashed border-gray-400 text-gray-700 transition-colors hover:border-primary-200 hover:text-primary"
+            onClick={() => {
+              resetDialog();
+              setOpen(true);
+            }}
+          >
+            <span className="inline-flex size-8 items-center justify-center rounded-lg bg-gray-100">
+              <IconPlus size={16} />
+            </span>
+            <span className="text-[13px]">Connect an external API</span>
+          </button>
+        </div>
+
+        <div className="mt-5 flex items-start gap-3 rounded-xl border border-primary-100 bg-primary-50/60 px-5 py-4">
+          <span className="tile tile-lg bg-primary text-white">
+            <IconBolt size={15} />
+          </span>
+          <p className="text-[13px] leading-relaxed text-gray-900">
+            Credentials are held centrally and encrypted at rest (Fernet); an
+            agent only ever receives the tools, never the secret. Enable a
+            connector per agent from that agent's settings.
+          </p>
+        </div>
       </div>
 
       <Dialog open={open} onOpenChange={handleOpenChange}>

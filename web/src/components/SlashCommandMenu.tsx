@@ -126,12 +126,23 @@ export function SlashCommandMenu({
   return (
     <div
       className={cn(
-        "slash-menu z-30 overflow-hidden rounded-xl border-[0.7px] border-gray-400 bg-card p-1 shadow-lg",
+        "slash-menu z-30 overflow-hidden rounded-xl border border-gray-400 bg-card shadow-[0_18px_40px_-24px_rgba(28,44,72,0.45)]",
         className
       )}
       role="listbox"
       aria-label="Slash commands"
     >
+      {/* The palette announces itself the way the design does: what this is,
+          how many matched, and the keys that drive it — so it reads as a
+          keyboard surface rather than a dropdown. */}
+      <div className="slash-menu-header flex items-center justify-between border-b border-gray-300 bg-gray-50 px-3.5 py-2 font-mono text-[10.5px] uppercase tracking-[0.12em] text-gray-700">
+        <span>
+          Commands · {commands.length} match{commands.length === 1 ? "" : "es"}
+        </span>
+        <span className="hidden sm:inline normal-case tracking-normal">
+          ↑↓ select · ⏎ complete · Esc close
+        </span>
+      </div>
       {commands.map((cmd, i) => {
         const active = i === activeIndex;
         return (
@@ -148,20 +159,30 @@ export function SlashCommandMenu({
             onMouseEnter={() => onHoverIndex(i)}
             onClick={() => onSelect(cmd)}
             className={cn(
-              "slash-item flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors",
+              "slash-item flex w-full items-center gap-2.5 border-l-2 px-3.5 py-2 text-left transition-colors",
               active
-                ? "bg-accent text-foreground"
-                : "text-foreground hover:bg-accent/60"
+                ? "border-primary bg-primary-50"
+                : "border-transparent hover:bg-gray-50"
             )}
           >
-            <cmd.Icon size={15} className="shrink-0 text-muted-foreground" />
-            <span className="font-mono font-medium">{cmd.name}</span>
+            <cmd.Icon
+              size={15}
+              className={cn("shrink-0", active ? "text-primary" : "text-gray-600")}
+            />
+            <span
+              className={cn(
+                "font-mono text-[13px] font-medium",
+                active ? "text-primary" : "text-gray-900"
+              )}
+            >
+              {cmd.name}
+            </span>
             {cmd.hint && (
-              <span className="font-mono text-xs text-muted-foreground">
+              <span className="font-mono text-[12px] text-gray-600">
                 {cmd.hint}
               </span>
             )}
-            <span className="ml-auto truncate pl-3 text-xs text-muted-foreground">
+            <span className="ml-auto truncate pl-3 text-[12.5px] text-gray-800">
               {cmd.description}
             </span>
           </button>

@@ -72,7 +72,7 @@ test("fork from a user message opens a prefilled, banner-marked branch", async (
   await page
     .locator(".session-item .session-name", { hasText: "Fork E2E Parent" })
     .click();
-  await expect(page.locator(".chat-header h3")).toHaveText("Fork E2E Parent");
+  await expect(page.locator(".chat-header .crumb-current")).toHaveText("Fork E2E Parent");
 
   // Hover the SECOND user message and click its "Rewind to here" affordance.
   const secondUserMsg = page.locator(".msg-user").nth(1);
@@ -118,7 +118,7 @@ test("/rewind picker lists user messages and creates a branch", async ({
     .locator(".session-item .session-name", { hasText: "Fork E2E Parent" })
     .first()
     .click();
-  await expect(page.locator(".chat-header h3")).toHaveText("Fork E2E Parent");
+  await expect(page.locator(".chat-header .crumb-current")).toHaveText("Fork E2E Parent");
 
   // Type the /rewind slash command and submit it to open the picker. The first
   // Enter is captured by the slash-autocomplete menu (it selects the command

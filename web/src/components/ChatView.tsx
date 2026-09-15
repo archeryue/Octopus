@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   IconArrowUp,
   IconFile,
-  IconMenu2,
   IconPaperclip,
   IconPlayerStop,
   IconX,
@@ -18,6 +17,7 @@ import {
 import { ForkDialog } from "./ForkDialog";
 import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
+import { PageHeader } from "./PageHeader";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
 import {
@@ -112,6 +112,7 @@ export function ChatView({
       archivedSessions.find((s) => s.id === activeSessionId),
     [sessions, archivedSessions, activeSessionId]
   );
+  const credentials = useSessionStore((s) => s.credentials);
   const activeAgent = useMemo(
     () => agents.find((a) => a.id === activeSession?.agent_id),
     [agents, activeSession?.agent_id]
@@ -857,30 +858,25 @@ export function ChatView({
   }, [activeSessionId, isRunning, interrupt]);
 
   const renderStatusBadge = (status: string | undefined) => {
-    const base =
-      "status-badge inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-full";
+    const base = "status-badge font-mono text-[11px]";
     if (status === "running") {
       return (
-        <span className={`${base} status-running bg-primary-50 text-primary-700`}>
+        <span className={`${base} status-running inline-flex items-center gap-1.5 text-primary`}>
           <span className="inline-block size-1.5 rounded-full bg-primary animate-pulse" />
-          Running
+          running
         </span>
       );
     }
     if (status === "waiting_approval") {
       return (
-        <span className={`${base} status-waiting_approval bg-yellow-50 text-yellow-700`}>
-          <span className="inline-block size-1.5 rounded-full bg-yellow-500" />
-          Waiting
+        <span className={`${base} status-waiting_approval inline-flex items-center gap-1.5 text-warn-foreground`}>
+          <span className="inline-block size-1.5 rounded-full bg-warn" />
+          waiting
         </span>
       );
     }
-    // Idle: subtle text-only label — kept in DOM as a test hook + low-key cue.
-    return (
-      <span className={`${base} status-idle text-muted-foreground/70`}>
-        Idle
-      </span>
-    );
+    // Idle stays in the DOM as a test hook and a low-key cue.
+    return <span className={`${base} status-idle text-gray-700`}>idle</span>;
   };
 
   // Delegation child sessions get a small banner under the header that
@@ -909,53 +905,56 @@ export function ChatView({
     store.setActiveSessionId(parentSession.id);
   };
 
+  // The credential this session actually runs on — the design keeps it in the
+  // header because "which key is this burning" is a per-turn question.
+  const activeCredential = credentials.find(
+    (c) => c.id === (activeSession?.credential_id ?? activeAgent?.credential_id)
+  );
+
   const header = (
-    <div className="chat-header flex items-center gap-3 px-4 h-12 shrink-0 border-b border-border bg-sidebar">
-      <button
-        className="btn btn-menu inline-flex items-center justify-center size-9 rounded-lg text-foreground hover:bg-accent md:hidden"
-        onClick={onToggleSidebar}
-        aria-label="Toggle sidebar"
-      >
-        <IconMenu2 size={18} />
-      </button>
-      {activeSession && (
+    <PageHeader
+      className="chat-header"
+      onToggleSidebar={onToggleSidebar}
+      icon={
+        activeSession && activeAgent ? (
+          <span className="tile tile-warm shrink-0" aria-hidden>
+            {activeAgent.avatar || "🐙"}
+          </span>
+        ) : undefined
+      }
+      crumbs={
+        activeSession
+          ? [activeAgent?.name ?? "Agent", activeSession.name || "Session"]
+          : ["Octopus"]
+      }
+      meta={activeSession ? renderStatusBadge(activeSession.status) : undefined}
+      actions={
         <>
-          {activeAgent && (
+          {activeCredential && (
             <span
-              className="chat-agent inline-flex items-center gap-1.5 text-sm text-muted-foreground shrink-0"
-              title={`Agent: ${activeAgent.name}`}
+              className="credential-chip pill pill-neutral"
+              title={`Credential: ${activeCredential.label}`}
             >
-              <span aria-hidden className="text-base leading-none">
-                {activeAgent.avatar || "🐙"}
-              </span>
-              <span className="hidden sm:inline truncate max-w-[10rem]">
-                {activeAgent.name}
-              </span>
-              <span aria-hidden className="text-border">
-                /
-              </span>
+              <span
+                className={`size-1.5 rounded-sm ${
+                  activeCredential.needs_reconnect ? "bg-warn" : "bg-warn/70"
+                }`}
+              />
+              {activeCredential.label}
             </span>
           )}
-          <h3 className="text-[15px] font-semibold text-foreground truncate">
-            {activeSession.name || "Session"}
-          </h3>
-          {renderStatusBadge(activeSession.status)}
+          <span
+            className={`conn-status ${connected ? "on" : "off"} pill ${
+              connected ? "pill-success" : "pill-warn"
+            }`}
+            title={connected ? "Connected" : "Disconnected"}
+          >
+            <span className={`dot ${connected ? "" : "animate-pulse"}`} />
+            {connected ? "Connected" : "Disconnected"}
+          </span>
         </>
-      )}
-      <span
-        className={`conn-status ${
-          connected ? "on" : "off"
-        } ml-auto inline-flex items-center gap-2 text-xs text-muted-foreground`}
-        title={connected ? "Connected" : "Disconnected"}
-      >
-        <span
-          className={`inline-block size-2 rounded-full ${
-            connected ? "bg-green-500" : "bg-destructive animate-pulse"
-          }`}
-        />
-        {connected ? "Connected" : "Disconnected"}
-      </span>
-    </div>
+      }
+    />
   );
 
   // Fork sessions get a banner mirroring the delegation one
@@ -1277,9 +1276,14 @@ export function ChatView({
       <div className="chat-view flex-1 flex flex-col min-h-0">
         {header}
         {delegationBanner}
-        <div className="chat-empty flex-1 flex flex-col items-center justify-center text-muted-foreground gap-3">
-          <h2 className="text-3xl font-bold text-primary tracking-tight">Octopus</h2>
-          <p className="text-sm leading-relaxed">Create or select a session to start.</p>
+        <div className="chat-empty flex flex-1 flex-col items-center justify-center gap-2 text-gray-700">
+          <h2 className="text-[22px] font-bold tracking-tight text-gray-950">
+            Octopus
+          </h2>
+          <p className="text-[13.5px] leading-relaxed">
+            Pick a session on the left, or start a new one with{" "}
+            <span className="font-mono text-primary">+</span> on an agent.
+          </p>
         </div>
       </div>
     );
@@ -1377,7 +1381,7 @@ export function ChatView({
           </span>
         </div>
       ) : (
-        <div className="chat-input-bar px-4 py-1.5 bg-background shrink-0">
+        <div className="chat-input-bar shrink-0 bg-background px-6 pb-5 pt-2">
           {/* `relative` anchors the slash-command menu, which floats just
               above the composer (bottom-full) like the Claude Code CLI. */}
           <div className="relative">
@@ -1395,7 +1399,7 @@ export function ChatView({
               for Octopus' chat panel: the textarea auto-grows with
               content (field-sizing-content) so the empty composer is a
               single comfortable line, not a hero-sized block. */}
-          <div className="zero-composer overflow-hidden rounded-xl border-[0.7px] border-gray-400 bg-card shadow-sm focus-within:border-primary/70 focus-within:ring-[3px] focus-within:ring-primary/10 transition-colors">
+          <div className="zero-composer overflow-hidden rounded-[14px] border border-gray-400 bg-card transition-colors focus-within:border-primary focus-within:ring-[3px] focus-within:ring-primary/10">
             <input
               ref={fileInputRef}
               type="file"
@@ -1508,7 +1512,7 @@ export function ChatView({
                 <Button
                   type="button"
                   size="sm"
-                  className="btn btn-send rounded-lg h-8 w-8 p-0 shrink-0"
+                  className="btn btn-send size-9 shrink-0 rounded-full p-0"
                   onClick={handleSend}
                   disabled={
                     hasUploadInFlight ||
@@ -1517,7 +1521,7 @@ export function ChatView({
                   aria-label={isRunning ? "Queue message" : "Send message"}
                   title={isRunning ? "Queue (current turn is running)" : "Send"}
                 >
-                  <IconArrowUp size={14} />
+                  <IconArrowUp size={16} />
                 </Button>
               </div>
             </div>

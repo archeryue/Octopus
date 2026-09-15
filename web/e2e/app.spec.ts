@@ -87,7 +87,7 @@ test.describe("Session Management", () => {
     // Should be selected (active)
     await expect(page.locator(".session-item.active")).toBeVisible();
     // Chat header should show session name
-    await expect(page.locator(".chat-header h3")).toHaveText(
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
       "E2E Test Session"
     );
   });
@@ -136,11 +136,11 @@ test.describe("Chat @llm", () => {
     await page
       .locator('.session-create input[placeholder="Session name"]')
       .fill("Chat Test");
-    await page
-      .locator('.session-create input[placeholder*="Working directory"]')
-      .fill("/tmp");
+    // Working dir is an override now — unfold the create row's extras first.
+    await page.locator(".btn-session-advanced").click();
+    await page.locator(".session-working-dir").fill("/tmp");
     await page.locator("button.btn-create").click();
-    await expect(page.locator(".chat-header h3")).toHaveText("Chat Test");
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Chat Test");
   });
 
   test("shows connection status", async ({ page }) => {
