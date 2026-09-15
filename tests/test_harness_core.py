@@ -21,6 +21,7 @@ from server.harness import (
     ParseOutput,
     RunConfig,
     RuntimeProfile,
+    StdinMode,
     TurnContext,
     available_backends,
     get_harness,
@@ -47,7 +48,9 @@ class _RawParser(EventParser):
         return ParseOutput(events=[ev], end_of_stream=obj.get("type") == "result")
 
 
-def _stream_profile(*lines: str, close_stdin: bool = False) -> RuntimeProfile:
+def _stream_profile(
+    *lines: str, stdin_mode: StdinMode = StdinMode.STREAM_JSON
+) -> RuntimeProfile:
     def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         return ([sys.executable, str(FAKE_CLI), "emit-lines", *lines], {"cwd": ctx.working_dir})
 
@@ -57,7 +60,7 @@ def _stream_profile(*lines: str, close_stdin: bool = False) -> RuntimeProfile:
         tools_prompt="TOOLS",
         credential_style="env_secret",
         premature_exit_recovery=False,
-        close_stdin_after_start=close_stdin,
+        stdin_mode=stdin_mode,
         build_turn_argv=build_turn_argv,
         new_event_parser=_RawParser,
         build_oneshot_argv=lambda ctx: ([sys.executable], {}),
@@ -108,8 +111,10 @@ async def test_engine_skips_malformed_lines(tmp_path):
 
 @pytest.mark.asyncio
 async def test_engine_close_stdin_flag(tmp_path):
-    # close_stdin_after_start must not break a normal run (codex's behavior).
-    profile = _stream_profile('{"type":"result"}', close_stdin=True)
+    # CLOSE_AFTER_SPAWN must not break a normal run (codex's behaviour).
+    profile = _stream_profile(
+        '{"type":"result"}', stdin_mode=StdinMode.CLOSE_AFTER_SPAWN
+    )
     run = Harness(profile).create_run()
     await run.start("p", str(tmp_path))
     events = await asyncio.wait_for(_drain(run), timeout=3.0)
@@ -517,3 +522,115 @@ async def test_run_oneshot_reaps_group_on_cancel(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert _signal.SIGKILL in calls
+
+
+# --------------------------------------------------------------------------- #
+# stdin as an input channel (inline-steering.md §6)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_stream_json_writes_the_prompt_to_stdin(tmp_path):
+    """Under STREAM_JSON the prompt is a frame on stdin, not an argv tail."""
+    profile = _mode_profile("echo-stdin")
+    run = Harness(profile).create_run()
+    await run.start("hello from stdin", str(tmp_path))
+    events = await asyncio.wait_for(_drain(run), timeout=5.0)
+    await run.stop()
+
+    seen = [e.raw for e in events if e.raw and e.raw.get("type") == "frame_seen"]
+    assert [f["content"] for f in seen] == ["hello from stdin"]
+    # And the argv carries no prompt.
+    argv, _ = run.build_argv("hello from stdin", str(tmp_path))
+    assert "hello from stdin" not in argv
+
+
+@pytest.mark.asyncio
+async def test_every_frame_uuid_is_distinct(tmp_path):
+    """The real CLI reports our frame uuid back as `command_uuid` and
+    deduplicates on it: two frames sharing a uuid means the second command is
+    silently dropped and the turn hangs waiting for a reply that never comes.
+
+    This cost a real debugging session — a uuid derived from
+    (session_id, turn_index) repeated on every turn of a session, so the second
+    turn of any resumed session hung for the full timeout.
+    """
+    profile = _mode_profile("echo-stdin")
+    run = Harness(profile).create_run()
+    await run.start("first", str(tmp_path))
+    second = await run.send_user_frame("second")
+    third = await run.send_user_frame("third")
+
+    assert run._initial_uuid is not None
+    assert len({run._initial_uuid, second, third}) == 3
+    await run.stop()
+
+
+@pytest.mark.asyncio
+async def test_send_user_frame_refused_on_argv_backends(tmp_path):
+    """A backend whose prompt lives in argv has no input channel; asking it to
+    take one must fail loudly rather than write into a closed pipe."""
+    profile = _stream_profile(
+        '{"type":"result"}', stdin_mode=StdinMode.CLOSE_AFTER_SPAWN
+    )
+    run = Harness(profile).create_run()
+    await run.start("p", str(tmp_path))
+    with pytest.raises(RuntimeError, match="does not take input on stdin"):
+        await run.send_user_frame("late")
+    await run.stop()
+
+
+# --------------------------------------------------------------------------- #
+# Reuse identity (inline-steering.md §7)
+# --------------------------------------------------------------------------- #
+
+
+def _sig_profile() -> RuntimeProfile:
+    return _stream_profile('{"type":"result"}')
+
+
+def test_spawn_signature_is_stable_across_turns():
+    """The signature decides whether a live process may serve the next turn, so
+    it must depend on CONFIG, never on object identity.
+
+    `_load_connectors` builds fresh connector objects every turn. Keying on the
+    object meant its default repr — which carries a memory address — landed in
+    the signature, so every turn looked like a config change and reuse silently
+    never happened. That fails quietly, as a permanent ~1s-per-turn tax.
+    """
+    class _Conn:
+        kind = "gmail"
+
+    class _Inst:
+        id = "install-1"
+
+    profile = _sig_profile()
+    cfg = dict(system_prompt="P", model="m")
+    a = Harness(profile).create_run(RunConfig(connectors=[(_Conn(), _Inst())], **cfg))
+    b = Harness(profile).create_run(RunConfig(connectors=[(_Conn(), _Inst())], **cfg))
+    assert a.spawn_signature("/tmp", None) == b.spawn_signature("/tmp", None)
+
+
+def test_spawn_signature_changes_with_anything_baked_in_at_spawn():
+    """Persona, model, tool policy, MCP set and working dir are all argv or env
+    at spawn and cannot change afterwards — each must force a respawn."""
+    profile = _sig_profile()
+    base = dict(system_prompt="P", model="m", mcp_servers=["bg"],
+                tool_allow=["Read"], tool_deny=["Write"], memory_dir="/m")
+    ref = Harness(profile).create_run(RunConfig(**base)).spawn_signature("/tmp", None)
+
+    for field, value in [
+        ("system_prompt", "DIFFERENT"),
+        ("model", "other-model"),
+        ("mcp_servers", ["bg", "ask"]),
+        ("tool_allow", ["Read", "Glob"]),
+        ("tool_deny", []),
+        ("memory_dir", "/other"),
+    ]:
+        changed = {**base, field: value}
+        got = Harness(profile).create_run(RunConfig(**changed)).spawn_signature("/tmp", None)
+        assert got != ref, f"{field} must change the signature"
+
+    # …and so must the working dir.
+    same_cfg = Harness(profile).create_run(RunConfig(**base))
+    assert same_cfg.spawn_signature("/elsewhere", None) != ref

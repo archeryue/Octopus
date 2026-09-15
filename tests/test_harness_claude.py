@@ -75,7 +75,12 @@ def test_turn_argv_full_config(tmp_path):
     assert argv[argv.index("--allowedTools") + 1] == "Read,Glob"
     assert argv[argv.index("--disallowedTools") + 1] == "AskUserQuestion,Write"
     assert argv[argv.index("--resume") + 1] == "resume-1"
-    assert argv[-2:] == ["--", "hello"]
+    # The prompt is NOT in argv under STREAM_JSON — it's written to stdin as a
+    # JSON frame, which is the same channel a mid-turn steer will use
+    # (inline-steering.md §6).
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    assert "hello" not in argv
+    assert "--" not in argv
     cfg = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
     assert set(cfg) == {"bg", "ask"}  # only the selected built-ins
     ap = argv[argv.index("--append-system-prompt") + 1]
@@ -90,7 +95,9 @@ def test_turn_argv_api_key_and_minimal(tmp_path):
         credential=HarnessCredential(backend="claude-code", auth_type="api_key", secret="sk-ant-1"),
     )
     argv, kw = build_turn_argv(ctx)
-    assert argv[0] == "claude" and argv[-2:] == ["--", "p"]
+    assert argv[0] == "claude"
+    assert argv[-2:] == ["--input-format", "stream-json"]
+    assert "p" not in argv  # the prompt goes to stdin, not argv
     assert "--resume" not in argv  # no resume id
     assert "--allowedTools" not in argv  # no allow list
     assert kw["env"]["ANTHROPIC_API_KEY"] == "sk-ant-1"

@@ -8,6 +8,7 @@ import pytest
 from server.database import Database
 from server.models import MessageContent, MessageRole, SessionStatus
 from server.session_manager import SessionManager
+from tests.fake_run import FakeRunBase
 
 
 @pytest.fixture
@@ -19,6 +20,10 @@ async def manager():
     try:
         yield mgr
     finally:
+        # Release any held CLI process before the manager goes away — a
+        # SessionManager that keeps processes between turns must hand them
+        # back when it's discarded, or the suite accumulates them.
+        await mgr.stop_all_held_processes()
         # Close the aiosqlite connection so its worker thread exits
         # before the per-test event loop is torn down. A leaked
         # connection's thread later crashes with "Event loop is
@@ -330,7 +335,7 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
         except asyncio.CancelledError:
             raise
 
-    class HangingBackend:
+    class HangingBackend(FakeRunBase):
         name = "hanging"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -982,7 +987,7 @@ async def test_run_backend_translates_events_end_to_end(manager):
         ),
     ]
 
-    class ScriptedBackend:
+    class ScriptedBackend(FakeRunBase):
         name = "scripted"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -1036,7 +1041,7 @@ async def test_run_backend_auto_respawns_on_premature_exit_after_tool(manager):
     # what it owed us after the continue nudge.
     invocations: list[dict[str, Any]] = []
 
-    class FlakyBackend:
+    class FlakyBackend(FakeRunBase):
         name = "flaky"
 
         def __init__(self, events: list[HarnessEvent]) -> None:
@@ -1135,7 +1140,7 @@ async def test_run_backend_bounds_recovery_to_single_retry(manager):
             # No `result` — bug fires every time.
         ]
 
-    class AlwaysFlakyBackend:
+    class AlwaysFlakyBackend(FakeRunBase):
         name = "always-flaky"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -1177,7 +1182,7 @@ async def test_run_backend_does_not_respawn_on_clean_exit(manager):
 
     invocations: list[str] = []
 
-    class CleanBackend:
+    class CleanBackend(FakeRunBase):
         name = "clean"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -1220,7 +1225,7 @@ async def test_run_backend_does_not_respawn_when_no_tool_use(manager):
     session = await _new(manager,"DiesEarly")
     invocations: list[str] = []
 
-    class CrashEarlyBackend:
+    class CrashEarlyBackend(FakeRunBase):
         name = "crash-early"
 
         async def start(self, prompt, working_dir, resume_id=None, credential=None):
@@ -1438,14 +1443,17 @@ async def test_archive_broadcasts_session_archived_event(manager):
 # re-authorize prompt (harness-credential-reauth.md §4).
 
 
-class _FakeBackend:
+class _FakeBackend(FakeRunBase):
     """Stand-in HarnessRun: yields a scripted event list and exposes a fixed
     stderr_text, so _run_backend's auth-expiry classifier can be exercised
     without a real CLI subprocess."""
 
-    def __init__(self, events, stderr_text=""):
+    def __init__(self, events, stderr_text="", reusable=False):
         self._events = list(events)
         self.stderr_text = stderr_text
+        # Opt-in: whether this stand-in claims its process survives the turn.
+        self.reusable = reusable
+        self.sent_turns: list[str] = []
 
     async def start(self, *args, **kwargs):
         pass
@@ -1591,7 +1599,7 @@ async def test_failed_codex_turn_with_tool_unauthorized_does_not_flag(manager, m
 # (harness-transient-retry.md §4).
 
 
-class _SeqBackend:
+class _SeqBackend(FakeRunBase):
     """One scripted attempt: records the prompt it was started with, yields a
     fixed event list, exposes stderr_text."""
 
@@ -1859,7 +1867,7 @@ async def test_transient_error_after_output_resumes_with_continue(manager, monke
 # and surfaced, instead of hanging forever (the deep-research wedge).
 
 
-class _StallBackend:
+class _StallBackend(FakeRunBase):
     """Yields `pre` events then blocks forever — until stop() unblocks it.
     Models a wedged turn (no terminal result)."""
 
@@ -1945,7 +1953,7 @@ async def test_turn_timeout_does_not_trigger_premature_exit_respawn(manager, mon
     assert calls["n"] == 1  # not respawned with "continue"
 
 
-class _DripBackend:
+class _DripBackend(FakeRunBase):
     """Yields a text event every `interval`s forever (so idle keeps resetting),
     until stop() unblocks it — to prove the OVERALL cap trips on a steadily-
     alive turn."""
@@ -2050,3 +2058,221 @@ def test_flush_uses_one_wire_shape():
     assert mgr._flush_text_deltas("s1", buf) == mgr._event_to_ws_message(
         "s1", HarnessEvent(type="text_delta", content="x")
     )
+
+
+
+# --------------------------------------------------------------------------- #
+# Held CLI processes (inline-steering.md §7)
+# --------------------------------------------------------------------------- #
+
+
+def _held_session(mgr, backend, held_at=0.0, session_id="s-held"):
+    """A session standing in for one that finished a turn holding a process."""
+    from server.session_manager import Session
+
+    sess = Session(id=session_id, name="held", working_dir="/tmp")
+    sess._backend = backend
+    sess._held_run_at = held_at
+    mgr.sessions[session_id] = sess
+    return sess
+
+
+def test_non_reusable_backend_is_never_reused():
+    """A backend whose prompt lives in argv is one process per turn by
+    construction — asking to reuse it must return nothing, not a dead handle."""
+    mgr = SessionManager()
+    backend = _FakeBackend([], reusable=False)
+    sess = _held_session(mgr, backend)
+    assert mgr._reusable_run(sess, "/tmp", None, None, None) is None
+
+
+def test_dead_process_is_not_reused():
+    mgr = SessionManager()
+    backend = _FakeBackend([], reusable=True)
+    backend.is_alive = lambda: False
+    sess = _held_session(mgr, backend)
+    assert mgr._reusable_run(sess, "/tmp", None, None, None) is None
+
+
+def test_reuse_refused_when_the_spawn_config_changed(monkeypatch):
+    """Everything a process bakes in at spawn — persona, model, tools, MCP set,
+    credential — is unchangeable afterwards. If any of it moved, the held
+    process must be abandoned rather than silently serve the old config."""
+    mgr = SessionManager()
+    held = _FakeBackend([], reusable=True)
+    held.spawn_signature = lambda wd, cred: "OLD-CONFIG"
+    sess = _held_session(mgr, held)
+
+    fresh = _FakeBackend([], reusable=True)
+    fresh.spawn_signature = lambda wd, cred: "NEW-CONFIG"
+    monkeypatch.setattr(mgr, "_make_run", lambda *a, **k: fresh)
+
+    assert mgr._reusable_run(sess, "/tmp", None, None, None) is None
+
+
+def test_reuse_accepted_when_the_config_is_unchanged(monkeypatch):
+    mgr = SessionManager()
+    held = _FakeBackend([], reusable=True)
+    sess = _held_session(mgr, held)
+    monkeypatch.setattr(mgr, "_make_run", lambda *a, **k: _FakeBackend([], reusable=True))
+    assert mgr._reusable_run(sess, "/tmp", None, None, None) is held
+
+
+async def test_reaper_drops_idle_processes_and_keeps_fresh_ones():
+    """Idle past the cutoff goes; recently used stays. A reaped session is not
+    broken — its next turn just spawns again."""
+    import time as _time
+    from server.session_manager import _HELD_PROCESS_IDLE_SECONDS
+
+    mgr = SessionManager()
+    now = _time.monotonic()
+    stale = _FakeBackend([], reusable=True)
+    fresh = _FakeBackend([], reusable=True)
+    s_stale = _held_session(mgr, stale, held_at=now - _HELD_PROCESS_IDLE_SECONDS - 1, session_id="stale")
+    s_fresh = _held_session(mgr, fresh, held_at=now, session_id="fresh")
+
+    assert await mgr.reap_held_processes() == 1
+    assert s_stale._backend is None and s_stale._held_run_at is None
+    assert s_fresh._backend is fresh
+
+
+async def test_reaper_caps_total_held_processes():
+    """Memory is the cost of holding a process (~255MB each), so only a bounded
+    number are kept — the least recently used are dropped first."""
+    import time as _time
+    from server.session_manager import _MAX_HELD_PROCESSES
+
+    mgr = SessionManager()
+    now = _time.monotonic()
+    sessions = [
+        _held_session(mgr, _FakeBackend([], reusable=True), held_at=now - i, session_id=f"s{i}")
+        for i in range(_MAX_HELD_PROCESSES + 2)
+    ]
+    assert await mgr.reap_held_processes() == 2
+    # The two oldest went; the newest survive.
+    assert sessions[-1]._backend is None and sessions[-2]._backend is None
+    assert all(s._backend is not None for s in sessions[:_MAX_HELD_PROCESSES])
+
+
+async def test_reaper_leaves_a_running_turn_alone():
+    """A process mid-turn is not idle, however long ago it last finished one."""
+    mgr = SessionManager()
+    backend = _FakeBackend([], reusable=True)
+    sess = _held_session(mgr, backend, held_at=0.0)
+
+    async def forever():
+        await asyncio.sleep(3600)
+
+    sess._active_task = asyncio.create_task(forever())
+    try:
+        assert await mgr.reap_held_processes() == 0
+        assert sess._backend is backend
+    finally:
+        sess._active_task.cancel()
+
+
+async def test_held_cap_is_enforced_without_the_reaper():
+    """The cap must hold on its own. The reaper is a background task that
+    doesn't run in tests and ticks every 30s in production, so if the bound
+    depended on it, finished sessions would each pin ~255MB in between — which
+    is how the backend suite got OOM-killed while this was being built."""
+    import time as _time
+    from server.session_manager import _MAX_HELD_PROCESSES
+
+    mgr = SessionManager()
+    now = _time.monotonic()
+    olds = [
+        _held_session(mgr, _FakeBackend([], reusable=True), held_at=now - 100 + i, session_id=f"old{i}")
+        for i in range(_MAX_HELD_PROCESSES + 3)
+    ]
+    current = _held_session(mgr, _FakeBackend([], reusable=True), held_at=now, session_id="current")
+
+    await mgr._enforce_held_cap(keep_session_id="current")
+
+    still_held = [s for s in mgr.sessions.values() if s._backend is not None]
+    assert len(still_held) <= _MAX_HELD_PROCESSES
+    # The session that just finished keeps its process...
+    assert current._backend is not None
+    # ...and the oldest were the ones released.
+    assert olds[0]._backend is None
+
+
+async def test_held_cap_never_touches_a_running_turn():
+    from server.session_manager import _MAX_HELD_PROCESSES
+
+    mgr = SessionManager()
+    busy = _held_session(mgr, _FakeBackend([], reusable=True), held_at=0.0, session_id="busy")
+
+    async def forever():
+        await asyncio.sleep(3600)
+
+    busy._active_task = asyncio.create_task(forever())
+    for i in range(_MAX_HELD_PROCESSES + 2):
+        _held_session(mgr, _FakeBackend([], reusable=True), held_at=1.0 + i, session_id=f"idle{i}")
+    try:
+        await mgr._enforce_held_cap()
+        assert busy._backend is not None
+    finally:
+        busy._active_task.cancel()
+
+
+async def test_shutdown_sweep_is_bounded_by_a_hung_process():
+    """A CLI that won't die must not hold up server shutdown. stop() already
+    escalates stdin-close → SIGTERM → SIGKILL; if even that doesn't return, the
+    sweep abandons it rather than hanging the process forever."""
+    import time as _time
+    from server.session_manager import _HELD_STOP_TIMEOUT
+
+    class _HangingStop(FakeRunBase):
+        reusable = True
+
+        async def stop(self):
+            await asyncio.sleep(3600)
+
+    mgr = SessionManager()
+    sess = _held_session(mgr, _HangingStop(), held_at=_time.monotonic())
+
+    t0 = _time.monotonic()
+    stopped = await mgr.stop_all_held_processes()
+    elapsed = _time.monotonic() - t0
+
+    assert elapsed < _HELD_STOP_TIMEOUT + 1.0
+    assert stopped == 0            # it never confirmed it died
+    assert sess._backend is None   # but we've let go of it either way
+
+
+async def test_interrupt_releases_the_session_handle_immediately(manager):
+    """An interrupted process is being torn down in the background, so the
+    session must let go of it at once. With process reuse, a next turn that
+    found it still briefly alive would hand its prompt to a dying CLI."""
+    session = await _new(manager, "InterruptHandle")
+
+    class _SlowStop(FakeRunBase):
+        reusable = True
+        stopped = False
+
+        async def stop(self):
+            await asyncio.sleep(0.2)
+            _SlowStop.stopped = True
+
+        async def interrupt(self):
+            await self.stop()
+
+    backend = _SlowStop()
+    session._backend = backend
+    session._held_run_at = 1.0
+
+    async def busy():
+        await asyncio.sleep(30)
+
+    session._inner_task = asyncio.create_task(busy())
+    try:
+        await manager.interrupt(session.id)
+        # Released synchronously, before the teardown finishes.
+        assert session._backend is None
+        assert session._held_run_at is None
+        assert manager._reusable_run(session, "/tmp", None, None, None) is None
+    finally:
+        if not session._inner_task.done():
+            session._inner_task.cancel()
+        await asyncio.sleep(0.3)

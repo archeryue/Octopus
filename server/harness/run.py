@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import glob
+import hashlib
 import json
 import logging
 import os
 import shutil
 import signal
+import uuid as uuid_module
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,7 +27,7 @@ from typing import Any
 
 from . import assembly
 from .events import HarnessCredential, HarnessEvent
-from .profile import RuntimeProfile, TurnContext
+from .profile import RuntimeProfile, StdinMode, TurnContext
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +183,16 @@ class HarnessRun:
         self._stderr_task: asyncio.Task[None] | None = None
         self._stderr_lines: list[str] = []
         self._stream_closed: bool = False
+        # The uuid of this run's opening prompt frame, remembered so S3 can
+        # tell the CLI's echo of our own prompt from a genuine user message.
+        #
+        # Every frame uuid MUST be unique: the CLI reports it back as
+        # `command_uuid` on `command_lifecycle` and deduplicates on it, so
+        # reusing one silently drops the command and the turn hangs waiting
+        # for a reply that will never come. A derived id (session + turn
+        # counter) is exactly the kind of thing that repeats — this is
+        # random per frame, and we simply remember what we sent.
+        self._initial_uuid: str | None = None
 
     @property
     def profile(self) -> RuntimeProfile:
@@ -271,14 +283,128 @@ class HarnessRun:
             self._read_stderr(), name=f"{self._profile.backend}-stderr"
         )
 
-        # Codex reads stdin even with a positional prompt and blocks forever
-        # waiting on EOF; closing stdin lets it proceed. Claude keeps stdin
-        # open until stop() (it's how we end the turn).
-        if self._profile.close_stdin_after_start and self._process.stdin is not None:
+        # CLOSE_AFTER_SPAWN: the prompt is in argv and the CLI must not wait
+        # on stdin. Codex reads stdin even with a positional prompt and blocks
+        # forever waiting on EOF, so the close is what lets the turn proceed.
+        # STREAM_JSON leaves the pipe open — the prompt is written to it.
+        if (
+            self._profile.stdin_mode is StdinMode.CLOSE_AFTER_SPAWN
+            and self._process.stdin is not None
+        ):
             try:
                 self._process.stdin.close()
             except Exception:
                 logger.debug("closing stdin failed", exc_info=True)
+        elif self._profile.stdin_mode is StdinMode.STREAM_JSON:
+            # Write the prompt immediately. The pipe must never sit open and
+            # idle: that is what made the CLI stall ~3s per turn waiting for
+            # input that wasn't coming (inline-steering.md §10).
+            self._initial_uuid = await self.send_user_frame(prompt)
+
+    async def send_user_frame(self, text: str, *, frame_uuid: str | None = None) -> str:
+        """Write one user message to the CLI's stdin as a JSON line.
+
+        This is the whole input channel under `STREAM_JSON`: the opening
+        prompt goes through it, and (S3) so does anything the user says while
+        the turn is running. Returns the frame's uuid so the caller can match
+        the CLI's echo of it.
+
+        A failed write is terminal for the turn — if we can't reach the CLI's
+        stdin the prompt simply hasn't been delivered, and pretending otherwise
+        would hang the turn waiting for a reply to a question never asked.
+        """
+        if self._profile.stdin_mode is not StdinMode.STREAM_JSON:
+            raise RuntimeError(
+                f"{self._profile.backend} does not take input on stdin"
+            )
+        proc = self._process
+        if proc is None or proc.stdin is None or proc.stdin.is_closing():
+            raise RuntimeError("CLI stdin is not open")
+        frame_uuid = frame_uuid or str(uuid_module.uuid4())
+        line = json.dumps(
+            {
+                "type": "user",
+                "uuid": frame_uuid,
+                "parent_tool_use_id": None,
+                "message": {"role": "user", "content": text},
+            }
+        ) + "\n"
+        proc.stdin.write(line.encode())
+        await proc.stdin.drain()
+        return frame_uuid
+
+    def spawn_signature(
+        self, working_dir: str, credential: HarnessCredential | None
+    ) -> str:
+        """Identity of the *process* a turn would need.
+
+        Everything a `STREAM_JSON` process bakes in at spawn — system prompt,
+        model, tool policy, MCP set, memory dir, credential, working dir —
+        lives in argv or env and cannot be changed afterwards. A held process
+        may therefore only be reused for a turn whose signature matches;
+        edit the agent's persona or swap its credential and the next turn
+        must respawn, or it would silently run under the old configuration.
+
+        `resume_id` is deliberately absent: a live process already holds the
+        conversation, and that's what makes reuse worth having.
+        """
+        parts = [
+            self._profile.backend,
+            self._config.system_prompt or "",
+            self._config.model or "",
+            ",".join(sorted(self._config.mcp_servers or [])),
+            ",".join(sorted(self._config.tool_allow or [])),
+            ",".join(sorted(self._config.tool_deny or [])),
+            self._config.memory_dir or "",
+            self._config.fork_note or "",
+            str(self._config.web_research),
+            # (kind, installation id) — content, not object identity. A
+            # connector object's default repr carries its memory address, which
+            # changes between turns and would make every signature differ, so
+            # reuse would silently never happen for an agent with connectors.
+            ",".join(
+                sorted(
+                    f"{getattr(conn, 'kind', '?')}:{getattr(inst, 'id', '?')}"
+                    for conn, inst in self._config.connectors
+                )
+            ),
+            str(Path(working_dir).resolve()),
+            (credential.auth_type + ":" + (credential.secret or "")) if credential else "",
+        ]
+        return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
+
+    def is_alive(self) -> bool:
+        """Whether the subprocess is up and could serve another turn."""
+        return self._process is not None and self._process.returncode is None
+
+    @property
+    def reusable(self) -> bool:
+        """Whether this backend can serve more than one turn per process.
+
+        Only `STREAM_JSON` can: a backend whose prompt lives in argv is, by
+        construction, one process per turn.
+        """
+        return self._profile.stdin_mode is StdinMode.STREAM_JSON
+
+    async def send_turn(self, prompt: str) -> None:
+        """Run another turn on the process already up.
+
+        This is the whole point of keeping it: spawning the CLI costs ~1.5s
+        that a live process doesn't pay, and its prompt cache stays warm
+        (inline-steering.md §3). The per-turn stream state is reset so
+        `stream()` can be iterated again; the process, its parser (which holds
+        the engine's session id) and its MCP children all carry over.
+        """
+        if not self.reusable:
+            raise RuntimeError(f"{self._profile.backend} cannot reuse a process")
+        if not self.is_alive():
+            raise RuntimeError("CLI process is not running")
+        # A fresh queue rather than draining the old one: anything still in it
+        # belongs to the turn that just ended, and replaying that into the new
+        # turn would duplicate messages.
+        self._event_queue = asyncio.Queue()
+        self._stream_closed = False
+        self._initial_uuid = await self.send_user_frame(prompt)
 
     async def stream(self) -> AsyncIterator[HarnessEvent]:
         while True:

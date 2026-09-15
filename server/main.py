@@ -114,7 +114,15 @@ async def lifespan(app: FastAPI):
             print("=" * 60 + "\n")
             logger.info("Cloudflare Tunnel active: %s", url)
 
+    # Idle-process reaper (inline-steering.md §7): a session keeps its CLI
+    # process after a turn so the next one skips the ~1.5s spawn, and this
+    # drops the ones that stop earning their ~255MB.
+    session_manager.start_reaper()
+
     yield
+
+    await session_manager.stop_reaper()
+    await session_manager.stop_all_held_processes()
 
     if tunnel:
         await tunnel.stop()

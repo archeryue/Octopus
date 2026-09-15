@@ -191,6 +191,7 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
     from server.harness import HarnessEvent
     from server.database import Database
     from server.session_manager import SessionManager
+    from tests.fake_run import FakeRunBase
 
     mgr = SessionManager()
     db = Database(":memory:")
@@ -202,7 +203,7 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
 
         received_prompts: list[str] = []
 
-        class RecordingBackend:
+        class RecordingBackend(FakeRunBase):
 
             async def start(
                 self, prompt, working_dir, resume_id=None, credential=None

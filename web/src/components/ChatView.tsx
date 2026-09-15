@@ -416,6 +416,7 @@ export function ChatView({
             sessionId={activeSessionId ?? ""}
             agentName={activeAgent?.name}
             agentAvatar={activeAgent?.avatar}
+            plain
           />
         </div>
       );

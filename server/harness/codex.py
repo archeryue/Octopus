@@ -28,6 +28,7 @@ from .profile import (
     OneShotContext,
     ParseOutput,
     RuntimeProfile,
+    StdinMode,
     TurnContext,
     WebCapability,
 )
@@ -676,7 +677,7 @@ CODEX = RuntimeProfile(
     # Single combined search-and-read tool, enabled per-leaf via the
     # web_research render path (-c tools.web_search=true). native-deep-research.md §4.
     web=WebCapability(tool_names=("web_search",), combined=True),
-    close_stdin_after_start=True,
+    stdin_mode=StdinMode.CLOSE_AFTER_SPAWN,
     build_turn_argv=build_turn_argv,
     new_event_parser=CodexEventParser,
     build_oneshot_argv=build_oneshot_argv,

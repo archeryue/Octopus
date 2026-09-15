@@ -143,6 +143,10 @@ async def _bootstrap(tmp_path, monkeypatch):
         except (asyncio.TimeoutError, asyncio.CancelledError):
             task.cancel()
         dm.shutdown()
+        # Release any CLI process a finished turn is holding. Without this each
+        # test leaves ~255MB of live `claude` behind for the rest of the run,
+        # which is enough to get the suite OOM-killed (inline-steering.md §7).
+        await mgr.stop_all_held_processes()
         await db.close()
 
     return db, mgr, dm, am, wd, teardown

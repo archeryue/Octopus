@@ -18,6 +18,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Protocol
 
 from .events import HarnessCredential, HarnessEvent
@@ -124,6 +125,24 @@ class TranscriptCodec(Protocol):
     ) -> None: ...
 
 
+class StdinMode(str, Enum):
+    """What a backend's stdin is for (inline-steering.md §6).
+
+    One enum rather than two booleans: "the prompt arrives on stdin" and
+    "stdin is closed right after spawn" are mutually exclusive, and separate
+    flags could express the combination that must never exist.
+    """
+
+    #: Prompt is in argv; stdin gets EOF immediately. Codex reads stdin even
+    #: with a positional prompt and blocks forever waiting on EOF, so closing
+    #: it is what lets the turn proceed.
+    CLOSE_AFTER_SPAWN = "close_after_spawn"
+
+    #: Prompt — and any mid-turn follow-up — are written as JSON lines on
+    #: stdin, which therefore stays open for the life of the process.
+    STREAM_JSON = "stream_json"
+
+
 @dataclass(frozen=True)
 class RuntimeProfile:
     """Everything that differs between harness kinds, as one record."""
@@ -136,9 +155,9 @@ class RuntimeProfile:
     # the session_manager run loop respawns with "continue" after a
     # premature mid-turn exit only when this is set.
     premature_exit_recovery: bool
-    # Codex reads stdin even with a positional prompt; closing it after
-    # spawn gives EOF so it uses just the argv prompt. Claude: False.
-    close_stdin_after_start: bool
+    # How the CLI is fed its prompt, and therefore what stdin is for
+    # (inline-steering.md §6).
+    stdin_mode: StdinMode
     # Renderers / parsers (module functions in the profile's file):
     build_turn_argv: Callable[[TurnContext], tuple[list[str], dict[str, Any]]]
     new_event_parser: Callable[[], EventParser]

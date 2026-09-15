@@ -54,6 +54,19 @@ logger = logging.getLogger(__name__)
 # forwarding every token individually.
 _DELTA_FLUSH_SECONDS = 0.05
 
+# Holding a finished CLI process makes the next turn ~1.5s faster and keeps its
+# prompt cache warm, but costs ~255MB of RSS for as long as it's held
+# (inline-steering.md §7). Two bounds keep that honest: a process is dropped
+# after this long without a turn, and only this many are held at once (the
+# least-recently-used goes first). A dropped process is never a broken
+# session — the next turn spawns and `--resume`s, which is what every turn did
+# before reuse existed.
+_HELD_PROCESS_IDLE_SECONDS = 600.0
+_MAX_HELD_PROCESSES = 4
+_REAPER_INTERVAL_SECONDS = 30.0
+# How long to wait for one held process to die before giving up on it.
+_HELD_STOP_TIMEOUT = 2.0
+
 
 class ForkError(Exception):
     """A fork request was rejected for a reason the route maps to a status
@@ -237,6 +250,9 @@ class Session:
     # the orchestrator loop and survives interrupts so it can drain the queue.
     _inner_task: asyncio.Task | None = field(default=None, repr=False)
     _backend: HarnessRun | None = field(default=None, repr=False)
+    # When the held CLI process last finished a turn — the reaper's clock
+    # (inline-steering.md §7). None whenever no process is being held.
+    _held_run_at: float | None = field(default=None, repr=False)
     _pending_approvals: dict[str, PendingApproval] = field(default_factory=dict, repr=False)
     _pending_questions: dict[str, PendingQuestion] = field(default_factory=dict, repr=False)
     # question_id -> background timer that auto-answers if the user
@@ -262,6 +278,8 @@ class SessionManager:
         self.sessions: dict[str, Session] = {}
         self._broadcast_callbacks: dict[str, Callable] = {}
         self.db: Database | None = None
+        # Background task that drops idle held CLI processes.
+        self._reaper_task: asyncio.Task[None] | None = None
         # Wired in by main.py once the manager is constructed. Kept as
         # an opaque object — we only call `.fire(event)` on it — so the
         # session manager doesn't take a hard dependency on the
@@ -992,6 +1010,7 @@ class SessionManager:
             except Exception:
                 pass
             parent._backend = None
+            parent._held_run_at = None
         parent._pending_queue.clear()
         parent._pending_questions.clear()
         self._cancel_all_question_timers(parent)
@@ -1189,6 +1208,7 @@ class SessionManager:
             except Exception:
                 pass
             old._backend = None
+            old._held_run_at = None
         old._pending_queue.clear()
         old._pending_questions.clear()
         self._cancel_all_question_timers(old)
@@ -1313,6 +1333,7 @@ class SessionManager:
                 except Exception:
                     pass
                 session._backend = None
+                session._held_run_at = None
             session._pending_queue.clear()
             self._cancel_all_question_timers(session)
             self.sessions.pop(sid, None)
@@ -1961,6 +1982,12 @@ class SessionManager:
         # even before the subprocess actually exits.
         if session._backend:
             backend = session._backend
+            # Let go of it immediately. The teardown task below holds its own
+            # reference, but the session must not: an interrupted process is
+            # being torn down, and with reuse a next turn that found it still
+            # briefly alive would hand its prompt to a dying CLI.
+            session._backend = None
+            session._held_run_at = None
             asyncio.create_task(self._safe_backend_interrupt(backend))
 
         inner = session._inner_task
@@ -2032,6 +2059,7 @@ class SessionManager:
             except Exception:
                 pass
             session._backend = None
+            session._held_run_at = None
         if session._lock.locked():
             session._lock.release()
         session.status = SessionStatus.idle
@@ -2104,7 +2132,12 @@ class SessionManager:
         resume_at_turn_start = session.claude_session_id
 
         while True:
-            backend = self._make_run(session, agent, connectors)
+            # Reuse the session's live process when nothing it baked in at
+            # spawn has changed (inline-steering.md §7); otherwise spawn.
+            reused = self._reusable_run(
+                session, session.working_dir, credential, agent, connectors
+            )
+            backend = reused or self._make_run(session, agent, connectors)
             session._backend = backend
             saw_result = False
             saw_tool_use = False
@@ -2130,12 +2163,18 @@ class SessionManager:
             watchdog = self._start_turn_watchdog(backend, watchdog_state)
 
             try:
-                await backend.start(
-                    current_prompt,
-                    session.working_dir,
-                    session.claude_session_id,
-                    credential=credential,
-                )
+                if reused is not None:
+                    # The process already holds this conversation, so there is
+                    # no prompt to re-render and no transcript to resume: just
+                    # hand it the next message.
+                    await backend.send_turn(current_prompt)
+                else:
+                    await backend.start(
+                        current_prompt,
+                        session.working_dir,
+                        session.claude_session_id,
+                        credential=credential,
+                    )
 
                 async for event in backend.stream():
                     watchdog_state["last"] = time.monotonic()
@@ -2239,13 +2278,36 @@ class SessionManager:
                         await watchdog
                     except (asyncio.CancelledError, Exception):
                         pass
-                try:
-                    await backend.stop()
-                except Exception:
-                    logger.exception(
-                        "backend.stop() failed cleanly for session %s", session.id
-                    )
-                session._backend = None
+                # Keep the process only when this turn ended the way a turn
+                # is supposed to: a clean `result`, nothing tripped, nothing
+                # to retry. A watchdog timeout, an error, or an interrupt all
+                # leave the CLI in a state we'd rather not inherit, so those
+                # shut it down and the next turn spawns fresh.
+                keep = (
+                    backend.reusable
+                    and backend.is_alive()
+                    and saw_result
+                    and not saw_error_event
+                    and watchdog_state["tripped"] is None
+                )
+                if keep:
+                    session._held_run_at = time.monotonic()
+                    # Enforce the cap HERE, not only on the reaper's tick.
+                    # The reaper is a background task that doesn't exist in
+                    # tests and runs every 30s in production, so leaving the
+                    # bound to it means N finished sessions can each pin
+                    # ~255MB in between — which is exactly how the backend
+                    # suite got OOM-killed.
+                    await self._enforce_held_cap(keep_session_id=session.id)
+                else:
+                    try:
+                        await backend.stop()
+                    except Exception:
+                        logger.exception(
+                            "backend.stop() failed cleanly for session %s", session.id
+                        )
+                    session._backend = None
+                    session._held_run_at = None
 
             # Turn watchdog tripped (idle or overall cap): the backend was
             # stopped mid-turn. Surface a clear error and STOP — before the
@@ -2486,6 +2548,178 @@ class SessionManager:
         return get_harness(session.backend).create_run(
             self._run_config(session, agent, connectors)
         )
+
+    async def _enforce_held_cap(self, *, keep_session_id: str | None = None) -> int:
+        """Drop least-recently-used held processes until at most
+        `_MAX_HELD_PROCESSES` remain, never touching `keep_session_id` (the
+        session that just finished a turn) or any session mid-turn.
+
+        This is the hard bound on the memory reuse costs. The reaper's idle
+        timeout is the soft one — it releases processes nobody is using, while
+        this stops a busy workspace from holding more than we budgeted for.
+        """
+        held = [
+            s
+            for s in self.sessions.values()
+            if s._backend is not None
+            and s._held_run_at is not None
+            and s.id != keep_session_id
+            and (s._active_task is None or s._active_task.done())
+        ]
+        if len(held) < _MAX_HELD_PROCESSES:
+            return 0
+        held.sort(key=lambda s: s._held_run_at or 0.0)
+        # `keep_session_id` occupies one slot of the budget.
+        excess = len(held) - (_MAX_HELD_PROCESSES - (1 if keep_session_id else 0))
+        stopped = 0
+        for session in held[: max(0, excess)]:
+            backend = session._backend
+            session._backend = None
+            session._held_run_at = None
+            if backend is None:
+                continue
+            try:
+                await backend.stop()
+                stopped += 1
+            except Exception:
+                logger.exception(
+                    "failed stopping held process for session %s", session.id
+                )
+        if stopped:
+            logger.info("released %d held CLI process(es) to stay under the cap", stopped)
+        return stopped
+
+    async def reap_held_processes(self) -> int:
+        """Drop held CLI processes that have outstayed their welcome.
+
+        Two rules, both from §7: anything idle longer than
+        `_HELD_PROCESS_IDLE_SECONDS`, and — if more are still held than
+        `_MAX_HELD_PROCESSES` — the least recently used until the count fits.
+        Returns how many were stopped. A session whose process is reaped is
+        not harmed: its next turn spawns and resumes.
+        """
+        now = time.monotonic()
+        held = [
+            s
+            for s in self.sessions.values()
+            if s._backend is not None
+            and s._held_run_at is not None
+            and (s._active_task is None or s._active_task.done())
+        ]
+        doomed = [s for s in held if now - (s._held_run_at or now) >= _HELD_PROCESS_IDLE_SECONDS]
+        survivors = [s for s in held if s not in doomed]
+        if len(survivors) > _MAX_HELD_PROCESSES:
+            survivors.sort(key=lambda s: s._held_run_at or 0.0)
+            doomed.extend(survivors[: len(survivors) - _MAX_HELD_PROCESSES])
+
+        stopped = 0
+        for session in doomed:
+            backend = session._backend
+            session._backend = None
+            session._held_run_at = None
+            if backend is None:
+                continue
+            try:
+                await backend.stop()
+                stopped += 1
+            except Exception:
+                logger.exception(
+                    "failed stopping held process for session %s", session.id
+                )
+        if stopped:
+            logger.info("reaped %d idle CLI process(es)", stopped)
+        return stopped
+
+    async def _reaper_loop(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(_REAPER_INTERVAL_SECONDS)
+                await self.reap_held_processes()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("held-process reaper iteration failed")
+
+    def start_reaper(self) -> None:
+        """Start the idle-process reaper. Idempotent; called from lifespan."""
+        if self._reaper_task is None or self._reaper_task.done():
+            self._reaper_task = asyncio.create_task(
+                self._reaper_loop(), name="held-process-reaper"
+            )
+
+    async def stop_all_held_processes(self) -> int:
+        """Stop every held CLI process. Called at shutdown.
+
+        Without this a server restart orphans one ~255MB node process per held
+        session: nothing else closes their stdin, and they are waiting on it
+        rather than on a parent that just died.
+        """
+        stopped = 0
+        for session in list(self.sessions.values()):
+            backend = session._backend
+            session._backend = None
+            session._held_run_at = None
+            if backend is None:
+                continue
+            try:
+                # Bounded: a CLI that won't die must not hold up shutdown.
+                # The process group gets SIGKILLed by stop()'s own escalation,
+                # and anything still alive after that is the OS's problem, not
+                # a reason to hang the server.
+                await asyncio.wait_for(backend.stop(), timeout=_HELD_STOP_TIMEOUT)
+                stopped += 1
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "held process for session %s didn't stop in %.0fs; abandoning it",
+                    session.id,
+                    _HELD_STOP_TIMEOUT,
+                )
+            except Exception:
+                logger.exception(
+                    "failed stopping held process for session %s at shutdown",
+                    session.id,
+                )
+        return stopped
+
+    async def stop_reaper(self) -> None:
+        task = self._reaper_task
+        self._reaper_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    def _reusable_run(
+        self,
+        session: Session,
+        working_dir: str,
+        credential: Any,
+        agent: dict[str, Any] | None,
+        connectors: list[tuple[Any, Any]] | None,
+    ) -> HarnessRun | None:
+        """The session's held process, if it can serve this turn.
+
+        Spawning the CLI costs ~1.5s that a live process doesn't pay, and its
+        prompt cache stays warm (inline-steering.md §3). Reuse is refused —
+        and the caller spawns fresh — whenever anything baked in at spawn has
+        changed, so a persona edit or a credential swap can never be served by
+        a process still running the old one.
+        """
+        held = session._backend
+        if held is None or not held.reusable or not held.is_alive():
+            return None
+        want = self._make_run(session, agent, connectors).spawn_signature(
+            working_dir, credential
+        )
+        if held.spawn_signature(working_dir, credential) != want:
+            logger.info(
+                "session %s config changed; respawning instead of reusing",
+                session.id,
+            )
+            return None
+        return held
 
     def _run_config(
         self,

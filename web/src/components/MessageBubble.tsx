@@ -38,6 +38,13 @@ interface MessageBubbleProps {
   // session has no owning agent.
   agentName?: string;
   agentAvatar?: string | null;
+  // Render the body as plain text instead of markdown. Used for text that is
+  // still streaming (inline-steering.md §12): re-parsing a growing string
+  // through remark-gfm + remark-math on every 50ms flush is O(n²) work on a
+  // long answer and janks the main thread, and half-written markdown (an
+  // unclosed code fence, a lone table row) renders broken while it arrives.
+  // The completed block that replaces it renders as markdown normally.
+  plain?: boolean;
   // "Fork from here" affordance (session-rewind.md §6.1): rendered on
   // user messages when set + the message has a known seq. Called with the
   // rewind target seq.
@@ -110,6 +117,7 @@ export function MessageBubble({
   sessionId,
   agentName,
   agentAvatar,
+  plain = false,
   onFork,
 }: MessageBubbleProps) {
   const assistantLabel = agentName || "Assistant";
@@ -184,12 +192,18 @@ export function MessageBubble({
             {assistantAvatar || "🐙"}
           </span>
           <div className="msg-content markdown min-w-0 flex-1 text-[14px] leading-[1.65] text-gray-900">
-            <Markdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-            >
-              {message.content || ""}
-            </Markdown>
+            {plain ? (
+              <div className="msg-streaming-text whitespace-pre-wrap break-words">
+                {message.content || ""}
+              </div>
+            ) : (
+              <Markdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+              >
+                {message.content || ""}
+              </Markdown>
+            )}
           </div>
         </div>
       );

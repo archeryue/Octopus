@@ -30,6 +30,7 @@ from .profile import (
     OneShotContext,
     ParseOutput,
     RuntimeProfile,
+    StdinMode,
     TurnContext,
     WebCapability,
 )
@@ -170,6 +171,12 @@ def _apply_env_credential(env: dict[str, str], credential: HarnessCredential | N
         env["CLAUDE_CODE_OAUTH_TOKEN"] = credential.secret
 
 
+# Where the prompt goes, and therefore what stdin is for. Referenced by both
+# `build_turn_argv` and the profile below so the renderer and the run engine
+# can never disagree (inline-steering.md §6).
+_STDIN_MODE = StdinMode.STREAM_JSON
+
+
 # ------------------------------------------------------------------ turn argv
 
 
@@ -232,7 +239,14 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         argv += ["--model", ctx.model]
     if ctx.resume_id:
         argv += ["--resume", ctx.resume_id]
-    argv += ["--", ctx.prompt]
+    if _STDIN_MODE is StdinMode.STREAM_JSON:
+        # The prompt — and, later, any mid-turn follow-up — are written as
+        # JSON lines on stdin instead of being baked into argv
+        # (inline-steering.md §6). `HarnessRun.start` writes the first frame
+        # the moment the process is up, so the CLI never waits on an idle pipe.
+        argv += ["--input-format", "stream-json"]
+    else:
+        argv += ["--", ctx.prompt]
 
     env = os.environ.copy()
     _apply_env_credential(env, ctx.credential)
@@ -698,14 +712,19 @@ CLAUDE_CODE = RuntimeProfile(
     stale_session_patterns=_CLAUDE_STALE_SESSION_PATTERNS,
     transient_error_patterns=_CLAUDE_TRANSIENT_ERROR_PATTERNS,
     web=WebCapability(tool_names=("WebSearch", "WebFetch"), combined=False),
-    # Close stdin right after spawn. `claude --print` takes its prompt from
-    # argv (`-- <prompt>`) and never reads stdin, so leaving the pipe open made
-    # the CLI wait ~3s ("no stdin data received in 3s") on every turn AND —
-    # critically — made `--resume` of a freshly-synthesized fork transcript
-    # fail ~all the time with "No conversation found" (a discovery race the
-    # open-stdin wait widened). Closing stdin gives immediate EOF: no wait, and
-    # synth resume becomes reliable (session-rewind.md Phase 5).
-    close_stdin_after_start=True,
+    # The prompt is a JSON frame on stdin, which therefore stays open for the
+    # life of the process — that open pipe is what lets one process serve
+    # several turns, and (S3) take a steer mid-turn.
+    #
+    # Stdin used to be closed right after spawn, because an open-but-idle pipe
+    # made the CLI wait ~3s ("no stdin data received in 3s") on every turn AND
+    # made `--resume` of a freshly-synthesized fork transcript fail with "No
+    # conversation found" (a discovery race the wait widened). STREAM_JSON
+    # removes the wait by construction: the frame is written the instant the
+    # process is up, so the CLI never waits for input that isn't coming
+    # (measured 2.39s vs a 2.04s bare spawn). Neither failure reproduced —
+    # inline-steering.md §10, with the fork suites as the standing gate.
+    stdin_mode=_STDIN_MODE,
     build_turn_argv=build_turn_argv,
     new_event_parser=ClaudeEventParser,
     build_oneshot_argv=build_oneshot_argv,

@@ -18,6 +18,7 @@ from server.harness.events import HarnessEvent
 from server import session_manager as sm
 from server.session_manager import ForkError, QueuedPrompt, SessionManager
 from server.delegations import DelegationRunState, delegation_manager
+from tests.fake_run import FakeRunBase
 
 
 @pytest.fixture
@@ -502,7 +503,7 @@ async def test_fork_with_revert_refused_non_git(manager, tmp_path, monkeypatch):
 # ------------------------------------------------------------------ replay dispatch
 
 
-class _FakeRun:
+class _FakeRun(FakeRunBase):
     """Records the dispatch prompt and emits a clean session_started+result."""
 
     def __init__(self):

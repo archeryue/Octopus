@@ -108,9 +108,16 @@ answer length (a 120-word reply led by only 0.6s). Deltas are coalesced into at
 most one frame per 50ms: 128 frames for a ~900-token answer instead of ~900,
 with no visible stepping. The completed answer renders exactly once.
 
-**S2 — persist the process.** `stdin_mode=STREAM_JSON`, prompt over stdin, the
-process outliving the turn, plus an idle reaper (§7). −1.5s per turn after the
-first, bounded memory.
+**S2 — persist the process.** Two steps, the first of which is **done**:
+
+* *Prompt over stdin* (shipped): `StdinMode` replaces the
+  `close_stdin_after_start` boolean, Claude renders `--input-format
+  stream-json` with no argv prompt, and `HarnessRun.send_user_frame` writes the
+  opening frame. No behaviour change yet — one process still serves one turn —
+  but the channel now exists and every turn already goes through it.
+* *Reuse the process across turns* (next): the run outlives the turn, a config
+  change forces a respawn, and an idle reaper bounds memory (§7). −1.5s per
+  turn after the first.
 
 **S3 — steer.** The accept path (§8), the echo classifier (§9), the composer
 change (§12). Nearly free once S2 exists — S2 is what makes the channel
@@ -179,44 +186,67 @@ costing 255 MB forever.
 run. A third is taken first on the busy path:
 
 ```
-busy and harness.can_steer and steering window open  → steer
-busy otherwise                                       → queue (today's path)
-idle                                                 → run (today's path)
+busy and the turn can take input  → steer  (append to _steer_queue)
+busy otherwise                    → queue  (today's path)
+idle                              → run    (today's path)
 ```
 
-The window is open from spawn until `result` or `stop()`. A steer that misses it
-**falls back to the queue** rather than erroring — the message is never lost, it
-just arrives as the next turn. That decision must be atomic with the window
-flag, or a steer racing the turn's end is delivered twice.
+"Can take input" means the session's live backend is a `STREAM_JSON` process
+with a turn actually in flight. Everything else queues, which is the safe
+default — the message still runs, just as the next turn.
 
-* **8 pending steers** per turn (vm0's number; it's a person typing).
-* **Idempotent by uuid + text digest.** Same uuid + same text → no-op. Same uuid
-  + *different* text → rejected loudly; silently delivering one of them is the
-  worst outcome.
-* **Rejected, never silently dropped**, when the backend can't steer.
+* **8 pending steers** per turn (vm0's number; it's a person typing). Beyond
+  that the message queues instead, rather than being refused.
+* **Never silently dropped.** A steer that can't be delivered becomes a queued
+  prompt; §9 explains why that fallback is automatic rather than a decision the
+  handler has to get right.
+* A steer is persisted as a user message when it is *written*, so the
+  transcript order matches what the engine actually saw.
 
-## 9. Classifying the echo
+## 9. Delivering a steer: one writer, no echo filter
 
-`--replay-user-messages` makes the CLI emit `user` events for input we sent, and
-our parser already renders `user` events as user blocks
-(`server/harness/claude_code.py:281`) — so that flag and this classifier must
-ship together or every prompt renders twice.
+Two things turned out simpler than vm0's design, because our subprocess is
+local and theirs is across a network.
 
-| event | outcome |
-|-------|---------|
-| uuid == our initial-prompt uuid | `INITIAL_ECHO` — drop |
-| uuid matches a pending steer | `STEER_ECHO` — drop, mark delivered |
-| carries `tool_result`, or has `parent_tool_use_id` | `EXTERNAL` — keep |
-| prompt-shaped, unattributable | `UNKNOWN_PROMPT` — keep, and log |
+**No echo classifier.** `--replay-user-messages` exists to prove the CLI
+accepted the input, and vm0 needs that proof — plus a four-way classification
+of the echoes — because a network sits between their runner and their guest.
+We don't need any of it: `_user_blocks` only turns `tool_result` blocks into
+events and ignores text in user messages entirely, so a replayed prompt
+produces **no events at all** (verified). There is nothing to double-render and
+nothing to filter. A successful `write` + `drain` on a pipe we own is the
+receipt, and the CLI's own `command_lifecycle` events carry our `command_uuid`
+if we ever want an explicit one.
 
-uuid first; text only as a fallback when the uuid is absent. The fourth bucket
-exists because uuid matching cannot be assumed total, and the conservative
-choice for an unattributable prompt is to show it, not swallow it.
+**One writer, and it must not wait for events.** A steer is *not* written to
+stdin by the API handler. `start_message` appends it to
+`session._steer_queue`; a small per-turn **writer task** — the turn's only
+writer — wakes on that queue and writes the frame.
 
-**Ordering.** A steer is persisted as a user message when *accepted*, so the
-transcript matches what you saw when you hit enter; the echo is dropped. The
-engine sees it slightly later (at the tool boundary) — invisible, and better
-than waiting for an echo to render your own words.
+The obvious cheaper design (drain the queue between events in the run loop)
+is wrong: during a long tool call no events arrive at all, so the frame would
+sit unwritten for exactly as long as the tool runs — and a slow tool is
+precisely when a person reaches for the keyboard. The writer task wakes on the
+queue itself, so it writes immediately.
+
+A steer that arrives after the writer task is cancelled is never written, and
+the turn's `finally` moves it to the normal `_pending_queue` so it runs as the
+next turn. The message is never lost; it just may arrive as the next turn
+rather than this one.
+
+**The residual window, stated honestly.** Nothing can atomically know the
+CLI's internal state, so there is a sliver between the CLI emitting `result`
+and us cancelling the writer in which a frame we write is taken as a *new*
+turn. Its events would otherwise land in a queue nobody reads. So the run loop
+records whether any steer was written after `result` was seen, and if one was,
+it iterates the stream once more to consume that turn's reply instead of
+discarding it. The frame is already delivered at that point; recovering its
+answer is just reading.
+
+Latency is bounded by the next event, and during a turn events arrive
+constantly (token deltas alone are ~20/second), so a steer reaches stdin within
+tens of milliseconds — after which the CLI delivers it at the next tool
+boundary (§2).
 
 ## 10. The regression risk
 
@@ -227,14 +257,28 @@ than waiting for an echo to render your own words.
 > transcript fail ~all the time with "No conversation found" (a discovery race
 > the open-stdin wait widened).
 
-The 3s wait **did not reproduce**: turn 1 under `STREAM_JSON` measured 2.39s,
-in line with the 2.04s bare spawn, because we write the prompt frame
-immediately and the CLI never waits for input that isn't coming.
+**Settled: neither half reproduced.** The 3s wait didn't — turn 1 under
+`STREAM_JSON` measured 2.39s against a 2.04s bare spawn, because the prompt
+frame is written the instant the process is up, so the CLI never waits on an
+idle pipe. And resume works with stdin open: `--resume` + `--input-format
+stream-json` completes in 1.8s, the same with stdin left open as with it
+closed. The full real-CLI suite — including
+`test_claude_resume_survives_memory_override`, which exists precisely to catch
+a broken resume — passes.
 
-The resume race is **not** settled by argument. `web/e2e/fork.spec.ts`,
-`web/e2e/fork-copy.spec.ts` and the real-CLI resume tests run repeatedly before
-S2 ships. If it returns, `STREAM_JSON` is gated to non-fork turns rather than
-forced through.
+**What did bite, and it was ours, not the CLI's.** Frame uuids must be unique.
+The CLI reports the uuid we send back as `command_uuid` on `command_lifecycle`
+events and **deduplicates on it**: a repeated uuid means the command is
+silently dropped and the turn hangs until its timeout, with nothing on stderr.
+The first implementation derived the uuid from `(session_id, turn_index)` with
+`turn_index` always 0 on a fresh run, so every turn of a session sent the same
+id and the *second* turn of any resumed session hung.
+
+This also produced a convincing false diagnosis: a probe reusing one hardcoded
+uuid across two turns "proved" that `--resume` and stream-json input were
+incompatible. They aren't. Frame uuids are now random per frame, remembered on
+the run for S3's echo matching, and pinned by
+`test_every_frame_uuid_is_distinct`.
 
 ## 11. Codex
 
