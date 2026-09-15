@@ -510,7 +510,7 @@ function ArchivedAgents({
           className="archived-item card flex flex-col px-5 py-4"
         >
           <div className="flex items-center gap-2.5">
-            <span className="tile tile-lg tile-warm">{agent.avatar || "🐙"}</span>
+            <span className="tile tile-lg tile-plain">{agent.avatar || "🐙"}</span>
             <span className="truncate text-[15px] font-semibold text-gray-950">
               {agent.name}
             </span>

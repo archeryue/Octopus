@@ -18,6 +18,7 @@ import { ForkDialog } from "./ForkDialog";
 import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
 import { OctopusLogo } from "./OctopusLogo";
+import { CredentialPicker } from "./CredentialPicker";
 import { PageHeader } from "./PageHeader";
 import { QuestionPrompt, type AnswerPayload } from "./QuestionPrompt";
 import { ToolApproval } from "./ToolApproval";
@@ -113,7 +114,6 @@ export function ChatView({
       archivedSessions.find((s) => s.id === activeSessionId),
     [sessions, archivedSessions, activeSessionId]
   );
-  const credentials = useSessionStore((s) => s.credentials);
   const activeAgent = useMemo(
     () => agents.find((a) => a.id === activeSession?.agent_id),
     [agents, activeSession?.agent_id]
@@ -906,19 +906,13 @@ export function ChatView({
     store.setActiveSessionId(parentSession.id);
   };
 
-  // The credential this session actually runs on — the design keeps it in the
-  // header because "which key is this burning" is a per-turn question.
-  const activeCredential = credentials.find(
-    (c) => c.id === (activeSession?.credential_id ?? activeAgent?.credential_id)
-  );
-
   const header = (
     <PageHeader
       className="chat-header"
       onToggleSidebar={onToggleSidebar}
       icon={
         activeSession && activeAgent ? (
-          <span className="tile tile-warm shrink-0" aria-hidden>
+          <span className="tile tile-plain shrink-0" aria-hidden>
             {activeAgent.avatar || "🐙"}
           </span>
         ) : undefined
@@ -931,19 +925,7 @@ export function ChatView({
       meta={activeSession ? renderStatusBadge(activeSession.status) : undefined}
       actions={
         <>
-          {activeCredential && (
-            <span
-              className="credential-chip pill pill-neutral"
-              title={`Credential: ${activeCredential.label}`}
-            >
-              <span
-                className={`size-1.5 rounded-sm ${
-                  activeCredential.needs_reconnect ? "bg-warn" : "bg-warn/70"
-                }`}
-              />
-              {activeCredential.label}
-            </span>
-          )}
+          {activeSession && <CredentialPicker session={activeSession} />}
           <span
             className={`conn-status ${connected ? "on" : "off"} pill ${
               connected ? "pill-success" : "pill-warn"
@@ -1280,10 +1262,7 @@ export function ChatView({
         <div className="chat-empty flex flex-1 flex-col items-center justify-center gap-2 text-gray-700">
           {/* The one place the mark gets room to be itself — nothing else is
             * competing for attention on an empty canvas. */}
-          <OctopusLogo size={44} className="mb-2" />
-          <h2 className="text-[22px] font-bold tracking-tight text-gray-950">
-            Octopus
-          </h2>
+          <OctopusLogo size={44} className="mb-3" />
           <p className="text-[13.5px] leading-relaxed">
             Pick a session on the left, or start a new one with{" "}
             <span className="font-mono text-primary">+</span> on an agent.

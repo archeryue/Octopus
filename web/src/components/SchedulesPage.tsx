@@ -196,7 +196,7 @@ export function SchedulesPage({
                     <div>
                       <div className="text-[12.5px] text-gray-700">Target Agent</div>
                       <div className="mt-1.5 flex items-center gap-2">
-                        <span className="tile tile-warm">
+                        <span className="tile tile-plain">
                           {agent?.avatar || "🐙"}
                         </span>
                         <span className="truncate text-[13.5px] text-gray-900">

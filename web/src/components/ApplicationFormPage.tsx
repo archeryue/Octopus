@@ -147,7 +147,7 @@ export function ApplicationFormPage({
           ) : (
             <div className="space-y-6">
               <div className="flex items-start gap-4">
-                <span className="tile tile-blue mt-7 size-14 rounded-xl text-2xl">
+                <span className="tile tile-plain mt-7 size-14 rounded-xl text-2xl">
                   {icon || "🪟"}
                 </span>
                 <div className="grid flex-1 gap-4 md:grid-cols-2">
@@ -224,7 +224,7 @@ export function ApplicationFormPage({
                         onClick={() => setPickedAgentId(a.id)}
                         aria-pressed={picked}
                       >
-                        <span className="tile tile-warm">{a.avatar || "🐙"}</span>
+                        <span className="tile tile-plain">{a.avatar || "🐙"}</span>
                         <span className="min-w-0 flex-1">
                           <span
                             className={`block truncate text-[13.5px] ${
@@ -329,7 +329,7 @@ function ArchivedGrid({
       {items.map((app) => (
         <div key={app.id} className="archived-item card flex flex-col px-5 py-4">
           <div className="flex items-center gap-2.5">
-            <span className="tile tile-lg tile-blue">{app.icon || "🪟"}</span>
+            <span className="tile tile-lg tile-plain">{app.icon || "🪟"}</span>
             <span className="truncate text-[15px] font-semibold text-gray-950">
               {app.name}
             </span>

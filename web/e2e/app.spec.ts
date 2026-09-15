@@ -93,7 +93,11 @@ test.describe("Session Management", () => {
   });
 
   test("shows empty chat view when no session selected", async ({ page }) => {
-    await expect(page.locator(".chat-empty h2")).toHaveText("Octopus");
+    // The empty canvas is the mark plus one line of guidance — no wordmark.
+    await expect(page.locator(".chat-empty svg")).toBeVisible();
+    await expect(page.locator(".chat-empty")).toContainText(
+      "Pick a session on the left"
+    );
   });
 
   test("deletes a session", async ({ page }) => {

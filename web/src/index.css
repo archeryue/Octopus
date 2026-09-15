@@ -128,6 +128,14 @@ body {
   background: hsl(var(--tile-warm));
 }
 
+/* Identity emoji — agents and applications — sit on the page itself, with no
+ * fill behind them. The emoji is already a shape and a colour; a tinted chip
+ * under it just adds noise, and it read as an unexplained highlight. */
+.tile-plain {
+  background: transparent;
+  font-size: 16px;
+}
+
 .tile-blue {
   background: hsl(var(--gray-200));
   color: hsl(var(--primary-500));

@@ -31,6 +31,20 @@ class CreateSessionRequest(BaseModel):
     backend: BackendKind | None = None
 
 
+class SessionUpdate(BaseModel):
+    """Fields a live session can be repointed at after creation.
+
+    `credential_id` is the one that matters: a session's engine credential was
+    previously fixed at creation, so swapping a lapsed or deleted sign-in
+    meant abandoning the conversation. Pass null to fall back to the agent's
+    credential (or the CLI's own login)."""
+
+    # `...` default distinguishes "not provided" from an explicit null, which
+    # is how you clear the binding.
+    credential_id: str | None = Field(default=None)
+    name: str | None = None
+
+
 class ForkSessionRequest(BaseModel):
     """Body for `POST /api/sessions/{id}/fork` (session-rewind.md §5.1).
     Rewind to *before* the user message at `rewind_to_msg_seq` and re-spawn."""

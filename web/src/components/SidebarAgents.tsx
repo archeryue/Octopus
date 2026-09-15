@@ -203,7 +203,7 @@ export function SidebarAgents() {
                 >
                   ▸
                 </span>
-                <span className="agent-avatar tile tile-warm shrink-0">
+                <span className="agent-avatar tile tile-plain shrink-0">
                   {a.avatar || "🐙"}
                 </span>
                 <span className="agent-name truncate text-sm font-semibold text-gray-900">

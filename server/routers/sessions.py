@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
 from ..harness import BackendForkNotSupported
-from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus
+from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus, SessionUpdate
 from ..session_manager import ForkError, fork_info_fields, session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -68,6 +68,52 @@ async def _check_credential_backend(credential_id: str | None, backend: str) -> 
             f"Credential backend {row['backend']!r} does not match session "
             f"backend {backend!r}",
         )
+
+
+@router.patch("/{session_id}", response_model=SessionInfo)
+async def update_session(
+    session_id: str, req: SessionUpdate, _: str = Depends(verify_token)
+):
+    """Repoint a live session — today its credential and its name.
+
+    The credential is the point: it used to be fixed at creation, so a lapsed
+    or deleted sign-in stranded the conversation with no way back. The
+    backend-match rule still applies (a Codex credential can't run a Claude
+    session), and an unknown credential id is refused rather than silently
+    stored, because a dangling id is exactly the state this route exists to
+    get out of."""
+    session = session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+
+    fields = req.model_dump(exclude_unset=True)
+    updates: dict[str, object] = {}
+
+    if "credential_id" in fields:
+        cred_id = fields["credential_id"] or None
+        if cred_id is not None:
+            row = await session_manager.db.get_credential(cred_id)
+            if row is None:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, "Credential not found"
+                )
+            await _check_credential_backend(cred_id, session.backend)
+        updates["credential_id"] = cred_id
+
+    if "name" in fields and fields["name"] is not None:
+        name = str(fields["name"]).strip()
+        if not name:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Session name cannot be empty"
+            )
+        updates["name"] = name
+
+    if updates:
+        await session_manager.db.update_session_field(session_id, **updates)
+        for key, value in updates.items():
+            setattr(session, key, value)
+
+    return _to_session_info(session)
 
 
 @router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)

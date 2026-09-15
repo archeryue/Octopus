@@ -295,23 +295,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/sessions/import": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Import Session */
-        post: operations["import_session_api_sessions_import_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/sessions/{session_id}": {
         parameters: {
             query?: never;
@@ -325,6 +308,34 @@ export interface paths {
         post?: never;
         /** Delete Session */
         delete: operations["delete_session_api_sessions__session_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Session
+         * @description Repoint a live session — today its credential and its name.
+         *
+         *     The credential is the point: it used to be fixed at creation, so a lapsed
+         *     or deleted sign-in stranded the conversation with no way back. The
+         *     backend-match rule still applies (a Codex credential can't run a Claude
+         *     session), and an unknown credential id is refused rather than silently
+         *     stored, because a dangling id is exactly the state this route exists to
+         *     get out of.
+         */
+        patch: operations["update_session_api_sessions__session_id__patch"];
+        trace?: never;
+    };
+    "/api/sessions/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Session */
+        post: operations["import_session_api_sessions_import_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2308,6 +2319,21 @@ export interface components {
          * @enum {string}
          */
         SessionStatus: "idle" | "running" | "waiting_approval";
+        /**
+         * SessionUpdate
+         * @description Fields a live session can be repointed at after creation.
+         *
+         *     `credential_id` is the one that matters: a session's engine credential was
+         *     previously fixed at creation, so swapping a lapsed or deleted sign-in
+         *     meant abandoning the conversation. Pass null to fall back to the agent's
+         *     credential (or the CLI's own login).
+         */
+        SessionUpdate: {
+            /** Credential Id */
+            credential_id?: string | null;
+            /** Name */
+            name?: string | null;
+        };
         /** SetAgentConnectorsRequest */
         SetAgentConnectorsRequest: {
             /** Installation Ids */
@@ -3194,39 +3220,6 @@ export interface operations {
             };
         };
     };
-    import_session_api_sessions_import_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ImportSessionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionDetail"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_session_api_sessions__session_id__get: {
         parameters: {
             query?: never;
@@ -3275,6 +3268,74 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_session_api_sessions__session_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_session_api_sessions_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionDetail"];
+                };
             };
             /** @description Validation Error */
             422: {

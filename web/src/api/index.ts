@@ -40,6 +40,7 @@ export type PendingQuestionInfo = components["schemas"]["PendingQuestionInfo"];
 export type ScheduleInfo = components["schemas"]["ScheduleInfo"];
 export type SessionDetail = components["schemas"]["SessionDetail"];
 export type SessionInfo = components["schemas"]["SessionInfo"];
+export type SessionUpdate = components["schemas"]["SessionUpdate"];
 export type SessionStatus = components["schemas"]["SessionStatus"];
 
 export type CreateCredentialRequest = components["schemas"]["CreateCredentialRequest"];

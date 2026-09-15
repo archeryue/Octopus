@@ -19,6 +19,7 @@ const addOctoSession = (page: Page) =>
     .click();
 
 const OWNED_NAMES = new Set([
+  "Credential Swap",
   "Schedule UI Test",
   "Schedule Cmd Test",
   "Waiting Hint Yes",
@@ -665,6 +666,62 @@ test.describe("Credentials Panel", () => {
       "Agent's credential",
       "E2E Cred Renamed",
     ]);
+  });
+});
+
+test.describe("Session credential picker", () => {
+  test("repoints a live session at another credential from the header", async ({
+    page,
+    request,
+  }) => {
+    // Two sign-ins for the same engine: the session starts on one and has to
+    // be movable to the other. Before this existed, a session's credential was
+    // fixed at creation — deleting or losing that sign-in stranded the
+    // conversation.
+    const mk = async (label: string) => {
+      const res = await request.post(`${API}/credentials`, {
+        headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+        data: { backend: "claude-code", label, auth_type: "api_key", secret: "sk-e2e" },
+      });
+      expect(res.ok()).toBeTruthy();
+      return (await res.json()).id as string;
+    };
+    const oldId = await mk("E2E Old Key");
+    await mk("E2E New Key");
+
+    const made = await request.post(`${API}/sessions`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+      data: { name: "Credential Swap", working_dir: "/tmp", credential_id: oldId },
+    });
+    expect(made.ok()).toBeTruthy();
+    const sessionId = (await made.json()).id as string;
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Credential Swap" })
+      .click();
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
+      "Credential Swap"
+    );
+
+    const chip = page.locator(".credential-chip");
+    await expect(chip).toContainText("E2E Old Key");
+
+    await chip.click();
+    await page.locator(".credential-option", { hasText: "E2E New Key" }).click();
+    await expect(chip).toContainText("E2E New Key");
+
+    // It stuck server-side, not just in the store.
+    const after = await request.get(`${API}/sessions/${sessionId}`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const newId = (await after.json()).credential_id as string;
+    expect(newId).not.toBe(oldId);
+
+    // And it can fall back to the agent's credential / host default.
+    await chip.click();
+    await page.locator(".credential-option-inherit").click();
+    await expect(chip).toContainText("host default");
   });
 });
 

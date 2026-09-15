@@ -1407,6 +1407,31 @@ class Database:
         if meta_updates or secret_value is not None:
             await self._conn.commit()
 
+    async def clear_credential_from_sessions(self, credential_id: str) -> list[str]:
+        """Unbind a credential from every session that pins it, returning the
+        session ids changed.
+
+        `sessions.credential_id` predates foreign keys on that table (it was
+        added by a plain ALTER), so deleting a credential used to leave live
+        sessions pointing at a row that no longer exists — they'd silently stop
+        using the auth the user intended and couldn't be repointed, because a
+        session's credential was only settable at creation. Clearing it makes
+        them fall back to the agent's credential (or the CLI's own login),
+        which is what the FK on `agents.credential_id` already does for agents.
+        """
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "SELECT id FROM sessions WHERE credential_id = ?", (credential_id,)
+        )
+        ids = [row[0] for row in await cursor.fetchall()]
+        if ids:
+            await self._conn.execute(
+                "UPDATE sessions SET credential_id = NULL WHERE credential_id = ?",
+                (credential_id,),
+            )
+            await self._conn.commit()
+        return ids
+
     async def delete_credential(self, credential_id: str) -> bool:
         await self._ensure_connected()
         # ON DELETE CASCADE on credential_secrets handles the secret row.

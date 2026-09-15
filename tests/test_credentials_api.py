@@ -546,3 +546,143 @@ async def test_codex_status_reauth_clears_flag_in_place(client):
         assert row["status"] == "active"
     finally:
         codex_login_manager._sessions.pop("login-reauth", None)
+
+
+# ---------------------------------------------------------------------------
+# Deleting a credential must not strand the sessions that used it
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_unbinds_the_sessions_that_pinned_it(client):
+    """`sessions.credential_id` has no FK (it predates one), so deleting a
+    credential used to leave live sessions pointing at a row that no longer
+    exists: they silently stopped using the auth the user intended and
+    couldn't be repointed. Deleting now clears the binding, so those sessions
+    fall back to the agent's credential / the CLI's own login."""
+    from server.agent_manager import AgentManager
+    from server.session_manager import session_manager
+
+    c, db = client
+    session_manager.sessions.clear()
+    await session_manager.initialize(db)
+    agent = await AgentManager(db).create_agent(name="Binder")
+
+    made = await c.post(
+        "/api/credentials",
+        json={
+            "backend": "claude-code",
+            "label": "Old key",
+            "auth_type": "api_key",
+            "secret": "sk-ant-old",
+        },
+        headers=AUTH,
+    )
+    cred_id = made.json()["id"]
+
+    bound = await session_manager.create_session(
+        agent_id=agent["id"], name="pinned", credential_id=cred_id
+    )
+    free = await session_manager.create_session(agent_id=agent["id"], name="free")
+    assert bound.credential_id == cred_id
+
+    res = await c.delete(f"/api/credentials/{cred_id}", headers=AUTH)
+    assert res.status_code == 204
+
+    # In memory and on disk, the dead id is gone — not left dangling.
+    assert session_manager.get_session(bound.id).credential_id is None
+    rows = {r["id"]: r for r in await db.load_sessions()}
+    assert rows[bound.id]["credential_id"] is None
+    # Sessions that never used it are untouched.
+    assert rows[free.id]["credential_id"] is None
+    session_manager.sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_session_can_be_repointed_at_another_credential(client):
+    """A session's credential was fixed at creation, which made a lapsed or
+    deleted sign-in unrecoverable for that conversation."""
+    from server.agent_manager import AgentManager
+    from server.session_manager import session_manager
+
+    c, db = client
+    session_manager.sessions.clear()
+    await session_manager.initialize(db)
+    agent = await AgentManager(db).create_agent(name="Swapper")
+    session = await session_manager.create_session(agent_id=agent["id"], name="s")
+
+    new_id = (
+        await c.post(
+            "/api/credentials",
+            json={
+                "backend": "claude-code",
+                "label": "New key",
+                "auth_type": "api_key",
+                "secret": "sk-ant-new",
+            },
+            headers=AUTH,
+        )
+    ).json()["id"]
+
+    res = await c.patch(
+        f"/api/sessions/{session.id}",
+        json={"credential_id": new_id},
+        headers=AUTH,
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["credential_id"] == new_id
+    assert session_manager.get_session(session.id).credential_id == new_id
+
+    # Explicit null clears it again (back to the agent's credential).
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"credential_id": None}, headers=AUTH
+    )
+    assert res.status_code == 200
+    assert res.json()["credential_id"] is None
+
+    # A credential that doesn't exist is refused — a dangling id is exactly
+    # what this route exists to get out of.
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"credential_id": "ghost"}, headers=AUTH
+    )
+    assert res.status_code == 404
+
+    # ...and so is one belonging to the other engine.
+    codex_id = (
+        await c.post(
+            "/api/credentials",
+            json={"backend": "codex", "label": "Codex", "auth_type": "oauth", "secret": "x"},
+            headers=AUTH,
+        )
+    ).json()["id"]
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"credential_id": codex_id}, headers=AUTH
+    )
+    assert res.status_code == 400
+    assert "does not match" in res.json()["detail"]
+    session_manager.sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_patch_renames_a_session_and_rejects_an_empty_name(client):
+    from server.agent_manager import AgentManager
+    from server.session_manager import session_manager
+
+    c, db = client
+    session_manager.sessions.clear()
+    await session_manager.initialize(db)
+    agent = await AgentManager(db).create_agent(name="Renamer")
+    session = await session_manager.create_session(agent_id=agent["id"], name="old")
+
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"name": "  new name  "}, headers=AUTH
+    )
+    assert res.status_code == 200
+    assert res.json()["name"] == "new name"
+
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"name": "   "}, headers=AUTH
+    )
+    assert res.status_code == 400
+    assert (await c.patch("/api/sessions/ghost", json={"name": "x"}, headers=AUTH)).status_code == 404
+    session_manager.sessions.clear()

@@ -146,7 +146,7 @@ export function ApplicationView({
       <PageHeader
         onToggleSidebar={onToggleSidebar}
         icon={
-          <span className="tile tile-blue shrink-0" aria-hidden>
+          <span className="tile tile-plain shrink-0" aria-hidden>
             {app.icon || "🪟"}
           </span>
         }

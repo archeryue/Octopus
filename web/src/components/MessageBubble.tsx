@@ -177,7 +177,7 @@ export function MessageBubble({
            and plain prose beside it — no card, no name row. */
         <div className="msg msg-assistant flex gap-3">
           <span
-            className="tile tile-lg tile-warm mt-0.5"
+            className="tile tile-lg tile-plain mt-0.5"
             title={assistantLabel}
             aria-label={assistantLabel}
           >

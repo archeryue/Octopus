@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..auth import verify_token
+from ..session_manager import session_manager
 from ..config import settings
 from ..crypto import encrypt
 from ..models import (
@@ -140,6 +141,14 @@ async def update_credential(
 async def delete_credential(credential_id: str, _: str = Depends(verify_token)):
     db = _require_db()
     row = await db.get_credential(credential_id)
+    # Unbind before deleting: a session pinned to a deleted credential can't
+    # run it and (until now) couldn't be repointed either. Clearing drops it
+    # back to the agent's credential / the CLI's own login.
+    unbound = await db.clear_credential_from_sessions(credential_id)
+    for sid in unbound:
+        live = session_manager.get_session(sid)
+        if live is not None:
+            live.credential_id = None
     deleted = await db.delete_credential(credential_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="credential not found")

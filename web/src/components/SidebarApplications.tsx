@@ -81,7 +81,7 @@ export function SidebarApplications() {
               onClick={() => openApplication(app.id)}
               title={app.description || app.name}
             >
-              <span className="application-icon tile tile-blue shrink-0">
+              <span className="application-icon tile tile-plain shrink-0">
                 {app.icon || "🪟"}
               </span>
               <span
