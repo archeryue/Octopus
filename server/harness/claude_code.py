@@ -258,13 +258,16 @@ class ClaudeEventParser(EventParser):
         kind = obj.get("type")
 
         if kind == "system":
-            if obj.get("subtype") == "init":
+            subtype = obj.get("subtype")
+            if subtype == "init":
                 sid = obj.get("session_id")
                 self._captured_session_id = sid
                 if sid:
                     return ParseOutput(
                         events=[HarnessEvent(type="session_started", session_id=sid)]
                     )
+            if subtype == "api_retry":
+                return self._api_retry(obj)
             return ParseOutput()
 
         # Partial deltas / rate-limit notices / vestigial control protocol —
@@ -283,6 +286,43 @@ class ClaudeEventParser(EventParser):
 
         logger.debug("Unhandled CLI event type: %s", kind)
         return ParseOutput()
+
+    def _api_retry(self, obj: dict[str, Any]) -> ParseOutput:
+        """`system/api_retry` — the CLI retrying a failed API call itself.
+
+        Retryable statuses (429/5xx/overloaded) are the CLI's business: stay
+        quiet and let it work, and let the terminal failure fall through to
+        the transient-retry path (harness-transient-retry.md).
+
+        A **401 is different**. The credential is rejected, and no amount of
+        retrying fixes that — but the CLI backs off exponentially across 10
+        attempts, so the turn would sit there for roughly ten minutes before
+        failing, long enough for the idle watchdog to mis-report it as a
+        timeout. Surface it as an auth error immediately and end the stream;
+        the session manager's reactive auth-expiry path then flags the
+        credential `needs_reconnect` and prompts a re-authorize
+        (harness-credential-reauth.md §4). The text deliberately contains
+        "API error: 401" so `is_auth_error` matches it.
+        """
+        status = obj.get("error_status")
+        reason = str(obj.get("error") or "").strip()
+        if status != 401 and reason != "authentication_failed":
+            return ParseOutput()
+        detail = f" ({reason})" if reason else ""
+        return ParseOutput(
+            events=[
+                HarnessEvent(
+                    type="error",
+                    content=(
+                        f"Claude API error: 401 authentication failed{detail} — "
+                        f"the credential was rejected."
+                    ),
+                    is_error=True,
+                    raw=obj,
+                )
+            ],
+            end_of_stream=True,
+        )
 
     def _assistant_blocks(self, message: dict[str, Any]) -> list[HarnessEvent]:
         out: list[HarnessEvent] = []

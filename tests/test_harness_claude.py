@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from server.harness import assembly
+from server.harness import assembly, get_harness
 from server.harness.claude_code import (
     _OCTOPUS_SYSTEM_PROMPT,
     ClaudeEventParser,
@@ -143,6 +143,45 @@ def test_parser_ignores_control_and_unknown():
     p = ClaudeEventParser()
     for kind in ("control_request", "control_response", "rate_limit_event", "stream_event", "mystery"):
         assert p.parse({"type": kind}).events == []
+
+
+def test_parser_api_retry_401_is_a_fatal_auth_error():
+    """The CLI retries a rejected credential 10 times with exponential
+    backoff — ~10 minutes of nothing. Cut it short: a 401 retry becomes an
+    auth error that ends the stream, so the session manager's reactive
+    auth-expiry path fires instead of the idle watchdog
+    (harness-credential-reauth.md §4)."""
+    p = ClaudeEventParser()
+    out = p.parse(
+        {
+            "type": "system",
+            "subtype": "api_retry",
+            "attempt": 1,
+            "max_retries": 10,
+            "retry_delay_ms": 564,
+            "error_status": 401,
+            "error": "authentication_failed",
+        }
+    )
+    assert [e.type for e in out.events] == ["error"]
+    assert out.events[0].is_error is True
+    assert out.end_of_stream is True
+    # The wording has to match the backend's auth patterns, or the session
+    # manager would treat it as a generic failure and respawn.
+    assert get_harness("claude-code").is_auth_error(out.events[0].content)
+
+
+def test_parser_api_retry_transient_stays_quiet():
+    """429/5xx retries are the CLI's own business — it recovers most of the
+    time, and the terminal failure (if any) falls through to the
+    transient-retry path. Surfacing them would spam the transcript."""
+    p = ClaudeEventParser()
+    for status, reason in ((429, "rate_limit_error"), (500, "api_error"), (529, "overloaded_error")):
+        out = p.parse(
+            {"type": "system", "subtype": "api_retry", "error_status": status, "error": reason}
+        )
+        assert out.events == []
+        assert out.end_of_stream is False
 
 
 # --------------------------------------------------------------------------- #

@@ -73,6 +73,29 @@ Detection reads the raw `HarnessEvent` stream directly (terminal event
 it works even for `type="error"` events that those mappers drop today, with
 no change to result/error rendering semantics and no duplicate bubbles.
 
+### 4a. Don't wait out the CLI's own 401 retries
+
+The Claude CLI retries a failed API call by itself and announces each
+attempt as `{"type":"system","subtype":"api_retry", "error_status":…}`. For
+429/5xx that's exactly right — stay out of its way and let the terminal
+failure fall through to the transient-retry path.
+
+A **401 is not retryable**: the credential is rejected, and the tenth attempt
+will be rejected too. But the CLI backs off exponentially across 10 attempts,
+so the turn sits there for roughly ten minutes — long enough that the idle
+watchdog trips first and the user gets "the turn timed out" instead of "your
+key was rejected".
+
+So `ClaudeEventParser` treats an `api_retry` carrying `error_status: 401` (or
+`error: authentication_failed`) as fatal: it emits an `error` event worded to
+match `_CLAUDE_AUTH_ERROR_PATTERNS` and ends the stream. §4's wiring then runs
+on the spot — credential flagged, re-authorize prompt surfaced — about a
+second after the first rejection instead of ten minutes later. Covered by
+`test_parser_api_retry_401_is_a_fatal_auth_error` (and its transient-stays-quiet
+sibling) plus the real-CLI
+`test_real_credential_with_bad_key_yields_auth_error`, which previously timed
+out waiting for the retry storm to end.
+
 ## 5. Re-authorize in place + clear-on-success
 
 The durable affordance mirrors connectors: the sidebar credential shows a
