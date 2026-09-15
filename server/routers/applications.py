@@ -17,17 +17,21 @@ from __future__ import annotations
 import mimetypes
 import os
 
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from ..applications import (
     ApplicationError,
     ApplicationManager,
     resolve_within,
 )
+from ..app_backends import ABSENT, RUNNING, backend_supervisor
 from ..auth import verify_token
 from ..config import settings
 from ..models import (
+    ApplicationBackend,
     ApplicationBuildRequest,
     ApplicationCreate,
     ApplicationRead,
@@ -58,6 +62,22 @@ def _get_manager() -> ApplicationManager:
     return _manager
 
 
+def _read(row: dict) -> ApplicationRead:
+    """One application row as the API shape, with its live backend state.
+
+    The backend isn't a column — it's a running process the supervisor knows
+    about — so every response has to merge it in. A helper rather than five
+    copies of the same merge, because the one that gets forgotten is the one
+    the UI reads.
+    """
+    return ApplicationRead(
+        **row,
+        backend=ApplicationBackend(
+            **backend_supervisor.describe(row["id"], row["app_dir"])
+        ),
+    )
+
+
 def _http_error(e: ApplicationError) -> HTTPException:
     return HTTPException(e.status_code, e.message)
 
@@ -72,7 +92,7 @@ async def list_applications(
     """Live applications by default; `?archived=true` returns only the
     archived ones (what the create page's Archived tab lists)."""
     rows = await _get_manager().list_applications(only_archived=archived)
-    return [ApplicationRead(**a) for a in rows]
+    return [_read(a) for a in rows]
 
 
 @router.post("", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
@@ -81,13 +101,13 @@ async def create_application(req: ApplicationCreate, _: str = Depends(verify_tok
         app_row = await _get_manager().create_application(**req.model_dump())
     except ApplicationError as e:
         raise _http_error(e)
-    return ApplicationRead(**app_row)
+    return _read(app_row)
 
 
 @router.get("/{app_id}", response_model=ApplicationRead)
 async def get_application(app_id: str, _: str = Depends(verify_token)):
     try:
-        return ApplicationRead(**await _get_manager().get_application(app_id))
+        return _read(await _get_manager().get_application(app_id))
     except ApplicationError as e:
         raise _http_error(e)
 
@@ -104,7 +124,7 @@ async def update_application(
         )
     except ApplicationError as e:
         raise _http_error(e)
-    return ApplicationRead(**row)
+    return _read(row)
 
 
 @router.post("/{app_id}/build", response_model=ApplicationRead)
@@ -116,7 +136,7 @@ async def build_application(
         row = await _get_manager().request_build(app_id, req.prompt)
     except ApplicationError as e:
         raise _http_error(e)
-    return ApplicationRead(**row)
+    return _read(row)
 
 
 @router.post("/{app_id}/archive", response_model=ApplicationRead)
@@ -195,6 +215,108 @@ async def _serve(request: Request, app_id: str, path: str) -> FileResponse:
         target,
         media_type=media_type,
         headers={"Cache-Control": cache},
+    )
+
+
+# Methods a backend may see. Everything a web app needs; nothing that would
+# let a request method itself be a surprise.
+_PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+
+# Hop-by-hop headers belong to one connection and must not be forwarded, plus
+# the ones we set ourselves.
+_SKIP_REQUEST_HEADERS = {
+    "host", "connection", "keep-alive", "transfer-encoding", "upgrade",
+    "proxy-authorization", "proxy-connection", "te", "trailer",
+    # The app cookie authenticates the request to US. A backend has no use for
+    # it, and forwarding it hands the Octopus token to app code.
+    "cookie", "authorization",
+}
+_SKIP_RESPONSE_HEADERS = {
+    "connection", "keep-alive", "transfer-encoding", "upgrade", "trailer",
+    "content-length", "content-encoding",
+}
+
+
+@static_router.api_route(
+    "/apps/{app_id}/api/{path:path}",
+    methods=_PROXY_METHODS,
+    # Not part of the typed client API: the only caller is an application's own
+    # page, calling `api/…` relative to itself. Keeping it out of the schema
+    # also avoids FastAPI giving all seven methods of a multi-method route the
+    # same operationId, which makes the generated TypeScript uncompilable.
+    include_in_schema=False,
+)
+async def proxy_application_api(request: Request, app_id: str, path: str):
+    """`/apps/{id}/api/…` → the application's own backend
+    (application-backends.md §7).
+
+    A fixed prefix rather than "serve a static file if one exists, else proxy":
+    fallback routing makes whether a request reaches your backend depend on
+    whether a file happens to share its path, so renaming a file silently
+    changes routing.
+    """
+    if not _authorized(request):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    try:
+        row = await _get_manager().get_application(app_id)
+    except ApplicationError as e:
+        raise _http_error(e)
+
+    state = await backend_supervisor.ensure_running(app_id, row["app_dir"])
+    if state.state == ABSENT:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "This application has no backend (no executable start.sh)",
+        )
+    if state.state != RUNNING or not state.port:
+        # 503 rather than 500: the app is fine, its backend isn't up. The
+        # message carries the reason because a dead backend with no output is
+        # the thing this feature exists to avoid.
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            state.error or f"backend is {state.state}",
+        )
+
+    url = f"http://127.0.0.1:{state.port}/api/{path}"
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _SKIP_REQUEST_HEADERS
+    }
+    # A long read timeout because a backend may legitimately be slow (a clone,
+    # a build); a short connect timeout because a backend we just confirmed is
+    # listening should answer the socket immediately.
+    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0))
+    try:
+        upstream = client.build_request(
+            request.method,
+            url,
+            headers=headers,
+            params=dict(request.query_params),
+            content=await request.body(),
+        )
+        resp = await client.send(upstream, stream=True)
+    except httpx.HTTPError as exc:
+        await client.aclose()
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"backend did not answer: {exc}"
+        )
+
+    async def body():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        finally:
+            await resp.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        body(),
+        status_code=resp.status_code,
+        headers={
+            k: v for k, v in resp.headers.items()
+            if k.lower() not in _SKIP_RESPONSE_HEADERS
+        },
+        media_type=resp.headers.get("content-type"),
     )
 
 

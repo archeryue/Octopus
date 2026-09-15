@@ -23,6 +23,7 @@ from .tunnel import CloudflareTunnel
 from .database import Database
 from .notifiers import notifier_manager
 from .agent_manager import AgentManager
+from .app_backends import backend_supervisor
 from .applications import application_manager
 from .connector_manager import ConnectorManager
 from .routers import agents, applications as applications_router, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
@@ -101,6 +102,9 @@ async def lifespan(app: FastAPI):
     # only runs after a build, so an app that already ships a logo would keep
     # showing the generic fallback until someone rebuilt it.
     await application_manager.refresh_icons()
+    # Applications with a backend (application-backends.md): stop the ones
+    # nobody is using, and never leave one running past our own exit.
+    backend_supervisor.start_reaper()
 
     # Native deep research (native-deep-research.md). Tracks research jobs as
     # async tasks; injects the final report back into the session.
@@ -127,6 +131,7 @@ async def lifespan(app: FastAPI):
 
     await session_manager.stop_reaper()
     await session_manager.stop_all_held_processes()
+    await backend_supervisor.shutdown()
 
     if tunnel:
         await tunnel.stop()

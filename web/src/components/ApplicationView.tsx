@@ -18,6 +18,7 @@ import { useSessionStore } from "../stores/sessionStore";
 import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import { AppIcon } from "./AppIcon";
+import { BackendPanel } from "./BackendPanel";
 
 /** The main pane for one application (applications.md §7) — the browser-tab
  * view. Renders the app's own document in an iframe once it's `ready`, shows
@@ -245,6 +246,8 @@ export function ApplicationView({
           </div>
         )}
       </div>
+
+      {app.backend && <BackendPanel backend={app.backend} />}
 
       <div className="application-compose shrink-0 border-t border-border bg-background px-4 py-2">
         {error && (

@@ -550,6 +550,24 @@ class ApplicationStatus(str, Enum):
     failed = "failed"
 
 
+class ApplicationBackend(BaseModel):
+    """Runtime state of an application's own server process.
+
+    A second axis alongside `status`, not folded into it: an app can be
+    perfectly built with a crashed backend, or mid-rebuild while the old
+    backend still serves (application-backends.md §9).
+    """
+
+    #: absent | installing | stopped | starting | running | failed
+    state: str = "absent"
+    port: int | None = None
+    error: str | None = None
+    uptime_s: float | None = None
+    #: Last lines of install/start output — a dead backend with no log is the
+    #: failure this feature exists to avoid.
+    log_tail: list[str] = Field(default_factory=list)
+
+
 class ApplicationRead(BaseModel):
     model_config = {"use_enum_values": True}
 
@@ -563,6 +581,9 @@ class ApplicationRead(BaseModel):
     # a rebuild can refresh it and a removed icon can clear it without ever
     # overwriting the emoji a user typed. The UI prefers `icon` when set.
     icon_src: str | None = None
+    # Present for every application; `state: "absent"` when it ships no
+    # executable start.sh.
+    backend: ApplicationBackend = Field(default_factory=ApplicationBackend)
     # The agent that built it and the session its build turns run in. Both
     # nullable: an application outlives the agent and the conversation
     # (ON DELETE SET NULL), it just can't be rebuilt without a new one.

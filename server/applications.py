@@ -91,6 +91,49 @@ def allocate_app_dir(name: str) -> str:
     return candidate
 
 
+def data_dir_for(app_dir: str) -> str:
+    """The app's own state, as a SIBLING of the code directory.
+
+    A sibling and not a subdirectory: a rebuild rewrites the code directory,
+    and anything the running app owns — a cloned repo, a database file,
+    uploads — must survive that (application-backends.md §3). Never served
+    statically.
+    """
+    return app_dir.rstrip("/") + ".data"
+
+
+def runtime_dir_for(app_dir: str) -> str:
+    """Where `install.sh` puts dependencies.
+
+    Separate from the data directory because a venv or node_modules is
+    *derived*: this directory can be deleted to force a clean reinstall without
+    risking anything the user cares about, and a backup of the data directory
+    doesn't carry a few hundred megabytes of packages.
+    """
+    return app_dir.rstrip("/") + ".runtime"
+
+
+def backend_script(app_dir: str, name: str) -> str | None:
+    """Path to `install.sh` / `start.sh` if the app ships an executable one.
+
+    Presence of `start.sh` IS the declaration that an application has a
+    backend — there is no manifest (application-backends.md §2). A file that
+    isn't executable is reported as missing rather than run, so a
+    `chmod`-forgotten script fails as "no backend" instead of as a confusing
+    exec error.
+    """
+    if name not in ("install.sh", "start.sh"):
+        raise ValueError(f"not a backend script: {name}")
+    path = resolve_within(app_dir, name)
+    if path is None or not os.path.isfile(path):
+        return None
+    return path if os.access(path, os.X_OK) else None
+
+
+def has_backend(app_dir: str) -> bool:
+    return backend_script(app_dir, "start.sh") is not None
+
+
 def is_inside_root(path: str) -> bool:
     """True iff `path` resolves inside the managed applications root. Guards
     the delete path — a hand-edited `app_dir` must not be able to make us
@@ -501,10 +544,28 @@ class ApplicationManager:
         never deleted — sessions are history."""
         db = self._require_db()
         row = await self.get_application(app_id)
+
+        # Stop the backend FIRST. A running server outlives its application
+        # otherwise: nothing points at it any more, so neither the reaper nor
+        # shutdown can reach it, and it keeps holding its port and its files
+        # open while we delete the directory underneath it.
+        try:
+            from .app_backends import backend_supervisor
+
+            await backend_supervisor.stop(app_id)
+        except Exception:
+            logger.exception("failed stopping backend for application %s", app_id)
+
         if not keep_files:
             app_dir = row["app_dir"]
             if is_inside_root(app_dir):
                 shutil.rmtree(app_dir, ignore_errors=True)
+                # The data and runtime directories are siblings, so rmtree on
+                # the code directory leaves them behind. Deleting an
+                # application means deleting its state too.
+                for extra in (data_dir_for(app_dir), runtime_dir_for(app_dir)):
+                    if is_inside_root(extra):
+                        shutil.rmtree(extra, ignore_errors=True)
             else:
                 logger.warning(
                     "Refusing to delete application dir outside the managed "
@@ -590,6 +651,16 @@ class ApplicationManager:
             fields["icon_src"] = discover_icon_src(row["app_dir"], row["entrypoint"])
         except Exception:
             logger.exception("icon discovery failed for application %s", app_id)
+
+        # A build turn rewrote the code, so a backend still running is running
+        # the old one, and its dependencies may have changed
+        # (application-backends.md §6).
+        try:
+            from .app_backends import backend_supervisor
+
+            await backend_supervisor.on_rebuild(app_id, row["app_dir"])
+        except Exception:
+            logger.exception("failed restarting backend for application %s", app_id)
 
         fields["updated_at"] = _now()
         await db.update_application(app_id, **fields)
@@ -684,6 +755,24 @@ class ApplicationManager:
             f"width.\n"
             f"- Make it genuinely good: real layout, real styling, real empty "
             f"states. Not a wireframe.\n"
+            f"\nIf it needs SERVER-SIDE work — running a program, talking to "
+            f"a service that blocks browser requests, or storing more than a "
+            f"few megabytes — it can have a real backend:\n"
+            f"- Write an executable `start.sh` at the root that starts a "
+            f"server in the FOREGROUND on `127.0.0.1:$PORT`. Use `exec` so "
+            f"the server IS the process; a script that backgrounds it and "
+            f"returns looks like a crash to Octopus.\n"
+            f"- Put dependency installation in an executable `install.sh`, "
+            f"installing into `$APP_RUNTIME_DIR`. It runs before the first "
+            f"start and after every rebuild, so keep it idempotent.\n"
+            f"- Keep the app's own data in `$APP_DATA_DIR`. A rebuild rewrites "
+            f"your code and never touches that directory — anything you want "
+            f"to survive goes there, nowhere else.\n"
+            f"- The page reaches the backend at `api/…` relative to itself "
+            f"(Octopus proxies `/apps/<id>/api/*`). Everything else is served "
+            f"as a static file from this directory.\n"
+            f"- No backend? Don't write the scripts. A static app stays "
+            f"static.\n\n"
             f"- Give it an icon: either `icon.svg` at the root (square, and "
             f"legible at 22px), or a `<link rel=\"icon\">` in "
             f"`{entrypoint}` pointing at a file in this directory. Octopus "

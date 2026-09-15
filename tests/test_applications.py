@@ -18,6 +18,7 @@ is what's asserted, exactly like the delegation suite.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -1055,3 +1056,214 @@ async def test_refresh_icons_leaves_the_emoji_and_status_alone(am, db, sent):
     assert after["icon"] == "💠"
     assert after["status"] == before["status"]
     assert after["icon_src"] == "icon.svg"
+
+
+# --------------------------------------------------------------------------- #
+# Backends (application-backends.md)
+# --------------------------------------------------------------------------- #
+
+
+def _script(app_dir: str, name: str, body: str, executable: bool = True) -> None:
+    import stat
+
+    path = Path(app_dir) / name
+    path.write_text(body)
+    if executable:
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+
+def test_a_backend_is_declared_by_an_executable_start_script(tmp_path):
+    """Presence of `start.sh` IS the declaration — there is no manifest. A
+    non-executable one reports as absent rather than being run, so a forgotten
+    chmod fails as "no backend" instead of a confusing exec error."""
+    from server.applications import has_backend
+
+    d = tmp_path / "app"
+    d.mkdir()
+    assert has_backend(str(d)) is False
+
+    _script(str(d), "start.sh", "#!/bin/sh\nsleep 1\n", executable=False)
+    assert has_backend(str(d)) is False
+
+    _script(str(d), "start.sh", "#!/bin/sh\nsleep 1\n")
+    assert has_backend(str(d)) is True
+
+
+def test_script_environment_excludes_the_servers_own(monkeypatch):
+    """The server's environment holds the Octopus token, credentials and tunnel
+    config. A backend has no business seeing any of it, and inheriting it
+    wholesale is invisible until it isn't."""
+    from server.app_backends import script_env
+
+    monkeypatch.setenv("OCTOPUS_AUTH_TOKEN", "super-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    env = script_env("a1", "/apps/demo", port=4100)
+
+    assert "OCTOPUS_AUTH_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert env["APP_DATA_DIR"] == "/apps/demo.data"
+    assert env["APP_RUNTIME_DIR"] == "/apps/demo.runtime"
+    assert env["PORT"] == "4100"
+
+
+def test_data_and_runtime_are_siblings_not_subdirectories(tmp_path):
+    """The data directory must survive a rebuild rewriting the code directory,
+    which a subdirectory of it would not."""
+    from server.applications import data_dir_for, runtime_dir_for
+
+    app = str(tmp_path / "demo")
+    assert data_dir_for(app) == str(tmp_path / "demo.data")
+    assert runtime_dir_for(app) == str(tmp_path / "demo.runtime")
+    for d in (data_dir_for(app), runtime_dir_for(app)):
+        assert not d.startswith(app + os.sep)
+
+
+@pytest.mark.asyncio
+async def test_a_real_backend_answers_through_the_proxy(client):
+    """The whole feature, end to end: an application ships `start.sh`, Octopus
+    starts it, and `/apps/{id}/api/…` reaches it.
+
+    The backend here is a real HTTP server in a real subprocess — a stub would
+    prove the routing and none of the contract (port binding, foreground
+    execution, readiness, teardown).
+    """
+    from server.app_backends import backend_supervisor
+
+    app_row = await _api_create(client, name="With Backend")
+    app_dir = app_row["app_dir"]
+    Path(app_dir, "index.html").write_text("<html>ui</html>")
+    _script(
+        app_dir,
+        "start.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "cat > \"$APP_RUNTIME_DIR/serve.py\" <<'EOF'\n"
+        "import json, os\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "class H(BaseHTTPRequestHandler):\n"
+        "    def do_GET(self):\n"
+        "        body = json.dumps({'path': self.path,\n"
+        "                           'data_dir': os.environ['APP_DATA_DIR']}).encode()\n"
+        "        self.send_response(200)\n"
+        "        self.send_header('content-type', 'application/json')\n"
+        "        self.end_headers()\n"
+        "        self.wfile.write(body)\n"
+        "    def log_message(self, *a):\n"
+        "        pass\n"
+        "HTTPServer(('127.0.0.1', int(os.environ['PORT'])), H).serve_forever()\n"
+        "EOF\n"
+        'exec python3 "$APP_RUNTIME_DIR/serve.py"\n',
+    )
+    os.makedirs(Path(app_dir + ".runtime"), exist_ok=True)
+
+    try:
+        resp = await client.get(
+            f"/apps/{app_row['id']}/api/notes?limit=2", headers=HEADERS
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        # The prefix is preserved, so a backend routes on the path it declared.
+        assert payload["path"] == "/api/notes?limit=2"
+        # And it ran with the data directory the contract promises.
+        assert payload["data_dir"] == app_dir + ".data"
+
+        # Static files still come from the code directory, unproxied.
+        page = await client.get(f"/apps/{app_row['id']}/index.html", headers=HEADERS)
+        assert page.status_code == 200
+        assert "ui" in page.text
+
+        # The row reports the backend as running, with its port.
+        detail = (await client.get(
+            f"/api/applications/{app_row['id']}", headers=HEADERS
+        )).json()
+        assert detail["backend"]["state"] == "running"
+        assert detail["backend"]["port"]
+    finally:
+        await backend_supervisor.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_proxy_is_404_when_the_app_has_no_backend(client):
+    app_row = await _api_create(client, name="Static Only")
+    Path(app_row["app_dir"], "index.html").write_text("<html></html>")
+    resp = await client.get(f"/apps/{app_row['id']}/api/anything", headers=HEADERS)
+    assert resp.status_code == 404
+    assert "no backend" in resp.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_proxy_reports_a_broken_backend_rather_than_hanging(client):
+    """A backend that exits immediately is a 503 naming the reason, not a 500
+    and not a wait — "it doesn't work" with no output is the failure this
+    feature exists to avoid."""
+    from server.app_backends import backend_supervisor
+
+    app_row = await _api_create(client, name="Broken Backend")
+    _script(app_row["app_dir"], "start.sh", "#!/bin/sh\necho 'boom' >&2\nexit 7\n")
+    try:
+        resp = await client.get(f"/apps/{app_row['id']}/api/x", headers=HEADERS)
+        assert resp.status_code == 503
+        assert "exited 7" in resp.text
+
+        detail = (await client.get(
+            f"/api/applications/{app_row['id']}", headers=HEADERS
+        )).json()
+        assert detail["backend"]["state"] == "failed"
+        assert any("boom" in line for line in detail["backend"]["log_tail"])
+    finally:
+        await backend_supervisor.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_proxy_requires_auth(client):
+    app_row = await _api_create(client, name="Guarded")
+    _script(app_row["app_dir"], "start.sh", "#!/bin/sh\nsleep 5\n")
+    resp = await client.get(f"/apps/{app_row['id']}/api/x")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_application_stops_its_backend(client):
+    """A running server must not outlive its application. Nothing points at it
+    afterwards, so neither the reaper nor shutdown could ever reach it — it
+    would keep its port and hold files open under a deleted directory."""
+    from server.app_backends import RUNNING, backend_supervisor
+
+    app_row = await _api_create(client, name="Doomed Backend")
+    _script(
+        app_row["app_dir"],
+        "start.sh",
+        '#!/usr/bin/env bash\nexec python3 -m http.server "$PORT" --bind 127.0.0.1\n',
+    )
+    try:
+        resp = await client.get(f"/apps/{app_row['id']}/api/x", headers=HEADERS)
+        assert resp.status_code in (200, 404)  # the stub server's own answer
+        state = backend_supervisor.get(app_row["id"])
+        assert state and state.state == RUNNING
+        proc = state.process
+        assert proc is not None and proc.returncode is None
+
+        await client.delete(f"/api/applications/{app_row['id']}", headers=HEADERS)
+
+        await asyncio.sleep(0.3)
+        assert proc.returncode is not None, "the backend process outlived its app"
+    finally:
+        await backend_supervisor.stop_all()
+
+
+@pytest.mark.asyncio
+async def test_deleting_an_application_removes_its_data_and_runtime(client):
+    """The data and runtime directories are siblings, so removing the code
+    directory leaves them behind unless we say otherwise."""
+    app_row = await _api_create(client, name="Sibling Cleanup")
+    app_dir = app_row["app_dir"]
+    Path(app_dir, "index.html").write_text("<html></html>")
+    os.makedirs(app_dir + ".data", exist_ok=True)
+    os.makedirs(app_dir + ".runtime", exist_ok=True)
+    Path(app_dir + ".data", "notes.json").write_text("[]")
+
+    await client.delete(f"/api/applications/{app_row['id']}", headers=HEADERS)
+
+    assert not os.path.exists(app_dir)
+    assert not os.path.exists(app_dir + ".data")
+    assert not os.path.exists(app_dir + ".runtime")

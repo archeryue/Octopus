@@ -1540,6 +1540,29 @@ export interface components {
             text?: string | null;
         };
         /**
+         * ApplicationBackend
+         * @description Runtime state of an application's own server process.
+         *
+         *     A second axis alongside `status`, not folded into it: an app can be
+         *     perfectly built with a crashed backend, or mid-rebuild while the old
+         *     backend still serves (application-backends.md §9).
+         */
+        ApplicationBackend: {
+            /**
+             * State
+             * @default absent
+             */
+            state: string;
+            /** Port */
+            port?: number | null;
+            /** Error */
+            error?: string | null;
+            /** Uptime S */
+            uptime_s?: number | null;
+            /** Log Tail */
+            log_tail?: string[];
+        };
+        /**
          * ApplicationBuildRequest
          * @description Another build turn — "add a dark mode", "the header should stick".
          */
@@ -1583,6 +1606,7 @@ export interface components {
             icon?: string | null;
             /** Icon Src */
             icon_src?: string | null;
+            backend?: components["schemas"]["ApplicationBackend"];
             /** Agent Id */
             agent_id?: string | null;
             /** Session Id */
