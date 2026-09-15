@@ -13,9 +13,17 @@ a fresh LLM turn — we're testing the chain primitive, not the
 parent's reply. This keeps each test to one real LLM call per real
 agent in the chain.
 
-Sub-agents call no tools (we instruct them not to), so the absence
-of a live FastAPI on 127.0.0.1:<port> for the bg / ask / ask_agent
-MCP servers doesn't matter — they simply aren't invoked.
+A real FastAPI **is** served for each test, on an ephemeral port that
+`settings.port` is pointed at, carrying the two routers the in-turn MCP
+shims call back into: `questions` (for `mcp__ask__user`) and `delegations`
+(for `mcp__ask_agent__*`). Without it those shims time out — "failed to
+reach Octopus" — and any test whose model actually obeys an instruction to
+call one of them cannot pass. Those routes resolve the
+`session_manager` / `delegation_manager` module globals, so the bootstrap
+re-points the *router modules'* names at this test's own instances
+(monkeypatch, so it's undone per test) rather than binding the process-wide
+singletons — the managers stay per-test-isolated while the HTTP path and the
+test's direct calls still act on the same objects.
 """
 
 from __future__ import annotations
@@ -56,15 +64,56 @@ HAS_CODEX = codex_cli_works()
 # ---------------------------------------------------------------------------
 
 
-async def _bootstrap(
-    tmp_path, monkeypatch
-) -> tuple[Database, SessionManager, DelegationManager, AgentManager, str]:
-    """Common per-test setup: per-test agents dir, in-memory DB, fresh
-    SessionManager + DelegationManager + AgentManager, and an existing
-    working_dir for the child sessions to inherit."""
+async def _serve_callback_api() -> tuple[int, "uvicorn.Server", asyncio.Task]:
+    """Serve the routes the in-turn MCP shims POST back to, on a free port.
+
+    `mcp__ask__user` and `mcp__ask_agent__*` are real subprocesses making real
+    HTTP calls to `http://127.0.0.1:{settings.port}` (see
+    `harness.assembly.build_callback_env`). With nothing listening they fail
+    with "failed to reach Octopus … timed out", which used to be misread as
+    the model declining to call the tool.
+    """
+    import uvicorn
+    from fastapi import FastAPI
+
+    from server.routers import delegations as delegations_routes
+    from server.routers import questions as questions_routes
+
+    app = FastAPI()
+    app.include_router(delegations_routes.router)
+    app.include_router(questions_routes.router)
+
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=0, log_level="warning", lifespan="off"
+    )
+    server = uvicorn.Server(config)
+    # Signal handlers belong to pytest, not to a server we start mid-test.
+    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
+    task = asyncio.create_task(server.serve())
+    for _ in range(200):
+        if server.started and server.servers:
+            break
+        await asyncio.sleep(0.05)
+    else:  # pragma: no cover - a stuck uvicorn is a real failure, not a skip
+        raise RuntimeError("callback API server never started")
+    port = server.servers[0].sockets[0].getsockname()[1]
+    return port, server, task
+
+
+async def _bootstrap(tmp_path, monkeypatch):
+    """Common per-test setup: per-test agents dir, in-memory DB, the
+    SessionManager + DelegationManager **singletons** bound to it (the HTTP
+    routes resolve those, so private instances would leave the MCP shims
+    talking to a different object graph), an AgentManager, a working_dir for
+    the child sessions to inherit, and a live callback API.
+
+    Returns `(db, mgr, dm, am, wd, teardown)`; call `await teardown()` in the
+    test's `finally`.
+    """
     monkeypatch.setattr(settings, "agents_dir", str(tmp_path / "agents"))
     db = Database(":memory:")
     await db.initialize()
+
     mgr = SessionManager()
     await mgr.initialize(db)
     dm = DelegationManager()
@@ -72,7 +121,31 @@ async def _bootstrap(
     am = AgentManager(db)
     wd = str(tmp_path / "ws")
     os.makedirs(wd, exist_ok=True)
-    return db, mgr, dm, am, wd
+
+    # Point the routers at THIS test's managers. They hold module-global
+    # references to the process-wide singletons, which know nothing about this
+    # in-memory DB; monkeypatch restores them after the test, so nothing leaks
+    # into the rest of the suite.
+    from server.routers import delegations as delegations_routes
+    from server.routers import questions as questions_routes
+
+    monkeypatch.setattr(delegations_routes, "session_manager", mgr)
+    monkeypatch.setattr(delegations_routes, "delegation_manager", dm)
+    monkeypatch.setattr(questions_routes, "session_manager", mgr)
+
+    port, server, task = await _serve_callback_api()
+    monkeypatch.setattr(settings, "port", port)
+
+    async def teardown() -> None:
+        server.should_exit = True
+        try:
+            await asyncio.wait_for(task, timeout=10.0)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            task.cancel()
+        dm.shutdown()
+        await db.close()
+
+    return db, mgr, dm, am, wd, teardown
 
 
 def _intercept_parent_injections(
@@ -117,7 +190,7 @@ async def test_real_two_hop_claude_to_claude(tmp_path, monkeypatch):
     """Octo (claude-code) delegates to Vera (claude-code). Vera's
     reply ends up injected into Octo's session as
     `[agent-reply:Vera delegation=… ]` carrying her assistant text."""
-    db, mgr, dm, am, wd = await _bootstrap(tmp_path, monkeypatch)
+    db, mgr, dm, am, wd, teardown = await _bootstrap(tmp_path, monkeypatch)
     try:
         # The system Default Agent is "Octo" — created by the
         # migration. Reuse it as the parent rather than colliding on
@@ -146,8 +219,7 @@ async def test_real_two_hop_claude_to_claude(tmp_path, monkeypatch):
         assert prompt.startswith("[agent-reply:Vera ")
         assert "PONG" in prompt
     finally:
-        dm.shutdown()
-        await db.close()
+        await teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -167,11 +239,17 @@ async def test_real_question_loop_claude_to_claude(tmp_path, monkeypatch):
     the inbound injection on the parent side, and then drain the
     pending question programmatically the same way the route does —
     that's the answer-path the production code takes."""
-    db, mgr, dm, am, wd = await _bootstrap(tmp_path, monkeypatch)
+    db, mgr, dm, am, wd, teardown = await _bootstrap(tmp_path, monkeypatch)
     try:
         octo = await db.get_system_agent()
         assert octo is not None
-        await am.create_agent(name="Vera", model="haiku", backend="claude-code")
+        # Sonnet, not haiku: the assertion here is about Octopus's routing
+        # (child question → parent injection), and haiku paraphrases the
+        # question instead of calling `mcp__ask__user` often enough that the
+        # test used to skip itself on those runs. The model is a fixture
+        # detail, so pick one that follows the STRICT INSTRUCTION reliably
+        # and let a genuine routing regression fail loudly.
+        await am.create_agent(name="Vera", model="sonnet", backend="claude-code")
         octo_sess = await mgr.create_session(
             agent_id=octo["id"], name="octo", working_dir=wd
         )
@@ -203,10 +281,9 @@ async def test_real_question_loop_claude_to_claude(tmp_path, monkeypatch):
         # whichever arrives first is the one to assert on.
         await _wait_for(lambda: bool(captured), timeout=180.0)
         first_prompt = captured[0][1]
-        # The question may not always fire — some real LLM responses
-        # paraphrase without invoking the tool. When it does fire,
-        # confirm the prefix shape; otherwise xfail this assertion
-        # path with a clear message rather than masking the result.
+        # The child's question MUST come back as a question injection — that
+        # is the behaviour under test. Anything else (a paraphrase, a plain
+        # reply) is a real failure, not something to skip past.
         if first_prompt.startswith("[agent-question:Vera "):
             assert "delegation=" in first_prompt
             assert "question_id=" in first_prompt
@@ -220,20 +297,14 @@ async def test_real_question_loop_claude_to_claude(tmp_path, monkeypatch):
                 child, qid, "red", auto=False
             )
             return
-        # The model paraphrased the question directly instead of
-        # invoking the ask MCP tool. Real-CLI haiku has a non-trivial
-        # rate of this; the full UI-driven flow is covered in the
-        # Playwright e2e (`web/e2e/agent-collaboration.spec.ts`)
-        # where a live FastAPI + a stronger prompt make it
-        # deterministic. We skip rather than fail to keep the suite
-        # green under LLM non-determinism.
-        pytest.skip(
-            "LLM declined to invoke the ask tool on this run; "
-            "covered deterministically by the Playwright e2e"
+        pytest.fail(
+            "the child's question never reached the parent as an "
+            "[agent-question:Vera …] injection — the caller-chain routing is "
+            f"broken (or the model ignored a STRICT INSTRUCTION). Parent got: "
+            f"{first_prompt[:300]!r}"
         )
     finally:
-        dm.shutdown()
-        await db.close()
+        await teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +321,7 @@ async def test_real_two_hop_claude_to_codex(tmp_path, monkeypatch):
     """Octo (claude-code) delegates to Vera, who runs the codex
     harness. Same reply-injection shape. Proves the design is
     harness-agnostic at the chain level."""
-    db, mgr, dm, am, wd = await _bootstrap(tmp_path, monkeypatch)
+    db, mgr, dm, am, wd, teardown = await _bootstrap(tmp_path, monkeypatch)
     try:
         octo = await db.get_system_agent()
         assert octo is not None
@@ -277,8 +348,7 @@ async def test_real_two_hop_claude_to_codex(tmp_path, monkeypatch):
         # Codex sometimes preambles. Loose match: the token PONG appears.
         assert "PONG" in prompt
     finally:
-        dm.shutdown()
-        await db.close()
+        await teardown()
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +367,7 @@ async def test_real_three_hop_chain(tmp_path, monkeypatch):
     hop would be rejected — covered by the unit test
     test_depth_cap_rejected.
     """
-    db, mgr, dm, am, wd = await _bootstrap(tmp_path, monkeypatch)
+    db, mgr, dm, am, wd, teardown = await _bootstrap(tmp_path, monkeypatch)
     try:
         octo = await db.get_system_agent()
         assert octo is not None
@@ -332,28 +402,45 @@ async def test_real_three_hop_chain(tmp_path, monkeypatch):
         # Multi-turn under Vera. Two real LLM calls + one for Pete.
         # Allow generous time but cap so a runaway model doesn't park
         # the test indefinitely.
-        await _wait_for(lambda: bool(captured), timeout=480.0)
-        _, prompt = captured[0]
-        # The injection into Octo is Vera's reply, which should
-        # contain the token Pete returned.
-        assert prompt.startswith("[agent-reply:Vera ")
-        if "HOP-7" not in prompt:
-            # Two failure modes here:
-            #   (1) LLM script didn't follow through (non-determinism).
-            #   (2) Vera DID invoke ask_agent for Pete, but the MCP
-            #       subprocess shim's HTTP POST timed out because this
-            #       test boots SessionManager+DelegationManager without
-            #       a live FastAPI server bound to settings.port.
-            # In practice (2) is the common case — Vera's reply
-            # contains "delegation … timeout error" when it hits. The
-            # full HTTP-backed 3-hop chain is covered deterministically
-            # by the Playwright e2e (`web/e2e/agent-collaboration.spec.ts`).
-            # Skip rather than fail to keep the suite green.
-            pytest.skip(
-                "3-hop didn't reach the token (LLM duck OR HTTP-less "
-                "MCP shim timeout); covered by Playwright e2e. "
-                f"Vera said: {prompt[:300]!r}"
-            )
+        #
+        # Vera injects into Octo more than once, by design: `ask_agent` is
+        # asynchronous, so her FIRST turn ends as soon as she's started Pete
+        # ("Delegation started to Pete … awaiting their reply") and the token
+        # can only appear in a LATER turn — the one she takes after Pete's
+        # `[agent-reply:Pete …]` lands in her own session. So wait for the
+        # token to show up in *any* of her injections rather than asserting
+        # on whichever happened to arrive first.
+        def _token_arrived() -> bool:
+            return any("HOP-7" in prompt for _, prompt in captured)
+
+        try:
+            await _wait_for(_token_arrived, timeout=480.0)
+        except AssertionError:
+            # Dump where the chain actually stopped: which sessions exist,
+            # what state each delegation reached, and what the child said.
+            chain = [
+                {
+                    "id": rid,
+                    "target": rec.target_agent_name,
+                    "state": rec.state,
+                    "error": rec.error,
+                    "text": " ".join(rec.captured_text)[:200],
+                }
+                for rid, rec in dm._records.items()
+            ]
+            sessions = [
+                (sess.name, sess.id, sess.status, sess.origin)
+                for sess in mgr.sessions.values()
+            ]
+            raise AssertionError(
+                "Pete's token never made it back up the chain to Octo.\n"
+                f"  Vera's injections: {[p[:200] for _, p in captured]!r}\n"
+                f"  Delegations: {chain!r}\n"
+                f"  Sessions: {sessions!r}"
+            ) from None
+        # Every injection the chain produces is Vera reporting to her caller.
+        assert all(
+            prompt.startswith("[agent-reply:Vera ") for _, prompt in captured
+        ), [p[:120] for _, p in captured]
     finally:
-        dm.shutdown()
-        await db.close()
+        await teardown()

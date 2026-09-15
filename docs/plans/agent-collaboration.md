@@ -273,6 +273,16 @@ except two:
   but must remain live so Pete's terminal turn can reach her. The
   session is not auto-deleted — the user can still browse it from
   Vera's archived-sessions list.
+- **A delegation with a sub-delegation in flight does not finalise.**
+  The load-bearing half of the note above. `ask_agent` is asynchronous, so
+  Vera's turn-1 `result` arrives the instant she has asked Pete — it is not
+  her answer. `DelegationManager._on_broadcast` therefore skips terminal
+  injection while `_has_running_children(sid)` holds, and finalises on the
+  next non-error result (the turn Pete's reply wakes her for). Without this
+  Octo received "awaiting Pete's response" as Vera's reply and her session
+  was archived mid-chain, so the relay could never land — the 3-hop backend
+  test could not pass and had been skipping itself. An **error** result still
+  finalises immediately, so a crashed middle agent can't hang its caller.
 - **No bridge fan-out.** Bridges only broadcast to `origin='user'` (and
   maybe `bridge`) sessions; a delegation must not also notify the
   user's Telegram chat. Single line in `BridgeManager._on_broadcast`.

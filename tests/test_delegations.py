@@ -752,6 +752,102 @@ async def test_reply_injection_on_result(dm, mgr, db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_parent_delegation_waits_for_its_own_sub_delegation(
+    dm, mgr, db, monkeypatch
+):
+    """Octo → Vera → Pete: Vera's turn-1 result must NOT finalise her.
+
+    `ask_agent` is asynchronous, so Vera's first turn ends the instant she has
+    asked Pete — "awaiting Pete's reply" is not her answer. Finalising there
+    relayed that non-answer to Octo and auto-archived Vera's session while Pete
+    was still running, so Pete's reply could never be relayed
+    (agent-collaboration.md §5: "Pete replies, Vera relays, Octo summarises").
+    Vera stays running until she has no sub-delegation in flight.
+    """
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    await _make_agent(db, "Pete")
+    parent = await _make_session(mgr, octo["id"], name="parent")
+
+    vera_rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="ask pete",
+    )
+    vera_sid = vera_rec.delegation_id
+    pete_rec = await dm.start_delegation(
+        parent_session_id=vera_sid, agent_name="pete", request="reply HOP-7",
+    )
+    pete_sid = pete_rec.delegation_id
+    injected.clear()
+
+    # Turn 1: Vera says she's asked Pete, then her turn ends.
+    await dm._on_broadcast(
+        {"type": "assistant_text", "session_id": vera_sid, "content": "Awaiting Pete."}
+    )
+    await dm._on_broadcast({"type": "result", "session_id": vera_sid, "is_error": False})
+    assert vera_rec.state == "running", "Vera finalised before Pete answered"
+    assert injected == [], f"Octo was told {injected!r} before Pete replied"
+
+    # Pete answers → his terminal injection wakes Vera (into HER session).
+    await dm._on_broadcast(
+        {"type": "assistant_text", "session_id": pete_sid, "content": "HOP-7"}
+    )
+    await dm._on_broadcast({"type": "result", "session_id": pete_sid, "is_error": False})
+    assert pete_rec.state == "completed"
+    assert [sid for sid, _ in injected] == [vera_sid]
+    injected.clear()
+
+    # Turn 2: Vera relays. No sub-delegation in flight now, so she finalises
+    # and Octo finally hears the token.
+    await dm._on_broadcast(
+        {"type": "assistant_text", "session_id": vera_sid, "content": "Pete says HOP-7"}
+    )
+    await dm._on_broadcast({"type": "result", "session_id": vera_sid, "is_error": False})
+    assert vera_rec.state == "completed"
+    assert len(injected) == 1
+    target_sid, prompt = injected[0]
+    assert target_sid == parent.id
+    assert prompt.startswith(f"[agent-reply:Vera delegation={vera_sid}]")
+    assert "HOP-7" in prompt
+
+
+@pytest.mark.asyncio
+async def test_parent_delegation_still_fails_fast_on_error(dm, mgr, db, monkeypatch):
+    """The wait-for-children rule must not swallow failures: an error result
+    finalises immediately even with a sub-delegation in flight, otherwise a
+    crashed middle agent would hang its caller forever."""
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    await _make_agent(db, "Pete")
+    parent = await _make_session(mgr, octo["id"], name="parent")
+
+    vera_rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="ask pete",
+    )
+    await dm.start_delegation(
+        parent_session_id=vera_rec.delegation_id, agent_name="pete", request="r",
+    )
+    injected.clear()
+
+    await dm._on_broadcast(
+        {"type": "result", "session_id": vera_rec.delegation_id, "is_error": True}
+    )
+    assert vera_rec.state == "failed"
+    assert [sid for sid, _ in injected] == [parent.id]
+
+
+@pytest.mark.asyncio
 async def test_error_injection_on_result_error(dm, mgr, db, monkeypatch):
     """result(is_error=True) → [agent-error:...] turn, state=failed."""
     injected: list[tuple[str, str]] = []

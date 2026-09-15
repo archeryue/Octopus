@@ -722,6 +722,17 @@ class DelegationManager:
 
     # ----------------------------------------------- broadcast → injection
 
+    def _has_running_children(self, session_id: str) -> bool:
+        """Does `session_id` have a delegation of its own still in flight?
+
+        One level is enough: a grandchild keeps ITS parent running by the same
+        rule, so the wait propagates up the chain naturally.
+        """
+        return any(
+            rec.parent_session_id == session_id and rec.state == "running"
+            for rec in self._records.values()
+        )
+
     async def _on_broadcast(self, msg: dict[str, Any]) -> None:
         """Filter the session-manager broadcast bus to delegation
         children we're tracking. Mirrors the bridge quiet-mode filter:
@@ -746,6 +757,29 @@ class DelegationManager:
             await self._inject_question(rec, msg)
             return
         if kind == "result":
+            if not msg.get("is_error") and self._has_running_children(sid):
+                # This child kicked off a delegation of its own and ended its
+                # turn immediately — that's the async `ask_agent` contract, not
+                # an answer. Octo → Vera → Pete: Vera's turn 1 ends the moment
+                # she's asked Pete, and her real reply only exists after Pete's
+                # `[agent-reply:Pete …]` wakes her for turn 2. Finalising here
+                # would relay "awaiting Pete's response" as Vera's answer AND
+                # auto-archive her session while Pete is still working, so the
+                # relay could never arrive (agent-collaboration.md §5 —
+                # "Pete replies, Vera relays, Octo summarises"; the archive
+                # note calls this out as load-bearing for nested chains).
+                # Stay running; the next result finalises.
+                logger.debug(
+                    "delegation %s ended a turn with %d running sub-delegation(s); "
+                    "deferring terminal injection",
+                    rec.delegation_id,
+                    sum(
+                        1
+                        for r in self._records.values()
+                        if r.parent_session_id == sid and r.state == "running"
+                    ),
+                )
+                return
             if msg.get("is_error"):
                 rec.state = "failed"
                 rec.error = "child session reported an error result"
