@@ -1992,3 +1992,61 @@ async def test_turn_overall_cap_trips_even_with_steady_events(manager, monkeypat
     assert timeout is not None
     assert "maximum duration" in timeout["message"]  # the overall-cap message
     assert backend.stopped is True
+
+
+# --------------------------------------------------------------------------- #
+# Streamed token deltas (inline-steering.md §4 S1)
+# --------------------------------------------------------------------------- #
+
+
+def test_text_delta_broadcasts_but_never_persists():
+    """Deltas are a UI affordance, not history. The completed block that
+    follows is the message; persisting deltas too would duplicate every answer
+    in the transcript."""
+    from server.harness.events import HarnessEvent
+
+    mgr = SessionManager()
+    ev = HarnessEvent(type="text_delta", content="partial")
+    assert mgr._event_to_message_content(ev) is None
+    assert mgr._event_to_ws_message("s1", ev) == {
+        "type": "assistant_delta",
+        "session_id": "s1",
+        "content": "partial",
+    }
+
+
+def test_empty_text_delta_sends_no_frame():
+    from server.harness.events import HarnessEvent
+
+    mgr = SessionManager()
+    assert mgr._event_to_ws_message("s1", HarnessEvent(type="text_delta", content="")) is None
+
+
+def test_flush_text_deltas_joins_and_drains():
+    """The coalescing buffer batches tokens into one frame and empties itself,
+    so a caller can flush unconditionally without checking first."""
+    mgr = SessionManager()
+    buf: list[str] = []
+    assert mgr._flush_text_deltas("s1", buf) is None  # nothing buffered
+
+    buf.extend(["he", "llo", " there"])
+    frame = mgr._flush_text_deltas("s1", buf)
+    assert frame == {
+        "type": "assistant_delta",
+        "session_id": "s1",
+        "content": "hello there",
+    }
+    assert buf == []                                   # drained in place
+    assert mgr._flush_text_deltas("s1", buf) is None   # and stays drained
+
+
+def test_flush_uses_one_wire_shape():
+    """The flush helper must not hand-roll the frame — one definition of the
+    wire format, or the two drift."""
+    from server.harness.events import HarnessEvent
+
+    mgr = SessionManager()
+    buf = ["x"]
+    assert mgr._flush_text_deltas("s1", buf) == mgr._event_to_ws_message(
+        "s1", HarnessEvent(type="text_delta", content="x")
+    )

@@ -55,6 +55,8 @@ function handleWsMessage(data: Record<string, unknown>) {
     removePendingQuestion,
     setLastAppliedSeq,
     lastAppliedSeq,
+    appendStreamingText,
+    clearStreamingText,
   } = getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
@@ -74,6 +76,12 @@ function handleWsMessage(data: Record<string, unknown>) {
 
     case "dequeued":
       dequeuePending(sessionId);
+      break;
+
+    // Partial text, still being written. `addMessage` drops the buffer when
+    // the completed block lands, so there's nothing to clear here.
+    case "assistant_delta":
+      appendStreamingText(sessionId, data.content as string);
       break;
 
     case "assistant_text":
@@ -152,6 +160,10 @@ function handleWsMessage(data: Record<string, unknown>) {
       break;
 
     case "result":
+      // A turn can end with no completed text block at all — an interrupt, a
+      // failure, or a turn that only ran tools. Whatever was streaming is not
+      // going to be superseded by a real message, so drop it here.
+      clearStreamingText(sessionId);
       addMessage(sessionId, {
         role: "system",
         type: "result",
@@ -174,6 +186,7 @@ function handleWsMessage(data: Record<string, unknown>) {
       break;
 
     case "error":
+      clearStreamingText(sessionId);
       addMessage(sessionId || "__global", {
         role: "system",
         type: "error",

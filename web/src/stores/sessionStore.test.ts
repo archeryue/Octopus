@@ -294,4 +294,75 @@ describe("sessionStore", () => {
     ).toEqual(["i2"]);
     expect(useSessionStore.getState().agentConnectorIds["a1"]).toEqual(["i2"]);
   });
+
+  // --- streamed text (inline-steering.md §4 S1) -------------------------
+
+  describe("streamingText", () => {
+    beforeEach(() => {
+      useSessionStore.setState({ messages: {}, streamingText: {} });
+    });
+
+    it("accumulates deltas per session", () => {
+      const { appendStreamingText } = useSessionStore.getState();
+      appendStreamingText("s1", "Hel");
+      appendStreamingText("s1", "lo w");
+      appendStreamingText("s2", "other");
+      appendStreamingText("s1", "orld");
+      expect(useSessionStore.getState().streamingText).toEqual({
+        s1: "Hello world",
+        s2: "other",
+      });
+    });
+
+    it("drops the buffer when the completed assistant block arrives", () => {
+      // The finished block is authoritative; if the buffer survived we'd paint
+      // the answer twice.
+      const { appendStreamingText, addMessage } = useSessionStore.getState();
+      appendStreamingText("s1", "Hello wor");
+      addMessage("s1", { role: "assistant", type: "text", content: "Hello world" });
+      expect(useSessionStore.getState().streamingText.s1).toBeUndefined();
+      expect(useSessionStore.getState().messages.s1).toHaveLength(1);
+      expect(useSessionStore.getState().messages.s1[0].content).toBe("Hello world");
+    });
+
+    it("keeps the buffer when some other message type arrives mid-stream", () => {
+      // A tool_use landing between deltas must not wipe partial text — the
+      // model often narrates, calls a tool, then keeps writing.
+      const { appendStreamingText, addMessage } = useSessionStore.getState();
+      appendStreamingText("s1", "working on it");
+      addMessage("s1", {
+        role: "assistant",
+        type: "tool_use",
+        tool_name: "Bash",
+        tool_use_id: "t1",
+      });
+      expect(useSessionStore.getState().streamingText.s1).toBe("working on it");
+    });
+
+    it("only clears the session whose block completed", () => {
+      const { appendStreamingText, addMessage } = useSessionStore.getState();
+      appendStreamingText("s1", "aaa");
+      appendStreamingText("s2", "bbb");
+      addMessage("s1", { role: "assistant", type: "text", content: "aaa done" });
+      expect(useSessionStore.getState().streamingText.s2).toBe("bbb");
+    });
+
+    it("clears on an explicit clear, and is a no-op when already empty", () => {
+      const { appendStreamingText, clearStreamingText } = useSessionStore.getState();
+      appendStreamingText("s1", "half a sentence");
+      clearStreamingText("s1");
+      expect(useSessionStore.getState().streamingText.s1).toBeUndefined();
+      // No-op path must return the identical object so subscribers don't wake.
+      const before = useSessionStore.getState().streamingText;
+      clearStreamingText("s1");
+      expect(useSessionStore.getState().streamingText).toBe(before);
+    });
+
+    it("drops stale partial text when a snapshot reloads the session", () => {
+      const { appendStreamingText, setMessages } = useSessionStore.getState();
+      appendStreamingText("s1", "half-written");
+      setMessages("s1", [{ role: "user", type: "text", content: "hi" }]);
+      expect(useSessionStore.getState().streamingText.s1).toBeUndefined();
+    });
+  });
 });

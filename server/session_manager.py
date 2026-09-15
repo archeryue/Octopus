@@ -48,6 +48,12 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# How often streamed token deltas are flushed to the client as one WS frame
+# (inline-steering.md §4 S1). 50ms is ~20 updates/second: below the rate at
+# which a reader perceives stepping, and ~10x fewer frames and renders than
+# forwarding every token individually.
+_DELTA_FLUSH_SECONDS = 0.05
+
 
 class ForkError(Exception):
     """A fork request was rejected for a reason the route maps to a status
@@ -2108,6 +2114,15 @@ class SessionManager:
             # Terminal-error signal for post-turn auth-expiry classification.
             saw_error_event = False
             error_event_text = ""
+            # Streaming-text coalescing (inline-steering.md §4 S1). The CLI
+            # emits one delta per token; forwarding each as its own WS frame
+            # would be a frame per token and a React render per token. We
+            # batch them into at most one frame every _DELTA_FLUSH_SECONDS,
+            # which is still far below the threshold where a human sees
+            # stepping, and flush before any non-delta event so ordering with
+            # tool calls and the final block is exact.
+            delta_buf: list[str] = []
+            delta_last_flush = 0.0
             # Per-turn watchdog state (turn-safety.md §3): the watchdog stops a
             # turn that goes silent (idle) or runs too long (overall) so it can
             # never hang forever the way the deep-research wedge did.
@@ -2124,6 +2139,26 @@ class SessionManager:
 
                 async for event in backend.stream():
                     watchdog_state["last"] = time.monotonic()
+
+                    # Coalesce token deltas; flush on a timer.
+                    if event.type == "text_delta":
+                        if event.content:
+                            delta_buf.append(event.content)
+                        now = time.monotonic()
+                        if now - delta_last_flush >= _DELTA_FLUSH_SECONDS:
+                            delta_last_flush = now
+                            flushed = self._flush_text_deltas(session.id, delta_buf)
+                            if flushed is not None:
+                                yield flushed
+                        continue
+
+                    # Anything else ends the current delta run: flush it first
+                    # so the partial text can never arrive after the completed
+                    # block that supersedes it.
+                    flushed = self._flush_text_deltas(session.id, delta_buf)
+                    if flushed is not None:
+                        delta_last_flush = time.monotonic()
+                        yield flushed
                     # session_started arrives on the CLI's init event,
                     # before any tool work. Persist the resume id
                     # immediately so the recovery path below can use
@@ -3031,8 +3066,38 @@ class SessionManager:
             )
         return None
 
+    def _flush_text_deltas(
+        self, session_id: str, buf: list[str]
+    ) -> dict[str, Any] | None:
+        """Drain the coalescing buffer into one `assistant_delta` frame.
+
+        Empties `buf` in place and returns None when there was nothing to send,
+        so callers can flush unconditionally. The frame shape comes from
+        `_event_to_ws_message` rather than being rebuilt here — one definition
+        of the wire format, not two.
+        """
+        if not buf:
+            return None
+        text = "".join(buf)
+        buf.clear()
+        return self._event_to_ws_message(
+            session_id, HarnessEvent(type="text_delta", content=text)
+        )
+
     @staticmethod
     def _event_to_ws_message(session_id: str, event: HarnessEvent) -> dict[str, Any] | None:
+        if event.type == "text_delta":
+            # Broadcast-only (never persisted — `_event_to_message_content`
+            # has no branch for it). The client appends these to a scratch
+            # buffer and drops the buffer when the real `assistant_text`
+            # lands, so losing one costs a flicker, not a message.
+            if not event.content:
+                return None
+            return {
+                "type": "assistant_delta",
+                "session_id": session_id,
+                "content": event.content,
+            }
         if event.type == "text":
             if not event.content or not event.content.strip():
                 return None

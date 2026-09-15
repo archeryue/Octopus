@@ -214,6 +214,10 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         "--print",
         "--output-format=stream-json",
         "--verbose",
+        # Token deltas as they arrive. Without this the UI can't paint a word
+        # until the whole block is done — measured 3.95s to first visible text
+        # versus 1.68s with it, on the same turn (inline-steering.md §3).
+        "--include-partial-messages",
         "--dangerously-skip-permissions",
         "--disallowedTools",
         ",".join(disallowed),
@@ -270,9 +274,11 @@ class ClaudeEventParser(EventParser):
                 return self._api_retry(obj)
             return ParseOutput()
 
-        # Partial deltas / rate-limit notices / vestigial control protocol —
-        # nothing to surface under the VM0 shape.
-        if kind in ("rate_limit_event", "stream_event", "control_response", "control_request"):
+        if kind == "stream_event":
+            return self._stream_delta(obj)
+
+        # Rate-limit notices / vestigial control protocol — nothing to surface.
+        if kind in ("rate_limit_event", "control_response", "control_request"):
             return ParseOutput()
 
         if kind == "assistant":
@@ -286,6 +292,35 @@ class ClaudeEventParser(EventParser):
 
         logger.debug("Unhandled CLI event type: %s", kind)
         return ParseOutput()
+
+    def _stream_delta(self, obj: dict[str, Any]) -> ParseOutput:
+        """`--include-partial-messages` token deltas (inline-steering.md §4 S1).
+
+        Only `content_block_delta` carries new characters; every other envelope
+        frame (`message_start`/`_stop`, `content_block_start`/`_stop`,
+        `message_delta`) describes structure the completed `assistant` event
+        already gives us.
+
+        These are **broadcast-only**: the authoritative text is the finished
+        block, which still arrives and is what gets persisted. A dropped delta
+        therefore costs a flicker, never a message — which is why the UI
+        *replaces* its buffer with the final block rather than appending to it
+        (§12).
+
+        `thinking_delta` is deliberately not emitted: thinking is persisted but
+        never broadcast (`_event_to_ws_message`), so streaming it would put text
+        on screen that the completed turn then hides.
+        """
+        event = obj.get("event") or {}
+        if event.get("type") != "content_block_delta":
+            return ParseOutput()
+        delta = event.get("delta") or {}
+        if delta.get("type") != "text_delta":
+            return ParseOutput()
+        text = delta.get("text")
+        if not text:
+            return ParseOutput()
+        return ParseOutput(events=[HarnessEvent(type="text_delta", content=text)])
 
     def _api_retry(self, obj: dict[str, Any]) -> ParseOutput:
         """`system/api_retry` — the CLI retrying a failed API call itself.

@@ -104,7 +104,9 @@ export function ChatView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const messagesMap = useSessionStore((s) => s.messages);
+  const streamingMap = useSessionStore((s) => s.streamingText);
   const messages = activeSessionId ? (messagesMap[activeSessionId] ?? EMPTY_MESSAGES) : EMPTY_MESSAGES;
+  const streamingText = activeSessionId ? (streamingMap[activeSessionId] ?? "") : "";
   const sessions = useSessionStore((s) => s.sessions);
   const archivedSessions = useSessionStore((s) => s.archivedSessions);
   const agents = useSessionStore((s) => s.agents);
@@ -399,17 +401,39 @@ export function ChatView({
     .filter((a) => a.status === "ready" && a.meta)
     .map((a) => a.meta!.id);
 
-  const footer = useCallback(
-    () =>
-      isRunning ? (
-        <div className="msg msg-loading flex items-center gap-1.5 px-3 py-2">
-          <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.32s]" />
-          <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.16s]" />
-          <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse" />
+  // While a turn runs: the text the model is producing right now, or the
+  // loading dots when it hasn't produced any yet (it's thinking, or running a
+  // tool). Rendered through MessageBubble so a partial answer looks exactly
+  // like the finished one and doesn't jump when it's replaced — it carries no
+  // `seq`, so the fork affordance stays off it.
+  const footer = useCallback(() => {
+    if (!isRunning) return null;
+    if (streamingText) {
+      return (
+        <div className="msg-streaming" data-testid="streaming-text">
+          <MessageBubble
+            message={{ role: "assistant", type: "text", content: streamingText }}
+            sessionId={activeSessionId ?? ""}
+            agentName={activeAgent?.name}
+            agentAvatar={activeAgent?.avatar}
+          />
         </div>
-      ) : null,
-    [isRunning]
-  );
+      );
+    }
+    return (
+      <div className="msg msg-loading flex items-center gap-1.5 px-3 py-2">
+        <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.32s]" />
+        <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse [animation-delay:-0.16s]" />
+        <span className="loading-dot inline-block size-2 rounded-full bg-muted-foreground/60 animate-pulse" />
+      </div>
+    );
+  }, [
+    isRunning,
+    streamingText,
+    activeSessionId,
+    activeAgent?.name,
+    activeAgent?.avatar,
+  ]);
 
   // Slash-command autocomplete state, derived from the current input.
   const slashCommands = useMemo(() => filterSlashCommands(input), [input]);

@@ -5,7 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { SidebarManage } from "./SidebarManage";
 import {
@@ -87,18 +87,40 @@ describe("SidebarManage", () => {
     expect(useSessionStore.getState().mainView).toBe("harness");
   });
 
-  it("shows the next fire time next to the schedule count", async () => {
-    const soon = new Date();
-    soon.setHours(soon.getHours() + 1, 30, 0, 0);
-    useSessionStore.setState({
-      schedules: [schedule({ next_run_at: soon.toISOString() })],
-    });
-    const { container } = render(<SidebarManage />);
-    await waitFor(() =>
-      expect(container.querySelector(".btn-manage-schedules")?.textContent).toMatch(
-        /next \d{2}:\d{2}/
-      )
-    );
+  it("shows the next fire time next to the schedule count", () => {
+    // Frozen clock: the row prints a bare "next HH:MM" for today and prefixes
+    // a weekday for any other day, so a relative time like now+1h renders
+    // differently depending on when the suite runs — this test failed nightly
+    // between 23:00 and midnight. Pin both ends instead.
+    const now = new Date(2026, 2, 10, 9, 0, 0); // Tue 10 Mar 2026, 09:00 local
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      const row = schedule({
+        next_run_at: new Date(2026, 2, 10, 10, 30, 0).toISOString(),
+      });
+      useSessionStore.setState({ schedules: [row] });
+      // SidebarManage refetches /api/schedules on mount and writes the result
+      // into the store, so a mock returning [] races the assertion and wipes
+      // the seeded state. Answer that fetch with the same schedule.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: RequestInfo | URL) =>
+          String(url).includes("/api/schedules")
+            ? new Response(JSON.stringify([row]), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              })
+            : new Response("[]", { status: 200 })
+        )
+      );
+      const { container } = render(<SidebarManage />);
+      expect(
+        container.querySelector(".btn-manage-schedules")?.textContent
+      ).toContain("next 10:30");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ignores a disabled schedule when working out what's next", () => {

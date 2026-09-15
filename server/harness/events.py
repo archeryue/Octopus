@@ -40,7 +40,10 @@ class HarnessEvent:
     so the front-end doesn't change when we swap the underlying CLI.
     """
 
-    type: str  # text | thinking | tool_use | tool_result | result | error | question_request | session_started
+    # text_delta is broadcast-only: a partial chunk of the text block still
+    # being written. The completed `text` event always follows and is what
+    # gets persisted (inline-steering.md §4 S1).
+    type: str  # text | text_delta | thinking | tool_use | tool_result | result | error | question_request | session_started
     content: str | None = None
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None

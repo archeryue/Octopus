@@ -264,6 +264,14 @@ class Bridge(ABC):
             elif event_type == "user_message":
                 pass  # No need to echo user's own message
 
+            elif event_type == "assistant_delta":
+                # Partial text from a turn still in flight (inline-steering.md
+                # §4 S1). The bridge sends the *completed* `assistant_text`
+                # block, buffered above; forwarding chunks as well would
+                # duplicate every reply — and on a chat platform it would mean
+                # an edit or a message roughly 20 times a second.
+                pass
+
             else:
                 logger.debug(
                     "Bridge %s ignoring unknown event: %s", self.name, event_type

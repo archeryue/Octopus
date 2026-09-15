@@ -66,7 +66,11 @@ def test_turn_argv_full_config(tmp_path):
     argv, kw = build_turn_argv(ctx)
 
     assert argv[0] == "claude"
-    assert {"--print", "--output-format=stream-json", "--verbose", "--dangerously-skip-permissions"} <= set(argv)
+    assert {"--print", "--output-format=stream-json", "--verbose",
+            "--dangerously-skip-permissions",
+            # Token deltas: without this the UI can't paint until a block is
+            # finished (inline-steering.md §3).
+            "--include-partial-messages"} <= set(argv)
     assert argv[argv.index("--model") + 1] == "claude-opus-4-7"
     assert argv[argv.index("--allowedTools") + 1] == "Read,Glob"
     assert argv[argv.index("--disallowedTools") + 1] == "AskUserQuestion,Write"
@@ -93,6 +97,72 @@ def test_turn_argv_api_key_and_minimal(tmp_path):
     # AskUserQuestion is always disabled so the model uses mcp__ask__user.
     di = argv.index("--disallowedTools")
     assert argv[di + 1] == "AskUserQuestion"
+
+
+# --------------------------------------------------------------------------- #
+# Streamed token deltas (inline-steering.md §4 S1)
+# --------------------------------------------------------------------------- #
+
+
+def _delta(text):
+    """One `content_block_delta` envelope, exactly as the CLI emits it."""
+    return {
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "text_delta", "text": text},
+        },
+    }
+
+
+def test_text_deltas_become_text_delta_events():
+    p = ClaudeEventParser()
+    out = p.parse(_delta("hel"))
+    assert [(e.type, e.content) for e in out.events] == [("text_delta", "hel")]
+
+
+def test_stream_envelope_frames_carry_nothing():
+    """Only content_block_delta has new characters; the rest of the streaming
+    envelope describes structure the completed `assistant` event already gives
+    us, so it must not produce events."""
+    p = ClaudeEventParser()
+    for frame in (
+        "message_start",
+        "content_block_start",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ):
+        assert p.parse({"type": "stream_event", "event": {"type": frame}}).events == []
+
+
+def test_thinking_deltas_are_not_streamed():
+    """Thinking is persisted but never broadcast, so streaming it would put
+    text on screen that the finished turn then hides."""
+    p = ClaudeEventParser()
+    out = p.parse(
+        {
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "hmm"},
+            },
+        }
+    )
+    assert out.events == []
+
+
+def test_empty_delta_is_dropped():
+    p = ClaudeEventParser()
+    assert p.parse(_delta("")).events == []
+
+
+def test_deltas_do_not_end_the_stream():
+    """A delta must never look terminal — the turn is still running."""
+    p = ClaudeEventParser()
+    assert p.parse(_delta("x")).end_of_stream is False
 
 
 # --------------------------------------------------------------------------- #

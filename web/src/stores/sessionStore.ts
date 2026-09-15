@@ -68,6 +68,19 @@ export interface PendingQuestion {
   questions: QuestionItem[];
 }
 
+/** Return `map` without `key`, or `map` itself when the key isn't there.
+ * Returning the same object on a miss keeps zustand from waking subscribers
+ * for a no-op clear. */
+function dropKey<T>(
+  map: Record<string, T>,
+  key: string
+): Record<string, T> {
+  if (map[key] === undefined) return map;
+  const next = { ...map };
+  delete next[key];
+  return next;
+}
+
 /** What the main pane shows. Octopus has no URL router, so this is the
  * routing state. The manage views (schedules/connectors/harness) are full
  * pages in the main area rather than dialogs, and the create views are
@@ -167,6 +180,13 @@ interface SessionStore {
   removeConnectorInstallation: (id: string) => void;
   agentConnectorIds: Record<string, string[]>;
   setAgentConnectorIds: (agentId: string, ids: string[]) => void;
+
+  // Text the model is streaming right now, per session, accumulated from
+  // `assistant_delta` frames and dropped the moment the completed block
+  // arrives. Never persisted, never part of `messages`.
+  streamingText: Record<string, string>;
+  appendStreamingText: (sessionId: string, chunk: string) => void;
+  clearStreamingText: (sessionId: string) => void;
 
   // Per-session queue of messages waiting for the current run to finish.
   // Mirrored from server `queued` / `dequeued` events; not persisted.
@@ -374,16 +394,48 @@ export const useSessionStore = create<SessionStore>((set) => ({
 
   messages: {},
   addMessage: (sessionId, msg) =>
-    set((s) => ({
-      messages: {
-        ...s.messages,
-        [sessionId]: [...(s.messages[sessionId] || []), msg],
-      },
-    })),
+    set((s) => {
+      // A completed assistant text block supersedes whatever was streaming:
+      // drop the buffer in the same update that appends the real message, so
+      // the UI never paints both for a frame.
+      const streaming =
+        msg.type === "text" && msg.role === "assistant" && s.streamingText[sessionId]
+          ? dropKey(s.streamingText, sessionId)
+          : s.streamingText;
+      return {
+        messages: {
+          ...s.messages,
+          [sessionId]: [...(s.messages[sessionId] || []), msg],
+        },
+        streamingText: streaming,
+      };
+    }),
   setMessages: (sessionId, msgs) =>
     set((s) => ({
       messages: { ...s.messages, [sessionId]: msgs },
+      // A snapshot reload is authoritative; any half-streamed text it doesn't
+      // contain is stale by definition.
+      streamingText: dropKey(s.streamingText, sessionId),
     })),
+
+  // Text the model is producing right now, accumulated from `assistant_delta`
+  // frames. Deliberately never persisted and never part of `messages`: the
+  // completed block that follows is the real message, and this is only what
+  // lets the UI paint before it arrives.
+  streamingText: {},
+  appendStreamingText: (sessionId, chunk) =>
+    set((s) => ({
+      streamingText: {
+        ...s.streamingText,
+        [sessionId]: (s.streamingText[sessionId] || "") + chunk,
+      },
+    })),
+  clearStreamingText: (sessionId) =>
+    set((s) =>
+      s.streamingText[sessionId] === undefined
+        ? s
+        : { streamingText: dropKey(s.streamingText, sessionId) }
+    ),
 
   schedules: [],
   setSchedules: (schedules) => set({ schedules }),

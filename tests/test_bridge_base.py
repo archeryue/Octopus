@@ -169,6 +169,31 @@ class TestBridgeHandleEvent:
         await bridge._flush_buffer("c1")
         assert bridge.calls == [("send_text", {"chat_id": "c1", "text": "hi"})]
 
+    async def test_assistant_delta_sends_nothing(self):
+        """Partial text must never reach a chat platform: the bridge already
+        sends the completed `assistant_text` block, so forwarding chunks would
+        duplicate every reply — at roughly 20 messages a second
+        (inline-steering.md §4 S1)."""
+        bridge = MockBridge()
+        await bridge.handle_event("c1", {"type": "assistant_delta", "content": "par"})
+        await bridge.handle_event("c1", {"type": "assistant_delta", "content": "tial"})
+        assert bridge.calls == []
+        # And it isn't quietly folded into the text buffer either.
+        await bridge._flush_buffer("c1")
+        assert bridge.calls == []
+
+    async def test_assistant_delta_does_not_disturb_a_buffered_reply(self):
+        """A delta arriving mid-buffer must not flush or corrupt the real
+        text the bridge is accumulating."""
+        bridge = MockBridge()
+        await bridge.handle_event("c1", {"type": "assistant_text", "content": "real "})
+        await bridge.handle_event("c1", {"type": "assistant_delta", "content": "XXX"})
+        await bridge.handle_event("c1", {"type": "assistant_text", "content": "answer"})
+        await bridge._flush_buffer("c1")
+        assert bridge.calls == [
+            ("send_text", {"chat_id": "c1", "text": "real answer"})
+        ]
+
     async def test_tool_use_flushes_then_sends(self):
         bridge = MockBridge()
         await bridge.handle_event("c1", {"type": "assistant_text", "content": "thinking"})

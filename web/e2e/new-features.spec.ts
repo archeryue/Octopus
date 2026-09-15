@@ -269,6 +269,72 @@ test.describe("Interactive Input Hint", () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Streamed assistant text (inline-steering.md §4 S1)
+// ---------------------------------------------------------------------------
+
+test.describe("Streaming assistant text @llm", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  test("text is delivered while the turn is still running, then replaced once", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Streaming Test");
+
+    // Assert on the wire, not on a render race: any multi-token answer emits
+    // `assistant_delta` frames, and the contract is that they arrive BEFORE
+    // the completed `assistant_text` block. Watching the DOM for a partial
+    // paint would be timing-dependent on how fast the model writes.
+    const deltas: number[] = [];
+    let finalAt: number | null = null;
+    const t0 = Date.now();
+    page.on("websocket", (ws) =>
+      ws.on("framereceived", (f) => {
+        try {
+          const d = JSON.parse(f.payload.toString()) as Record<string, unknown>;
+          if (d.type === "assistant_delta") deltas.push(Date.now() - t0);
+          if (d.type === "assistant_text" && finalAt === null) {
+            finalAt = Date.now() - t0;
+          }
+        } catch {
+          /* non-JSON frame */
+        }
+      })
+    );
+
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Streaming Test" })
+      .click();
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
+      "Streaming Test"
+    );
+
+    const input = page.locator(".chat-input-bar textarea");
+    await input.fill(
+      "Write about 150 words on why the sea is salty. Prose only, no tools."
+    );
+    await page.locator("button.btn-send").click();
+
+    // Wait for the turn to finish.
+    await expect(page.locator(".session-item.active .session-status")).toHaveText(
+      "idle",
+      { timeout: 150_000 }
+    );
+
+    expect(deltas.length).toBeGreaterThan(0);
+    expect(finalAt).not.toBeNull();
+    // The whole point: something was on screen before the block completed.
+    expect(deltas[0]).toBeLessThan(finalAt as number);
+
+    // The buffer is transient — it must not survive the completed block, or
+    // the answer would render twice.
+    await expect(page.locator('[data-testid="streaming-text"]')).toHaveCount(0);
+    await expect(page.locator(".msg-streaming")).toHaveCount(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Message queue + interrupt
 // ---------------------------------------------------------------------------
 
