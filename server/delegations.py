@@ -99,6 +99,14 @@ class DelegationRunState:
     # crashing child; this flag forces a single emission no matter
     # how the producers interleave.
     _terminal_injected: bool = False
+    # True from the moment this child starts a sub-delegation until the end
+    # of its NEXT turn. Its own answer cannot exist in the turn that merely
+    # asked someone else — `ask_agent` is asynchronous, so that turn ends with
+    # "awaiting their reply". `_has_running_children` alone can't see this: it
+    # samples at the instant the turn ends, and a fast grandchild (or a slow
+    # wrap-up here) can leave nothing in flight even though the relay turn
+    # hasn't happened yet. The flag remembers the intent instead of the timing.
+    _awaiting_sub_relay: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
         """API-shape for ``GET /sessions/{sid}/delegations`` and the
@@ -227,6 +235,13 @@ class DelegationManager:
         # (test fakes, especially), and the listener needs to find
         # us in _records.
         self._records[child.id] = rec
+        # The caller may itself be a delegation child (Octo → Vera → Pete).
+        # If so, whatever it says in THIS turn is "I've asked Pete", not its
+        # answer — hold its terminal injection until it has taken the turn
+        # that Pete's reply wakes it for.
+        caller_rec = self._records.get(parent.id)
+        if caller_rec is not None and caller_rec.state == "running":
+            caller_rec._awaiting_sub_relay = True
 
         composed = self._compose_initial_prompt(
             parent_name=parent_name,
@@ -391,6 +406,7 @@ class DelegationManager:
         rec.error = None
         rec.finished_at = None
         rec._terminal_injected = False
+        rec._awaiting_sub_relay = False
         rec.request = request
 
         # Compose a thin reopen-the-conversation prompt. We don't
@@ -757,7 +773,9 @@ class DelegationManager:
             await self._inject_question(rec, msg)
             return
         if kind == "result":
-            if not msg.get("is_error") and self._has_running_children(sid):
+            if not msg.get("is_error") and (
+                self._has_running_children(sid) or rec._awaiting_sub_relay
+            ):
                 # This child kicked off a delegation of its own and ended its
                 # turn immediately — that's the async `ask_agent` contract, not
                 # an answer. Octo → Vera → Pete: Vera's turn 1 ends the moment
@@ -768,10 +786,13 @@ class DelegationManager:
                 # relay could never arrive (agent-collaboration.md §5 —
                 # "Pete replies, Vera relays, Octo summarises"; the archive
                 # note calls this out as load-bearing for nested chains).
-                # Stay running; the next result finalises.
+                # Stay running; the next result finalises — that next turn
+                # is the relay, so consume the flag here. If the relay turn
+                # asks someone else again, `start_delegation` re-arms it.
+                rec._awaiting_sub_relay = False
                 logger.debug(
-                    "delegation %s ended a turn with %d running sub-delegation(s); "
-                    "deferring terminal injection",
+                    "delegation %s ended a turn that asked a sub-delegation "
+                    "(%d still running); deferring terminal injection",
                     rec.delegation_id,
                     sum(
                         1

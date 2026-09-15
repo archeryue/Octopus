@@ -277,12 +277,27 @@ except two:
   The load-bearing half of the note above. `ask_agent` is asynchronous, so
   Vera's turn-1 `result` arrives the instant she has asked Pete — it is not
   her answer. `DelegationManager._on_broadcast` therefore skips terminal
-  injection while `_has_running_children(sid)` holds, and finalises on the
-  next non-error result (the turn Pete's reply wakes her for). Without this
-  Octo received "awaiting Pete's response" as Vera's reply and her session
-  was archived mid-chain, so the relay could never land — the 3-hop backend
-  test could not pass and had been skipping itself. An **error** result still
-  finalises immediately, so a crashed middle agent can't hang its caller.
+  injection while `_has_running_children(sid)` holds **or** the record's
+  `_awaiting_sub_relay` flag is set, and finalises on the next non-error
+  result (the turn Pete's reply wakes her for). Without this Octo received
+  "awaiting Pete's response" as Vera's reply and her session was archived
+  mid-chain, so the relay could never land — the 3-hop backend test could not
+  pass and had been skipping itself. An **error** result still finalises
+  immediately, so a crashed middle agent can't hang its caller.
+
+  The flag exists because `_has_running_children` samples the registry at the
+  instant the turn ends, and that instant is a race: if Pete is quick, or
+  Vera's own wrap-up is slow, Pete is already `completed` when Vera's turn-1
+  `result` lands and nothing looks in flight — so she finalised with "I've
+  asked Pete" as her answer and Pete's real reply, already queued into her
+  session, was dropped on a record that was no longer `running`. What decides
+  the deferral is that she *asked* someone during the turn, not whether they
+  are still working when it ends, so `start_delegation` marks the caller's own
+  record and `_on_broadcast` consumes the mark on the deferred turn (a relay
+  turn that asks again re-arms it). The real-CLI 3-hop test only caught this
+  on runs slow enough to invert the two events; `test_delegations.py` now pins
+  both orderings, plus the one-hop case that must still finalise on its first
+  result.
 - **No bridge fan-out.** Bridges only broadcast to `origin='user'` (and
   maybe `bridge`) sessions; a delegation must not also notify the
   user's Telegram chat. Single line in `BridgeManager._on_broadcast`.

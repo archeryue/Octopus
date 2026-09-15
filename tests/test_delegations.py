@@ -441,7 +441,20 @@ async def test_nested_chain_intermediate_stays_alive_while_grandchild_runs(
     # Vera is STILL alive — she hasn't fired her own terminal yet.
     assert mgr.get_session(vera_rec.delegation_id) is not None
 
-    # Now Vera fires her own terminal. Pete-style.
+    # Vera's turn 1 ends — the turn that only asked Pete. Even though Pete is
+    # already done (he answered above, before she wrapped up), that turn isn't
+    # her answer, so it must not finalise or archive her: Pete's reply is
+    # queued into her session and she still owes Octo the relay.
+    await dm._on_broadcast({
+        "type": "result",
+        "session_id": vera_rec.delegation_id,
+        "is_error": False,
+    })
+    assert mgr.get_session(vera_rec.delegation_id) is not None, (
+        "Vera was archived on the turn that merely asked Pete"
+    )
+
+    # Turn 2 — the relay Pete's reply woke her for — fires her own terminal.
     await dm._on_broadcast({
         "type": "result",
         "session_id": vera_rec.delegation_id,
@@ -814,6 +827,116 @@ async def test_parent_delegation_waits_for_its_own_sub_delegation(
     assert target_sid == parent.id
     assert prompt.startswith(f"[agent-reply:Vera delegation={vera_sid}]")
     assert "HOP-7" in prompt
+
+
+@pytest.mark.asyncio
+async def test_parent_delegation_waits_when_its_sub_delegation_finished_first(
+    dm, mgr, db, monkeypatch
+):
+    """Same chain, inverted timing: Pete answers BEFORE Vera's turn-1 result.
+
+    `_has_running_children` samples at the instant the turn ends, so a fast
+    grandchild — or merely a slow wrap-up on Vera's own turn — leaves nothing
+    in flight even though the relay turn hasn't happened yet. Vera was then
+    finalised with "Delegation started to Pete … waiting for their reply" as
+    her answer, and Pete's real reply, already queued into her session, was
+    dropped because her record was no longer running.
+
+    The real-CLI `test_real_three_hop_chain` caught this, but only on runs slow
+    enough to invert the two events. What decides the deferral is that Vera
+    ASKED someone during the turn, not whether they happen to still be working
+    when it ends.
+    """
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    await _make_agent(db, "Pete")
+    parent = await _make_session(mgr, octo["id"], name="parent")
+
+    vera_rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="ask pete",
+    )
+    vera_sid = vera_rec.delegation_id
+    pete_rec = await dm.start_delegation(
+        parent_session_id=vera_sid, agent_name="pete", request="reply HOP-7",
+    )
+    pete_sid = pete_rec.delegation_id
+    injected.clear()
+
+    # Pete is quick: he answers while Vera is still wrapping up turn 1. His
+    # terminal injection lands in Vera's session, queued behind that turn.
+    await dm._on_broadcast(
+        {"type": "assistant_text", "session_id": pete_sid, "content": "HOP-7"}
+    )
+    await dm._on_broadcast({"type": "result", "session_id": pete_sid, "is_error": False})
+    assert pete_rec.state == "completed"
+    assert [sid for sid, _ in injected] == [vera_sid]
+    injected.clear()
+
+    # Only now does Vera's turn 1 end. Nothing is running under her — but she
+    # still owes Octo the relay, so she must not finalise here.
+    await dm._on_broadcast(
+        {
+            "type": "assistant_text",
+            "session_id": vera_sid,
+            "content": "Delegation started to Pete. Waiting for their reply.",
+        }
+    )
+    await dm._on_broadcast({"type": "result", "session_id": vera_sid, "is_error": False})
+    assert vera_rec.state == "running", "Vera finalised on the turn that only asked Pete"
+    assert injected == [], f"Octo was told {injected!r} instead of Pete's answer"
+
+    # Turn 2 — woken by Pete's reply — is the relay, and it finalises her.
+    await dm._on_broadcast(
+        {"type": "assistant_text", "session_id": vera_sid, "content": "Pete says HOP-7"}
+    )
+    await dm._on_broadcast({"type": "result", "session_id": vera_sid, "is_error": False})
+    assert vera_rec.state == "completed"
+    assert len(injected) == 1
+    target_sid, prompt = injected[0]
+    assert target_sid == parent.id
+    assert prompt.startswith(f"[agent-reply:Vera delegation={vera_sid}]")
+    assert "HOP-7" in prompt
+
+
+@pytest.mark.asyncio
+async def test_plain_delegation_finalises_on_its_first_result(
+    dm, mgr, db, monkeypatch
+):
+    """The deferral must not leak onto ordinary one-hop delegations.
+
+    Only a child that asked someone else waits for a second turn; a child that
+    simply answers finalises on its first result, as it always has.
+    """
+    injected: list[tuple[str, str]] = []
+
+    async def capture(sid, prompt, attachment_ids=None):
+        injected.append((sid, prompt))
+
+    monkeypatch.setattr(mgr, "start_message", capture)
+    octo = await db.get_system_agent()
+    await _make_agent(db, "Vera")
+    parent = await _make_session(mgr, octo["id"], name="parent")
+
+    rec = await dm.start_delegation(
+        parent_session_id=parent.id, agent_name="vera", request="just answer",
+    )
+    injected.clear()
+
+    await dm._on_broadcast(
+        {"type": "assistant_text", "session_id": rec.delegation_id, "content": "done"}
+    )
+    await dm._on_broadcast(
+        {"type": "result", "session_id": rec.delegation_id, "is_error": False}
+    )
+    assert rec.state == "completed"
+    assert [sid for sid, _ in injected] == [parent.id]
+    assert "done" in injected[0][1]
 
 
 @pytest.mark.asyncio
