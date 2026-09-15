@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
+  addSessionInfo,
+  hydrateSession,
+  sessionInfoFromDetail,
+} from "../lib/hydrateSession";
+import {
   useSessionStore,
+  type Application,
   type BgTask,
   type Message,
   type PendingQuestion,
@@ -189,6 +195,29 @@ function handleWsMessage(data: Record<string, unknown>) {
       }
       break;
 
+    // Applications (applications.md §4/§7). Global events — no session_id,
+    // because the sidebar shows applications regardless of which session is
+    // open. The row comes down whole, so the store just mirrors it.
+    case "application_created":
+    case "application_updated": {
+      const row = data.application as Application | undefined;
+      if (!row) break;
+      getState().upsertApplication(row);
+      // The build session was created server-side, so the sidebar list
+      // doesn't have it yet — pull it in so it's listed under its agent and
+      // the chat header can name it when the user opens it.
+      if (row.session_id) void hydrateSession(row.session_id);
+      break;
+    }
+
+    case "application_deleted": {
+      const id =
+        (data.application_id as string) ||
+        (data.application as Application | undefined)?.id;
+      if (id) getState().removeApplication(id);
+      break;
+    }
+
     case "bg_started": {
       const { upsertBgTask } = getState();
       upsertBgTask(sessionId, {
@@ -338,20 +367,7 @@ function handleWsMessage(data: Record<string, unknown>) {
       })
         .then((r) => (r.ok ? r.json() : null))
         .then((detail) => {
-          if (!detail) return;
-          const s = getState();
-          if (s.sessions.some((x) => x.id === forkId)) return;
-          // The detail endpoint is a SessionInfo superset (+ messages,
-          // pending_queue, pending_questions, next_message_seq); strip the
-          // detail-only fields so the list holds a clean SessionInfo.
-          const {
-            messages: _m,
-            pending_queue: _q,
-            pending_questions: _pq,
-            next_message_seq: _n,
-            ...info
-          } = detail;
-          s.setSessions([...s.sessions, info]);
+          if (detail) addSessionInfo(sessionInfoFromDetail(detail));
         })
         .catch(() => {});
       break;
@@ -386,6 +402,15 @@ export function useWebSocket() {
           })
             .then((r) => (r.ok ? r.json() : null))
             .then((sessions) => sessions && getState().setSessions(sessions))
+            .catch(() => {});
+
+          // Applications: a build that finished while we were disconnected
+          // would otherwise leave the sidebar showing "building" forever.
+          fetch(`${window.location.origin}/api/applications`, {
+            headers: { Authorization: `Bearer ${t}` },
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((apps) => apps && getState().setApplications(apps))
             .catch(() => {});
 
           if (activeSessionId) {

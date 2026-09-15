@@ -339,6 +339,33 @@ CREATE TABLE IF NOT EXISTS research_jobs (
 
 CREATE INDEX IF NOT EXISTS idx_research_jobs_session
   ON research_jobs(session_id, created_at);
+
+-- Agent-built web applications (applications.md §2). An application is a
+-- directory of static files an agent wrote, served under /apps/{id}/ and
+-- rendered in the main pane like a browser tab. The row owns the directory
+-- and points at the *build session* — a normal session with
+-- origin='application' whose turns write the app. Both FKs SET NULL rather
+-- than CASCADE: an application outlives the agent that built it and the
+-- conversation that produced it. New-table-only — CREATE IF NOT EXISTS is a
+-- no-op migration on existing DBs.
+CREATE TABLE IF NOT EXISTS applications (
+    id TEXT PRIMARY KEY,                   -- 12-char hex, as sessions/agents
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    icon TEXT,                             -- emoji shown in the sidebar
+    agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    app_dir TEXT NOT NULL,                 -- absolute path to the app root
+    entrypoint TEXT NOT NULL DEFAULT 'index.html',
+    status TEXT NOT NULL DEFAULT 'building',  -- building|ready|failed
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_built_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique
+  ON applications(name COLLATE NOCASE);
 """
 
 
@@ -2267,3 +2294,134 @@ class Database:
         )
         await self._conn.commit()
         return cursor.rowcount
+
+    # ------------------------------------------------------------ applications
+
+    _APPLICATION_COLS = (
+        "id, name, description, icon, agent_id, session_id, app_dir, "
+        "entrypoint, status, error, created_at, updated_at, last_built_at"
+    )
+
+    @staticmethod
+    def _row_to_application(row: tuple[Any, ...]) -> dict[str, Any]:
+        return {
+            "id": row[0],
+            "name": row[1],
+            "description": row[2],
+            "icon": row[3],
+            "agent_id": row[4],
+            "session_id": row[5],
+            "app_dir": row[6],
+            "entrypoint": row[7],
+            "status": row[8],
+            "error": row[9],
+            "created_at": row[10],
+            "updated_at": row[11],
+            "last_built_at": row[12],
+        }
+
+    async def save_application(
+        self,
+        *,
+        app_id: str,
+        name: str,
+        app_dir: str,
+        created_at: str,
+        updated_at: str,
+        description: str = "",
+        icon: str | None = None,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+        entrypoint: str = "index.html",
+        status: str = "building",
+    ) -> None:
+        await self._ensure_connected()
+        await self._conn.execute(
+            "INSERT INTO applications "
+            "(id, name, description, icon, agent_id, session_id, app_dir, "
+            " entrypoint, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                app_id,
+                name,
+                description,
+                icon,
+                agent_id,
+                session_id,
+                app_dir,
+                entrypoint,
+                status,
+                created_at,
+                updated_at,
+            ),
+        )
+        await self._conn.commit()
+
+    async def load_applications(self) -> list[dict[str, Any]]:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._APPLICATION_COLS} FROM applications "
+            "ORDER BY created_at ASC"
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_application(r) for r in rows]
+
+    async def get_application(self, app_id: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._APPLICATION_COLS} FROM applications WHERE id = ?",
+            (app_id,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_application(row) if row else None
+
+    async def get_application_by_name(self, name: str) -> dict[str, Any] | None:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._APPLICATION_COLS} FROM applications "
+            "WHERE name = ? COLLATE NOCASE",
+            (name,),
+        )
+        row = await cursor.fetchone()
+        return self._row_to_application(row) if row else None
+
+    async def get_applications_for_session(
+        self, session_id: str
+    ) -> list[dict[str, Any]]:
+        """Every application whose build session is `session_id`. A list (not a
+        single row) because nothing stops two applications from being built in
+        the same conversation if a future flow wires it that way."""
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            f"SELECT {self._APPLICATION_COLS} FROM applications "
+            "WHERE session_id = ?",
+            (session_id,),
+        )
+        rows = await cursor.fetchall()
+        return [self._row_to_application(r) for r in rows]
+
+    async def update_application(self, app_id: str, **fields: Any) -> None:
+        """Patch any of: name, description, icon, agent_id, session_id,
+        entrypoint, status, error, updated_at, last_built_at."""
+        await self._ensure_connected()
+        allowed = {
+            "name", "description", "icon", "agent_id", "session_id",
+            "entrypoint", "status", "error", "updated_at", "last_built_at",
+        }
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        await self._conn.execute(
+            f"UPDATE applications SET {set_clause} WHERE id = ?",
+            list(updates.values()) + [app_id],
+        )
+        await self._conn.commit()
+
+    async def delete_application(self, app_id: str) -> bool:
+        await self._ensure_connected()
+        cursor = await self._conn.execute(
+            "DELETE FROM applications WHERE id = ?", (app_id,)
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0

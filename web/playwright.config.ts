@@ -9,6 +9,14 @@ import { defineConfig } from "@playwright/test";
 // in global-teardown. Exported so the teardown deletes the exact same path.
 export const E2E_AGENTS_DIR = path.join(os.tmpdir(), "octopus-e2e-agents");
 
+// Same isolation for agent-built applications (docs/plans/applications.md §9):
+// the e2e backend writes app directories under here instead of the
+// developer's real ~/.octopus/applications. Removed in global-teardown.
+export const E2E_APPLICATIONS_DIR = path.join(
+  os.tmpdir(),
+  "octopus-e2e-applications"
+);
+
 export default defineConfig({
   testDir: "./e2e",
   testIgnore: ["telegram-bridge.spec.ts"],
@@ -52,6 +60,9 @@ export default defineConfig({
         // them out of the developer's real ~/.octopus/agents. Cleaned in
         // e2e/global-teardown.ts.
         OCTOPUS_AGENTS_DIR: E2E_AGENTS_DIR,
+        // Applications built by the e2e suite land here, not in the
+        // developer's real ~/.octopus/applications.
+        OCTOPUS_APPLICATIONS_DIR: E2E_APPLICATIONS_DIR,
         // Short auto-answer window so the AskUserQuestion-timeout e2e
         // fires in seconds instead of minutes. Existing interactive
         // real-CLI tests click within a second of the form appearing,

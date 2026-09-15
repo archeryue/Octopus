@@ -23,8 +23,9 @@ from .tunnel import CloudflareTunnel
 from .database import Database
 from .notifiers import notifier_manager
 from .agent_manager import AgentManager
+from .applications import application_manager
 from .connector_manager import ConnectorManager
-from .routers import agents, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
+from .routers import agents, applications as applications_router, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     schedules._runner = schedule_runner
     agents.set_manager(AgentManager(db))
     connectors.set_manager(ConnectorManager(db))
+    applications_router.set_manager(application_manager)
     credentials.set_db(db)
     notifiers.set_db(db)
     notifier_manager.set_db(db)
@@ -90,6 +92,11 @@ async def lifespan(app: FastAPI):
     # the session-manager broadcast bus and routes child-session
     # replies/errors back into the parent session as injected turns.
     delegation_manager.bind(session_mgr=session_manager, db=db)
+
+    # Applications (applications.md). Subscribes to the session broadcast bus
+    # so a build session's turns drive each application's building/ready/failed
+    # status.
+    application_manager.bind(session_mgr=session_manager, db=db)
 
     # Native deep research (native-deep-research.md). Tracks research jobs as
     # async tasks; injects the final report back into the session.
@@ -119,6 +126,7 @@ async def lifespan(app: FastAPI):
     await codex_login_manager.shutdown()
 
     await bg_task_manager.shutdown()
+    application_manager.shutdown()
     delegation_manager.shutdown()
     await schedule_runner.shutdown()
     await bridge_manager.stop_all()
@@ -137,6 +145,10 @@ app.add_middleware(
 )
 
 app.include_router(agents.router)
+app.include_router(applications_router.router)
+# /apps/{id}/… — the application itself. Registered before the SPA catch-all
+# mount so it wins the path (applications.md §3).
+app.include_router(applications_router.static_router)
 app.include_router(sessions.router)
 app.include_router(attachments.router)
 app.include_router(files.router)

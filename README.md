@@ -117,6 +117,14 @@ Phone / Browser / Telegram
   Codex). A `ResearchCard` in the chat tracks phase progress and exposes a cancel
   button; the final report arrives as a follow-up turn the agent can act on.
   Design: [`docs/plans/native-deep-research.md`](docs/plans/native-deep-research.md).
+- **Applications** — Ask an agent to build you a web app and it lands in the
+  sidebar. Describe what you want, pick the agent, and it writes a
+  self-contained static site into a directory Octopus owns
+  (`~/.octopus/applications/<app>`); the moment the entry page exists, the app
+  renders in the main pane like a browser tab. Ask for changes right from that
+  pane — each request is another turn in the same build session, so the agent
+  keeps its context and the frame reloads itself when the rebuild lands.
+  Design: [`docs/plans/applications.md`](docs/plans/applications.md).
 - **Local handoff** — `octopus handoff` imports local Claude Code sessions;
   `octopus pull` exports a session as JSONL for local `claude --resume`.
 - **Persistence** — SQLite (WAL, batched commits per turn); sessions, messages,

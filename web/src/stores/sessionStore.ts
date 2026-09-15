@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   AgentRead as ApiAgentRead,
+  ApplicationRead as ApiApplicationRead,
   AttachmentMetadata as ApiAttachmentMetadata,
   BackendKind as ApiBackendKind,
   ConnectorCatalogEntry as ApiConnectorCatalogEntry,
@@ -17,6 +18,7 @@ import type {
 export type SessionStatus = ApiSessionStatus;
 export type SessionInfo = ApiSessionInfo;
 export type Agent = ApiAgentRead;
+export type Application = ApiApplicationRead;
 export type BackendKind = ApiBackendKind;
 export type CredentialInfo = ApiCredentialInfo;
 export type ConnectorCatalogEntry = ApiConnectorCatalogEntry;
@@ -66,6 +68,8 @@ export interface PendingQuestion {
   questions: QuestionItem[];
 }
 
+export type MainView = "chat" | "application" | "application-create";
+
 interface SessionStore {
   token: string;
   setToken: (t: string) => void;
@@ -79,6 +83,25 @@ interface SessionStore {
   removeAgent: (id: string) => void;
   activeAgentId: string | null;
   setActiveAgentId: (id: string | null) => void;
+
+  // Applications (applications.md §7) — agent-built static web apps listed
+  // in the sidebar and rendered in the main pane. WS `application_*` events
+  // keep this list live; ApplicationList seeds it once on mount.
+  applications: Application[];
+  setApplications: (a: Application[]) => void;
+  upsertApplication: (a: Application) => void;
+  removeApplication: (id: string) => void;
+
+  // What the main pane shows. Octopus has no URL router, so this is the
+  // routing state: "chat" (the session transcript), "application" (the
+  // selected app's iframe), "application-create" (the new-app form).
+  // `setActiveSessionId` flips it back to "chat" so every existing call site
+  // that selects a session gets the behavior for free.
+  mainView: MainView;
+  activeApplicationId: string | null;
+  openApplication: (id: string) => void;
+  openApplicationCreate: () => void;
+  showChat: () => void;
 
   // Which AI backends this host can run (GET /api/backends). 'claude-code'
   // is always present; 'codex' only when the binary resolves. Drives the
@@ -269,6 +292,39 @@ export const useSessionStore = create<SessionStore>((set) => ({
   activeAgentId: null,
   setActiveAgentId: (activeAgentId) => set({ activeAgentId }),
 
+  applications: [],
+  setApplications: (applications) => set({ applications }),
+  upsertApplication: (application) =>
+    set((s) => {
+      const idx = s.applications.findIndex((a) => a.id === application.id);
+      const applications =
+        idx >= 0
+          ? [
+              ...s.applications.slice(0, idx),
+              application,
+              ...s.applications.slice(idx + 1),
+            ]
+          : [...s.applications, application];
+      return { applications };
+    }),
+  removeApplication: (id) =>
+    set((s) => ({
+      applications: s.applications.filter((a) => a.id !== id),
+      // Deleting the app you're looking at drops you back to chat rather
+      // than leaving a frame pointed at a 404.
+      ...(s.activeApplicationId === id
+        ? { activeApplicationId: null, mainView: "chat" as MainView }
+        : {}),
+    })),
+
+  mainView: "chat",
+  activeApplicationId: null,
+  openApplication: (id) =>
+    set({ activeApplicationId: id, mainView: "application" }),
+  openApplicationCreate: () =>
+    set({ activeApplicationId: null, mainView: "application-create" }),
+  showChat: () => set({ mainView: "chat", activeApplicationId: null }),
+
   availableBackends: ["claude-code"],
   setAvailableBackends: (availableBackends) => set({ availableBackends }),
 
@@ -284,7 +340,10 @@ export const useSessionStore = create<SessionStore>((set) => ({
     })),
 
   activeSessionId: null,
-  setActiveSessionId: (id) => set({ activeSessionId: id }),
+  // Selecting a session is also what leaves an application view — see
+  // `mainView` above.
+  setActiveSessionId: (id) =>
+    set({ activeSessionId: id, mainView: "chat", activeApplicationId: null }),
 
   lastAppliedSeq: {},
   setLastAppliedSeq: (sessionId, seq) =>

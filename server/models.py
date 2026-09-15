@@ -513,3 +513,60 @@ class UpdateNotifierRequest(BaseModel):
     label: str | None = None
     config: dict[str, Any] | None = None
     enabled: bool | None = None
+
+
+# Applications (docs/plans/applications.md §2/§5) — agent-built static web
+# apps that Octopus serves under /apps/{id}/ and renders in the main pane.
+
+
+class ApplicationStatus(str, Enum):
+    building = "building"
+    ready = "ready"
+    failed = "failed"
+
+
+class ApplicationRead(BaseModel):
+    model_config = {"use_enum_values": True}
+
+    id: str
+    name: str
+    description: str = ""
+    icon: str | None = None
+    # The agent that built it and the session its build turns run in. Both
+    # nullable: an application outlives the agent and the conversation
+    # (ON DELETE SET NULL), it just can't be rebuilt without a new one.
+    agent_id: str | None = None
+    session_id: str | None = None
+    app_dir: str
+    entrypoint: str = "index.html"
+    status: ApplicationStatus = ApplicationStatus.building
+    error: str | None = None
+    created_at: str
+    updated_at: str
+    last_built_at: str | None = None
+
+
+class ApplicationCreate(BaseModel):
+    name: str = Field(min_length=1)
+    # Required: the description IS the brief the agent builds from.
+    description: str = Field(min_length=1)
+    agent_id: str = Field(min_length=1)
+    icon: str | None = None
+    # Free-form extra steer appended to the brief ("use a dark theme", "no
+    # emoji"). Optional — the description alone is a valid brief.
+    instructions: str = ""
+    entrypoint: str = "index.html"
+
+
+class ApplicationUpdate(BaseModel):
+    # All optional; the route applies only explicitly-provided fields.
+    name: str | None = None
+    description: str | None = None
+    icon: str | None = None
+    entrypoint: str | None = None
+
+
+class ApplicationBuildRequest(BaseModel):
+    """Another build turn — "add a dark mode", "the header should stick"."""
+
+    prompt: str = Field(min_length=1)

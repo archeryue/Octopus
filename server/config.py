@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # CLAUDE_COWORK_MEMORY_PATH_OVERRIDE, Codex via its instructions blurb).
     # `~` expanded at use time.
     agents_dir: str = "~/.octopus/agents"
+    # Agent-built web applications (docs/plans/applications.md §2). Each app
+    # gets `<applications_dir>/<slug>/` — a plain directory of static files
+    # that the server streams back under /apps/{id}/. `~` expanded at use
+    # time so tests (and the e2e suite) can point it at a temp root.
+    applications_dir: str = "~/.octopus/applications"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False

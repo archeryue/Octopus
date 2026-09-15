@@ -7,6 +7,7 @@ import {
   IconSubtask,
   IconX,
 } from "@tabler/icons-react";
+import { selectSession as selectSessionShared } from "../lib/selectSession";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -37,9 +38,6 @@ export function SessionList({
   const activeSessionId = useSessionStore((s) => s.activeSessionId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
-  const setMessages = useSessionStore((s) => s.setMessages);
-  const setPendingQueue = useSessionStore((s) => s.setPendingQueue);
-  const setPendingQuestions = useSessionStore((s) => s.setPendingQuestions);
   const credentials = useSessionStore((s) => s.credentials);
   const availableBackends = useSessionStore((s) => s.availableBackends);
   const agents = useSessionStore((s) => s.agents);
@@ -127,32 +125,9 @@ export function SessionList({
     }
   };
 
-  const selectSession = async (id: string) => {
-    setActiveAgentId(agentId);
-    setActiveSessionId(id);
-    try {
-      const [detailRes, bgRes] = await Promise.all([
-        fetch(`${API_URL}/api/sessions/${id}`, { headers }),
-        fetch(`${API_URL}/api/sessions/${id}/bg-tasks`, { headers }),
-      ]);
-      if (detailRes.ok) {
-        const data = await detailRes.json();
-        setMessages(id, data.messages || []);
-        setPendingQueue(id, data.pending_queue || []);
-        setPendingQuestions(id, data.pending_questions || []);
-        if (typeof data.next_message_seq === "number") {
-          useSessionStore
-            .getState()
-            .setLastAppliedSeq(id, data.next_message_seq - 1);
-        }
-      }
-      if (bgRes.ok) {
-        useSessionStore.getState().setBgTasks(id, await bgRes.json());
-      }
-    } catch {
-      // ignore
-    }
-  };
+  // Shared with the application view's "Open build session" — see
+  // lib/selectSession.ts for why snapshot loading lives outside the component.
+  const selectSession = (id: string) => selectSessionShared(id, agentId);
 
   // Every session is a flat, EQUAL row in the sidebar — no parent/child
   // nesting, no fork chrome. A /fork duplicate or /rewind branch is just

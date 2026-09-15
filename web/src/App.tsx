@@ -5,7 +5,9 @@ import { AgentList } from "./components/AgentList";
 import { AgentSettings } from "./components/AgentSettings";
 import { ArchivedSessionsDialog } from "./components/ArchivedSessionsDialog";
 import { ChatView } from "./components/ChatView";
+import { ApplicationCreate } from "./components/ApplicationCreate";
 import { ApplicationList } from "./components/ApplicationList";
+import { ApplicationView } from "./components/ApplicationView";
 import { ConnectorList } from "./components/ConnectorList";
 import { CredentialList } from "./components/CredentialList";
 // SessionList is rendered inside AgentList (nested under the active agent),
@@ -86,6 +88,7 @@ function AuthenticatedApp({
   const setToken = useSessionStore((s) => s.setToken);
   const agents = useSessionStore((s) => s.agents);
   const activeAgentId = useSessionStore((s) => s.activeAgentId);
+  const mainView = useSessionStore((s) => s.mainView);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // Agent-settings dialog lives at the app level (not the sidebar) so it can
   // be driven from the account menu. It's a two-pane manager: this id just
@@ -151,7 +154,7 @@ function AuthenticatedApp({
         <nav className="flex-1 flex flex-col min-h-0 overflow-y-auto px-3">
           <AgentList onCreateAgent={openCreateAgent} />
           <ScheduleList onOpen={() => setSchedulesOpen(true)} />
-          <ApplicationList onAdd={() => {}} />
+          <ApplicationList />
           <ConnectorList />
           <CredentialList />
         </nav>
@@ -167,17 +170,37 @@ function AuthenticatedApp({
         </div>
       </aside>
 
+      {/* The main pane is chat unless an application took it over
+        * (applications.md §7). ChatView stays mounted underneath — it owns
+        * the composer draft, scroll position and attachment state, and
+        * unmounting it on every app visit would throw all of that away. */}
       <div className="main-area">
-        <ChatView
-          sendMessage={sendMessage}
-          interrupt={interrupt}
-          approveTool={approveTool}
-          denyTool={denyTool}
-          answerQuestion={answerQuestion}
-          connected={connected}
-          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-          onOpenSchedules={() => setSchedulesOpen(true)}
-        />
+        <div
+          className={`main-pane flex-1 flex flex-col min-h-0 ${
+            mainView === "chat" ? "" : "hidden"
+          }`}
+        >
+          <ChatView
+            sendMessage={sendMessage}
+            interrupt={interrupt}
+            approveTool={approveTool}
+            denyTool={denyTool}
+            answerQuestion={answerQuestion}
+            connected={connected}
+            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+            onOpenSchedules={() => setSchedulesOpen(true)}
+          />
+        </div>
+        {mainView === "application" && (
+          <ApplicationView
+            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          />
+        )}
+        {mainView === "application-create" && (
+          <ApplicationCreate
+            onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
+          />
+        )}
       </div>
 
       {sidebarOpen && (

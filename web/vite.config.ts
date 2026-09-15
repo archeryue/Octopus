@@ -11,6 +11,10 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': apiTarget,
+      // Applications are served by the backend out of their own directories
+      // (applications.md §3); the dev server has to forward them or the
+      // in-app iframe 404s on :5173/:5174.
+      '/apps': apiTarget,
       '/ws': { target: apiTarget, ws: true },
       '/health': apiTarget,
     },

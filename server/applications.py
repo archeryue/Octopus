@@ -1,0 +1,541 @@
+"""ApplicationManager — agent-built web apps (docs/plans/applications.md).
+
+An **application** is a directory of static files that one of the user's
+agents wrote, served back under ``/apps/{id}/`` and rendered in the main pane
+like a browser tab. The row owns three things:
+
+  * the directory (allocated under ``settings.applications_dir``),
+  * the *build session* — a normal ``Session`` with ``origin='application'``
+    whose turns write the files (the same "reuse the session concept" trick
+    delegations use for children),
+  * a ``building | ready | failed`` status, derived from whether the
+    entrypoint exists when a build turn ends.
+
+Status is not something the model reports; it's observed. This manager
+subscribes to ``SessionManager``'s broadcast bus (the ``DelegationManager``
+pattern) and re-evaluates an application every time its build session starts
+or finishes a turn. So "ask for changes" — which is just another turn in the
+same session — gets live status for free, whether it was requested from the
+application view or typed straight into the chat.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import shutil
+import uuid
+from pathlib import PurePosixPath
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+
+from .config import settings
+
+if TYPE_CHECKING:
+    from .database import Database
+    from .session_manager import SessionManager
+
+logger = logging.getLogger(__name__)
+
+# Status values. `building` covers "a build turn is in flight"; the terminal
+# pair is decided by whether the entrypoint file landed.
+STATUS_BUILDING = "building"
+STATUS_READY = "ready"
+STATUS_FAILED = "failed"
+
+DEFAULT_ENTRYPOINT = "index.html"
+
+
+class ApplicationError(Exception):
+    """Surface-level error carrying an HTTP status for the REST layer."""
+
+    def __init__(self, message: str, *, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status_code = status_code
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def applications_root() -> str:
+    """The managed root every application directory lives under. Expanded at
+    call time (not import time) so tests and the e2e suite can repoint
+    `OCTOPUS_APPLICATIONS_DIR` after Settings has been constructed."""
+    return os.path.abspath(os.path.expanduser(settings.applications_dir))
+
+
+def slugify(name: str) -> str:
+    """Filesystem-safe, human-readable stem for an application directory."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return slug[:48] or "app"
+
+
+def allocate_app_dir(name: str) -> str:
+    """Pick an unused directory for `name` under the managed root.
+
+    The slug is the readable part; collisions get a `-2`, `-3`, … suffix so
+    two applications never share a directory. The result is stored on the row,
+    which is why renaming an application later never has to move files.
+    """
+    root = applications_root()
+    os.makedirs(root, exist_ok=True)
+    stem = slugify(name)
+    candidate = os.path.join(root, stem)
+    n = 2
+    while os.path.exists(candidate):
+        candidate = os.path.join(root, f"{stem}-{n}")
+        n += 1
+    return candidate
+
+
+def is_inside_root(path: str) -> bool:
+    """True iff `path` resolves inside the managed applications root. Guards
+    the delete path — a hand-edited `app_dir` must not be able to make us
+    `rmtree` something outside our own tree."""
+    root = os.path.realpath(applications_root())
+    target = os.path.realpath(path)
+    return target != root and os.path.commonpath([root, target]) == root
+
+
+def is_safe_relative_path(rel_path: str) -> bool:
+    """True iff `rel_path` is a relative path that can't climb out of its own
+    directory. Used to validate a stored `entrypoint` before it ever reaches
+    the filesystem."""
+    if not rel_path or os.path.isabs(rel_path) or rel_path.startswith("/"):
+        return False
+    parts = PurePosixPath(rel_path).parts
+    return bool(parts) and ".." not in parts
+
+
+def resolve_within(app_dir: str, rel_path: str) -> str | None:
+    """Resolve `rel_path` inside `app_dir`, or None if it escapes.
+
+    Used by the static-file route. Returns None for absolute paths, `..`
+    traversal, and symlinks pointing out of the directory — the caller turns
+    that into a 404 rather than a 403, so probing can't confirm what exists
+    outside the app.
+    """
+    base = os.path.realpath(app_dir)
+    target = os.path.realpath(os.path.join(base, rel_path.lstrip("/")))
+    if target != base and os.path.commonpath([base, target]) != base:
+        return None
+    return target
+
+
+class ApplicationManager:
+    """App-lifetime singleton; bound in main.py's lifespan."""
+
+    BROADCAST_KEY = "application-manager"
+
+    def __init__(self) -> None:
+        self.session_mgr: "SessionManager | None" = None
+        self.db: "Database | None" = None
+
+    def bind(self, session_mgr: "SessionManager", db: "Database") -> None:
+        self.session_mgr = session_mgr
+        self.db = db
+        session_mgr.on_broadcast(self.BROADCAST_KEY, self._on_broadcast)
+
+    def shutdown(self) -> None:
+        if self.session_mgr is not None:
+            self.session_mgr.remove_broadcast(self.BROADCAST_KEY)
+
+    def _require_db(self) -> "Database":
+        if self.db is None:
+            raise ApplicationError("ApplicationManager not bound", status_code=500)
+        return self.db
+
+    # ------------------------------------------------------------------ reads
+
+    async def list_applications(self) -> list[dict[str, Any]]:
+        return await self._require_db().load_applications()
+
+    async def get_application(self, app_id: str) -> dict[str, Any]:
+        row = await self._require_db().get_application(app_id)
+        if row is None:
+            raise ApplicationError("Application not found", status_code=404)
+        return row
+
+    # ----------------------------------------------------------------- create
+
+    async def create_application(
+        self,
+        *,
+        name: str,
+        description: str = "",
+        agent_id: str,
+        icon: str | None = None,
+        instructions: str = "",
+        entrypoint: str = DEFAULT_ENTRYPOINT,
+    ) -> dict[str, Any]:
+        """Create the directory + row, open the build session under `agent_id`,
+        and fire the build brief. Returns the row immediately — the app is
+        `building` until the agent's turn ends (applications.md §4)."""
+        db = self._require_db()
+        if self.session_mgr is None:
+            raise ApplicationError("ApplicationManager not bound", status_code=500)
+
+        name = (name or "").strip()
+        if not name:
+            raise ApplicationError("Application name is required")
+        if await db.get_application_by_name(name) is not None:
+            raise ApplicationError(
+                f"An application named {name!r} already exists", status_code=409
+            )
+        description = (description or "").strip()
+        if not description:
+            raise ApplicationError("Application description is required")
+
+        agent = await db.get_agent(agent_id) if agent_id else None
+        if agent is None:
+            raise ApplicationError("Agent not found", status_code=404)
+
+        entrypoint = (entrypoint or DEFAULT_ENTRYPOINT).strip()
+        if not is_safe_relative_path(entrypoint):
+            raise ApplicationError("entrypoint must be a path inside the app")
+
+        app_id = uuid.uuid4().hex[:12]
+        app_dir = allocate_app_dir(name)
+        os.makedirs(app_dir, exist_ok=True)
+        now = _now()
+        await db.save_application(
+            app_id=app_id,
+            name=name,
+            description=description,
+            icon=icon,
+            agent_id=agent_id,
+            session_id=None,
+            app_dir=app_dir,
+            entrypoint=entrypoint,
+            status=STATUS_BUILDING,
+            created_at=now,
+            updated_at=now,
+        )
+
+        session = await self.session_mgr.create_session(
+            agent_id=agent_id,
+            name=f"Build: {name}",
+            working_dir=app_dir,
+            origin="application",
+            backend=(agent.get("backend") or "claude-code"),
+        )
+        await db.update_application(app_id, session_id=session.id, updated_at=_now())
+
+        # Announce the row BEFORE the first turn starts, so the `created`
+        # event can never land after an `updated` one produced by that turn
+        # (clients upsert by id — a late `created` would re-apply the stale
+        # building row over a finished build).
+        row = await db.get_application(app_id)
+        await self._broadcast_application("application_created", row)
+
+        prompt = self.compose_build_prompt(
+            name=name,
+            description=description,
+            app_dir=app_dir,
+            entrypoint=entrypoint,
+            instructions=instructions,
+        )
+        try:
+            await self.session_mgr.start_message(session.id, prompt)
+        except Exception as exc:
+            logger.exception("Failed to start build session for application %s", app_id)
+            await db.update_application(
+                app_id,
+                status=STATUS_FAILED,
+                error=f"failed to start the build session: {exc}",
+                updated_at=_now(),
+            )
+            row = await db.get_application(app_id)
+            await self._broadcast_application("application_updated", row)
+        return row
+
+    # ------------------------------------------------------------------ build
+
+    async def request_build(self, app_id: str, prompt: str) -> dict[str, Any]:
+        """Run another build turn — "make the header sticky", "add a dark
+        mode". Reuses the build session so the agent keeps its context; if that
+        session is gone (deleted), a fresh one is opened under the same agent
+        and given the full brief again."""
+        db = self._require_db()
+        if self.session_mgr is None:
+            raise ApplicationError("ApplicationManager not bound", status_code=500)
+        row = await self.get_application(app_id)
+
+        prompt = (prompt or "").strip()
+        if not prompt:
+            raise ApplicationError("prompt must be a non-empty string")
+
+        session_id = row["session_id"]
+        session = (
+            self.session_mgr.get_session(session_id) if session_id else None
+        )
+        if session is None:
+            agent_id = row["agent_id"]
+            agent = await db.get_agent(agent_id) if agent_id else None
+            if agent is None:
+                raise ApplicationError(
+                    "This application's agent is gone — pick a new one before "
+                    "asking for changes",
+                    status_code=409,
+                )
+            session = await self.session_mgr.create_session(
+                agent_id=agent_id,
+                name=f"Build: {row['name']}",
+                working_dir=row["app_dir"],
+                origin="application",
+                backend=(agent.get("backend") or "claude-code"),
+            )
+            await db.update_application(app_id, session_id=session.id)
+            body = self.compose_build_prompt(
+                name=row["name"],
+                description=row["description"],
+                app_dir=row["app_dir"],
+                entrypoint=row["entrypoint"],
+                instructions=prompt,
+            )
+        else:
+            body = self.compose_change_prompt(
+                request=prompt,
+                app_dir=row["app_dir"],
+                entrypoint=row["entrypoint"],
+            )
+
+        await db.update_application(
+            app_id, status=STATUS_BUILDING, error=None, updated_at=_now()
+        )
+        updated = await db.get_application(app_id)
+        await self._broadcast_application("application_updated", updated)
+        await self.session_mgr.start_message(session.id, body)
+        return updated
+
+    # ----------------------------------------------------------------- update
+
+    async def update_application(self, app_id: str, **fields: Any) -> dict[str, Any]:
+        """Rename / re-icon / repoint the entrypoint. The directory never
+        moves — `app_dir` is the identity of the files on disk."""
+        db = self._require_db()
+        row = await self.get_application(app_id)
+        updates: dict[str, Any] = {}
+
+        if "name" in fields and fields["name"] is not None:
+            new_name = str(fields["name"]).strip()
+            if not new_name:
+                raise ApplicationError("Application name cannot be empty")
+            clash = await db.get_application_by_name(new_name)
+            if clash is not None and clash["id"] != app_id:
+                raise ApplicationError(
+                    f"An application named {new_name!r} already exists",
+                    status_code=409,
+                )
+            updates["name"] = new_name
+        if "description" in fields and fields["description"] is not None:
+            updates["description"] = str(fields["description"]).strip()
+        if "icon" in fields:
+            updates["icon"] = fields["icon"]
+        if "entrypoint" in fields and fields["entrypoint"] is not None:
+            ep = str(fields["entrypoint"]).strip()
+            if not is_safe_relative_path(ep):
+                raise ApplicationError("entrypoint must be a path inside the app")
+            updates["entrypoint"] = ep
+
+        if not updates:
+            return row
+        updates["updated_at"] = _now()
+        await db.update_application(app_id, **updates)
+        # An entrypoint change can flip a failed app to ready (and back), so
+        # re-derive rather than trusting the stored status.
+        if "entrypoint" in updates:
+            await self._evaluate(app_id, broadcast=False)
+        updated = await db.get_application(app_id)
+        await self._broadcast_application("application_updated", updated)
+        return updated
+
+    # ----------------------------------------------------------------- delete
+
+    async def delete_application(
+        self, app_id: str, *, keep_files: bool = False
+    ) -> None:
+        """Drop the row and (by default) the directory. The build session is
+        never deleted — sessions are history."""
+        db = self._require_db()
+        row = await self.get_application(app_id)
+        if not keep_files:
+            app_dir = row["app_dir"]
+            if is_inside_root(app_dir):
+                shutil.rmtree(app_dir, ignore_errors=True)
+            else:
+                logger.warning(
+                    "Refusing to delete application dir outside the managed "
+                    "root: %s",
+                    app_dir,
+                )
+        await db.delete_application(app_id)
+        await self._broadcast_application("application_deleted", row)
+
+    # ------------------------------------------------------------- build eval
+
+    def entrypoint_path(self, row: dict[str, Any]) -> str | None:
+        """Absolute path of the app's entry file, or None if it escapes."""
+        return resolve_within(row["app_dir"], row["entrypoint"])
+
+    def is_built(self, row: dict[str, Any]) -> bool:
+        path = self.entrypoint_path(row)
+        return bool(path) and os.path.isfile(path)
+
+    async def _evaluate(
+        self, app_id: str, *, error: str | None = None, broadcast: bool = True
+    ) -> dict[str, Any] | None:
+        """Derive terminal status from the filesystem: the entrypoint exists →
+        `ready`, it doesn't → `failed`. `error` is the turn-level failure
+        message, used only when the entrypoint is also missing (an agent can
+        hit an error *after* writing a perfectly good app)."""
+        db = self._require_db()
+        row = await db.get_application(app_id)
+        if row is None:
+            return None
+        built = self.is_built(row)
+        if built:
+            fields = {
+                "status": STATUS_READY,
+                "error": None,
+                "last_built_at": _now(),
+            }
+        else:
+            fields = {
+                "status": STATUS_FAILED,
+                "error": error
+                or (
+                    f"The build finished but {row['entrypoint']} was never "
+                    f"written. Ask for changes to try again."
+                ),
+            }
+        fields["updated_at"] = _now()
+        await db.update_application(app_id, **fields)
+        updated = await db.get_application(app_id)
+        if broadcast:
+            await self._broadcast_application("application_updated", updated)
+        return updated
+
+    async def _on_broadcast(self, msg: dict[str, Any]) -> None:
+        """Watch the session bus for build-session turns.
+
+        `status: running` means a build turn started (this is how a change
+        typed directly into the build session's chat still flips the badge to
+        "building"); `result` / `error` end one and hand status over to the
+        filesystem check.
+        """
+        sid = msg.get("session_id")
+        if not sid or self.db is None:
+            return
+        kind = msg.get("type")
+        if kind not in ("status", "result", "error"):
+            return
+        if kind == "status" and msg.get("status") != "running":
+            return
+        try:
+            rows = await self.db.get_applications_for_session(sid)
+        except Exception:
+            logger.exception("application lookup failed for session %s", sid)
+            return
+        for row in rows:
+            try:
+                if kind == "status":
+                    if row["status"] == STATUS_BUILDING:
+                        continue
+                    await self.db.update_application(
+                        row["id"], status=STATUS_BUILDING, updated_at=_now()
+                    )
+                    updated = await self.db.get_application(row["id"])
+                    await self._broadcast_application("application_updated", updated)
+                elif kind == "result":
+                    err = (
+                        "The build turn ended with an error."
+                        if msg.get("is_error")
+                        else None
+                    )
+                    await self._evaluate(row["id"], error=err)
+                else:  # error
+                    await self._evaluate(
+                        row["id"], error=str(msg.get("message") or "build error")
+                    )
+            except Exception:
+                logger.exception("application %s status update failed", row["id"])
+
+    # ---------------------------------------------------------------- prompts
+
+    @staticmethod
+    def compose_build_prompt(
+        *,
+        name: str,
+        description: str,
+        app_dir: str,
+        entrypoint: str = DEFAULT_ENTRYPOINT,
+        instructions: str = "",
+    ) -> str:
+        """The brief handed to the agent on the first build turn.
+
+        The constraints aren't stylistic — they're what makes the result
+        renderable at all: Octopus serves the directory as static files inside
+        an iframe, with no build step and no server (applications.md §6).
+        """
+        extra = (instructions or "").strip()
+        extra_block = f"\n\nAdditional instructions from the user:\n{extra}" if extra else ""
+        return (
+            f"Build a web application called \"{name}\".\n\n"
+            f"What the user wants:\n{description}{extra_block}\n\n"
+            f"Build it in this directory (it already exists and is your "
+            f"working directory):\n  {app_dir}\n\n"
+            f"How it will be run — this is a hard contract, not a preference:\n"
+            f"- Octopus serves this directory as STATIC FILES and renders it "
+            f"inside an iframe. There is no build step, no dev server, and no "
+            f"backend.\n"
+            f"- The entry point MUST be `{entrypoint}` at the root of that "
+            f"directory, loadable directly by a browser.\n"
+            f"- Plain HTML/CSS/JS (ES modules are fine). Any library must come "
+            f"from a CDN <script>/<link> tag or be vendored as a file in the "
+            f"directory. Never require `npm install`, bundling, or a "
+            f"transpile step.\n"
+            f"- Persist state in the browser (localStorage) — there is no "
+            f"server to talk to.\n"
+            f"- It is rendered at whatever size the pane happens to be, so it "
+            f"must look right on both a wide desktop pane and a ~400px phone "
+            f"width.\n"
+            f"- Make it genuinely good: real layout, real styling, real empty "
+            f"states. Not a wireframe.\n\n"
+            f"When you're done, verify `{entrypoint}` exists in that directory "
+            f"and end with a one-paragraph summary of what you built."
+        )
+
+    @staticmethod
+    def compose_change_prompt(
+        *, request: str, app_dir: str, entrypoint: str = DEFAULT_ENTRYPOINT
+    ) -> str:
+        """Follow-up turn in the same build session — the agent already has the
+        original brief in its transcript, so this stays short."""
+        return (
+            f"Update the application in {app_dir}.\n\n"
+            f"Requested change:\n{request}\n\n"
+            f"The same constraints still apply: static files only, `"
+            f"{entrypoint}` stays the entry point, no build step, no backend. "
+            f"When you're done, verify `{entrypoint}` still exists and briefly "
+            f"say what changed."
+        )
+
+    # -------------------------------------------------------------- broadcast
+
+    async def _broadcast_application(self, kind: str, row: dict[str, Any] | None) -> None:
+        """Push a row change to every WS client. No `session_id` key: these are
+        global events (the sidebar shows applications regardless of which
+        session is open), and the client's snapshot-dedup only applies to
+        events that carry one."""
+        if self.session_mgr is None or row is None:
+            return
+        await self.session_mgr._broadcast(
+            {"type": kind, "application_id": row["id"], "application": row}
+        )
+
+
+application_manager = ApplicationManager()
