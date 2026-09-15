@@ -23,6 +23,17 @@ export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
   timeout: 30_000,
   retries: 0,
+  // Every spec drives ONE shared backend (a single uvicorn with an in-memory
+  // DB) plus ONE Vite dev server, and each @llm turn spawns a real `claude`
+  // process with its four MCP-server children. Playwright's default (half the
+  // logical cores — 8 here) piles that many browsers, unbundled dev-server
+  // page loads and concurrent model turns onto the box, and specs start
+  // failing at `page.goto("/")` because the login page never finishes
+  // loading. Capped so the suite is deterministic — and it costs nothing:
+  // 8 workers took 4.2-4.4 min with 3 failures, 2 workers 2.6 min with none,
+  // because the timeouts and worker restarts an overloaded run produces cost
+  // far more than the parallelism saves.
+  workers: 2,
   use: {
     baseURL: "http://localhost:5174",
     headless: true,

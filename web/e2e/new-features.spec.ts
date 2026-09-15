@@ -76,6 +76,12 @@ async function login(page: Page) {
   await page.locator('input[type="password"]').fill(TOKEN);
   await page.locator("button.btn-login").click();
   await expect(page.locator(".agent-list-header")).toBeVisible();
+  // Messages are sent over the WebSocket, and the client drops a send when
+  // the socket isn't OPEN yet. Under load the connect can lag the first
+  // render by a second or two, so a test that types immediately after login
+  // would silently lose its prompt and then time out waiting for a turn that
+  // never started. Wait for the header's connected indicator first.
+  await expect(page.locator(".conn-status.on")).toBeVisible({ timeout: 15_000 });
 }
 
 async function createSessionApi(
@@ -152,7 +158,10 @@ test.describe("Scheduled Tasks UI @llm", () => {
     // "📅 Scheduling…" → "📅 Scheduled …" once parsed. Default 5s expect
     // timeout caught that mid-transition under heavy parallel load; 15s
     // is comfortably above the observed worst case.
-    await expect(page.locator(".msg-notice")).toContainText("Scheduled", {
+    // Both notices live in the transcript once the parse lands ("📅
+    // Scheduling…" then "📅 Scheduled …"), so a bare `.msg-notice` locator is
+    // a strict-mode violation. Assert on the LAST notice — the outcome.
+    await expect(page.locator(".msg-notice").last()).toContainText("Scheduled", {
       timeout: 15000,
     });
 
@@ -1185,11 +1194,24 @@ test.describe("slash-command autocomplete", () => {
     const input = page.locator(".chat-input-bar textarea");
     const menu = page.locator(".slash-menu");
 
-    // Bare "/" lists every command.
+    // Bare "/" lists every command. Asserted by name, not by count alone —
+    // a bare number goes stale silently every time a command is added.
+    const ALL_COMMANDS = [
+      "/schedule",
+      "/remember",
+      "/research",
+      "/showme",
+      "/rewind",
+      "/fork",
+      "/archive",
+      "/reset",
+    ];
     await input.fill("/");
     await expect(menu).toBeVisible();
-    await expect(menu.locator(".slash-item")).toHaveCount(5);
-    await expect(menu).toContainText("/showme");
+    await expect(menu.locator(".slash-item")).toHaveCount(ALL_COMMANDS.length);
+    for (const name of ALL_COMMANDS) {
+      await expect(menu.locator(".slash-item", { hasText: name })).toHaveCount(1);
+    }
 
     // A prefix narrows to the single match.
     await input.fill("/sch");
