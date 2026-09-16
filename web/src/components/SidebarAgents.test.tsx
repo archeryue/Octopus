@@ -72,6 +72,7 @@ function mount() {
     credentials: [],
     availableBackends: ["claude-code"],
     mainView: "chat",
+    sidebarCollapsed: false,
   });
   return render(<SidebarAgents />);
 }
@@ -143,6 +144,32 @@ describe("SidebarAgents fold state", () => {
     await waitFor(() =>
       expect(container.querySelectorAll(".session-item")).toHaveLength(0)
     );
+  });
+
+  it("expands the whole sidebar when an agent is clicked on the icon rail", async () => {
+    const { container } = mount();
+    await waitFor(() => expect(screen.getByText("Researcher")).toBeTruthy());
+    useSessionStore.getState().setSidebarCollapsed(true);
+
+    const row = screen
+      .getByText("Researcher")
+      .closest(".agent-item") as HTMLElement;
+    fireEvent.click(row);
+
+    // A fold toggle would be invisible from the rail, so the click means
+    // "show me this agent": the sidebar opens and the agent comes with it.
+    await waitFor(() =>
+      expect(useSessionStore.getState().sidebarCollapsed).toBe(false)
+    );
+    expect(screen.getByText("papers")).toBeTruthy();
+    expect(useSessionStore.getState().activeAgentId).toBe("ag2");
+
+    // And now that it's expanded, clicking again folds as it always did.
+    fireEvent.click(row);
+    await waitFor(() =>
+      expect(container.querySelectorAll(".session-item")).toHaveLength(0)
+    );
+    expect(useSessionStore.getState().sidebarCollapsed).toBe(false);
   });
 
   it("unfolds the agent whose new-session + was pressed", async () => {

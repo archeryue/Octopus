@@ -59,7 +59,7 @@ export function SidebarAccount({
           <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary-100 text-[12px] font-bold text-primary">
             {initial}
           </span>
-          <span className="min-w-0 flex-1">
+          <span className="account-text min-w-0 flex-1">
             <span className="block truncate text-[13px] font-semibold leading-tight text-gray-900">
               Octopus
             </span>

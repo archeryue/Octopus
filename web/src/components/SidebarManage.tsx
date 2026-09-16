@@ -153,12 +153,15 @@ function ManageRow({
           : "border border-transparent hover:bg-gray-100"
       }`}
       onClick={onClick}
+      /* The label is hidden when the sidebar is collapsed, so the icon needs
+         to say what it is some other way. */
+      title={label}
     >
       <span className="inline-flex w-5 shrink-0 justify-center text-gray-700">
         {icon}
       </span>
       <span
-        className={`flex-1 truncate text-[13.5px] ${
+        className={`manage-label flex-1 truncate text-[13.5px] ${
           active ? "font-semibold text-gray-950" : "text-gray-800"
         }`}
       >

@@ -109,6 +109,20 @@ export function SidebarAgents() {
       return next;
     });
 
+  // Clicking an agent row. From the icon rail there is no rail to fold into,
+  // so the click can only mean "show me this agent": unfold the sidebar and
+  // the agent together, rather than toggling a fold nobody can see.
+  const openAgent = (id: string) => {
+    setActiveAgentId(id);
+    const store = useSessionStore.getState();
+    if (store.sidebarCollapsed) {
+      store.setSidebarCollapsed(false);
+      setExpanded((prev) => new Set(prev).add(id));
+      return;
+    }
+    toggleExpand(id);
+  };
+
   const openCreateRow = (agentId: string) => {
     setActiveAgentId(agentId);
     setExpanded((prev) => new Set(prev).add(agentId));
@@ -192,12 +206,12 @@ export function SidebarAgents() {
             <div key={a.id} className="agent-group">
               <div
                 className="agent-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-100 transition-colors"
-                onClick={() => {
-                  setActiveAgentId(a.id);
-                  toggleExpand(a.id);
-                }}
+                onClick={() => openAgent(a.id)}
                 onDoubleClick={() => openAgentForm(a.id)}
-                title={a.description || a.name}
+                /* The name leads even when there's a description: folded to
+                   the icon rail, the tooltip is the only thing naming the
+                   row. */
+                title={a.description ? `${a.name} — ${a.description}` : a.name}
               >
                 <span
                   className={`agent-fold shrink-0 text-[10px] leading-none text-gray-600 transition-transform ${
@@ -216,7 +230,9 @@ export function SidebarAgents() {
                 {runningCount > 0 ? (
                   <span className="agent-running badge-running ml-auto shrink-0">
                     <span className="dot" />
-                    {runningCount} running
+                    <span className="agent-running-count">
+                      {runningCount} running
+                    </span>
                   </span>
                 ) : (
                   <button

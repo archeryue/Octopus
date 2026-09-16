@@ -80,7 +80,9 @@ export function SidebarApplications() {
                   : "border border-transparent hover:bg-gray-100"
               }`}
               onClick={() => openApplication(app.id)}
-              title={app.description || app.name}
+              title={
+                app.description ? `${app.name} — ${app.description}` : app.name
+              }
             >
               <AppIcon app={app} className="application-icon shrink-0" />
               <span

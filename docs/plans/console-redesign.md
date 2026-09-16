@@ -103,10 +103,49 @@ in the design but have nothing behind them. They are not faked. `next_run_at`
 was the one gap worth closing — it's real now, read from APScheduler's live
 trigger state and surfaced in the sidebar summary and the Schedules header.
 
-## 8. Testing
+## 8. Folding the sidebar to an icon rail
+
+The sidebar collapses to 56px of icons and back. The handle is a small round
+button on the sidebar's edge, revealed on hover, with the chevron pointing the
+way it will move the edge.
+
+Three decisions worth writing down:
+
+- **The trigger is the edge, not the header.** When you want the sidebar
+  narrower, the edge is where your pointer already is; a header button is a
+  fixed target you have to go and aim for. The hover strip is 14px and lives
+  *inside* the sidebar's own width so it can never sit over the main pane and
+  swallow a click meant for the chat; only the button overhangs the border,
+  and while it's hidden it is `pointer-events: none` for exactly that reason.
+- **The fold is CSS, driven by one class.** `--sidebar-w` on `.app-layout` is
+  the single source of truth for the width, and `.sidebar.collapsed` hides the
+  words — names, section labels, summaries, the session rail. Nothing threads
+  a `collapsed` prop through four components, and no row has two renderings to
+  keep in sync.
+- **It persists; per-agent folds don't.** Collapsing the sidebar is a
+  statement about how you want to work, so it survives a reload
+  (`octopus_sidebar_collapsed`). Which agents are unfolded is navigation, and
+  still resets to all-folded on every load (§3).
+
+Status survives the fold, because a running agent is most of the reason to
+glance at the rail at all: the `N running` badge becomes a dot pinned to the
+agent's tile, and an application's build dot does the same. Rows keep working
+as rows — a manage icon opens its page, an app icon opens the app. The one
+row that can't is an agent, whose click normally toggles a session rail that
+the rail has no room for; from the icon rail it means "show me this agent", so
+it unfolds the sidebar and the agent together.
+
+Mobile is exempt. Below 769px the sidebar is already a slide-over drawer, so a
+collapse persisted from a laptop must not turn the phone's drawer into a
+sliver — the whole collapsed block, and the handle, are desktop-only.
+
+## 9. Testing
 
 Unit: `SidebarApplications`, `SidebarManage`, `ApplicationFormPage`,
-`AgentFormPage` (+ the existing chat/card suites). E2E: every spec was moved
-onto the new vocabulary — `.chat-header .crumb-current` for the session name,
-`.btn-manage-*` to reach the manage pages, the inline `.session-create` row
-for creation, `.btn-tab-archived` for the archived tabs.
+`AgentFormPage`, `SidebarEdgeToggle` (+ the existing chat/card suites). E2E:
+every spec was moved onto the new vocabulary — `.chat-header .crumb-current`
+for the session name, `.btn-manage-*` to reach the manage pages, the inline
+`.session-create` row for creation, `.btn-tab-archived` for the archived tabs.
+The fold has its own pair in `app.spec.ts`, driving the real mouse: the handle
+is invisible and unclickable until the edge is hovered, which is the guarantee
+worth pinning down.

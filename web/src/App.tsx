@@ -14,6 +14,7 @@ import { SettingsDialog } from "./components/SettingsDialog";
 import { SidebarAccount } from "./components/SidebarAccount";
 import { SidebarAgents } from "./components/SidebarAgents";
 import { SidebarApplications } from "./components/SidebarApplications";
+import { SidebarEdgeToggle } from "./components/SidebarEdgeToggle";
 import { SidebarManage } from "./components/SidebarManage";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -83,6 +84,7 @@ function AuthenticatedApp({
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
   const mainView = useSessionStore((s) => s.mainView);
+  const sidebarCollapsed = useSessionStore((s) => s.sidebarCollapsed);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
 
@@ -93,17 +95,19 @@ function AuthenticatedApp({
   const toggleSidebar = () => setSidebarOpen(!sidebarOpen);
 
   return (
-    <div className="app-layout">
+    <div className={`app-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside
-        className={`sidebar ${sidebarOpen ? "open" : ""}`}
+        className={`sidebar ${sidebarOpen ? "open" : ""} ${
+          sidebarCollapsed ? "collapsed" : ""
+        }`}
         aria-label="Sidebar"
       >
         {/* Brand lockup. The mark is untouched — same artwork, same 22px, same
          * brand navy it has always been; only the wordmark beside it follows
          * the console design. */}
-        <div className="flex h-12 shrink-0 items-center gap-2.5 px-[18px]">
+        <div className="sidebar-brand flex h-12 shrink-0 items-center gap-2.5 px-[18px]">
           <OctopusLogo size={22} className="shrink-0" />
-          <span className="truncate text-[17px] font-bold text-gray-950">
+          <span className="brand-name truncate text-[17px] font-bold text-gray-950">
             Octopus
           </span>
           <button
@@ -117,13 +121,13 @@ function AuthenticatedApp({
         </div>
 
         {/* Workspace (what you made) above, system (what runs it) below. */}
-        <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
+        <nav className="sidebar-nav flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pb-3">
           <SidebarAgents />
           <SidebarApplications />
           <SidebarManage />
         </nav>
 
-        <div className="shrink-0 border-t border-gray-300 px-3 py-2.5">
+        <div className="sidebar-account-bar shrink-0 border-t border-gray-300 px-3 py-2.5">
           <SidebarAccount
             onSignOut={signOut}
             onOpenSettings={() => setSettingsOpen(true)}
@@ -131,6 +135,8 @@ function AuthenticatedApp({
           />
         </div>
       </aside>
+
+      <SidebarEdgeToggle />
 
       {/* ChatView stays mounted behind every other view — it owns the composer
        * draft, the scroll position and pending attachments, and unmounting it

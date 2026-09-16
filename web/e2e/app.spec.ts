@@ -241,3 +241,80 @@ test.describe("Responsive Layout", () => {
     await expect(page.locator(".sidebar-overlay")).toBeVisible();
   });
 });
+
+/** The sidebar folds down to an icon rail.
+ *
+ * The handle is hover-revealed, so the test drives the mouse rather than
+ * clicking a locator blind: `pointer-events: none` while hidden means a click
+ * that skipped the hover would never land, which is exactly the guarantee
+ * worth pinning down (the button overhangs the main pane).
+ */
+test.describe("Foldable sidebar", () => {
+  const EDGE_Y = 400;
+
+  test("hover reveals the handle, and the rail keeps its icons", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.locator('input[type="password"]').fill(TOKEN);
+    await page.locator("button.btn-login").click();
+    await expect(page.locator(".sidebar")).toHaveCSS("width", "270px");
+
+    const handle = page.locator(".btn-sidebar-toggle");
+    await expect(handle).toHaveCSS("opacity", "0");
+
+    // The strip lives in the sidebar's last 14px — x=263 is on it.
+    await page.mouse.move(263, EDGE_Y);
+    await expect(handle).toHaveCSS("opacity", "1");
+    await expect(handle).toHaveAttribute("aria-label", "Collapse sidebar");
+
+    await handle.click();
+    await expect(page.locator(".sidebar")).toHaveClass(/collapsed/);
+    await expect(page.locator(".sidebar")).toHaveCSS("width", "56px");
+
+    // Words are gone; the icons that replace them are not.
+    await expect(page.locator(".brand-name")).toBeHidden();
+    await expect(page.locator(".manage-label").first()).toBeHidden();
+    await expect(page.locator(".agent-name").first()).toBeHidden();
+    await expect(page.locator(".agent-avatar").first()).toBeVisible();
+    await expect(page.locator(".btn-account")).toBeVisible();
+
+    // The rail still navigates — an icon is a row, not a decoration.
+    await page.locator(".btn-manage-schedules").click();
+    await expect(page.locator(".schedules-page")).toBeVisible();
+
+    // Folding is a preference, so it survives a reload.
+    await page.reload();
+    await expect(page.locator(".sidebar")).toHaveClass(/collapsed/);
+
+    // And the handle, now at the rail's edge, puts it back.
+    await page.mouse.move(49, EDGE_Y);
+    const expand = page.locator(".btn-sidebar-toggle");
+    await expect(expand).toHaveAttribute("aria-label", "Expand sidebar");
+    await expand.click();
+    await expect(page.locator(".sidebar")).not.toHaveClass(/collapsed/);
+    await expect(page.locator(".brand-name")).toBeVisible();
+  });
+
+  test("clicking an agent on the rail opens the sidebar with it", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.locator('input[type="password"]').fill(TOKEN);
+    await page.locator("button.btn-login").click();
+    await expect(page.locator(".agent-item").first()).toBeVisible();
+
+    await page.mouse.move(263, EDGE_Y);
+    await page.locator(".btn-sidebar-toggle").click();
+    await expect(page.locator(".sidebar")).toHaveClass(/collapsed/);
+
+    // From the rail there is no fold to toggle, so the click means "show me
+    // this agent": the sidebar comes back with the agent already open.
+    // (Matched by position, not by name — the name is display:none on the
+    // rail, so a `hasText` locator would stop resolving mid-test.)
+    const agent = page.locator(".agent-item").first();
+    await agent.click();
+    await expect(page.locator(".sidebar")).not.toHaveClass(/collapsed/);
+    await expect(agent.locator(".agent-fold")).toHaveClass(/rotate-90/);
+  });
+});

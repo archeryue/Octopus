@@ -66,6 +66,11 @@ body {
 
 /* Layout */
 .app-layout {
+  /* One source of truth for the sidebar's width: the sidebar itself, the
+     hover strip that carries the fold handle, and anything else that has to
+     line up with that edge all read this. `.sidebar-collapsed` swaps it for
+     the icon rail's width (desktop only — see the mobile query). */
+  --sidebar-w: 270px;
   display: flex;
   position: absolute;
   top: var(--app-top, 0px);
@@ -78,17 +83,170 @@ body {
 .sidebar {
   /* 270px is the console design's sidebar; the two-level agent rows need
      the extra width for a session name plus its status. */
-  width: 270px;
-  min-width: 270px;
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
   background-color: hsl(var(--sidebar));
   border-right: 0.7px solid hsl(var(--sidebar-border));
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.18s ease, min-width 0.18s ease;
 }
 
 .sidebar-overlay {
   display: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * The fold handle and the collapsed (icon-rail) sidebar.
+ *
+ * The handle lives in a narrow strip along the sidebar's inner edge and only
+ * appears while that edge is hovered (or the button is focused), so nothing
+ * changes about the sidebar at rest. The strip is kept *inside* the sidebar's
+ * own width — it must never sit over the main pane and eat a click there —
+ * while the button itself straddles the border, because a handle centred on
+ * the line it moves is what reads as "pull this in".
+ * ------------------------------------------------------------------------- */
+.sidebar-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--sidebar-w) - 14px);
+  width: 14px;
+  z-index: 60;
+  transition: left 0.18s ease;
+}
+
+.btn-sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  right: -11px;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 0.7px solid hsl(var(--gray-400));
+  background: hsl(var(--card));
+  color: hsl(var(--gray-700));
+  box-shadow: 0 1px 3px rgba(28, 44, 72, 0.16);
+  opacity: 0;
+  /* Invisible means unclickable: the button overhangs the main pane, so it
+     must not intercept anything while it is not being offered. */
+  pointer-events: none;
+  transition: opacity 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+
+.sidebar-edge:hover .btn-sidebar-toggle,
+.btn-sidebar-toggle:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.btn-sidebar-toggle:hover {
+  color: hsl(var(--primary));
+  border-color: hsl(var(--primary-200));
+}
+
+/* The collapsed rail is a desktop affordance only. On mobile the sidebar is
+   already an overlay that slides fully off-screen, so a persisted collapse
+   from a laptop must not turn the phone's drawer into a 56px sliver. */
+@media (min-width: 769px) {
+  .app-layout.sidebar-collapsed {
+    --sidebar-w: 56px;
+  }
+
+  /* Anything that is words rather than an icon. */
+  .sidebar.collapsed .brand-name,
+  .sidebar.collapsed .sidebar-section-header,
+  .sidebar.collapsed .session-rail,
+  .sidebar.collapsed .agent-fold,
+  .sidebar.collapsed .agent-name,
+  .sidebar.collapsed .agent-running-count,
+  .sidebar.collapsed .btn-session-add,
+  .sidebar.collapsed .application-name,
+  .sidebar.collapsed .application-empty,
+  .sidebar.collapsed .btn-application-delete,
+  .sidebar.collapsed .manage-label,
+  .sidebar.collapsed .manage-summary,
+  .sidebar.collapsed .account-text {
+    display: none;
+  }
+
+  .sidebar.collapsed .sidebar-brand {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+    gap: 0;
+  }
+
+  .sidebar.collapsed .sidebar-nav,
+  .sidebar.collapsed .sidebar-account-bar {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  /* A 56px rail has no room for a scrollbar without shoving the icons
+     off-centre; the rail scrolls, it just doesn't advertise it. */
+  .sidebar.collapsed .sidebar-nav {
+    scrollbar-width: none;
+  }
+
+  .sidebar.collapsed .sidebar-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Every row becomes its icon, centred. `position: relative` is for the
+     status markers below, which have to pin to the icon now that there is no
+     row left to sit at the end of. */
+  .sidebar.collapsed .agent-item,
+  .sidebar.collapsed .application-item,
+  .sidebar.collapsed .manage-item,
+  .sidebar.collapsed .btn-account {
+    position: relative;
+    justify-content: center;
+    gap: 0;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  /* Status is the reason to glance at the rail at all, so it survives the
+     fold — as a dot on the icon rather than a pill with a word count. */
+  .sidebar.collapsed .agent-running {
+    position: absolute;
+    top: 2px;
+    right: 5px;
+    margin: 0;
+    padding: 0;
+    gap: 0;
+    border: none;
+    background: none;
+    box-shadow: none;
+  }
+
+  .sidebar.collapsed .app-status-dot {
+    position: absolute;
+    top: 3px;
+    right: 6px;
+    margin: 0;
+  }
+
+  /* The section labels are gone, so the groups need a line between them.
+     MANAGE already draws its own. */
+  .sidebar.collapsed .application-section {
+    margin-top: 9px;
+    padding-top: 9px;
+    border-top: 0.7px solid hsl(var(--sidebar-border));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar-edge {
+    transition: none;
+  }
 }
 
 .main-area {
@@ -311,6 +469,10 @@ body {
 
   .sidebar.open {
     left: 0;
+  }
+
+  .sidebar-edge {
+    display: none;
   }
 
   .sidebar-overlay {

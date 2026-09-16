@@ -250,6 +250,13 @@ interface SessionStore {
   showDelegations: boolean;
   setShowDelegations: (v: boolean) => void;
 
+  // Whether the sidebar is folded down to its icon rail. Persisted, unlike
+  // the per-agent fold state: folding the whole sidebar is a statement about
+  // how you want to work ("give the main pane the room"), not a transient
+  // navigation step, so it should survive a reload.
+  sidebarCollapsed: boolean;
+  setSidebarCollapsed: (v: boolean) => void;
+
   // Native deep-research jobs, keyed by sessionId → list (native-deep-research.md
   // §7). The ResearchCard renders live phase/progress; the final report arrives
   // as a normal injected turn.
@@ -625,5 +632,12 @@ export const useSessionStore = create<SessionStore>((set) => ({
     if (v) localStorage.setItem("octopus_show_delegations", "true");
     else localStorage.removeItem("octopus_show_delegations");
     set({ showDelegations: v });
+  },
+
+  sidebarCollapsed: localStorage.getItem("octopus_sidebar_collapsed") === "true",
+  setSidebarCollapsed: (v) => {
+    if (v) localStorage.setItem("octopus_sidebar_collapsed", "true");
+    else localStorage.removeItem("octopus_sidebar_collapsed");
+    set({ sidebarCollapsed: v });
   },
 }));
