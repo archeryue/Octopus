@@ -1267,3 +1267,33 @@ async def test_deleting_an_application_removes_its_data_and_runtime(client):
     assert not os.path.exists(app_dir)
     assert not os.path.exists(app_dir + ".data")
     assert not os.path.exists(app_dir + ".runtime")
+
+
+def test_build_prompt_states_the_home_screen_icon_rules():
+    """The four rules an agent gets wrong otherwise. Each one produces a
+    silently broken icon rather than an error, which is why they're spelled out
+    rather than left to "ship an icon"."""
+    prompt = ApplicationManager.compose_build_prompt(
+        name="X", description="d", app_dir="/tmp/x"
+    )
+    assert "apple-touch-icon.png" in prompt
+    assert "PNG" in prompt and "SVG" in prompt      # Safari ignores SVG here
+    assert "opaque" in prompt                        # alpha composites to black
+    assert "180x180" in prompt
+    assert "full-bleed" in prompt                    # iOS applies its own mask
+    # And the trap specific to us: apps live under /apps/<id>/, so an absolute
+    # href resolves against Octopus instead of the app.
+    assert "RELATIVE" in prompt
+
+
+def test_apple_touch_icon_is_discovered_for_the_sidebar_too(tmp_path):
+    """The same file doubles as the sidebar icon when an app ships nothing
+    else — it's already in the candidate list, ahead of favicon.ico."""
+    from server.applications import discover_icon_src
+
+    d = tmp_path / "app"
+    d.mkdir()
+    (d / "index.html").write_text("<html></html>")
+    (d / "apple-touch-icon.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (d / "favicon.ico").write_bytes(b"\x00")
+    assert discover_icon_src(str(d), "index.html") == "apple-touch-icon.png"
