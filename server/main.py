@@ -153,6 +153,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Octopus", version="0.1.0", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def _no_store_on_missing(request, call_next):
+    """Never let a 404 be cached.
+
+    We send no `Cache-Control` on a 404, so a CDN in front of us is free to
+    invent one — Cloudflare caches error responses for static-looking paths for
+    four hours. The consequence is nasty and non-obvious: the FIRST request for
+    an asset that doesn't exist yet poisons that URL long after the file lands,
+    so a newly added icon or script is invisible to everyone behind the edge
+    while the origin serves it perfectly. Cost real debugging time once; this
+    makes it structurally impossible.
+    """
+    response = await call_next(request)
+    if response.status_code == 404:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

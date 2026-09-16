@@ -255,3 +255,26 @@ async def test_session_info_reports_the_steering_capability(client):
     )
     assert cx.status_code == 201
     assert cx.json()["can_steer"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_404_is_never_cacheable(client):
+    """We send no Cache-Control on a 404, so a CDN invents one — Cloudflare
+    caches error responses for static-looking paths for four hours. The first
+    request for an asset that doesn't exist YET then poisons that URL long
+    after the file lands: the origin serves it, everyone behind the edge sees
+    a 404. That cost real debugging time on an apple-touch-icon.
+    """
+    # Static-looking extensions specifically: those are what a CDN caches.
+    for path in ("/not-here.png", "/nope.js", "/api/definitely-not-a-route"):
+        resp = await client.get(path, headers=HEADERS)
+        assert resp.status_code == 404, path
+        assert resp.headers.get("cache-control") == "no-store", path
+
+
+@pytest.mark.asyncio
+async def test_a_successful_response_keeps_its_own_cache_headers(client):
+    """The 404 rule must not reach into anything else."""
+    resp = await client.get("/health")
+    assert resp.status_code == 200
+    assert resp.headers.get("cache-control") != "no-store"

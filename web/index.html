@@ -7,6 +7,24 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Home screen / dock. Safari ignores the SVG favicon above for this, and
+         without an explicit tag it falls back to /apple-touch-icon.png — which
+         is why the file exists at the origin root. PNG, opaque, 180x180,
+         full-bleed: iOS masks its own corners, so artwork that brings its own
+         rounding shows dark notches. Absolute href is correct HERE because
+         Octopus IS the origin root (an Application under /apps/<id>/ must use
+         a relative one). -->
+    <!-- Plain path, no query string: Safari is unreliable about a versioned
+         apple-touch-icon URL, and this is also the path it probes implicitly
+         when no tag is present, so the two agree. Cache-busting belongs on the
+         filename if the icon ever changes. -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="apple-mobile-web-app-title" content="Octopus" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#123587" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
