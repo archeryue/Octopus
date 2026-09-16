@@ -199,6 +199,15 @@ never litter the developer's real applications root.
   different plan, and one that shouldn't be bolted onto this one halfway.
 * **Sharing / publishing.** Apps are served behind the same token as the rest
   of Octopus. Public publishing is a hosting decision, not a UI one.
+* **Interrupting an in-flight build on delete.** Deleting an application
+  removes the row and the directory, but does not stop a build turn that is
+  already running in its session — and that turn will happily recreate the
+  directory it was writing to. The result is an orphan: files on disk with no
+  row, so nothing lists it, nothing reaps it, and it stays there. Observed in
+  practice (a delete at T, the directory back at T+2min). Left as-is on the
+  owner's call — it needs a delete to reach into the session manager and
+  interrupt a turn, which is a bigger seam than the symptom warrants. The
+  cleanup is `rm -rf` on the stale directory.
 * **Versioning / rollback.** The build directory is the app. Git-anchoring an
   application the way `/rewind` anchors a turn needs the app dir to be a repo,
   which is a real design question rather than an increment of this one.
