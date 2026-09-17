@@ -168,11 +168,24 @@ export function ApplicationView({
       <span
         className={`dot ${app.status === "building" ? "animate-pulse" : ""}`}
       />
-      {app.status === "building"
-        ? "Building"
-        : app.status === "failed"
-        ? "Build failed"
-        : `Built by ${agent?.name ?? "an agent"}`}
+      {/* Two labels, one shown at a time (mobile.md §4). A phone header has
+        * room for the app's name OR "Built by Octo", and the name is what
+        * you came for — but "Building" still has to be legible, so the short
+        * form says the state rather than dropping it. */}
+      <span className="app-status-label">
+        {app.status === "building"
+          ? "Building"
+          : app.status === "failed"
+          ? "Build failed"
+          : `Built by ${agent?.name ?? "an agent"}`}
+      </span>
+      <span className="app-status-label-short">
+        {app.status === "building"
+          ? "Building"
+          : app.status === "failed"
+          ? "Failed"
+          : "Ready"}
+      </span>
     </span>
   );
 

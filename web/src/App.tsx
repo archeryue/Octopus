@@ -28,7 +28,6 @@ function App() {
   const token = useSessionStore((s) => s.token);
   const setToken = useSessionStore((s) => s.setToken);
   const [tokenInput, setTokenInput] = useState("");
-  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   if (!token) {
     const submit = () => {
@@ -49,6 +48,10 @@ function App() {
               <Input
                 id="token"
                 type="password"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="go"
                 value={tokenInput}
                 onChange={(e) => setTokenInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -67,20 +70,14 @@ function App() {
     );
   }
 
-  return (
-    <AuthenticatedApp sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
-  );
+  return <AuthenticatedApp />;
 }
 
-function AuthenticatedApp({
-  sidebarOpen,
-  setSidebarOpen,
-}: {
-  sidebarOpen: boolean;
-  setSidebarOpen: (v: boolean) => void;
-}) {
+function AuthenticatedApp() {
   const { sendMessage, interrupt, approveTool, denyTool, answerQuestion } =
     useWebSocket();
+  const sidebarOpen = useSessionStore((s) => s.sidebarOpen);
+  const setSidebarOpen = useSessionStore((s) => s.setSidebarOpen);
   const connected = useSessionStore((s) => s.connected);
   const setToken = useSessionStore((s) => s.setToken);
   const mainView = useSessionStore((s) => s.mainView);

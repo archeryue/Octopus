@@ -297,6 +297,45 @@ describe("sessionStore", () => {
     expect(useSessionStore.getState().agentConnectorIds["a1"]).toEqual(["i2"]);
   });
 
+  // --- the mobile drawer (mobile.md §2) --------------------------------
+
+  describe("sidebarOpen", () => {
+    beforeEach(() => {
+      useSessionStore.setState({ sidebarOpen: true });
+    });
+
+    it("closes when a session is picked", () => {
+      useSessionStore.getState().setActiveSessionId("s1");
+      expect(useSessionStore.getState().sidebarOpen).toBe(false);
+      expect(useSessionStore.getState().mainView).toBe("chat");
+    });
+
+    it("closes for every other way of changing what the pane shows", () => {
+      // The close lives in the store precisely so no navigation can forget
+      // it — including ones added later.
+      const cases: Array<[string, () => void]> = [
+        ["openApplication", () => useSessionStore.getState().openApplication("a1")],
+        [
+          "openApplicationCreate",
+          () => useSessionStore.getState().openApplicationCreate(),
+        ],
+        ["openAgentForm", () => useSessionStore.getState().openAgentForm("ag1")],
+        ["openManage", () => useSessionStore.getState().openManage("schedules")],
+        ["showChat", () => useSessionStore.getState().showChat()],
+      ];
+      for (const [name, act] of cases) {
+        useSessionStore.setState({ sidebarOpen: true });
+        act();
+        expect(useSessionStore.getState().sidebarOpen, name).toBe(false);
+      }
+    });
+
+    it("is not persisted — a reload must not open with a wall of menu", () => {
+      useSessionStore.getState().setSidebarOpen(true);
+      expect(localStorage.getItem("octopus_sidebar_open")).toBeNull();
+    });
+  });
+
   // --- streamed text (inline-steering.md §4 S1) -------------------------
 
   describe("streamingText", () => {

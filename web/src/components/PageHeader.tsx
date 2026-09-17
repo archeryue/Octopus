@@ -46,9 +46,17 @@ export function PageHeader({
       {crumbs.map((crumb, i) => {
         const last = i === crumbs.length - 1;
         return (
-          <span key={i} className="flex min-w-0 items-center gap-2.5">
+          <span
+            key={i}
+            /* Leading crumbs are context, and context is the first thing a
+             * 390px header can't afford — they're dropped on phones so the
+             * name you're actually looking at keeps its width (mobile.md §4). */
+            className={`flex min-w-0 items-center gap-2.5 ${
+              last ? "" : "crumb-lead"
+            }`}
+          >
             {i > 0 && (
-              <span className="shrink-0 text-gray-500" aria-hidden>
+              <span className="crumb-sep shrink-0 text-gray-500" aria-hidden>
                 /
               </span>
             )}

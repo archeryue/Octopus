@@ -456,19 +456,120 @@ body {
   background: hsl(var(--gray-50));
 }
 
-/* Mobile responsive */
+/* ---------------------------------------------------------------------------
+ * Phones and tablets (docs/plans/mobile.md)
+ *
+ * Octopus is used from a phone as much as from a laptop — often the *same*
+ * session, picked up on the way somewhere. Three separate things are handled
+ * below, and they don't have the same trigger:
+ *
+ *   - width  (`max-width: 768px`) — layout: the sidebar becomes a drawer.
+ *   - input  (`hover: none`)      — touch: hit areas, and affordances that
+ *                                   were hidden behind hover and would
+ *                                   otherwise be unreachable.
+ *   - safe areas (`env(...)`)     — the notch and the home indicator, which
+ *                                   only intrude once the page is allowed
+ *                                   under them (`viewport-fit=cover`).
+ * ------------------------------------------------------------------------- */
+
+/* Safe areas apply at every width: an iPhone in landscape has the notch on
+   the side, and a home-screen Octopus is full-screen on every device.
+   `--app-h`/`--app-top` come from the visual viewport (useViewportHeight), so
+   the two systems compose: the visual viewport tracks the keyboard, the insets
+   track the hardware. */
+.app-layout {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* The bottom inset is paid by whatever sits on the bottom edge, not by the
+   layout, so the surface still extends under the home indicator instead of
+   leaving a dead strip of page background beneath it. */
+.chat-input-bar,
+.sidebar-account-bar {
+  padding-bottom: calc(
+    var(--bottom-bar-pad, 0.625rem) + env(safe-area-inset-bottom, 0px)
+  );
+}
+
+.chat-input-bar {
+  --bottom-bar-pad: 1.25rem;
+}
+
+/* A tap should feel like a press, and should never be mistaken for a
+   double-tap-to-zoom (which costs 300ms of nothing happening). */
+button,
+a,
+[role="button"],
+summary {
+  touch-action: manipulation;
+}
+
+@media (hover: none) {
+  /* Every affordance that lives behind a hover is unreachable on a
+     touchscreen — there is no hover, only a tap that has already chosen
+     something. Delete buttons and the per-agent "+" are always visible here.
+     (Unlayered, so this beats Tailwind's `opacity-0` utility.) */
+  .btn-delete,
+  .btn-application-delete,
+  .btn-session-add {
+    opacity: 1;
+  }
+
+  /* Hit areas. The icons stay 18-20px because the design is dense on
+     purpose; the *target* grows past the button's box with a pseudo-element,
+     which is invisible and costs no layout. */
+  .btn-delete,
+  .btn-application-delete,
+  .btn-session-add,
+  .sidebar-section-header button,
+  .delegation-marker,
+  .btn-sidebar-toggle {
+    position: relative;
+  }
+
+  .btn-delete::after,
+  .btn-application-delete::after,
+  .btn-session-add::after,
+  .sidebar-section-header button::after {
+    content: "";
+    position: absolute;
+    inset: -10px;
+  }
+
+  /* Taps get their own feedback since :hover never fires. */
+  .agent-item:active,
+  .session-item:active,
+  .application-item:active,
+  .manage-item:active,
+  .btn-account:active {
+    background-color: hsl(var(--gray-100));
+  }
+}
+
 @media (max-width: 768px) {
+  /* The drawer. `min(...)` keeps a 320px phone from losing the whole screen
+     to it, and the closed position is derived from the width — hard-coding
+     both is how the old rule ended up leaving a 10px sliver on screen when
+     the sidebar grew by 10px. */
+  .app-layout {
+    --sidebar-w: min(270px, 84vw);
+  }
+
   .sidebar {
     position: absolute;
-    left: -260px;
+    left: calc(-1 * var(--sidebar-w));
     top: 0;
     height: 100%;
     z-index: 100;
-    transition: left 0.3s;
+    transition: left 0.22s ease;
+    box-shadow: none;
   }
 
   .sidebar.open {
     left: 0;
+    box-shadow: 0 0 48px -8px rgba(15, 28, 48, 0.35);
   }
 
   .sidebar-edge {
@@ -479,11 +580,108 @@ body {
     display: block;
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(15, 28, 48, 0.42);
     z-index: 99;
   }
 
-  .msg-user .msg-content {
-    max-width: 95%;
+  /* iOS zooms the page when a focused field is under 16px, and never zooms
+     back out. `!important` because the size comes from utility classes on
+     dozens of fields, and this is a platform behaviour to defeat rather than
+     a style to prefer. */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  /* A phone screen is the message; give it the width. */
+  .msg-user .msg-content,
+  .msg-assistant .msg-content {
+    max-width: 100%;
+  }
+
+  .chat-input-bar {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+  }
+
+  /* Anything that can't wrap scrolls inside its own box rather than making
+     the whole page slide sideways. */
+  .markdown pre,
+  .markdown table {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .markdown code,
+  .msg-content {
+    overflow-wrap: anywhere;
+  }
+
+  /* Grid and flex children size to their longest unbreakable word, so one
+     absolute path in a schedule's prompt is enough to widen a whole column
+     past the screen. Everything in a page body is allowed to break instead. */
+  .page-body {
+    overflow-wrap: anywhere;
+  }
+
+  /* Page headers hold 4-6 controls; at 390px the breadcrumb has to give way
+     first, and the controls stay reachable. */
+  .page-header {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+    gap: 0.5rem;
+  }
+
+  /* "Applications / OctoFeature" becomes "OctoFeature": the leading crumbs
+     are context you already have — you just tapped the thing. Without this
+     the name itself truncates to a letter and a slash. */
+  .page-header .crumb-lead,
+  .page-header .crumb-sep {
+    display: none;
+  }
+
+  /* Connection state keeps its dot and loses its word. */
+  .conn-status .conn-label {
+    display: none;
+  }
+
+  /* The application's build state swaps its long label for the short one. */
+  .app-status-badge .app-status-label {
+    display: none;
+  }
+
+  .app-status-badge .app-status-label-short {
+    display: inline;
+  }
+
+  .conn-status {
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+  }
+}
+
+/* The short form of the application status pill exists only for narrow
+   headers; everywhere else the long one is shown. */
+.app-status-label-short {
+  display: none;
+}
+
+/* A schedule's first message is shown verbatim — usually a path or two. It
+   breaks rather than stretching its card, at any width. */
+.schedule-prompt {
+  overflow-wrap: anywhere;
+}
+
+/* The engine-credential chip is a desktop affordance: it names a credential
+   and opens a picker, which needs more width than a phone header has to
+   spare. It stays from 641px up (tablets, landscape), where it fits. */
+@media (max-width: 640px) {
+  .credential-chip {
+    display: none;
+  }
+
+  .page-body {
+    padding: 16px 14px 32px;
   }
 }

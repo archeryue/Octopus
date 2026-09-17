@@ -19,6 +19,7 @@ const OWNED_NAMES = new Set([
   "E2E Test Session",
   "To Delete",
   "Chat Test",
+  "Mobile Drawer",
 ]);
 
 // Clean up only sessions created by this spec
@@ -239,6 +240,90 @@ test.describe("Responsive Layout", () => {
 
     // Overlay should be visible
     await expect(page.locator(".sidebar-overlay")).toBeVisible();
+
+    // …and entirely off-screen when closed. It used to sit at -260px while
+    // being 270px wide, leaving a 10px sliver of sidebar on every screen.
+    await page.locator(".sidebar-overlay").click();
+    await expect(page.locator(".sidebar")).not.toHaveClass(/open/);
+    // Polled, because the class comes off when the slide-out *starts*.
+    await expect
+      .poll(async () => {
+        const box = await page.locator(".sidebar").boundingBox();
+        return box ? box.x + box.width : -1;
+      })
+      .toBeLessThanOrEqual(0.5);
+  });
+
+  test("the drawer puts itself away when you pick a session", async ({
+    page,
+    request,
+  }) => {
+    // The worst phone bug this suite guards: picking something left the
+    // drawer open, so every navigation ended with the thing you'd just
+    // chosen hidden behind the menu you chose it from (mobile.md §2).
+    const created = await request.post(API, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      data: { name: "Mobile Drawer", working_dir: "/tmp" },
+    });
+    expect(created.ok()).toBeTruthy();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.locator('input[type="password"]').fill(TOKEN);
+    await page.locator("button.btn-login").click();
+
+    await page.locator(".btn-menu").first().click();
+    await expect(page.locator(".sidebar")).toHaveClass(/open/);
+
+    await page.locator(".agent-item", { hasText: "Octo" }).click();
+    await page
+      .locator(".session-item", { hasText: "Mobile Drawer" })
+      .first()
+      .click();
+
+    await expect(page.locator(".sidebar")).not.toHaveClass(/open/);
+    await expect(page.locator(".sidebar-overlay")).toHaveCount(0);
+    await expect(page.locator(".chat-header .crumb-current")).toContainText(
+      "Mobile Drawer"
+    );
+  });
+
+  test("nothing scrolls sideways, and no field is small enough to zoom iOS", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    // The login field is the first thing a phone shows.
+    expect(
+      await page
+        .locator('input[type="password"]')
+        .evaluate((el) => parseFloat(getComputedStyle(el).fontSize))
+    ).toBeGreaterThanOrEqual(16);
+
+    await page.locator('input[type="password"]').fill(TOKEN);
+    await page.locator("button.btn-login").click();
+    await expect(page.locator(".conn-status.on")).toBeVisible({
+      timeout: 10_000,
+    });
+
+    // A phone that scrolls sideways feels broken even when nothing is
+    // actually cut off.
+    const doc = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      clientWidth: document.documentElement.clientWidth,
+    }));
+    expect(doc.scrollWidth).toBe(doc.clientWidth);
+
+    // Under 16px, iOS zooms on focus and never zooms back.
+    const composer = page.locator(".chat-input-bar textarea").first();
+    if (await composer.count()) {
+      expect(
+        await composer.evaluate((el) => parseFloat(getComputedStyle(el).fontSize))
+      ).toBeGreaterThanOrEqual(16);
+    }
   });
 });
 

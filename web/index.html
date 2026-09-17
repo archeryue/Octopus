@@ -23,7 +23,12 @@
     <meta name="apple-mobile-web-app-title" content="Octopus" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- `default`, not `black-translucent`: translucent means iOS draws the
+         status bar's own text over the page, in white — and Octopus's header
+         is white, so the clock and battery would vanish. `default` gives the
+         status bar a light background with dark text, which is what a light
+         app wants. The safe-area padding in index.css covers either case. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="theme-color" content="#123587" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

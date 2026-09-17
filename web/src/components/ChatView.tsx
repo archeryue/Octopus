@@ -39,6 +39,19 @@ const EMPTY_MESSAGES: Message[] = [];
 const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 
+/** True on a device whose primary input can't hover — a phone or tablet.
+ *
+ * Read at the moment of the keystroke rather than cached in state: a tablet
+ * with a keyboard attached mid-session changes the answer, and this is cheap.
+ */
+function isTouchDevice(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(hover: none)").matches
+  );
+}
+
 // A file the user picked but hasn't sent yet. Lives in the composer
 // only — once the WS send_message fires, the server's user_message
 // broadcast carries the AttachmentMetadata into the chat history.
@@ -862,7 +875,11 @@ export function ChatView({
         return;
       }
     }
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !isTouchDevice()) {
+      // Touch keyboards have no Shift+Enter worth reaching for, and a return
+      // key that sends makes a second paragraph impossible to type. On a
+      // phone Enter is a newline and the send button — which is right there
+      // under your thumb — sends (mobile.md §3).
       e.preventDefault();
       handleSend();
     }
@@ -964,7 +981,11 @@ export function ChatView({
             title={connected ? "Connected" : "Disconnected"}
           >
             <span className={`dot ${connected ? "" : "animate-pulse"}`} />
-            {connected ? "Connected" : "Disconnected"}
+            {/* The word is the first thing to go on a phone; the dot and its
+              * colour say the same thing in 6px (mobile.md §4). */}
+            <span className="conn-label">
+              {connected ? "Connected" : "Disconnected"}
+            </span>
           </span>
         </>
       }
@@ -1485,6 +1506,7 @@ export function ChatView({
                   : "Send a message…"
               }
               rows={1}
+              enterKeyHint={isTouchDevice() ? "enter" : "send"}
               // field-sizing-content makes the textarea grow with its
               // content (Tailwind v4 / native CSS), so the empty state is
               // one comfortable line and we don't need JS auto-grow.

@@ -257,6 +257,15 @@ interface SessionStore {
   sidebarCollapsed: boolean;
   setSidebarCollapsed: (v: boolean) => void;
 
+  // The mobile drawer. On a phone the sidebar is a slide-over, so *picking*
+  // something has to put it away again — leaving it open means every
+  // navigation ends with the thing you just chose hidden behind the menu you
+  // chose it from. It lives here rather than in App's local state so the
+  // close can happen inside the navigation actions themselves, where it
+  // can't be forgotten (mobile.md §2).
+  sidebarOpen: boolean;
+  setSidebarOpen: (v: boolean) => void;
+
   // Native deep-research jobs, keyed by sessionId → list (native-deep-research.md
   // §7). The ResearchCard renders live phase/progress; the final report arrives
   // as a normal injected turn.
@@ -368,13 +377,24 @@ export const useSessionStore = create<SessionStore>((set) => ({
   activeApplicationId: null,
   editingAgentId: null,
   openApplication: (id) =>
-    set({ activeApplicationId: id, mainView: "application" }),
+    set({ activeApplicationId: id, mainView: "application", sidebarOpen: false }),
   openApplicationCreate: () =>
-    set({ activeApplicationId: null, mainView: "application-create" }),
+    set({
+      activeApplicationId: null,
+      mainView: "application-create",
+      sidebarOpen: false,
+    }),
   openAgentForm: (agentId = null) =>
-    set({ mainView: "agent-form", editingAgentId: agentId, activeApplicationId: null }),
-  openManage: (view) => set({ mainView: view, activeApplicationId: null }),
-  showChat: () => set({ mainView: "chat", activeApplicationId: null }),
+    set({
+      mainView: "agent-form",
+      editingAgentId: agentId,
+      activeApplicationId: null,
+      sidebarOpen: false,
+    }),
+  openManage: (view) =>
+    set({ mainView: view, activeApplicationId: null, sidebarOpen: false }),
+  showChat: () =>
+    set({ mainView: "chat", activeApplicationId: null, sidebarOpen: false }),
 
   availableBackends: ["claude-code"],
   setAvailableBackends: (availableBackends) => set({ availableBackends }),
@@ -394,7 +414,12 @@ export const useSessionStore = create<SessionStore>((set) => ({
   // Selecting a session is also what leaves an application view — see
   // `mainView` above.
   setActiveSessionId: (id) =>
-    set({ activeSessionId: id, mainView: "chat", activeApplicationId: null }),
+    set({
+      activeSessionId: id,
+      mainView: "chat",
+      activeApplicationId: null,
+      sidebarOpen: false,
+    }),
 
   lastAppliedSeq: {},
   setLastAppliedSeq: (sessionId, seq) =>
@@ -640,4 +665,9 @@ export const useSessionStore = create<SessionStore>((set) => ({
     else localStorage.removeItem("octopus_sidebar_collapsed");
     set({ sidebarCollapsed: v });
   },
+
+  // Never persisted: a drawer that reopened itself on load would be a
+  // wall between you and the app every time you launch it.
+  sidebarOpen: false,
+  setSidebarOpen: (v) => set({ sidebarOpen: v }),
 }));
