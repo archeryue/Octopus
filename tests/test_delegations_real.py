@@ -269,15 +269,22 @@ async def test_real_question_loop_claude_to_claude(tmp_path, monkeypatch):
             parent_session_id=octo_sess.id,
             agent_name="Vera",
             request=(
-                "STRICT INSTRUCTION: You must invoke the tool named "
-                "`mcp__ask__user` exactly once before saying anything. "
-                "Pass it this exact `questions` argument: "
+                # The request carries a real task, not a bare "ask a
+                # question": asked to perform a context-free instruction an
+                # agent can reasonably refuse it ("there's no underlying
+                # task"), and then the routing under test never runs. The
+                # decision genuinely belongs to a human, so asking is the
+                # correct move rather than an imposed one.
+                "I need a one-line status banner for our CLI and the colour "
+                "is a product decision I can't make for you. Before writing "
+                "anything, invoke the tool named `mcp__ask__user` exactly "
+                "once with this exact `questions` argument: "
                 "[{\"question\": \"which color do you prefer?\", "
                 "\"options\": [{\"label\": \"red\"}, "
                 "{\"label\": \"blue\"}]}]. "
-                "Do not write any natural-language paraphrase of the "
-                "question before calling the tool. Do not answer the "
-                "question yourself. Calling the tool is required."
+                "Do not paraphrase the question in prose before calling the "
+                "tool, and do not pick for me — the answer decides what I "
+                "write next."
             ),
         )
 

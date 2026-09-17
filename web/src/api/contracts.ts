@@ -2400,6 +2400,8 @@ export interface components {
             origin_session_id?: string | null;
             /** Run At */
             run_at?: string | null;
+            /** Last Run Session Id */
+            last_run_session_id?: string | null;
             /** Next Run At */
             next_run_at?: string | null;
         };

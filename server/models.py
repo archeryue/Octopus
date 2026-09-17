@@ -267,6 +267,10 @@ class ScheduleInfo(BaseModel):
     # One-time schedule: fire once at this ISO datetime then auto-delete.
     # Null for recurring schedules (interval or cron).
     run_at: str | None = None
+    # The session the most recent fire ran in, so "last run" in the UI opens
+    # what actually happened. Null before the first fire, and on rows that
+    # predate the column.
+    last_run_session_id: str | None = None
     # When this schedule fires next, read from APScheduler's live trigger
     # state. Null when disabled (no job registered). The UI shows it in the
     # sidebar summary row and the Schedules page header.

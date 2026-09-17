@@ -155,6 +155,10 @@ CREATE TABLE IF NOT EXISTS schedules (
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     last_run_at TEXT,
+    -- The session the most recent fire ran in. Two jobs: the UI links "last
+    -- run" to what actually happened, and the runner refuses to start a fire
+    -- while the previous one is still going (scheduler.md — overlap guard).
+    last_run_session_id TEXT,
     run_at TEXT  -- nullable ISO datetime; when set, fires once at that time then auto-deletes
 );
 
@@ -690,6 +694,13 @@ class Database:
         if not await self._has_column("schedules", "run_at"):
             await self._conn.execute(
                 "ALTER TABLE schedules ADD COLUMN run_at TEXT"
+            )
+            await self._conn.commit()
+        # Which session the last fire ran in. Additive; NULL on every
+        # pre-existing row means "we don't know", which both readers handle.
+        if not await self._has_column("schedules", "last_run_session_id"):
+            await self._conn.execute(
+                "ALTER TABLE schedules ADD COLUMN last_run_session_id TEXT"
             )
             await self._conn.commit()
 
@@ -1256,7 +1267,7 @@ class Database:
         cursor = await self._conn.execute(
             "SELECT id, agent_id, name, prompt, interval_seconds, cron, timezone, "
             "recurrence_label, enabled, created_at, last_run_at, origin_session_id, "
-            "run_at FROM schedules"
+            "run_at, last_run_session_id FROM schedules"
         )
         rows = await cursor.fetchall()
         return [
@@ -1274,6 +1285,7 @@ class Database:
                 "last_run_at": row[10],
                 "origin_session_id": row[11],
                 "run_at": row[12],
+                "last_run_session_id": row[13],
             }
             for row in rows
         ]
@@ -1317,6 +1329,7 @@ class Database:
             "recurrence_label",
             "enabled",
             "last_run_at",
+            "last_run_session_id",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:

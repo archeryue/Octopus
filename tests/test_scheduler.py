@@ -5,6 +5,7 @@ import pytest
 from server.database import Database
 from server.scheduler import ScheduleRunner
 from server.session_manager import SessionManager
+from server.models import SessionStatus
 
 
 @pytest.fixture
@@ -50,7 +51,8 @@ async def test_fire_materializes_scheduled_session_and_auto_archives(
     await runner._fire("sch1", agent["id"], "do it")
 
     # A fresh session ran the prompt under the agent...
-    assert ran["prompt"] == "do it"
+    assert ran["prompt"].endswith("do it")
+    assert ran["prompt"].startswith("[scheduled:daily — Every 1m]")
     fired_sid = ran["session_id"]
     rows = await db.load_sessions(include_archived=True)
     fired = next(r for r in rows if r["id"] == fired_sid)
@@ -137,7 +139,13 @@ async def test_fire_appends_into_live_origin_session(setup, monkeypatch):
     await runner._fire("sch1", agent["id"], "summarize", origin.id)
 
     # Ran in the origin session, not a fresh one.
-    assert started == {"session_id": origin.id, "prompt": "summarize"}
+    assert started["session_id"] == origin.id
+    # …carrying the marker every machine-injected turn in Octopus carries, so
+    # the agent can tell its 07:00 run from something the user typed.
+    assert started["prompt"].startswith("[scheduled:daily — Every 1m]")
+    assert started["prompt"].endswith("summarize")
+    # The session the fire ran in is recorded, so "last run" can open it.
+    assert (await db.load_schedules())[0]["last_run_session_id"] == origin.id
     assert created == []  # no throwaway session materialized
     # Origin session is left intact (it's a user session, never archived).
     assert mgr.get_session(origin.id) is not None
@@ -567,3 +575,120 @@ async def test_migrate_schedule_run_at_from_legacy_shape():
         assert await db._has_column("schedules", "run_at")
     finally:
         await db.close()
+
+
+# ---------------------------------------------------------------- overlap
+
+
+@pytest.mark.asyncio
+async def test_a_fire_is_skipped_while_the_previous_one_is_still_running(
+    setup, monkeypatch
+):
+    """A schedule that runs every 5 minutes and takes 10 would otherwise stack
+    runs on top of each other until the box gives out."""
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+
+    sends: list[str] = []
+
+    async def fake_send(session_id, prompt):
+        sends.append(session_id)
+        if False:
+            yield
+
+    monkeypatch.setattr(mgr, "send_message", fake_send)
+    await db.save_schedule(
+        schedule_id="busy1",
+        agent_id=agent["id"],
+        name="slow",
+        prompt="do it",
+        interval_seconds=60,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+
+    # Fire once — it records the session it ran in…
+    await runner._fire("busy1", agent["id"], "do it")
+    assert len(sends) == 1
+    first_sid = (await db.load_schedules())[0]["last_run_session_id"]
+    assert first_sid == sends[0]
+
+    # …and pretend that run is still going when the next tick arrives.
+    stuck = await mgr.create_session(agent["id"], name="stuck")
+    await db.update_schedule("busy1", last_run_session_id=stuck.id)
+    stuck.status = SessionStatus.running
+
+    await runner._fire("busy1", agent["id"], "do it")
+    assert len(sends) == 1, "a second run started while the first was going"
+
+    # Once it finishes, the schedule resumes on the next tick.
+    stuck.status = SessionStatus.idle
+    await runner._fire("busy1", agent["id"], "do it")
+    assert len(sends) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_gone_or_idle_previous_session_never_blocks(setup, monkeypatch):
+    """The guard must not wedge a schedule: a deleted or finished session is
+    not a reason to skip forever."""
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+
+    sends: list[str] = []
+
+    async def fake_send(session_id, prompt):
+        sends.append(session_id)
+        if False:
+            yield
+
+    monkeypatch.setattr(mgr, "send_message", fake_send)
+    await db.save_schedule(
+        schedule_id="gone1",
+        agent_id=agent["id"],
+        name="n",
+        prompt="p",
+        interval_seconds=60,
+        created_at="2026-01-01T00:00:00+00:00",
+    )
+    await db.update_schedule("gone1", last_run_session_id="deleted-long-ago")
+
+    await runner._fire("gone1", agent["id"], "p")
+    assert len(sends) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_fire_does_not_pile_up_behind_another_fire_in_a_chat(
+    setup, monkeypatch
+):
+    """Origin-session mode queues behind the user's own turn — that's the
+    design. Queuing behind a *previous fire* is a pile-up."""
+    mgr, db, runner = setup
+    agent = await db.get_system_agent()
+    origin = await mgr.create_session(agent["id"], name="chat")
+
+    started: list[str] = []
+
+    async def fake_start(session_id, prompt):
+        started.append(prompt)
+
+    monkeypatch.setattr(mgr, "start_message", fake_start)
+    await db.save_schedule(
+        schedule_id="chat1",
+        agent_id=agent["id"],
+        name="daily",
+        prompt="summarize",
+        interval_seconds=60,
+        created_at="2026-01-01T00:00:00+00:00",
+        origin_session_id=origin.id,
+    )
+
+    await runner._fire("chat1", agent["id"], "summarize", origin.id)
+    assert len(started) == 1
+
+    # Something is now waiting in that session's queue.
+    origin._pending_queue.append(object())
+    await runner._fire("chat1", agent["id"], "summarize", origin.id)
+    assert len(started) == 1, "a second fire queued behind the first"
+
+    origin._pending_queue.clear()
+    await runner._fire("chat1", agent["id"], "summarize", origin.id)
+    assert len(started) == 2

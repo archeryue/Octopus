@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
-import { IconClock, IconTrash } from "@tabler/icons-react";
+import { IconArrowRight, IconClock, IconTrash } from "@tabler/icons-react";
 import { useSessionStore, type Agent, type Schedule } from "../stores/sessionStore";
+import { selectSession } from "../lib/selectSession";
 import { PageHeader } from "./PageHeader";
 
 const API = window.location.origin;
@@ -214,7 +215,28 @@ export function SchedulesPage({
                       <div className="text-[12.5px] text-gray-700">Recent runs</div>
                       <div className="mt-1.5 flex flex-col">
                         {sched.last_run_at ? (
-                          <div className="flex items-center gap-2.5 border-b border-gray-200 py-2 last:border-0">
+                          // Clickable when we know which session the fire ran
+                          // in: "it ran at 07:18" is only half the answer —
+                          // what it *did* is in that session.
+                          <div
+                            className={`flex items-center gap-2.5 border-b border-gray-200 py-2 last:border-0 ${
+                              sched.last_run_session_id
+                                ? "schedule-last-run cursor-pointer rounded-md transition-colors hover:bg-gray-100"
+                                : ""
+                            }`}
+                            onClick={() =>
+                              sched.last_run_session_id &&
+                              selectSession(
+                                sched.last_run_session_id,
+                                sched.agent_id
+                              )
+                            }
+                            title={
+                              sched.last_run_session_id
+                                ? "Open the session this run happened in"
+                                : undefined
+                            }
+                          >
                             <span className="inline-block size-1.5 shrink-0 rounded-full bg-success" />
                             <span className="text-[13px] text-gray-900">
                               {formatWhen(sched.last_run_at)}
@@ -222,6 +244,12 @@ export function SchedulesPage({
                             <span className="ml-auto font-mono text-[11px] text-gray-700">
                               last run
                             </span>
+                            {sched.last_run_session_id && (
+                              <IconArrowRight
+                                size={13}
+                                className="shrink-0 text-gray-600"
+                              />
+                            )}
                           </div>
                         ) : (
                           <div className="py-2 text-[13px] text-gray-700">
