@@ -96,9 +96,10 @@ test.describe("Session Management", () => {
 
   test("shows empty chat view when no session selected", async ({ page }) => {
     // The empty canvas is the mark plus one line of guidance — no wordmark.
-    await expect(page.locator(".chat-empty svg")).toBeVisible();
+    // The mark, not the icon inside the phone-only "Browse sessions" button.
+    await expect(page.locator(".chat-empty .text-logo")).toBeVisible();
     await expect(page.locator(".chat-empty")).toContainText(
-      "Pick a session on the left"
+      "Pick a session from the sidebar"
     );
   });
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   IconArrowUp,
   IconFile,
+  IconMenu2,
   IconPaperclip,
   IconPlayerStop,
   IconX,
@@ -1311,14 +1312,27 @@ export function ChatView({
       <div className="chat-view flex-1 flex flex-col min-h-0">
         {header}
         {delegationBanner}
-        <div className="chat-empty flex flex-1 flex-col items-center justify-center gap-2 text-gray-700">
+        <div className="chat-empty flex flex-1 flex-col items-center justify-center gap-2 px-8 text-center text-gray-700">
           {/* The one place the mark gets room to be itself — nothing else is
             * competing for attention on an empty canvas. */}
           <OctopusLogo size={44} className="mb-3" />
-          <p className="text-[13.5px] leading-relaxed">
-            Pick a session on the left, or start a new one with{" "}
+          {/* Centred *and* bounded: as a flex item this line sizes to its own
+            * content, so on a phone it grew wider than the screen and lost a
+            * word off each edge (mobile.md §7). */}
+          <p className="max-w-[26rem] text-[13.5px] leading-relaxed">
+            Pick a session from the sidebar, or start a new one with{" "}
             <span className="font-mono text-primary">+</span> on an agent.
           </p>
+          {/* On a phone the sidebar is behind the menu, so the empty state
+            * offers the way in rather than pointing at something off-screen. */}
+          <button
+            type="button"
+            className="btn-empty-browse mt-2 inline-flex items-center gap-1.5 rounded-lg border-[0.7px] border-gray-400 bg-card px-3 py-2 text-[13px] font-medium text-gray-900 transition-colors active:bg-gray-100 md:hidden"
+            onClick={onToggleSidebar}
+          >
+            <IconMenu2 size={15} />
+            Browse sessions
+          </button>
         </div>
       </div>
     );
