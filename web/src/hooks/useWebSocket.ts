@@ -108,6 +108,9 @@ function handleWsMessage(data: Record<string, unknown>) {
         tokens: (data.tokens as number) ?? null,
         tool_uses: (data.tool_uses as number) ?? null,
         duration_ms: (data.duration_ms as number) ?? null,
+        // The trail is built in the store from each step as it arrives; the
+        // wire carries the step, not the history.
+        steps: [],
       });
       break;
 

@@ -2694,6 +2694,11 @@ export interface components {
             tool_uses?: number | null;
             /** Duration Ms */
             duration_ms?: number | null;
+            /**
+             * Steps
+             * @default []
+             */
+            steps: string[];
         };
         /** SubmitAnswerRequest */
         SubmitAnswerRequest: {

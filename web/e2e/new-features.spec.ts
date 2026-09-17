@@ -2080,6 +2080,14 @@ test.describe("Native sub-agents @llm", () => {
         timeout: 120_000,
       });
 
+      // The card opens to say what it has actually been doing — a spinner
+      // and a token count can't answer that (native-subagents.md §5).
+      await card.locator(".subagent-summary-row").click();
+      await expect(card.locator(".subagent-step").first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(card.locator(".subagent-prompt")).toContainText(MARKER);
+
       // …and ends up completed, carrying the answer.
       await expect(page.locator(".subagent-card.subagent-completed").first()).toBeVisible({
         timeout: 180_000,

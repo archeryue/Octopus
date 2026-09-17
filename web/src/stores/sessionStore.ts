@@ -90,6 +90,14 @@ function dropKey<T>(
   return next;
 }
 
+/** The step trail with `description` appended, when it's actually new.
+ * Progress repeats the current step while one tool call runs. */
+function appendStep(steps: string[] | undefined, description?: string | null) {
+  const trail = steps ?? [];
+  if (!description || trail[trail.length - 1] === description) return trail;
+  return [...trail, description].slice(-40);
+}
+
 /** Drop keys whose value is null/undefined/"" so a partial update merges
  * onto the previous one instead of blanking fields it simply didn't
  * restate — the shape every sub-agent progress event arrives in. */
@@ -505,13 +513,18 @@ export const useSessionStore = create<SessionStore>((set) => ({
       if (!key) return s;
       const forSession = s.subagents[sessionId] || {};
       const prev = forSession[key];
+      // Each update is partial by design — a status patch carries no name, a
+      // summary carries no counters — so the merge keeps whatever this one
+      // doesn't restate. The step trail is built here rather than sent: the
+      // wire carries the step a run is *on*, and three busy sub-agents would
+      // otherwise repeat their whole history every second.
+      const steps = run.steps?.length
+        ? run.steps
+        : appendStep(prev?.steps, run.description);
       return {
         subagents: {
           ...s.subagents,
-          // Each update is partial by design — a status patch carries no
-          // name, a summary carries no counters — so the merge keeps
-          // whatever this one doesn't restate.
-          [sessionId]: { ...forSession, [key]: { ...prev, ...prune(run) } },
+          [sessionId]: { ...forSession, [key]: { ...prev, ...prune(run), steps } },
         },
       };
     }),

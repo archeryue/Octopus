@@ -516,6 +516,9 @@ async def test_the_session_snapshot_carries_live_runs(client):
             "tokens": None,
             "tool_uses": None,
             "duration_ms": None,
+            # The trail starts with the step it is on, so a reload mid-run
+            # restores history rather than a single line.
+            "steps": ["searching"],
         }
     ]
 
@@ -664,3 +667,34 @@ async def test_the_run_hands_post_turn_events_to_the_idle_handler():
         )
     )
     assert [e.content for e in seen] == ["after the turn"]
+
+
+def test_the_trail_records_each_new_step_once():
+    """"What is it doing?" can't be answered by one line when a run makes
+    eighty tool calls — but a progress event repeats the current step while
+    that call runs, so the trail must not fill with duplicates."""
+    from server.session_manager import SessionManager
+
+    session = _session()
+    for description in ("Searching the web", "Searching the web", "Fetching a page"):
+        SessionManager._record_subagent(
+            session,
+            SubagentUpdate(task_id="t1", tool_use_id="tu1", description=description),
+        )
+    (run,) = session._subagents.values()
+    assert run.steps == ["Searching the web", "Fetching a page"]
+
+
+def test_the_trail_is_bounded():
+    from server.harness.events import MAX_SUBAGENT_STEPS
+    from server.session_manager import SessionManager
+
+    session = _session()
+    for i in range(MAX_SUBAGENT_STEPS + 25):
+        SessionManager._record_subagent(
+            session,
+            SubagentUpdate(task_id="t1", tool_use_id="tu1", description=f"step {i}"),
+        )
+    (run,) = session._subagents.values()
+    assert len(run.steps) == MAX_SUBAGENT_STEPS
+    assert run.steps[-1] == f"step {MAX_SUBAGENT_STEPS + 24}"

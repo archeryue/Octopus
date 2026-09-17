@@ -208,6 +208,10 @@ class SubagentRun(BaseModel):
     tokens: int | None = None
     tool_uses: int | None = None
     duration_ms: int | None = None
+    # What it has been doing, newest last (native-subagents.md §5). Carried on
+    # the snapshot so a reload mid-run restores the trail, not just the
+    # current line.
+    steps: list[str] = []
 
 
 class SessionDetail(SessionInfo):

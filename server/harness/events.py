@@ -57,6 +57,11 @@ class SubagentUpdate:
     tokens: int | None = None
     tool_uses: int | None = None
     duration_ms: int | None = None
+    # What it has been doing, newest last — one entry per distinct step the
+    # harness reported ("Searching for …", "Fetching https://…"). The card's
+    # answer to "what is it doing?", which a single current description can't
+    # give for a run that makes eighty tool calls.
+    steps: list[str] = field(default_factory=list)
 
     def merged_with(self, older: "SubagentUpdate | None") -> "SubagentUpdate":
         """This observation, carrying forward anything it doesn't restate.
@@ -67,7 +72,12 @@ class SubagentUpdate:
         every consumer.
         """
         if older is None:
-            return self
+            return SubagentUpdate(
+                **{
+                    **self.__dict__,
+                    "steps": [self.description] if self.description else [],
+                }
+            )
         return SubagentUpdate(
             task_id=self.task_id or older.task_id,
             tool_use_id=self.tool_use_id or older.tool_use_id,
@@ -85,7 +95,24 @@ class SubagentUpdate:
                 if self.duration_ms is not None
                 else older.duration_ms
             ),
+            steps=_extend_steps(older.steps, self.description),
         )
+
+
+# How many steps a run remembers. Long enough to read the shape of an
+# eighty-tool-call research run, short enough that the snapshot stays small.
+MAX_SUBAGENT_STEPS = 40
+
+
+def _extend_steps(steps: list[str], description: str) -> list[str]:
+    """The trail with `description` appended, if it is actually new.
+
+    Progress events repeat the current step while a single tool call runs, so
+    appending blindly would fill the trail with the same line.
+    """
+    if not description or (steps and steps[-1] == description):
+        return list(steps)
+    return [*steps, description][-MAX_SUBAGENT_STEPS:]
 
 
 @dataclass

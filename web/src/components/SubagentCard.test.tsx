@@ -21,6 +21,7 @@ const run = (o: Partial<SubagentRun> = {}): SubagentRun =>
     description: "searching the repo",
     prompt: "find the token",
     summary: "",
+    steps: [],
     tokens: null,
     tool_uses: null,
     duration_ms: null,
@@ -79,8 +80,31 @@ describe("SubagentCard", () => {
 
     // The brief it was given is one click away, not on screen by default.
     expect(screen.queryByText("find the token")).toBeNull();
-    fireEvent.click(container.querySelector(".subagent-toggle")!);
+    fireEvent.click(container.querySelector(".subagent-summary-row")!);
     expect(screen.getByText("find the token")).toBeTruthy();
+  });
+
+  it("opens to show what it has been doing, step by step", () => {
+    // A spinner and a token count can't answer "what is it doing?" for a run
+    // that makes eighty tool calls (native-subagents.md §5).
+    useSessionStore.getState().setSubagents("s1", [
+      run({
+        steps: ["Searching the web", "Fetching bestbuy.com", "Reading the spec"],
+        tool_uses: 3,
+      }),
+    ]);
+    const { container } = render(
+      <SubagentCard sessionId="s1" toolUseId="tu1" />
+    );
+    expect(container.querySelector(".subagent-steps")).toBeNull();
+
+    fireEvent.click(container.querySelector(".subagent-summary-row")!);
+    const steps = container.querySelectorAll(".subagent-step");
+    expect([...steps].map((s) => s.textContent)).toEqual([
+      "1Searching the web",
+      "2Fetching bestbuy.com",
+      "3Reading the spec",
+    ]);
   });
 
   it("says a failure is a failure", () => {
@@ -96,6 +120,37 @@ describe("SubagentCard", () => {
 });
 
 describe("the store's sub-agent state", () => {
+  it("builds the step trail from progress, without repeating a step", () => {
+    // The wire carries the step a run is *on*; repeating the whole history
+    // every second with three busy sub-agents would be silly.
+    const { upsertSubagent } = useSessionStore.getState();
+    upsertSubagent("s1", run({ description: "Searching the web" }));
+    upsertSubagent("s1", run({ description: "Searching the web" }));
+    upsertSubagent("s1", run({ description: "Fetching a page" }));
+
+    expect(useSessionStore.getState().subagents["s1"]["tu1"].steps).toEqual([
+      "Searching the web",
+      "Fetching a page",
+    ]);
+  });
+
+  it("takes the server's trail when a snapshot brings one", () => {
+    // A reload mid-run restores history rather than starting from the line
+    // it happens to be on.
+    useSessionStore
+      .getState()
+      .setSubagents("s1", [run({ steps: ["one", "two", "three"] })]);
+    useSessionStore
+      .getState()
+      .upsertSubagent("s1", run({ description: "four", steps: [] }));
+    expect(useSessionStore.getState().subagents["s1"]["tu1"].steps).toEqual([
+      "one",
+      "two",
+      "three",
+      "four",
+    ]);
+  });
+
   it("merges partial updates instead of blanking what they omit", () => {
     // A status patch carries no name; a summary carries no counters. Each
     // observation is partial by design (native-subagents.md §3).

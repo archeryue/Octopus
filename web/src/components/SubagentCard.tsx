@@ -35,6 +35,7 @@ export function SubagentCard({
 
   const running = run.status === "running";
   const failed = run.status === "failed";
+  const steps = run.steps ?? [];
   const meta = [
     run.tool_uses ? `${run.tool_uses} tool${run.tool_uses === 1 ? "" : "s"}` : "",
     run.tokens ? `${formatTokens(run.tokens)} tokens` : "",
@@ -51,7 +52,13 @@ export function SubagentCard({
             : "border-gray-300 bg-gray-50"
       }`}
     >
-      <div className="flex items-center gap-2 text-[12.5px]">
+      <button
+        type="button"
+        className="subagent-summary-row flex w-full items-center gap-2 text-left text-[12.5px]"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        title={open ? "Hide what it's doing" : "See what it's doing"}
+      >
         {running ? (
           <span className="subagent-spinner inline-block size-3 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
         ) : failed ? (
@@ -76,36 +83,78 @@ export function SubagentCard({
             {meta.join(" · ")}
           </span>
         )}
-      </div>
+        <span className="shrink-0 text-gray-600">
+          {open ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
+        </span>
+      </button>
 
-      {(run.summary || run.prompt) && (
-        <button
-          type="button"
-          className="subagent-toggle mt-1.5 flex w-full items-start gap-1.5 text-left text-[12px] text-gray-800"
-          onClick={() => setOpen((v) => !v)}
-        >
-          <span className="shrink-0 text-gray-600">
-            {open ? (
-              <IconChevronDown size={13} />
-            ) : (
-              <IconChevronRight size={13} />
-            )}
-          </span>
-          <span className={`subagent-summary ${open ? "" : "line-clamp-2"}`}>
-            {run.summary || run.prompt}
-          </span>
-        </button>
+      {/* The answer it gave, always in reach — one line closed, whole when
+        * opened. While it's still working there is no answer yet, so the
+        * closed card shows the step it's on (above) and nothing else. */}
+      {!open && run.summary && (
+        <p className="subagent-summary mt-1.5 line-clamp-2 text-[12px] text-gray-800">
+          {run.summary}
+        </p>
       )}
 
-      {open && run.summary && run.prompt && (
-        <div className="subagent-prompt mt-1.5 border-t border-gray-300 pt-1.5 text-[11.5px] leading-relaxed text-gray-700">
-          <span className="font-mono text-[10.5px] uppercase tracking-wide text-gray-600">
-            brief
-          </span>
-          <p className="mt-0.5 whitespace-pre-wrap break-words">{run.prompt}</p>
+      {open && (
+        <div className="subagent-detail mt-2 space-y-2 border-t border-gray-300 pt-2">
+          {run.summary && (
+            <div>
+              <Label>answer</Label>
+              <p className="subagent-summary mt-0.5 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-gray-900">
+                {run.summary}
+              </p>
+            </div>
+          )}
+
+          {/* What it has actually been doing. One line per step, newest last
+            * — the thing a spinner and a token count can't tell you. */}
+          {steps.length > 0 && (
+            <div>
+              <Label>
+                {running ? `doing now · ${steps.length} steps` : `${steps.length} steps`}
+              </Label>
+              <ol className="subagent-steps mt-0.5 space-y-0.5">
+                {steps.map((step, i) => (
+                  <li
+                    key={`${i}-${step}`}
+                    className={`subagent-step flex gap-1.5 text-[11.5px] leading-relaxed ${
+                      running && i === steps.length - 1
+                        ? "font-medium text-gray-900"
+                        : "text-gray-700"
+                    }`}
+                  >
+                    <span className="shrink-0 font-mono text-[10px] text-gray-600">
+                      {i + 1}
+                    </span>
+                    <span className="break-words">{step}</span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          {run.prompt && (
+            <div>
+              <Label>brief</Label>
+              <p className="subagent-prompt mt-0.5 whitespace-pre-wrap break-words text-[11.5px] leading-relaxed text-gray-700">
+                {run.prompt}
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
+  );
+}
+
+/** The small caps label the expanded panel groups by. */
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="font-mono text-[10px] uppercase tracking-[0.1em] text-gray-600">
+      {children}
+    </span>
   );
 }
 
