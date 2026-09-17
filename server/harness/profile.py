@@ -77,6 +77,9 @@ class TurnContext:
     # web tools and forbids destructive/fan-out tools (no Bash/Write/subagents),
     # so a throwaway research leaf can search the web but can't touch the box.
     web_research: bool = False
+    # Sub-agent definitions to register for this turn (native-subagents.md §6).
+    # A profile without a surface for them simply doesn't render them.
+    subagents: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

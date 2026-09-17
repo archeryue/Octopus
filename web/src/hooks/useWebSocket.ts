@@ -57,6 +57,7 @@ function handleWsMessage(data: Record<string, unknown>) {
     lastAppliedSeq,
     appendStreamingText,
     clearStreamingText,
+    upsertSubagent,
   } = getState();
   const sessionId = data.session_id as string;
   const type = data.type as string;
@@ -89,6 +90,24 @@ function handleWsMessage(data: Record<string, unknown>) {
         role: "assistant",
         type: "text",
         content: data.content as string,
+      });
+      break;
+
+    // A sub-agent the model spawned inside this turn (native-subagents.md).
+    // Live state only — the Task / collab tool call in `messages` is the
+    // durable record, so nothing is added to the transcript here.
+    case "subagent":
+      upsertSubagent(sessionId, {
+        task_id: data.task_id as string,
+        tool_use_id: (data.tool_use_id as string) ?? null,
+        status: (data.status as string) ?? "running",
+        name: (data.name as string) ?? "",
+        description: (data.description as string) ?? "",
+        prompt: (data.prompt as string) ?? "",
+        summary: (data.summary as string) ?? "",
+        tokens: (data.tokens as number) ?? null,
+        tool_uses: (data.tool_uses as number) ?? null,
+        duration_ms: (data.duration_ms as number) ?? null,
       });
       break;
 

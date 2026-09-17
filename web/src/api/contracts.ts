@@ -1509,6 +1509,11 @@ export interface components {
              * @default
              */
             tool_deny: string;
+            /**
+             * Subagents
+             * @default []
+             */
+            subagents: components["schemas"]["SubagentDefinition"][];
         };
         /** AgentRead */
         AgentRead: {
@@ -1550,6 +1555,11 @@ export interface components {
              */
             tool_deny: string;
             /**
+             * Subagents
+             * @default []
+             */
+            subagents: components["schemas"]["SubagentDefinition"][];
+            /**
              * Is System
              * @default false
              */
@@ -1590,6 +1600,8 @@ export interface components {
             tool_allow?: string | null;
             /** Tool Deny */
             tool_deny?: string | null;
+            /** Subagents */
+            subagents?: components["schemas"]["SubagentDefinition"][] | null;
         };
         /**
          * AnswerDelegationQuestionRequest
@@ -2469,6 +2481,11 @@ export interface components {
              */
             pending_questions: components["schemas"]["PendingQuestionInfo"][];
             /**
+             * Subagents
+             * @default []
+             */
+            subagents: components["schemas"]["SubagentRun"][];
+            /**
              * Next Message Seq
              * @default 0
              */
@@ -2601,6 +2618,80 @@ export interface components {
         StartResearchRequest: {
             /** Question */
             question: string;
+        };
+        /**
+         * SubagentDefinition
+         * @description One sub-agent an Octopus agent can hand to the CLI.
+         *
+         *     Mirrors Claude Code's `--agents` JSON: a name the model addresses, a
+         *     description telling it when to reach for this one, the sub-agent's own
+         *     system prompt, and optional tool/model narrowing.
+         */
+        SubagentDefinition: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Prompt
+             * @default
+             */
+            prompt: string;
+            /** Model */
+            model?: string | null;
+            /**
+             * Tools
+             * @default []
+             */
+            tools: string[];
+        };
+        /**
+         * SubagentRun
+         * @description A sub-agent the model spawned inside a turn (native-subagents.md).
+         *
+         *     Live UI state, not history: the durable record is the `Task` /
+         *     `collab_tool_call` tool call already in `messages`. Carried on the
+         *     snapshot so a browser reload mid-run doesn't blank the card.
+         */
+        SubagentRun: {
+            /** Task Id */
+            task_id: string;
+            /** Tool Use Id */
+            tool_use_id?: string | null;
+            /**
+             * Status
+             * @default running
+             */
+            status: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Prompt
+             * @default
+             */
+            prompt: string;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /** Tokens */
+            tokens?: number | null;
+            /** Tool Uses */
+            tool_uses?: number | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
         };
         /** SubmitAnswerRequest */
         SubmitAnswerRequest: {

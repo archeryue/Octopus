@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconArchive } from "@tabler/icons-react";
+import { IconArchive, IconPlus, IconTrash } from "@tabler/icons-react";
 import { fetchAgentConnectors, toggleAgentConnector } from "../api/connectors";
-import { useSessionStore, type Agent } from "../stores/sessionStore";
+import {
+  useSessionStore,
+  type Agent,
+  type SubagentDefinition,
+} from "../stores/sessionStore";
 import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -52,6 +56,9 @@ export function AgentFormPage({
   const [toolAllow, setToolAllow] = useState("");
   const [toolDeny, setToolDeny] = useState("");
   const [enabledConnectors, setEnabledConnectors] = useState<string[]>([]);
+  // Sub-agents this agent brings with it (native-subagents.md §6). Empty is
+  // the normal case: the CLI's own built-ins are always available.
+  const [subagents, setSubagents] = useState<SubagentDefinition[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -71,6 +78,7 @@ export function AgentFormPage({
     setCredentialId(editing?.credential_id ?? "");
     setToolAllow(editing?.tool_allow ?? "");
     setToolDeny(editing?.tool_deny ?? "");
+    setSubagents(editing?.subagents ?? []);
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingAgentId]);
@@ -115,6 +123,8 @@ export function AgentFormPage({
       backend,
       tool_allow: toolAllow,
       tool_deny: toolDeny,
+      // Unnamed rows are drafts the user never filled in, not definitions.
+      subagents: subagents.filter((sa) => sa.name.trim()),
       ...(editing ? {} : { mcp_servers: [...BUILTIN_MCP] }),
     };
     try {
@@ -438,10 +448,98 @@ export function AgentFormPage({
                   />
                 </div>
               </div>
+
+              <SubagentEditor value={subagents} onChange={setSubagents} />
             </div>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Sub-agents an agent brings with it (native-subagents.md §6).
+ *
+ * These are handed to the CLI as session-scoped definitions, so they *add* to
+ * the built-in ones (Explore, Plan, general-purpose) rather than replacing
+ * them — which is why an empty list is the normal, fully-functional state and
+ * the section says so rather than looking unfinished.
+ */
+function SubagentEditor({
+  value,
+  onChange,
+}: {
+  value: SubagentDefinition[];
+  onChange: (next: SubagentDefinition[]) => void;
+}) {
+  const update = (i: number, patch: Partial<SubagentDefinition>) =>
+    onChange(value.map((sa, n) => (n === i ? { ...sa, ...patch } : sa)));
+
+  return (
+    <div className="agent-subagents space-y-3">
+      <div className="flex items-center justify-between">
+        <Label>
+          Sub-agents
+          <span className="ml-2 font-normal text-gray-700">
+            extra helpers this agent can hand work to, on top of the built-in
+            ones
+          </span>
+        </Label>
+        <button
+          type="button"
+          className="btn-subagent-add inline-flex items-center gap-1.5 rounded-lg border border-gray-400 px-2.5 py-1 text-[12.5px] text-gray-900 transition-colors hover:border-primary hover:text-primary"
+          onClick={() =>
+            onChange([...value, { name: "", description: "", prompt: "", model: null, tools: [] }])
+          }
+        >
+          <IconPlus size={14} />
+          Add
+        </button>
+      </div>
+
+      {value.length === 0 ? (
+        <p className="subagent-empty text-[12.5px] text-gray-700">
+          None — this agent uses the harness's built-in sub-agents.
+        </p>
+      ) : (
+        <div className="space-y-2.5">
+          {value.map((sa, i) => (
+            <div
+              key={i}
+              className="subagent-row space-y-2 rounded-xl border border-gray-400 bg-gray-50 p-3"
+            >
+              <div className="flex items-center gap-2">
+                <input
+                  className="subagent-name flex-1 rounded-lg border border-gray-400 bg-card px-3 py-1.5 font-mono text-[12.5px] text-gray-900 outline-none focus:border-primary"
+                  value={sa.name}
+                  onChange={(e) => update(i, { name: e.target.value })}
+                  placeholder="name — how the model addresses it (e.g. reviewer)"
+                />
+                <button
+                  type="button"
+                  className="btn-subagent-remove inline-flex size-8 items-center justify-center rounded-lg text-gray-600 transition-colors hover:bg-danger-bg hover:text-destructive"
+                  onClick={() => onChange(value.filter((_, n) => n !== i))}
+                  aria-label={`Remove ${sa.name || "sub-agent"}`}
+                >
+                  <IconTrash size={14} />
+                </button>
+              </div>
+              <input
+                className="subagent-description w-full rounded-lg border border-gray-400 bg-card px-3 py-1.5 text-[12.5px] text-gray-900 outline-none focus:border-primary"
+                value={sa.description ?? ""}
+                onChange={(e) => update(i, { description: e.target.value })}
+                placeholder="when to use it — the model reads this to decide"
+              />
+              <textarea
+                className="subagent-prompt min-h-16 w-full rounded-lg border border-gray-400 bg-card px-3 py-2 text-[12.5px] text-gray-900 outline-none focus:border-primary"
+                value={sa.prompt ?? ""}
+                onChange={(e) => update(i, { prompt: e.target.value })}
+                placeholder="its own system prompt"
+              />
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

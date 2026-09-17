@@ -51,6 +51,7 @@ class AgentManager:
         mcp_servers: list[str] | None = None,
         tool_allow: str = "",
         tool_deny: str = "",
+        subagents: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         name = (name or "").strip()
         if not name:
@@ -73,6 +74,7 @@ class AgentManager:
             mcp_servers=mcp_servers,
             tool_allow=tool_allow,
             tool_deny=tool_deny,
+            subagents=subagents,
             is_system=False,
         )
         agent = await self.db.get_agent(agent_id)

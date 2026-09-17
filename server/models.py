@@ -190,10 +190,32 @@ class PendingQuestionInfo(BaseModel):
     questions: list[dict[str, Any]]
 
 
+class SubagentRun(BaseModel):
+    """A sub-agent the model spawned inside a turn (native-subagents.md).
+
+    Live UI state, not history: the durable record is the `Task` /
+    `collab_tool_call` tool call already in `messages`. Carried on the
+    snapshot so a browser reload mid-run doesn't blank the card.
+    """
+
+    task_id: str
+    tool_use_id: str | None = None
+    status: str = "running"
+    name: str = ""
+    description: str = ""
+    prompt: str = ""
+    summary: str = ""
+    tokens: int | None = None
+    tool_uses: int | None = None
+    duration_ms: int | None = None
+
+
 class SessionDetail(SessionInfo):
     messages: list[MessageContent] = []
     pending_queue: list[str] = []
     pending_questions: list[PendingQuestionInfo] = []
+    # Sub-agents still on screen for this session (native-subagents.md §4).
+    subagents: list[SubagentRun] = []
     # High-water mark of the messages above: the seq of the next message
     # the server will assign. Frontends use this to set their dedup
     # baseline so any subsequently-broadcast event with seq <=
@@ -321,11 +343,30 @@ class AgentRead(BaseModel):
     # `tool_deny` wins on conflict.
     tool_allow: str = ""
     tool_deny: str = ""
+    # Sub-agents this agent brings with it (native-subagents.md §6), rendered
+    # as Claude Code's `--agents` JSON. Empty = the CLI's built-ins only.
+    subagents: list[SubagentDefinition] = []
     is_system: bool = False
     archived: bool = False
     created_at: str
     updated_at: str
     active_session_count: int = 0
+
+
+class SubagentDefinition(BaseModel):
+    """One sub-agent an Octopus agent can hand to the CLI.
+
+    Mirrors Claude Code's `--agents` JSON: a name the model addresses, a
+    description telling it when to reach for this one, the sub-agent's own
+    system prompt, and optional tool/model narrowing.
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+    description: str = ""
+    prompt: str = ""
+    model: str | None = None
+    # Empty = inherit the parent's tools.
+    tools: list[str] = []
 
 
 class AgentCreate(BaseModel):
@@ -341,6 +382,7 @@ class AgentCreate(BaseModel):
     mcp_servers: list[str] = ["ask", "bg"]
     tool_allow: str = ""
     tool_deny: str = ""
+    subagents: list[SubagentDefinition] = []
 
 
 class AgentUpdate(BaseModel):
@@ -359,6 +401,7 @@ class AgentUpdate(BaseModel):
     mcp_servers: list[str] | None = None
     tool_allow: str | None = None
     tool_deny: str | None = None
+    subagents: list[SubagentDefinition] | None = None
 
 
 # Backend credentials

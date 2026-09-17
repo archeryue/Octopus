@@ -20,7 +20,7 @@ import logging
 import os
 from typing import Any
 
-from .events import HarnessCredential, HarnessEvent
+from .events import HarnessCredential, HarnessEvent, SubagentUpdate
 from .harness import Harness
 from .login import LoginMethod
 from .profile import (
@@ -184,12 +184,35 @@ def _mcp_result_text(result: Any) -> str:
     return str(result)
 
 
+# What each collaboration tool is doing, in words a card can show.
+_COLLAB_DESCRIPTIONS = {
+    "spawn_agent": "starting",
+    "wait": "working",
+    "wait_agent": "working",
+    "send_input": "given more input",
+    "resume_agent": "resumed",
+    "close_agent": "closing",
+}
+
+# Bound on the child-thread → owning-item map, for the same reason the Claude
+# parser bounds its task map: one process parses many turns.
+_MAX_TRACKED_AGENTS = 64
+
+
+def _short_thread(thread_id: str) -> str:
+    """Codex names a sub-agent by its thread uuid; the card shows a handle."""
+    return f"agent {thread_id[:8]}" if thread_id else ""
+
+
 class CodexEventParser(EventParser):
     """Normalize `codex exec --json` into HarnessEvents. Holds the captured
     thread id (the resume id), surfaced early on `session_started`."""
 
     def __init__(self) -> None:
         self._captured_thread_id: str | None = None
+        # child thread id -> the `spawn_agent` item that created it, so every
+        # later `wait` / `send_input` on that thread updates the same card.
+        self._collab_owner: dict[str, str] = {}
 
     def parse(self, obj: dict[str, Any]) -> ParseOutput:
         kind = obj.get("type")
@@ -257,6 +280,94 @@ class CodexEventParser(EventParser):
         logger.debug("Unhandled codex event type: %s", kind)
         return ParseOutput()
 
+    def _collab_events(
+        self, item: dict[str, Any], *, started: bool, completed: bool
+    ) -> list[HarnessEvent]:
+        """`collab_tool_call` → a tool call plus normalized sub-agent updates.
+
+        Codex narrates multi-agent work as a sequence of tool calls against
+        *child threads*: `spawn_agent` creates one, `wait` blocks on it,
+        `send_input` talks to it. Several items therefore describe the same
+        sub-agent, so the card is keyed on the spawning item and the child
+        thread ids are mapped back to it (native-subagents.md §3).
+        """
+        item_id = str(item.get("id") or "")
+        tool = str(item.get("tool") or "agent")
+        prompt = str(item.get("prompt") or "")
+        receivers = [str(t) for t in (item.get("receiver_thread_ids") or [])]
+        states = item.get("agents_states")
+        states = states if isinstance(states, dict) else {}
+
+        events: list[HarnessEvent] = []
+        spawning = tool == "spawn_agent"
+
+        # The tool call itself, so the transcript shows the work and the card
+        # has something to attach to (Claude's `Task` is a real tool call;
+        # this makes Codex's equivalent one too).
+        if started:
+            events.append(
+                HarnessEvent(
+                    type="tool_use",
+                    tool_name=f"subagent:{tool}",
+                    tool_use_id=item_id,
+                    tool_input={"prompt": prompt, "agents": receivers} if prompt or receivers else {},
+                    raw=item,
+                )
+            )
+        if completed:
+            done = [
+                str(st.get("message") or "")
+                for st in states.values()
+                if isinstance(st, dict) and st.get("message")
+            ]
+            events.append(
+                HarnessEvent(
+                    type="tool_result",
+                    tool_use_id=item_id,
+                    content="\n\n".join(done) if done else tool,
+                    raw=item,
+                )
+            )
+
+        # Which card each child thread belongs to.
+        if spawning:
+            for tid in receivers:
+                self._collab_owner[tid] = item_id
+            targets = [(item_id, receivers[0] if receivers else "")]
+        else:
+            targets = [
+                (self._collab_owner.get(tid, item_id), tid) for tid in receivers
+            ] or [(item_id, "")]
+
+        for owner, tid in targets:
+            state = states.get(tid) if isinstance(states.get(tid), dict) else {}
+            raw_status = str(state.get("status") or "")
+            status = (
+                "completed"
+                if raw_status == "completed"
+                else "failed"
+                if raw_status in ("failed", "error")
+                else "running"
+            )
+            events.append(
+                HarnessEvent(
+                    type="subagent",
+                    subagent=SubagentUpdate(
+                        task_id=owner,
+                        tool_use_id=owner,
+                        status=status,
+                        name=_short_thread(tid),
+                        description=_COLLAB_DESCRIPTIONS.get(tool, tool),
+                        prompt=prompt if spawning and started else "",
+                        summary=str(state.get("message") or ""),
+                    ),
+                    raw=item,
+                )
+            )
+        while len(self._collab_owner) > _MAX_TRACKED_AGENTS:
+            self._collab_owner.pop(next(iter(self._collab_owner)))
+        return events
+
     def _item_events(self, kind: str, obj: dict[str, Any]) -> list[HarnessEvent]:
         item = obj.get("item")
         if not isinstance(item, dict):
@@ -265,6 +376,9 @@ class CodexEventParser(EventParser):
         item_id = item.get("id")
         started = kind == "item.started"
         completed = kind == "item.completed"
+
+        if item_type == "collab_tool_call":
+            return self._collab_events(item, started=started, completed=completed)
 
         if item_type == "agent_message":
             text = item.get("text")

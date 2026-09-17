@@ -33,6 +33,62 @@ class HarnessCredential:
 
 
 @dataclass
+class SubagentUpdate:
+    """One observation of a sub-agent the model spawned inside a turn.
+
+    Both harnesses have this feature natively and describe it differently —
+    Claude Code streams `system/task_*` events around a `Task` tool call,
+    Codex streams `collab_tool_call` items carrying child thread ids. They
+    normalize onto this one shape so the UI never learns which CLI it is
+    talking to (native-subagents.md §3).
+
+    A sub-agent is deliberately NOT a session: it is ephemeral, anonymous and
+    scoped to one tool call, unlike a delegation, which is a real session
+    owned by another agent (agent-collaboration.md).
+    """
+
+    task_id: str                     # the harness's own id for the run
+    tool_use_id: str | None = None   # the parent tool call it belongs to
+    status: str = "running"          # running | completed | failed
+    name: str = ""                   # "Explore", "general-purpose", a thread id…
+    description: str = ""            # what it is doing right now
+    prompt: str = ""                 # the brief (first observation only)
+    summary: str = ""                # final text (terminal observation)
+    tokens: int | None = None
+    tool_uses: int | None = None
+    duration_ms: int | None = None
+
+    def merged_with(self, older: "SubagentUpdate | None") -> "SubagentUpdate":
+        """This observation, carrying forward anything it doesn't restate.
+
+        Progress events are partial by design — `task_updated` is only a
+        status patch, and `task_notification` doesn't repeat the name. The
+        card needs the union, so the merge happens once here rather than in
+        every consumer.
+        """
+        if older is None:
+            return self
+        return SubagentUpdate(
+            task_id=self.task_id or older.task_id,
+            tool_use_id=self.tool_use_id or older.tool_use_id,
+            status=self.status or older.status,
+            name=self.name or older.name,
+            description=self.description or older.description,
+            prompt=self.prompt or older.prompt,
+            summary=self.summary or older.summary,
+            tokens=self.tokens if self.tokens is not None else older.tokens,
+            tool_uses=(
+                self.tool_uses if self.tool_uses is not None else older.tool_uses
+            ),
+            duration_ms=(
+                self.duration_ms
+                if self.duration_ms is not None
+                else older.duration_ms
+            ),
+        )
+
+
+@dataclass
 class HarnessEvent:
     """Normalized event emitted by any harness run.
 
@@ -43,7 +99,10 @@ class HarnessEvent:
     # text_delta is broadcast-only: a partial chunk of the text block still
     # being written. The completed `text` event always follows and is what
     # gets persisted (inline-steering.md §4 S1).
-    type: str  # text | text_delta | thinking | tool_use | tool_result | result | error | question_request | session_started
+    # `subagent` is broadcast-only too: the durable record of a sub-agent is
+    # the Task/collab tool call and its result, already persisted
+    # (native-subagents.md §4).
+    type: str  # text | text_delta | thinking | tool_use | tool_result | result | error | question_request | session_started | subagent
     content: str | None = None
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
@@ -53,6 +112,8 @@ class HarnessEvent:
     session_id: str | None = None  # backend's resume id (carried on `result`)
     duration_ms: int | None = None
     num_turns: int | None = None
+    # Set only on `subagent` events.
+    subagent: SubagentUpdate | None = None
     raw: dict[str, Any] | None = field(default=None, repr=False)
 
 

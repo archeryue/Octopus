@@ -36,6 +36,9 @@ export async function selectSession(
       s.setMessages(sessionId, data.messages || []);
       s.setPendingQueue(sessionId, data.pending_queue || []);
       s.setPendingQuestions(sessionId, data.pending_questions || []);
+      // Sub-agent cards are live state the server remembers for us, so a
+      // reload mid-run repaints them instead of showing a frozen tool call.
+      s.setSubagents(sessionId, data.subagents || []);
       if (typeof data.next_message_seq === "number") {
         s.setLastAppliedSeq(sessionId, data.next_message_seq - 1);
       }

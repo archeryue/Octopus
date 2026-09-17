@@ -32,6 +32,10 @@ export type ConnectorOAuthClientInfo = components["schemas"]["ConnectorOAuthClie
 export type CustomConnectorCreateRequest = components["schemas"]["CustomConnectorCreateRequest"];
 export type UpdateConnectorRequest = components["schemas"]["UpdateConnectorRequest"];
 export type AgentConnectorsResponse = components["schemas"]["AgentConnectorsResponse"];
+// Native sub-agents (native-subagents.md): a live run on a session, and a
+// definition an agent carries.
+export type SubagentRun = components["schemas"]["SubagentRun"];
+export type SubagentDefinition = components["schemas"]["SubagentDefinition"];
 export type MessageContent = components["schemas"]["MessageContent"];
 export type MessageRole = components["schemas"]["MessageRole"];
 export type NotifierInfo = components["schemas"]["NotifierInfo"];

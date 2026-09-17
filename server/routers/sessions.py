@@ -1,8 +1,10 @@
+from dataclasses import asdict
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
 from ..harness import BackendForkNotSupported, StdinMode, get_harness
-from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus, SessionUpdate
+from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus, SessionUpdate, SubagentRun
 from ..session_manager import ForkError, fork_info_fields, session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -204,6 +206,7 @@ async def import_session(
             PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
             for q in s._pending_questions.values()
         ],
+        subagents=[SubagentRun(**asdict(u)) for u in s._subagents.values()],
         # High-water mark: clients use this as the dedup baseline so any
         # WS event with seq < next_message_seq is treated as already
         # applied (it's in the messages list above).
@@ -241,6 +244,7 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
                 PendingQuestionInfo(question_id=q.question_id, questions=q.questions)
                 for q in s._pending_questions.values()
             ],
+            subagents=[SubagentRun(**asdict(u)) for u in s._subagents.values()],
             # High-water mark: clients use this as the dedup baseline so any
             # WS event with seq < next_message_seq is treated as already
             # applied (it's in the messages list above).

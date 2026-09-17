@@ -24,6 +24,7 @@ import {
   parseDelegationEvent,
 } from "./AgentDelegationEventCard";
 import { AgentDelegationRequestCard } from "./AgentDelegationRequestCard";
+import { SubagentCard } from "./SubagentCard";
 
 // Marker the backend prepends to the synthesized user message it
 // injects when a bg task completes. Used to render those messages
@@ -374,6 +375,12 @@ function ToolUseBlock({
         )}
       </div>
       {isBgRun && <BgChipForToolUse sessionId={sessionId} message={message} />}
+      {/* Native sub-agents (native-subagents.md). Deliberately NOT matched on
+        * the tool's name: Claude Code has called it `Task` and now `Agent`,
+        * and Codex's is `subagent:<tool>`. The run is keyed by tool_use_id,
+        * so the card renders exactly when there is a run to show and nothing
+        * otherwise — no name list to keep in step with two CLIs. */}
+      <SubagentCard sessionId={sessionId} toolUseId={message.tool_use_id} />
       {isAskAgent && askAgentName && askAgentRequest && (
         <AgentDelegationRequestCard
           sessionId={sessionId}

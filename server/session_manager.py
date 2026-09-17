@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 # forwarding every token individually.
 _DELTA_FLUSH_SECONDS = 0.05
 
+# How many sub-agent cards a session keeps live state for. They're UI state
+# (the transcript holds the durable record), so this only stops a session that
+# fans out all day from growing a map forever.
+_MAX_SUBAGENTS_PER_SESSION = 64
+
 # Holding a finished CLI process makes the next turn ~1.5s faster and keeps its
 # prompt cache warm, but costs ~255MB of RSS for as long as it's held
 # (inline-steering.md §7). Two bounds keep that honest: a process is dropped
@@ -237,6 +242,11 @@ class Session:
     # conversation the running app is holding with an agent (origin='app').
     # NULL on every ordinary session. (app-agent-access.md §3)
     app_id: str | None = None
+    # Live sub-agent runs, keyed by the tool call that spawned them
+    # (native-subagents.md §4). Broadcast-only state: the durable record is
+    # the Task / collab tool call already in the transcript, so this exists
+    # to keep a card alive across a browser reload, not across a restart.
+    _subagents: dict[str, Any] = field(default_factory=dict, repr=False)
     # Session tree-rewind / fork (session-rewind.md §4). All NULL/False
     # on non-fork sessions. fork_metadata / fork_revert_record hold raw JSON
     # strings (parsed lazily); fork_status drives crash recovery.
@@ -2279,6 +2289,14 @@ class SessionManager:
                         # Internal event — don't persist or broadcast.
                         continue
 
+                    # A sub-agent's progress: remembered on the session so a
+                    # reload can still paint the card, broadcast so the open
+                    # UI paints it now, and never persisted — the Task tool
+                    # call and its result are the durable record
+                    # (native-subagents.md §4).
+                    if event.type == "subagent" and event.subagent is not None:
+                        self._record_subagent(session, event.subagent)
+
                     if event.type == "tool_use":
                         saw_tool_use = True
                     if event.type == "text" and event.content and event.content.strip():
@@ -2952,6 +2970,10 @@ class SessionManager:
             except (json.JSONDecodeError, AttributeError):
                 fork_note = None
 
+        subagents = (agent or {}).get("subagents") or []
+        if not isinstance(subagents, list):
+            subagents = []
+
         return RunConfig(
             session_id=session.id,
             system_prompt=system_prompt,
@@ -2962,6 +2984,7 @@ class SessionManager:
             connectors=connectors or [],
             memory_dir=memory_dir,
             fork_note=fork_note,
+            subagents=subagents,
         )
 
     # Refresh the access_token if it expires within this many seconds. A
@@ -3483,6 +3506,23 @@ class SessionManager:
             )
         return None
 
+    @staticmethod
+    def _record_subagent(session: Session, update: Any) -> None:
+        """Merge one sub-agent observation into the session's live map.
+
+        Every harness reports sub-agents in partial shapes — a status patch
+        with no name, a summary with no counters — so each observation is
+        merged onto the last (`SubagentUpdate.merged_with`). Bounded, oldest
+        first: a long session can spawn many, and this is UI state, not
+        history.
+        """
+        key = update.tool_use_id or update.task_id
+        if not key:
+            return
+        session._subagents[key] = update.merged_with(session._subagents.get(key))
+        while len(session._subagents) > _MAX_SUBAGENTS_PER_SESSION:
+            session._subagents.pop(next(iter(session._subagents)))
+
     def _flush_text_deltas(
         self, session_id: str, buf: list[str]
     ) -> dict[str, Any] | None:
@@ -3542,6 +3582,22 @@ class SessionManager:
                 "tool_use_id": event.tool_use_id,
                 "output": event.content,
                 "is_error": event.is_error,
+            }
+        if event.type == "subagent" and event.subagent is not None:
+            u = event.subagent
+            return {
+                "type": "subagent",
+                "session_id": session_id,
+                "task_id": u.task_id,
+                "tool_use_id": u.tool_use_id,
+                "status": u.status,
+                "name": u.name,
+                "description": u.description,
+                "prompt": u.prompt,
+                "summary": u.summary,
+                "tokens": u.tokens,
+                "tool_uses": u.tool_uses,
+                "duration_ms": u.duration_ms,
             }
         if event.type == "question_request":
             return {

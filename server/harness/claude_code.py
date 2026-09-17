@@ -22,7 +22,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .events import HarnessCredential, HarnessEvent, HarnessOneshotError
+from .events import (
+    HarnessCredential,
+    HarnessEvent,
+    HarnessOneshotError,
+    SubagentUpdate,
+)
 from .harness import Harness
 from .login import LoginMethod
 from .profile import (
@@ -172,6 +177,46 @@ def _apply_env_credential(env: dict[str, str], credential: HarnessCredential | N
 
 
 # Where the prompt goes, and therefore what stdin is for. Referenced by both
+def _render_subagents(defs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Octopus's sub-agent definitions as Claude Code's `--agents` JSON.
+
+    Shape: `{"<name>": {"description": …, "prompt": …, "tools": [...],
+    "model": …}}`. Entries without a name are dropped rather than sent as
+    `""`, and empty optional fields are omitted so the CLI applies its own
+    defaults instead of an explicit blank.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for entry in defs:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        spec: dict[str, Any] = {
+            "description": str(entry.get("description") or "").strip(),
+            "prompt": str(entry.get("prompt") or "").strip(),
+        }
+        tools = entry.get("tools")
+        if isinstance(tools, list) and tools:
+            spec["tools"] = [str(t) for t in tools]
+        model = entry.get("model")
+        if model:
+            spec["model"] = str(model)
+        out[name] = spec
+    return out
+
+
+# The `system` subtypes Claude Code uses to narrate a sub-agent (`Task`) run.
+# `task_updated` is the anonymous one — see `_task_event`.
+_TASK_SUBTYPES = frozenset(
+    {"task_started", "task_progress", "task_updated", "task_notification"}
+)
+
+# How many sub-agent runs the parser remembers names for. One entry is ~100
+# bytes and a turn spawns a handful; this exists only so a process held across
+# hundreds of turns can't grow one.
+_MAX_TRACKED_TASKS = 64
+
 # `build_turn_argv` and the profile below so the renderer and the run engine
 # can never disagree (inline-steering.md §6).
 _STDIN_MODE = StdinMode.STREAM_JSON
@@ -233,6 +278,11 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         "--append-system-prompt",
         ctx.system_prompt,
     ]
+    if ctx.subagents:
+        # Session-scoped sub-agent definitions (native-subagents.md §6). The
+        # CLI's own built-ins (Explore, Plan, general-purpose…) stay available
+        # alongside these; `--agents` adds, it doesn't replace.
+        argv += ["--agents", json.dumps(_render_subagents(ctx.subagents))]
     if ctx.tool_allow:
         argv += ["--allowedTools", ",".join(ctx.tool_allow)]
     if ctx.model:
@@ -271,6 +321,11 @@ class ClaudeEventParser(EventParser):
 
     def __init__(self) -> None:
         self._captured_session_id: str | None = None
+        # task_id -> (tool_use_id, subagent name). `system/task_updated`
+        # arrives carrying only a task_id — it is the one sub-agent event
+        # that can't identify which tool call it belongs to
+        # (native-subagents.md §3).
+        self._tasks: dict[str, tuple[str | None, str]] = {}
 
     def parse(self, obj: dict[str, Any]) -> ParseOutput:
         kind = obj.get("type")
@@ -286,6 +341,8 @@ class ClaudeEventParser(EventParser):
                     )
             if subtype == "api_retry":
                 return self._api_retry(obj)
+            if subtype in _TASK_SUBTYPES:
+                return self._task_event(subtype, obj)
             return ParseOutput()
 
         if kind == "stream_event":
@@ -335,6 +392,53 @@ class ClaudeEventParser(EventParser):
         if not text:
             return ParseOutput()
         return ParseOutput(events=[HarnessEvent(type="text_delta", content=text)])
+
+    def _task_event(self, subtype: str, obj: dict[str, Any]) -> ParseOutput:
+        """`system/task_*` → one normalized `subagent` event.
+
+        The CLI reports a sub-agent in four shapes (started / progress /
+        updated / notification), each partial. They are merged downstream; the
+        job here is only to name the run, say what it is doing, and carry
+        whatever counters this particular shape happens to include.
+        """
+        task_id = str(obj.get("task_id") or "")
+        if not task_id:
+            return ParseOutput()
+
+        known_tool_use_id, known_name = self._tasks.get(task_id, (None, ""))
+        tool_use_id = obj.get("tool_use_id") or known_tool_use_id
+        name = obj.get("subagent_type") or known_name
+        self._tasks[task_id] = (tool_use_id, name)
+
+        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
+        patch = obj.get("patch") if isinstance(obj.get("patch"), dict) else {}
+        status = str(obj.get("status") or patch.get("status") or "running")
+        # The CLI's terminal words are "completed" / "failed" / "cancelled";
+        # anything else is still in flight.
+        if status not in ("completed", "failed", "cancelled"):
+            status = "running"
+
+        update = SubagentUpdate(
+            task_id=task_id,
+            tool_use_id=tool_use_id,
+            status=status,
+            name=name,
+            description=str(obj.get("description") or ""),
+            prompt=str(obj.get("prompt") or "") if subtype == "task_started" else "",
+            summary=str(obj.get("summary") or ""),
+            tokens=usage.get("total_tokens"),
+            tool_uses=usage.get("tool_uses"),
+            duration_ms=usage.get("duration_ms"),
+        )
+        # The map is NOT dropped on a terminal status: `task_updated` says
+        # "completed" and `task_notification` — which carries the summary —
+        # arrives after it, anonymous but for the task id. Bounded instead,
+        # because a held process parses many turns.
+        while len(self._tasks) > _MAX_TRACKED_TASKS:
+            self._tasks.pop(next(iter(self._tasks)))
+        return ParseOutput(
+            events=[HarnessEvent(type="subagent", subagent=update, raw=obj)]
+        )
 
     def _api_retry(self, obj: dict[str, Any]) -> ParseOutput:
         """`system/api_retry` — the CLI retrying a failed API call itself.

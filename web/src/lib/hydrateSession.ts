@@ -8,6 +8,7 @@ const DETAIL_ONLY_FIELDS = [
   "messages",
   "pending_queue",
   "pending_questions",
+  "subagents",
   "next_message_seq",
 ] as const;
 

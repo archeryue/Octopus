@@ -9,6 +9,8 @@ import type {
   CredentialInfo as ApiCredentialInfo,
   ScheduleInfo,
   SessionInfo as ApiSessionInfo,
+  SubagentDefinition as ApiSubagentDefinition,
+  SubagentRun as ApiSubagentRun,
   SessionStatus as ApiSessionStatus,
 } from "../api";
 
@@ -17,6 +19,8 @@ import type {
 // from FastAPI's openapi.json via `bun run generate:contracts`.
 export type SessionStatus = ApiSessionStatus;
 export type SessionInfo = ApiSessionInfo;
+export type SubagentRun = ApiSubagentRun;
+export type SubagentDefinition = ApiSubagentDefinition;
 export type Agent = ApiAgentRead;
 export type Application = ApiApplicationRead;
 export type BackendKind = ApiBackendKind;
@@ -84,6 +88,17 @@ function dropKey<T>(
   const next = { ...map };
   delete next[key];
   return next;
+}
+
+/** Drop keys whose value is null/undefined/"" so a partial update merges
+ * onto the previous one instead of blanking fields it simply didn't
+ * restate — the shape every sub-agent progress event arrives in. */
+function prune<T extends object>(value: T): Partial<T> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v !== null && v !== undefined && v !== "") out[k] = v;
+  }
+  return out as Partial<T>;
 }
 
 /** What the main pane shows. Octopus has no URL router, so this is the
@@ -192,6 +207,15 @@ interface SessionStore {
   streamingText: Record<string, string>;
   appendStreamingText: (sessionId: string, chunk: string) => void;
   clearStreamingText: (sessionId: string) => void;
+
+  // Sub-agents running inside the current turn, per session, keyed by the
+  // tool call that spawned them (native-subagents.md §4). Live UI state, like
+  // `streamingText`: the durable record is the Task / collab tool call in
+  // `messages`. Kept after completion so the card can show the summary, and
+  // re-seeded from the session snapshot on reconnect.
+  subagents: Record<string, Record<string, SubagentRun>>;
+  upsertSubagent: (sessionId: string, run: SubagentRun) => void;
+  setSubagents: (sessionId: string, runs: SubagentRun[]) => void;
 
   // Per-session queue of messages waiting for the current run to finish.
   // Mirrored from server `queued` / `dequeued` events; not persisted.
@@ -473,6 +497,33 @@ export const useSessionStore = create<SessionStore>((set) => ({
         ? s
         : { streamingText: dropKey(s.streamingText, sessionId) }
     ),
+
+  subagents: {},
+  upsertSubagent: (sessionId, run) =>
+    set((s) => {
+      const key = run.tool_use_id || run.task_id;
+      if (!key) return s;
+      const forSession = s.subagents[sessionId] || {};
+      const prev = forSession[key];
+      return {
+        subagents: {
+          ...s.subagents,
+          // Each update is partial by design — a status patch carries no
+          // name, a summary carries no counters — so the merge keeps
+          // whatever this one doesn't restate.
+          [sessionId]: { ...forSession, [key]: { ...prev, ...prune(run) } },
+        },
+      };
+    }),
+  setSubagents: (sessionId, runs) =>
+    set((s) => ({
+      subagents: {
+        ...s.subagents,
+        [sessionId]: Object.fromEntries(
+          runs.map((r) => [r.tool_use_id || r.task_id, r])
+        ),
+      },
+    })),
 
   schedules: [],
   setSchedules: (schedules) => set({ schedules }),

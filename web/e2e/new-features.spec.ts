@@ -2032,6 +2032,76 @@ test.describe("File attachments", () => {
 // Validates the load-bearing claim of this feature: bg state survives a
 // per-turn `claude --print` death and the agent gets a follow-up turn.
 
+test.describe("Native sub-agents @llm", () => {
+  test.setTimeout(240_000);
+
+  test("a Task run narrates itself in a card instead of a frozen tool call", async ({
+    page,
+    request,
+  }) => {
+    // Both CLIs can fan work out to a short-lived helper inside a turn.
+    // Before this card the only trace was a tool call that sat there for
+    // minutes (native-subagents.md §5).
+    const wd = fs.mkdtempSync(path.join(os.tmpdir(), "octopus-subagent-e2e-"));
+    const MARKER = "SUBAGENT-E2E-ZX9";
+    try {
+      fs.writeFileSync(path.join(wd, "notes.txt"), `alpha ${MARKER} gamma\n`);
+      fs.writeFileSync(path.join(wd, "other.txt"), "nothing here\n");
+
+      const sessRes = await request.post(`${API}/sessions`, {
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        data: { name: "Subagent E2E", working_dir: wd },
+      });
+      expect(sessRes.ok()).toBeTruthy();
+
+      await login(page);
+      await page
+        .locator(".session-item .session-name", { hasText: "Subagent E2E" })
+        .click();
+      await expect(page.locator(".chat-header .crumb-current")).toHaveText(
+        "Subagent E2E"
+      );
+
+      await page.locator(".chat-input-bar textarea").fill(
+        'Use the Task tool with subagent_type "Explore" to find which file ' +
+          `in this directory contains the token ${MARKER}. Report just the ` +
+          "filename."
+      );
+      await page.locator("button.btn-send").click();
+
+      // The card appears while the sub-agent is still working, names it,
+      // and says what it is doing.
+      const card = page.locator(".subagent-card").first();
+      await expect(card).toBeVisible({ timeout: 120_000 });
+      await expect(card.locator(".subagent-name")).toHaveText("Explore", {
+        timeout: 120_000,
+      });
+
+      // …and ends up completed, carrying the answer.
+      await expect(page.locator(".subagent-card.subagent-completed").first()).toBeVisible({
+        timeout: 180_000,
+      });
+      await expect(
+        page.locator(".subagent-card .subagent-summary").first()
+      ).toContainText("notes.txt", { timeout: 30_000 });
+
+      // Progress is live state, not history: nothing extra was written into
+      // the transcript beyond the tool call the model made.
+      const detail = await request.get(
+        `${API}/sessions/${(await sessRes.json()).id}`,
+        { headers: { Authorization: `Bearer ${TOKEN}` } }
+      );
+      const messages = (await detail.json()).messages as { type: string }[];
+      expect(messages.some((m) => m.type === "subagent")).toBe(false);
+    } finally {
+      fs.rmSync(wd, { recursive: true, force: true });
+    }
+  });
+});
+
 test.describe("Cross-turn bg tasks @llm", () => {
   test.setTimeout(180_000);
 

@@ -214,6 +214,7 @@ describe("sessionStore", () => {
       mcp_servers: ["ask", "bg"],
       tool_allow: "",
       tool_deny: "",
+    subagents: [],
       is_system: false,
       archived: false,
       created_at: "2026-01-01",

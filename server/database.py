@@ -35,6 +35,11 @@ CREATE TABLE IF NOT EXISTS agents (
                                             -- JSON array of built-in Octopus MCP server ids.
     tool_allow TEXT NOT NULL DEFAULT '',    -- newline-separated tool/MCP names; empty = allow all
     tool_deny  TEXT NOT NULL DEFAULT '',    -- newline-separated; deny takes precedence over allow
+    subagents TEXT NOT NULL DEFAULT '[]',   -- JSON list of sub-agent definitions this agent
+                                            -- brings with it: {name, description, prompt,
+                                            -- model?, tools?}. Rendered as Claude Code's
+                                            -- `--agents` JSON (native-subagents.md §6);
+                                            -- empty list = the CLI's built-ins only.
     is_system INTEGER NOT NULL DEFAULT 0,   -- 1 = the protected Default Agent (cannot be deleted)
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -380,6 +385,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique
 """
 
 
+def _load_json_list(raw: Any) -> list[Any]:
+    """A JSON-list column as a list, whatever shape the column is in.
+
+    Columns like `agents.subagents` are additive: rows that predate them read
+    back NULL, and a hand-edited row can hold anything. A decode failure
+    degrades to "none defined" rather than breaking the agent.
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
 class Database:
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -542,6 +563,16 @@ class Database:
                 await self._conn.execute(ddl)
             except Exception:
                 pass
+
+        # Agents that bring their own sub-agents (native-subagents.md §6).
+        # Additive; '[]' means "the CLI's built-in sub-agents only", which is
+        # every pre-existing row.
+        try:
+            await self._conn.execute(
+                "ALTER TABLE agents ADD COLUMN subagents TEXT NOT NULL DEFAULT '[]'"
+            )
+        except Exception:
+            pass
 
         # Applications that talk to agents (app-agent-access.md §3). One
         # nullable column naming the owning application; `origin` gains an
@@ -1916,7 +1947,7 @@ class Database:
     _AGENT_COLS = (
         "id, name, description, avatar, system_prompt, model, credential_id, "
         "mcp_servers, tool_allow, tool_deny, is_system, archived, "
-        "created_at, updated_at, backend"
+        "created_at, updated_at, backend, subagents"
     )
 
     @staticmethod
@@ -1941,10 +1972,11 @@ class Database:
             "created_at": row[12],
             "updated_at": row[13],
             "backend": row[14] or "claude-code",
+            "subagents": _load_json_list(row[15] if len(row) > 15 else None),
         }
         # Optional active-session count appended by load_agents / get_agent.
-        if len(row) > 15:
-            agent["active_session_count"] = row[15]
+        if len(row) > 16:
+            agent["active_session_count"] = row[16]
         return agent
 
     # Subquery counting live (non-archived) sessions for an agent — shared
@@ -1971,6 +2003,7 @@ class Database:
         tool_allow: str = "",
         tool_deny: str = "",
         is_system: bool = False,
+        subagents: list[dict[str, Any]] | None = None,
     ) -> None:
         await self._ensure_connected()
         servers_json = json.dumps(
@@ -1980,13 +2013,13 @@ class Database:
             "INSERT INTO agents "
             "(id, name, description, avatar, system_prompt, model, "
             " credential_id, backend, mcp_servers, tool_allow, tool_deny, "
-            " is_system, archived, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            " is_system, archived, created_at, updated_at, subagents) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
             (
                 agent_id, name, description, avatar, system_prompt, model,
                 credential_id, backend or "claude-code", servers_json,
                 tool_allow, tool_deny, int(bool(is_system)),
-                created_at, updated_at,
+                created_at, updated_at, json.dumps(subagents or []),
             ),
         )
         await self._conn.commit()
@@ -2049,6 +2082,7 @@ class Database:
         allowed = {
             "name", "description", "avatar", "system_prompt", "model",
             "credential_id", "backend", "mcp_servers", "tool_allow", "tool_deny",
+            "subagents",
             "archived",
         }
         # credential_id / model / avatar are nullable and may be cleared.
@@ -2059,7 +2093,7 @@ class Database:
                 continue
             if v is None and k not in nullable:
                 continue
-            if k == "mcp_servers":
+            if k in ("mcp_servers", "subagents"):
                 updates[k] = json.dumps(v if v is not None else [])
             elif k == "archived":
                 updates[k] = int(bool(v))

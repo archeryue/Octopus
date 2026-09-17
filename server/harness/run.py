@@ -167,6 +167,11 @@ class RunConfig:
     # Native-deep-research web leaf (native-deep-research.md §4): render a
     # scoped, web-enabled, read-only-ish turn (no destructive/fan-out tools).
     web_research: bool = False
+    # Sub-agents the owning agent brings with it (native-subagents.md §6).
+    # Rendered by the profile if it has a surface for them; ignored otherwise,
+    # so an agent that defines some still works on a harness that can't take
+    # them (the CLI's built-in sub-agents remain available either way).
+    subagents: list[dict[str, Any]] = field(default_factory=list)
 
 
 class HarnessRun:
@@ -237,6 +242,7 @@ class HarnessRun:
             credential=credential,
             memory_dir=self._config.memory_dir,
             web_research=self._config.web_research,
+            subagents=self._config.subagents,
         )
 
     def build_argv(

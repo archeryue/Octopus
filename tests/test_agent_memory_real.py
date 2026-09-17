@@ -123,9 +123,15 @@ async def test_claude_resume_survives_memory_override(tmp_path, monkeypatch):
     wd = str(tmp_path / "ws")
     os.makedirs(wd)
 
+    # The probe is a build label, NOT a "passphrase": asked to repeat a
+    # secret after a resume the model refuses on principle, and the refusal
+    # reads as a lost transcript when it is the opposite — it understood the
+    # question perfectly. The subject here is `--resume`, so the fact being
+    # recalled must be one nothing objects to repeating.
     run1 = get_harness("claude-code").create_run(RunConfig(**cfg))
     await run1.start(
-        "Remember for this conversation: my passphrase is ZEPHYR-7. Reply with just OK.",
+        "Remember for this conversation: the build label is ZEPHYR-7. "
+        "Reply with just OK.",
         wd, None, None,
     )
     try:
@@ -137,7 +143,8 @@ async def test_claude_resume_survives_memory_override(tmp_path, monkeypatch):
 
     run2 = get_harness("claude-code").create_run(RunConfig(**cfg))
     await run2.start(
-        "What passphrase did I tell you a moment ago? Reply with only the passphrase.",
+        "What build label did I give you a moment ago? Reply with only the "
+        "label.",
         wd, sid, None,
     )
     try:
