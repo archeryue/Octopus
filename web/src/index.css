@@ -485,11 +485,16 @@ body {
 
 /* The bottom inset is paid by whatever sits on the bottom edge, not by the
    layout, so the surface still extends under the home indicator instead of
-   leaving a dead strip of page background beneath it. */
+   leaving a dead strip of page background beneath it.
+
+   `max()`, not `+`: the home indicator's 34pt already clears the edge, and
+   adding the bar's own padding on top of it pushes the composer visibly up
+   the screen for no reason. */
 .chat-input-bar,
 .sidebar-account-bar {
-  padding-bottom: calc(
-    var(--bottom-bar-pad, 0.625rem) + env(safe-area-inset-bottom, 0px)
+  padding-bottom: max(
+    var(--bottom-bar-pad, 0.625rem),
+    env(safe-area-inset-bottom, 0px)
   );
 }
 

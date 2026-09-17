@@ -20,6 +20,7 @@ const OWNED_NAMES = new Set([
   "To Delete",
   "Chat Test",
   "Mobile Drawer",
+  "Mobile Viewport",
 ]);
 
 // Clean up only sessions created by this spec
@@ -289,6 +290,58 @@ test.describe("Responsive Layout", () => {
     await expect(page.locator(".chat-header .crumb-current")).toContainText(
       "Mobile Drawer"
     );
+  });
+
+  test("a stale visual viewport doesn't strand the composer above the bottom", async ({
+    page,
+    request,
+  }) => {
+    // iOS leaves the visual viewport reporting the keyboard-sized height
+    // after the keyboard has animated away. An app sized straight from it
+    // stops short of the bottom of the screen, which on a phone looks like
+    // the composer floating in a band of dead page (mobile.md §6).
+    const created = await request.post(API, {
+      headers: {
+        Authorization: `Bearer ${TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      data: { name: "Mobile Viewport", working_dir: "/tmp" },
+    });
+    expect(created.ok()).toBeTruthy();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      const vv = window.visualViewport;
+      if (vv) {
+        Object.defineProperty(vv, "height", {
+          configurable: true,
+          get: () => window.innerHeight - 90,
+        });
+      }
+    });
+    await page.goto("/");
+    await page.locator('input[type="password"]').fill(TOKEN);
+    await page.locator("button.btn-login").click();
+
+    await page.locator(".btn-menu").first().click();
+    await page.locator(".agent-item", { hasText: "Octo" }).click();
+    await page
+      .locator(".session-item", { hasText: "Mobile Viewport" })
+      .first()
+      .click();
+
+    const measured = await page.evaluate(() => {
+      const bar = document.querySelector(".chat-input-bar") as HTMLElement;
+      return {
+        innerHeight: window.innerHeight,
+        staleViewport: window.visualViewport?.height,
+        barBottom: Math.round(bar.getBoundingClientRect().bottom),
+      };
+    });
+    // The lie is in place…
+    expect(measured.staleViewport).toBe(measured.innerHeight - 90);
+    // …and the composer still sits on the bottom edge.
+    expect(measured.barBottom).toBeGreaterThanOrEqual(measured.innerHeight - 1);
   });
 
   test("nothing scrolls sideways, and no field is small enough to zoom iOS", async ({

@@ -98,9 +98,25 @@ The iOS status bar style changed from `black-translucent` to `default`.
 Translucent means iOS draws the clock and battery *over* the page in white,
 and Octopus's header is white — they disappeared.
 
-These compose with the existing visual-viewport hook (`--app-h` / `--app-top`,
-which tracks the keyboard): insets are hardware, the visual viewport is
-software, and both are needed.
+These compose with the visual-viewport hook (`--app-h` / `--app-top`, which
+tracks the keyboard): insets are hardware, the visual viewport is software,
+and both are needed.
+
+The hook does **not** simply size the app to the visual viewport, because that
+is only trustworthy while something is being typed into. After the keyboard
+animates away iOS can leave a stale, smaller height behind, and an app sized
+from it stops short of the bottom of the screen — a band of dead page under
+the composer. The rule is: nothing editable focused → the app is exactly
+`innerHeight` tall, whatever the visual viewport claims; editing → follow the
+visual viewport exactly. Focus and orientation changes re-measure a few times
+over the next 650ms (the resize that matters is the one at the *end* of the
+keyboard animation, which iOS doesn't reliably send), and a tap anywhere
+re-measures as a last resort for a keyboard dismissed while the field kept
+focus.
+
+The bottom inset uses `max()` rather than adding to the bar's own padding: 34pt
+of home indicator already clears the edge, and stacking both lifts the composer
+off the bottom for no reason.
 
 ## 7. Long strings
 
