@@ -208,63 +208,6 @@ test.describe("Scheduled Tasks UI @llm", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Interactive Input Hint
-// ---------------------------------------------------------------------------
-
-test.describe("Interactive Input Hint", () => {
-  test("shows waiting-hint when last assistant message ends with '?'", async ({
-    page,
-    request,
-  }) => {
-    await importSessionApi(request, "Waiting Hint Yes", [
-      { role: "user", type: "text", content: "Set me up" },
-      {
-        role: "assistant",
-        type: "text",
-        content: "Which database should we use?",
-      },
-    ]);
-
-    await login(page);
-    await page
-      .locator(".session-item .session-name", { hasText: "Waiting Hint Yes" })
-      .click();
-    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Waiting Hint Yes");
-
-    await expect(page.locator(".waiting-hint")).toBeVisible();
-    await expect(page.locator(".waiting-hint")).toContainText(
-      "waiting for your response"
-    );
-  });
-
-  test("hides waiting-hint when last assistant message is a statement", async ({
-    page,
-    request,
-  }) => {
-    await importSessionApi(request, "Waiting Hint No", [
-      { role: "user", type: "text", content: "Hi" },
-      {
-        role: "assistant",
-        type: "text",
-        content: "Hello! All systems are nominal.",
-      },
-    ]);
-
-    await login(page);
-    await page
-      .locator(".session-item .session-name", { hasText: "Waiting Hint No" })
-      .click();
-    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Waiting Hint No");
-
-    // Confirm the assistant message is rendered, then assert the hint is absent
-    await expect(page.locator(".msg-assistant .msg-content")).toContainText(
-      "All systems are nominal"
-    );
-    await expect(page.locator(".waiting-hint")).toHaveCount(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Virtualized chat (react-virtuoso)
 // ---------------------------------------------------------------------------
 

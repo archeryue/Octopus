@@ -209,17 +209,6 @@ export function ChatView({
   const canSteer =
     !!activeSession?.can_steer && pendingAttachments.length === 0;
 
-  const isWaitingForResponse = useMemo(() => {
-    if (isRunning || activeSession?.status !== "idle") return false;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m.role === "assistant" && m.type === "text") {
-        return /\?\s*$/.test((m.content ?? "").trim());
-      }
-    }
-    return false;
-  }, [messages, isRunning, activeSession?.status]);
-
   const renderMessage = useCallback(
     (_index: number, msg: Message) => {
       if (msg.type === "tool_approval_request") {
@@ -1388,12 +1377,6 @@ export function ChatView({
         increaseViewportBy={{ top: 400, bottom: 400 }}
         components={{ Footer: footer }}
       />
-
-      {isWaitingForResponse && (
-        <div className="waiting-hint shrink-0 px-4 py-1.5 text-center text-xs text-muted-foreground border-t border-border bg-muted/30">
-          {agentLabel} is waiting for your response
-        </div>
-      )}
 
       {activeSessionId && (
         <div className="research-card-wrap shrink-0 px-4 empty:hidden">
