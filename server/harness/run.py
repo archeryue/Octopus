@@ -20,7 +20,7 @@ import os
 import shutil
 import signal
 import uuid as uuid_module
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -198,6 +198,13 @@ class HarnessRun:
         # counter) is exactly the kind of thing that repeats — this is
         # random per frame, and we simply remember what we sent.
         self._initial_uuid: str | None = None
+        # Events that arrive with no turn in flight (native-subagents.md §7):
+        # an asynchronous sub-agent finishing, the follow-up turn the CLI
+        # wakes to report it, a native cron tick. Without a handler they are
+        # dropped, which is what the CLI's own "Async agent launched
+        # successfully" path used to look like from the UI: a card that never
+        # finished and an answer that never arrived.
+        self._idle_handler: Callable[[HarnessEvent], Awaitable[None]] | None = None
 
     @property
     def profile(self) -> RuntimeProfile:
@@ -498,13 +505,32 @@ class HarnessRun:
 
     # ------------------------------------------------------------------ readers
 
+    def set_idle_handler(
+        self, handler: "Callable[[HarnessEvent], Awaitable[None]] | None"
+    ) -> None:
+        """Where events go when no turn is in flight.
+
+        A held process keeps working after a turn ends — an async sub-agent
+        is still running, and the CLI wakes the agent to report it when it
+        lands. Those events belong to the session, not to the turn that
+        happened to be open, so the session manager takes them here.
+        """
+        self._idle_handler = handler
+
     async def _handle_line(self, line: str) -> None:
         obj = parse_json_line(line)
         if obj is None:
             return
         out = self._parser.parse(obj)
         for event in out.events:
-            self._emit(event)
+            if self._stream_closed and self._idle_handler is not None:
+                # Out of turn: hand it to the session rather than dropping it.
+                try:
+                    await self._idle_handler(event)
+                except Exception:
+                    logger.exception("idle event handler failed")
+            else:
+                self._emit(event)
         if out.end_of_stream:
             self._close_stream()
 

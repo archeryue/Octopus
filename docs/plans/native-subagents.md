@@ -114,22 +114,61 @@ there.
 Codex has no equivalent in `exec` (its `child_agents_md` feature is
 unreleased), so its sub-agents stay the built-in kind; §9.
 
-## 7. Cost
+## 7. Work that outlives its turn
+
+Claude Code decides on its own to run some sub-agents **asynchronously**. The
+tool returns `Async agent launched successfully` immediately, the parent turn
+ends, and the sub-agent keeps working inside the held process. When it lands,
+the CLI wakes the agent to report it — a whole turn's worth of text nobody
+asked for at that moment.
+
+Octopus used to drop every one of those events. `HarnessRun` closes its stream
+at the turn's `result`, and everything after that was discarded, so:
+
+* the card spun forever, because the sub-agent's completion never arrived;
+* **the answer never arrived either** — the agent's follow-up report went to
+  the floor;
+* and if the user happened to send the next message first, the async
+  sub-agent's events landed in *that* turn's stream instead, attributed to
+  whatever was open.
+
+So a held run now has an **idle handler**: events that arrive with no turn in
+flight go to the session rather than nowhere. They're handled exactly like
+in-turn events minus the turn machinery — persisted if they map to a message,
+broadcast either way.
+
+Session status deliberately stays `idle` through all of this: there is no
+`_active_task` to interrupt, and showing "running" would offer a stop button
+that stops nothing.
+
+The other half of the same problem: a sub-agent lives *inside* the CLI
+process, so when the idle reaper stops it (or a restart does), anything still
+marked running is over. Releasing a process closes out its runs — a card that
+keeps spinning after its process is gone is a lie.
+
+This is the same hole native cron ticks fall through, and the same fix covers
+them.
+
+## 8. Cost
 
 A sub-agent spends tokens on its own conversation, and `task_progress` reports
 them. The card shows the running total, and the turn's own `result` cost
 already includes the sub-agent's spend, so nothing about billing changes — it
 just stops being invisible.
 
-## 8. Testing
+## 9. Testing
 
 Parser snapshots for both harnesses (every event, including the anonymous
 `task_updated`), the session-manager path (broadcast-only, snapshot-carried,
-bounded), `--agents` argv rendering, the card's states in the UI, and a
-real-CLI test that drives an actual `Task` through the harness and asserts the
-normalized events came out.
+bounded), the out-of-turn path (§7: post-turn events persisted and broadcast,
+runs closed out when the process goes, an event for a deleted session
+ignored), `--agents` argv rendering, the card's states in the UI, and
+real-CLI tests that drive an actual `Task` through the harness, register a
+sub-agent an Octopus agent defined, and — the regression that prompted §7 —
+let an **asynchronous** sub-agent finish after its turn has ended, asserting
+both its completion and the agent's follow-up report survive.
 
-## 9. What this defers
+## 10. What this defers
 
 * **Custom sub-agent definitions for Codex** — no CLI surface for it in
   `exec` mode today (`child_agents_md` is unreleased). The Codex app-server

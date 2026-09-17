@@ -28,6 +28,7 @@ from .harness import (
     HarnessEvent,
     HarnessRun,
     RunConfig,
+    SubagentUpdate,
     get_harness,
 )
 from . import fork_helpers
@@ -1040,8 +1041,7 @@ class SessionManager:
                 await asyncio.wait_for(parent._backend.stop(), timeout=2.0)
             except Exception:
                 pass
-            parent._backend = None
-            parent._held_run_at = None
+            self._forget_backend(parent)
         parent._pending_queue.clear()
         parent._pending_questions.clear()
         self._cancel_all_question_timers(parent)
@@ -1241,8 +1241,7 @@ class SessionManager:
                 await asyncio.wait_for(old._backend.stop(), timeout=2.0)
             except Exception:
                 pass
-            old._backend = None
-            old._held_run_at = None
+            self._forget_backend(old)
         old._pending_queue.clear()
         old._pending_questions.clear()
         self._cancel_all_question_timers(old)
@@ -1366,8 +1365,7 @@ class SessionManager:
                     await asyncio.wait_for(session._backend.stop(), timeout=2.0)
                 except Exception:
                     pass
-                session._backend = None
-                session._held_run_at = None
+                self._forget_backend(session)
             session._pending_queue.clear()
             self._cancel_all_question_timers(session)
             self.sessions.pop(sid, None)
@@ -2034,8 +2032,7 @@ class SessionManager:
             # reference, but the session must not: an interrupted process is
             # being torn down, and with reuse a next turn that found it still
             # briefly alive would hand its prompt to a dying CLI.
-            session._backend = None
-            session._held_run_at = None
+            self._forget_backend(session)
             asyncio.create_task(self._safe_backend_interrupt(backend))
 
         inner = session._inner_task
@@ -2106,8 +2103,7 @@ class SessionManager:
                 await session._backend.stop()
             except Exception:
                 pass
-            session._backend = None
-            session._held_run_at = None
+            self._forget_backend(session)
         if session._lock.locked():
             session._lock.release()
         session.status = SessionStatus.idle
@@ -2192,8 +2188,7 @@ class SessionManager:
                 # neither the reaper nor shutdown can ever reach it. Let it go
                 # properly first.
                 stale = session._backend
-                session._backend = None
-                session._held_run_at = None
+                self._forget_backend(session)
                 try:
                     await asyncio.wait_for(stale.stop(), timeout=_HELD_STOP_TIMEOUT)
                 except (asyncio.TimeoutError, Exception):
@@ -2419,8 +2414,7 @@ class SessionManager:
                         logger.exception(
                             "backend.stop() failed cleanly for session %s", session.id
                         )
-                    session._backend = None
-                    session._held_run_at = None
+                    self._forget_backend(session)
 
             # Turn watchdog tripped (idle or overall cap): the backend was
             # stopped mid-turn. Surface a clear error and STOP — before the
@@ -2658,9 +2652,59 @@ class SessionManager:
         """Build the per-turn run for a session via its harness. Single seam
         the run loop calls (and tests monkeypatch); dispatches on
         `session.backend` through the registry — no kind branching here."""
-        return get_harness(session.backend).create_run(
+        run = get_harness(session.backend).create_run(
             self._run_config(session, agent, connectors)
         )
+        # A held process keeps working after a turn ends — an asynchronous
+        # sub-agent is still running, and the CLI wakes the agent to report it
+        # when it lands. Those events belong to the session
+        # (native-subagents.md §7).
+        run.set_idle_handler(
+            lambda event, sid=session.id: self._handle_idle_event(sid, event)
+        )
+        return run
+
+    async def _handle_idle_event(self, session_id: str, event: HarnessEvent) -> None:
+        """An event that arrived on a held process with no turn in flight.
+
+        The CLI can produce a turn's worth of work nobody asked for at that
+        moment: an async sub-agent finishing (`Async agent launched
+        successfully` returns immediately and the work continues), the
+        follow-up turn where the agent reports the result, a native cron tick.
+        Dropping those — what happened before — loses the answer outright and
+        leaves the sub-agent card spinning forever.
+
+        They are handled exactly like in-turn events, minus the turn
+        machinery: persisted if they map to a message, broadcast either way.
+        Session status is deliberately NOT flipped to `running`: no
+        `_active_task` exists to interrupt, and claiming otherwise would offer
+        the user a stop button that stops nothing.
+        """
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+
+        if event.type == "subagent" and event.subagent is not None:
+            self._record_subagent(session, event.subagent)
+        elif event.type == "session_started" and event.session_id:
+            if session.claude_session_id != event.session_id:
+                session.claude_session_id = event.session_id
+                if self.db:
+                    await self.db.update_session_field(
+                        session_id, claude_session_id=event.session_id
+                    )
+            return
+
+        msg_content = self._event_to_message_content(event)
+        msg_seq: int | None = None
+        if msg_content is not None:
+            msg_seq = await self._persist_message(session, msg_content)
+
+        ws_event = self._event_to_ws_message(session_id, event)
+        if ws_event is not None:
+            if msg_seq is not None:
+                ws_event["seq"] = msg_seq
+            await self._broadcast(ws_event)
 
     async def _try_steer(self, session: "Session", queued: QueuedPrompt) -> bool:
         """Offer a message to the running turn. True if it was accepted.
@@ -2765,8 +2809,7 @@ class SessionManager:
         stopped = 0
         for session in held[: max(0, excess)]:
             backend = session._backend
-            session._backend = None
-            session._held_run_at = None
+            self._forget_backend(session)
             if backend is None:
                 continue
             try:
@@ -2806,8 +2849,7 @@ class SessionManager:
         stopped = 0
         for session in doomed:
             backend = session._backend
-            session._backend = None
-            session._held_run_at = None
+            self._forget_backend(session)
             if backend is None:
                 continue
             try:
@@ -2848,8 +2890,7 @@ class SessionManager:
         stopped = 0
         for session in list(self.sessions.values()):
             backend = session._backend
-            session._backend = None
-            session._held_run_at = None
+            self._forget_backend(session)
             if backend is None:
                 continue
             try:
@@ -3505,6 +3546,31 @@ class SessionManager:
                 cost=event.cost,
             )
         return None
+
+    def _forget_backend(self, session: Session) -> None:
+        """Detach a session from its CLI process and close out what that
+        process was still doing.
+
+        Sub-agents live inside the process: when it goes, anything still
+        marked running is over, and saying so beats a card that spins for the
+        rest of the session (native-subagents.md §7).
+        """
+        session._backend = None
+        session._held_run_at = None
+        for key, run in list(session._subagents.items()):
+            if run.status == "running":
+                session._subagents[key] = SubagentUpdate(
+                    task_id=run.task_id,
+                    tool_use_id=run.tool_use_id,
+                    status="failed",
+                    name=run.name,
+                    description="interrupted — the CLI process ended",
+                    prompt=run.prompt,
+                    summary=run.summary,
+                    tokens=run.tokens,
+                    tool_uses=run.tool_uses,
+                    duration_ms=run.duration_ms,
+                )
 
     @staticmethod
     def _record_subagent(session: Session, update: Any) -> None:

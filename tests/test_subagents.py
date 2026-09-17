@@ -518,3 +518,149 @@ async def test_the_session_snapshot_carries_live_runs(client):
             "duration_ms": None,
         }
     ]
+
+
+# ------------------------------------------- work that outlives its own turn
+
+
+@pytest.mark.asyncio
+async def test_events_after_a_turn_reach_the_session(client):
+    """The CLI's async sub-agents are the reason this exists.
+
+    `Async agent launched successfully` returns immediately: the turn ends,
+    the sub-agent keeps working inside the held process, and when it lands the
+    CLI wakes the agent to report it. Those events used to be dropped — the
+    card spun forever and the answer never arrived (native-subagents.md §7).
+    """
+    from server.harness import HarnessEvent
+    from server.session_manager import session_manager
+
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    made = await client.post(
+        "/api/sessions",
+        json={"name": "Async", "working_dir": "/tmp", "agent_id": agents[0]["id"]},
+        headers=HEADERS,
+    )
+    sid = made.json()["id"]
+
+    broadcast: list[dict] = []
+    session_manager.on_broadcast("test", lambda m: _collect(broadcast, m))
+    try:
+        # The sub-agent finishes…
+        await session_manager._handle_idle_event(
+            sid,
+            HarnessEvent(
+                type="subagent",
+                subagent=SubagentUpdate(
+                    task_id="t1",
+                    tool_use_id="tu1",
+                    status="completed",
+                    name="general-purpose",
+                    summary="2 files",
+                ),
+            ),
+        )
+        # …and the agent reports it in a turn nobody asked for.
+        await session_manager._handle_idle_event(
+            sid, HarnessEvent(type="text", content="The background agent found 2 files.")
+        )
+    finally:
+        session_manager.remove_broadcast("test")
+
+    kinds = [m["type"] for m in broadcast]
+    assert "subagent" in kinds and "assistant_text" in kinds
+
+    # The report is persisted, so it's still there after a reload — unlike
+    # the progress that produced it.
+    detail = (await client.get(f"/api/sessions/{sid}", headers=HEADERS)).json()
+    assert any(
+        m["type"] == "text" and "background agent found 2 files" in (m["content"] or "")
+        for m in detail["messages"]
+    )
+    assert detail["subagents"][0]["status"] == "completed"
+
+
+async def _collect(sink: list[dict], message: dict) -> None:
+    sink.append(message)
+
+
+@pytest.mark.asyncio
+async def test_an_idle_event_for_an_unknown_session_is_dropped():
+    from server.harness import HarnessEvent
+    from server.session_manager import session_manager
+
+    # Deleted while its process was still finishing something.
+    await session_manager._handle_idle_event(
+        "gone", HarnessEvent(type="text", content="hello?")
+    )
+
+
+def test_losing_the_process_ends_its_sub_agents():
+    """A sub-agent lives inside the CLI process. When the reaper stops it, a
+    card that keeps spinning is a lie."""
+    from server.session_manager import SessionManager
+
+    mgr = SessionManager()
+    session = _session()
+    SessionManager._record_subagent(
+        session, SubagentUpdate(task_id="t1", tool_use_id="tu1", name="Explore")
+    )
+    SessionManager._record_subagent(
+        session,
+        SubagentUpdate(
+            task_id="t2", tool_use_id="tu2", status="completed", summary="done"
+        ),
+    )
+    session._held_run_at = 1.0
+
+    mgr._forget_backend(session)
+
+    assert session._backend is None and session._held_run_at is None
+    assert session._subagents["tu1"].status == "failed"
+    assert "interrupted" in session._subagents["tu1"].description
+    # A run that already finished keeps its result.
+    assert session._subagents["tu2"].status == "completed"
+    assert session._subagents["tu2"].summary == "done"
+
+
+@pytest.mark.asyncio
+async def test_the_run_hands_post_turn_events_to_the_idle_handler():
+    """Below the session layer: once a turn's stream is closed, further
+    events go to the handler instead of the floor."""
+    from server.harness import HarnessEvent
+    from server.harness.run import HarnessRun
+    from server.harness.registry import get_harness
+
+    run = get_harness("claude-code").create_run()
+    seen: list[HarnessEvent] = []
+
+    async def handler(event: HarnessEvent) -> None:
+        seen.append(event)
+
+    run.set_idle_handler(handler)
+
+    # An in-turn text lands on the stream…
+    await run._handle_line(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "in turn"}]},
+            }
+        )
+    )
+    assert seen == []
+    assert isinstance(run, HarnessRun)
+
+    # …the turn ends…
+    run._close_stream()
+
+    # …and what comes after belongs to the session.
+    await run._handle_line(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "after the turn"}]},
+            }
+        )
+    )
+    assert [e.content for e in seen] == ["after the turn"]

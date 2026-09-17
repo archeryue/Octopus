@@ -125,3 +125,52 @@ async def test_an_agents_own_subagent_is_registered(tmp_path):
     assert "octopus-probe" in names, names
     text = " ".join(e.content or "" for e in events if e.type == "text")
     assert "PERIWINKLE" in text
+
+
+@pytest.mark.asyncio
+async def test_an_async_subagent_finishes_after_its_turn_ends(tmp_path):
+    """The bug this whole out-of-turn path exists for.
+
+    Claude Code decides on its own to run some sub-agents asynchronously:
+    the tool returns "Async agent launched successfully", the turn ends, and
+    the work continues inside the held process. Everything after that —
+    the sub-agent's completion AND the turn the CLI wakes to report it —
+    used to be dropped on the floor (native-subagents.md §7).
+    """
+    (tmp_path / "a.txt").write_text("one\n")
+    (tmp_path / "b.txt").write_text("two\n")
+
+    run = get_harness("claude-code").create_run(RunConfig())
+    after_turn: list[HarnessEvent] = []
+    done = asyncio.Event()
+
+    async def idle(event: HarnessEvent) -> None:
+        after_turn.append(event)
+        # The report the agent makes once the sub-agent lands ends with its
+        # own result event.
+        if event.type == "result":
+            done.set()
+
+    run.set_idle_handler(idle)
+    await run.start(
+        "Launch an ASYNCHRONOUS background sub-agent (Task/Agent tool, "
+        "subagent_type general-purpose) that counts the .txt files in this "
+        "directory and reports the number. Do not wait for it — end your turn "
+        "immediately after launching it.",
+        str(tmp_path),
+    )
+    try:
+        await _drain(run, timeout=180.0)          # the turn itself
+        await asyncio.wait_for(done.wait(), timeout=180.0)  # what came after
+    finally:
+        await run.stop()
+
+    # The sub-agent completed, out of turn.
+    updates = [e.subagent for e in after_turn if e.type == "subagent"]
+    assert updates, [e.type for e in after_turn]
+    assert any(u.status == "completed" for u in updates)
+
+    # And the agent's follow-up report — the answer the user is waiting for —
+    # arrived as ordinary session text rather than vanishing.
+    text = " ".join(e.content or "" for e in after_turn if e.type == "text")
+    assert "2" in text, text
