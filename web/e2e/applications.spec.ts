@@ -186,7 +186,53 @@ test.describe("Applications @llm", () => {
     });
     expect(anonymous.status()).toBe(401);
 
+    // --- the app can talk to an agent -------------------------------------
+    // The whole point of the agent API (app-agent-access.md): a running app
+    // asks one of the user's own agents a question and gets prose back. Driven
+    // through the real server here, exactly as the page's `fetch` would.
+    const asked = await request.post(
+      `${SERVER_URL}/apps/${app.id}/agent/ask`,
+      {
+        headers,
+        data: {
+          message:
+            "What is the codeword in the document? Reply with the codeword " +
+            "alone and nothing else.",
+          context: "The agreed codeword is MARMALADE9981.",
+        },
+        timeout: 180_000,
+      }
+    );
+    expect(asked.ok()).toBeTruthy();
+    const answer = await asked.json();
+    expect(answer.reply).toContain("MARMALADE9981");
+
+    // It happened in a conversation owned by the app — and that conversation
+    // stays out of the sidebar's agent rails.
+    const threads = await (
+      await request.get(`${SERVER_URL}/apps/${app.id}/agent/conversations`, {
+        headers,
+      })
+    ).json();
+    expect(threads.map((t: { id: string }) => t.id)).toContain(
+      answer.conversation_id
+    );
+    // Unfold the owning agent so the assertion is about a rail that's
+    // actually rendering sessions: the build session shows, the app's own
+    // conversation doesn't.
+    await page.locator(".agent-item", { hasText: "Octo" }).click();
+    await expect(
+      page.locator('.session-item:has-text("Build: E2E Hello App")')
+    ).toBeVisible();
+    await expect(
+      page.locator(`.session-item:has-text("${threads[0].title}")`)
+    ).toHaveCount(0);
+
     // --- ask for a change from the app pane -------------------------------
+    // No composer bar under the page any more: it's the Iterate popover, which
+    // also carries the link into the build session.
+    await expect(page.locator(".application-compose")).toHaveCount(0);
+    await page.locator(".btn-application-iterate").click();
     await page
       .locator(".application-request-input")
       .fill("Change the h1 text to exactly GOODBYE OCTOPUS. Change nothing else.");
@@ -208,6 +254,7 @@ test.describe("Applications @llm", () => {
     expect(after.session_id).toBe(app.session_id);
 
     // --- the build session is a normal session ----------------------------
+    await page.locator(".btn-application-iterate").click();
     await page.locator(".btn-application-open-session").click();
     await expect(page.locator(".application-view")).toHaveCount(0);
     await expect(page.locator(".chat-header")).toContainText("Build: E2E Hello App");

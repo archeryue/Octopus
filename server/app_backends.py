@@ -25,7 +25,12 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
-from .applications import backend_script, data_dir_for, runtime_dir_for
+from .applications import (
+    app_scope_token,
+    backend_script,
+    data_dir_for,
+    runtime_dir_for,
+)
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -96,6 +101,12 @@ def script_env(app_id: str, app_dir: str, *, port: int | None = None) -> dict[st
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", "/tmp"),
         "LANG": os.environ.get("LANG", "C.UTF-8"),
+        # How a backend talks to the Octopus agents (app-agent-access.md §4).
+        # The token is scoped to this one application, so handing it to app
+        # code doesn't hand over Octopus; the URL is the loopback origin, not
+        # the tunnel, because the backend is on this machine.
+        "OCTOPUS_AGENT_API": f"http://127.0.0.1:{settings.port}/apps/{app_id}/agent",
+        "OCTOPUS_APP_TOKEN": app_scope_token(app_id),
     }
     if port is not None:
         env["PORT"] = str(port)

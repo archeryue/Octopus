@@ -14,23 +14,32 @@ Two routers live here:
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
+from typing import AsyncIterator
 
 import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
+from ..app_agent import AppAgentError, app_agent_manager
 from ..applications import (
     ApplicationError,
     ApplicationManager,
+    is_app_scope_token,
     resolve_within,
 )
 from ..app_backends import ABSENT, RUNNING, backend_supervisor
 from ..auth import verify_token
 from ..config import settings
 from ..models import (
+    AppAgentInfo,
+    AppAgentReply,
+    AppAgentTurnRequest,
+    AppConversation,
+    AppConversationDetail,
     ApplicationBackend,
     ApplicationBuildRequest,
     ApplicationCreate,
@@ -168,20 +177,30 @@ async def delete_application(
 # ------------------------------------------------------------ static serving
 
 
-def _authorized(request: Request) -> bool:
+def _authorized(request: Request, app_id: str) -> bool:
     """Bearer header, `?token=`, or the app cookie — see the module docstring
-    for why the last two exist."""
+    for why the last two exist.
+
+    Plus the application's own **scoped token** (`X-Octopus-App-Token`, or as
+    the bearer): the credential a backend script is given so it can reach the
+    agent API without ever holding the master token (app-agent-access.md §4).
+    It's checked against `app_id`, so app A's token opens nothing of app B's.
+    """
     expected = settings.auth_token
     auth = request.headers.get("authorization") or ""
-    if auth.lower().startswith("bearer ") and auth[7:].strip() == expected:
+    presented = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if presented and presented == expected:
         return True
     if request.query_params.get("token") == expected:
         return True
-    return request.cookies.get(APP_TOKEN_COOKIE) == expected
+    if request.cookies.get(APP_TOKEN_COOKIE) == expected:
+        return True
+    scoped = request.headers.get("x-octopus-app-token") or presented
+    return is_app_scope_token(app_id, scoped)
 
 
 async def _serve(request: Request, app_id: str, path: str) -> FileResponse:
-    if not _authorized(request):
+    if not _authorized(request, app_id):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
     try:
         row = await _get_manager().get_application(app_id)
@@ -255,7 +274,7 @@ async def proxy_application_api(request: Request, app_id: str, path: str):
     whether a file happens to share its path, so renaming a file silently
     changes routing.
     """
-    if not _authorized(request):
+    if not _authorized(request, app_id):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
     try:
         row = await _get_manager().get_application(app_id)
@@ -317,6 +336,140 @@ async def proxy_application_api(request: Request, app_id: str, path: str):
             if k.lower() not in _SKIP_RESPONSE_HEADERS
         },
         media_type=resp.headers.get("content-type"),
+    )
+
+
+# ------------------------------------------------------------- agent access
+#
+# An application talking to one of the user's agents (app-agent-access.md §2).
+# Mounted under the app's own path so the page reaches it at `agent/…`
+# relative to itself — no base URL to configure, no CORS — and reachable from
+# the app's backend with the scoped token in `OCTOPUS_APP_TOKEN`.
+#
+# These MUST stay above the `/apps/{app_id}/{path:path}` catch-all: FastAPI
+# matches in registration order, and the catch-all would otherwise swallow
+# them. `agent/` and `api/` are therefore reserved prefixes inside an app.
+
+
+async def _app_for_agent_api(request: Request, app_id: str) -> dict:
+    if not _authorized(request, app_id):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    try:
+        return await _get_manager().get_application(app_id)
+    except ApplicationError as e:
+        raise _http_error(e)
+
+
+def _agent_error(e: AppAgentError) -> HTTPException:
+    return HTTPException(e.status_code, e.message)
+
+
+@static_router.get(
+    "/apps/{app_id}/agent/agents", response_model=list[AppAgentInfo]
+)
+async def list_app_agents(request: Request, app_id: str):
+    """Who this app can address. Name is the address."""
+    await _app_for_agent_api(request, app_id)
+    try:
+        return await app_agent_manager.list_agents()
+    except AppAgentError as e:
+        raise _agent_error(e)
+
+
+@static_router.get(
+    "/apps/{app_id}/agent/conversations", response_model=list[AppConversation]
+)
+async def list_app_conversations(request: Request, app_id: str):
+    await _app_for_agent_api(request, app_id)
+    try:
+        return app_agent_manager.list_conversations(app_id)
+    except AppAgentError as e:
+        raise _agent_error(e)
+
+
+@static_router.get(
+    "/apps/{app_id}/agent/conversations/{conversation_id}",
+    response_model=AppConversationDetail,
+)
+async def get_app_conversation(
+    request: Request, app_id: str, conversation_id: str
+):
+    """One thread with its messages — what an app renders after a reload."""
+    await _app_for_agent_api(request, app_id)
+    try:
+        return await app_agent_manager.get_conversation(app_id, conversation_id)
+    except AppAgentError as e:
+        raise _agent_error(e)
+
+
+@static_router.delete(
+    "/apps/{app_id}/agent/conversations/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_app_conversation(
+    request: Request, app_id: str, conversation_id: str
+):
+    await _app_for_agent_api(request, app_id)
+    try:
+        await app_agent_manager.delete_conversation(app_id, conversation_id)
+    except AppAgentError as e:
+        raise _agent_error(e)
+
+
+@static_router.post("/apps/{app_id}/agent/ask", response_model=AppAgentReply)
+async def app_agent_ask(
+    request: Request, app_id: str, body: AppAgentTurnRequest
+):
+    """One question, one answer. The shape a backend script wants."""
+    row = await _app_for_agent_api(request, app_id)
+    try:
+        return await app_agent_manager.ask(row, **body.model_dump())
+    except AppAgentError as e:
+        raise _agent_error(e)
+
+
+def _sse(events) -> AsyncIterator[bytes]:
+    """Frame the manager's event dicts as Server-Sent Events.
+
+    The type goes in the SSE `event:` field *and* inside the JSON, so a client
+    can use `addEventListener("delta", …)` or a single `onmessage` handler —
+    both are normal, and picking one for the app would be picking wrong half
+    the time.
+    """
+
+    async def gen() -> AsyncIterator[bytes]:
+        async for event in events:
+            payload = json.dumps(event, ensure_ascii=False)
+            yield f"event: {event['type']}\ndata: {payload}\n\n".encode("utf-8")
+
+    return gen()
+
+
+@static_router.post("/apps/{app_id}/agent/chat", include_in_schema=False)
+async def app_agent_chat(
+    request: Request, app_id: str, body: AppAgentTurnRequest
+):
+    """The same turn as `ask`, streamed (`text/event-stream`).
+
+    Not in the schema: the response is a stream of events, which an OpenAPI
+    response model can't describe, and a lie in the spec is worse than a gap.
+    The event vocabulary is documented in app-agent-access.md §2 and in the
+    build prompt every application's agent reads.
+    """
+    row = await _app_for_agent_api(request, app_id)
+    try:
+        turn = await app_agent_manager.begin_turn(row, **body.model_dump())
+    except AppAgentError as e:
+        raise _agent_error(e)
+    return StreamingResponse(
+        _sse(app_agent_manager.stream_turn(turn)),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            # Nginx and friends buffer proxied responses by default, which
+            # turns a stream into one lump at the end.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

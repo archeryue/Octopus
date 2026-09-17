@@ -238,6 +238,84 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{app_id}/agent/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List App Agents
+         * @description Who this app can address. Name is the address.
+         */
+        get: operations["list_app_agents_apps__app_id__agent_agents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app_id}/agent/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List App Conversations */
+        get: operations["list_app_conversations_apps__app_id__agent_conversations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app_id}/agent/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get App Conversation
+         * @description One thread with its messages — what an app renders after a reload.
+         */
+        get: operations["get_app_conversation_apps__app_id__agent_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete App Conversation */
+        delete: operations["delete_app_conversation_apps__app_id__agent_conversations__conversation_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/apps/{app_id}/agent/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * App Agent Ask
+         * @description One question, one answer. The shape a backend script wants.
+         */
+        post: operations["app_agent_ask_apps__app_id__agent_ask_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{app_id}": {
         parameters: {
             query?: never;
@@ -1540,6 +1618,111 @@ export interface components {
             text?: string | null;
         };
         /**
+         * AppAgentInfo
+         * @description An agent as an application sees it: addressable by name, with nothing
+         *     about how it's wired up.
+         */
+        AppAgentInfo: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Avatar
+             * @default
+             */
+            avatar: string;
+            /**
+             * Is Default
+             * @default false
+             */
+            is_default: boolean;
+        };
+        /** AppAgentReply */
+        AppAgentReply: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Reply */
+            reply: string;
+            /** Cost */
+            cost?: number | null;
+        };
+        /**
+         * AppAgentTurnRequest
+         * @description One message from an application to an agent.
+         */
+        AppAgentTurnRequest: {
+            /** Message */
+            message: string;
+            /** Context */
+            context?: string | null;
+            /** Agent */
+            agent?: string | null;
+            /** Conversation Id */
+            conversation_id?: string | null;
+            /** Title */
+            title?: string | null;
+        };
+        /** AppConversation */
+        AppConversation: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Created At */
+            created_at: string;
+            /**
+             * Message Count
+             * @default 0
+             */
+            message_count: number;
+            /**
+             * Running
+             * @default false
+             */
+            running: boolean;
+        };
+        /** AppConversationDetail */
+        AppConversationDetail: {
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
+            /** Agent Id */
+            agent_id?: string | null;
+            /** Created At */
+            created_at: string;
+            /**
+             * Message Count
+             * @default 0
+             */
+            message_count: number;
+            /**
+             * Running
+             * @default false
+             */
+            running: boolean;
+            /**
+             * Messages
+             * @default []
+             */
+            messages: components["schemas"]["AppConversationMessage"][];
+        };
+        /** AppConversationMessage */
+        AppConversationMessage: {
+            /** Role */
+            role: string;
+            /** Text */
+            text?: string | null;
+            /** Seq */
+            seq: number;
+        };
+        /**
          * ApplicationBackend
          * @description Runtime state of an application's own server process.
          *
@@ -2241,6 +2424,8 @@ export interface components {
             parent_session_id?: string | null;
             /** Delegation Request */
             delegation_request?: string | null;
+            /** App Id */
+            app_id?: string | null;
             /**
              * Can Steer
              * @default false
@@ -2322,6 +2507,8 @@ export interface components {
             parent_session_id?: string | null;
             /** Delegation Request */
             delegation_request?: string | null;
+            /** App Id */
+            app_id?: string | null;
             /**
              * Can Steer
              * @default false
@@ -3116,6 +3303,165 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApplicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_app_agents_apps__app_id__agent_agents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppAgentInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_app_conversations_apps__app_id__agent_conversations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppConversation"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_app_conversation_apps__app_id__agent_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppConversationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_app_conversation_apps__app_id__agent_conversations__conversation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    app_agent_ask_apps__app_id__agent_ask_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AppAgentTurnRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppAgentReply"];
                 };
             };
             /** @description Validation Error */

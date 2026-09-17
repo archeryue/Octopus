@@ -233,6 +233,10 @@ class Session:
     # The original delegation prompt, kept verbatim for UI display on
     # delegation sessions. NULL elsewhere.
     delegation_request: str | None = None
+    # The application that owns this session — its build session, or a
+    # conversation the running app is holding with an agent (origin='app').
+    # NULL on every ordinary session. (app-agent-access.md §3)
+    app_id: str | None = None
     # Session tree-rewind / fork (session-rewind.md §4). All NULL/False
     # on non-fork sessions. fork_metadata / fork_revert_record hold raw JSON
     # strings (parsed lazily); fork_status drives crash recovery.
@@ -328,6 +332,7 @@ class SessionManager:
                 backend=row.get("backend") or "claude-code",
                 parent_session_id=row.get("parent_session_id"),
                 delegation_request=row.get("delegation_request"),
+                app_id=row.get("app_id"),
                 **_session_fork_kwargs(row),
             )
             session._message_count = await db.count_messages(session.id)
@@ -1098,6 +1103,7 @@ class SessionManager:
         backend: str = "claude-code",
         parent_session_id: str | None = None,
         delegation_request: str | None = None,
+        app_id: str | None = None,
     ) -> Session:
         """Create a conversation thread owned by `agent_id`.
 
@@ -1133,6 +1139,7 @@ class SessionManager:
             backend=backend,
             parent_session_id=parent_session_id,
             delegation_request=delegation_request,
+            app_id=app_id,
         )
         self.sessions[sid] = session
         if self.db:
@@ -1148,6 +1155,7 @@ class SessionManager:
                 backend=session.backend,
                 parent_session_id=session.parent_session_id,
                 delegation_request=session.delegation_request,
+                app_id=session.app_id,
             )
         return session
 

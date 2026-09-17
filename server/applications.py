@@ -21,6 +21,8 @@ application view or typed straight into the chat.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -54,6 +56,33 @@ class ApplicationError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+def app_scope_token(app_id: str) -> str:
+    """The credential an application's *backend* uses to reach Octopus.
+
+    Derived, not stored: ``HMAC-SHA256(auth_token, "app:<id>")``. It opens
+    exactly one application's ``/apps/<id>/…`` surface and nothing else, which
+    is what lets a backend hold a conversation with an agent without ever
+    seeing the master token — the promise ``script_env`` makes by refusing to
+    inherit the server's environment (application-backends.md §4).
+
+    Deriving it means there is no new secret to store, back up or leak, and
+    rotating ``OCTOPUS_AUTH_TOKEN`` rotates every app's token with it.
+    (app-agent-access.md §4)
+    """
+    return hmac.new(
+        settings.auth_token.encode("utf-8"),
+        f"app:{app_id}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def is_app_scope_token(app_id: str, candidate: str | None) -> bool:
+    """Constant-time check of a presented app token against `app_id`'s."""
+    if not candidate:
+        return False
+    return hmac.compare_digest(app_scope_token(app_id), candidate)
 
 
 def _now() -> str:
@@ -541,9 +570,25 @@ class ApplicationManager:
         self, app_id: str, *, keep_files: bool = False
     ) -> None:
         """Drop the row and (by default) the directory. The build session is
-        never deleted — sessions are history."""
+        never deleted — sessions are history.
+
+        The app's *conversations* are the exception (app-agent-access.md §3):
+        they belong to a program that no longer exists, they can't be reached
+        once its `/apps/{id}/` surface is gone, and leaving them would grow a
+        pile of threads nothing points at. Archiving doesn't touch them — a
+        restored app finds its history where it left it.
+        """
         db = self._require_db()
         row = await self.get_application(app_id)
+
+        from .app_agent import app_agent_manager
+
+        try:
+            await app_agent_manager.delete_conversations_for_app(app_id)
+        except Exception:
+            logger.exception(
+                "failed deleting agent conversations for application %s", app_id
+            )
 
         # Stop the backend FIRST. A running server outlives its application
         # otherwise: nothing points at it any more, so neither the reaper nor
@@ -773,6 +818,37 @@ class ApplicationManager:
             f"as a static file from this directory.\n"
             f"- No backend? Don't write the scripts. A static app stays "
             f"static.\n\n"
+            f"It can also TALK TO THE USER'S OWN AGENTS. If the app is about "
+            f"discussing, summarizing, explaining, drafting or deciding "
+            f"anything, use this rather than shipping an API key for some "
+            f"other model — there is no key to configure and the user's "
+            f"agents already have their tools and memory:\n"
+            f"- `POST agent/ask` (relative to the page) with JSON "
+            f"`{{message, context?, conversation_id?, agent?, title?}}` "
+            f"returns `{{conversation_id, reply}}`. `context` is the material "
+            f"— the article, the selection, the row — kept separate from the "
+            f"person's message.\n"
+            f"- `POST agent/chat` takes the same body and streams the answer "
+            f"back as Server-Sent Events: `conversation` (carries the id), "
+            f"`delta` (text as it is written), `message`, `tool`, then one "
+            f"`done` or `error`. Use it for anything chat-shaped; a reply "
+            f"that appears word by word is the difference between fast and "
+            f"broken.\n"
+            f"- Keep the `conversation_id` from the first reply and send it "
+            f"back with every later message — that is what makes it a "
+            f"conversation instead of a series of strangers. "
+            f"`GET agent/conversations` and "
+            f"`GET agent/conversations/<id>` restore the panel after a "
+            f"reload; `GET agent/agents` lists who can be addressed by name "
+            f"(omit `agent` to get this application's own).\n"
+            f"- From a backend script, the same API is at "
+            f"`$OCTOPUS_AGENT_API` with the header "
+            f"`X-Octopus-App-Token: $OCTOPUS_APP_TOKEN`.\n"
+            f"- `agent/` and `api/` are reserved prefixes: don't put files "
+            f"there.\n"
+            f"- The agent replies in prose and will not edit this app's code "
+            f"— that happens in this build session, not through the running "
+            f"app.\n\n"
             f"- Give it an icon: either `icon.svg` at the root (square, and "
             f"legible at 22px), or a `<link rel=\"icon\">` in "
             f"`{entrypoint}` pointing at a file in this directory. Octopus "
@@ -802,8 +878,10 @@ class ApplicationManager:
         return (
             f"Update the application in {app_dir}.\n\n"
             f"Requested change:\n{request}\n\n"
-            f"The same constraints still apply: static files only, `"
-            f"{entrypoint}` stays the entry point, no build step, no backend. "
+            f"The same contract still applies: `{entrypoint}` stays the entry "
+            f"point, the page is served as static files with no build step, "
+            f"and anything server-side goes through the `start.sh` / "
+            f"`install.sh` scripts (data in `$APP_DATA_DIR`). "
             f"When you're done, verify `{entrypoint}` still exists and briefly "
             f"say what changed."
         )

@@ -1,7 +1,10 @@
 /**
  * The backend readout. A backend that won't start is the failure mode this
- * feature has to answer for, so the panel's job is to say what state it's in
+ * feature has to answer for, so the control's job is to say what state it's in
  * and hand over the log — not to look tidy.
+ *
+ * It's a header control now (app-agent-access.md §7): the state word is
+ * always on screen, the detail and the log are behind it.
  */
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,11 +24,15 @@ describe("BackendPanel", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  it("shows the port and uptime while running", () => {
+  it("shows the state without being asked, and the port behind it", () => {
     const { container } = render(
       <BackendPanel backend={backend({ state: "running", port: 4321, uptime_s: 90 })} />
     );
-    expect(container.textContent).toContain("running");
+    // Always visible — it's the part you glance at.
+    expect(container.querySelector(".backend-state")?.textContent).toBe("running");
+    expect(container.textContent).not.toContain("port 4321");
+
+    fireEvent.click(container.querySelector(".backend-summary")!);
     expect(container.textContent).toContain("port 4321");
     expect(container.textContent).toContain("2m");
   });
@@ -36,8 +43,20 @@ describe("BackendPanel", () => {
         backend={backend({ state: "failed", error: "start.sh exited 7" })}
       />
     );
+    // A failure is visible at a glance; the reason is one click away.
     expect(container.textContent).toContain("failed");
+    fireEvent.click(container.querySelector(".backend-summary")!);
     expect(container.textContent).toContain("start.sh exited 7");
+  });
+
+  it("closes on Escape", () => {
+    const { container } = render(
+      <BackendPanel backend={backend({ state: "running", port: 1, log_tail: ["x"] })} />
+    );
+    fireEvent.click(container.querySelector(".backend-summary")!);
+    expect(container.querySelector(".backend-log")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(container.querySelector(".backend-log")).toBeNull();
   });
 
   it("keeps the log one click away rather than on screen", () => {

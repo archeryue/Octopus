@@ -5,7 +5,9 @@ import {
   IconArrowUp,
   IconExternalLink,
   IconMessage,
+  IconMessages,
   IconRefresh,
+  IconWand,
 } from "@tabler/icons-react";
 import {
   applicationUrl,
@@ -17,13 +19,27 @@ import { selectSession } from "../lib/selectSession";
 import { useSessionStore } from "../stores/sessionStore";
 import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { Popover } from "./ui/popover";
 import { AppIcon } from "./AppIcon";
 import { BackendPanel } from "./BackendPanel";
 
 /** The main pane for one application (applications.md §7) — the browser-tab
- * view. Renders the app's own document in an iframe once it's `ready`, shows
- * the build in progress before that, and carries a composer that turns a
- * sentence into another build turn in the same session. */
+ * view. Renders the app's own document in an iframe once it's `ready`, and
+ * shows the build in progress before that.
+ *
+ * Everything else lives in the header (app-agent-access.md §7). Asking for a
+ * change used to be a composer bar pinned under the page: ~60px of every app,
+ * forever, for something you do rarely. It's now the **Iterate** popover,
+ * which also carries the link into the build session, and the backend panel
+ * and the app's own agent conversations are header menus for the same reason.
+ * Below the header there is nothing but the app. */
 export function ApplicationView({
   onToggleSidebar,
 }: {
@@ -36,12 +52,27 @@ export function ApplicationView({
   const upsertApplication = useSessionStore((s) => s.upsertApplication);
   const removeApplication = useSessionStore((s) => s.removeApplication);
 
+  const sessions = useSessionStore((s) => s.sessions);
+
   const app = applications.find((a) => a.id === activeApplicationId) ?? null;
   const agent = agents.find((a) => a.id === app?.agent_id) ?? null;
+
+  // The threads the running app has opened with an agent (app-agent-access.md
+  // §3). They're hidden from the sidebar — an app that talks all day would
+  // bury the user's own sessions — so this is where "what is my app saying to
+  // my agent?" gets answered.
+  const conversations = useMemo(
+    () =>
+      sessions
+        .filter((s) => s.origin === "app" && s.app_id === app?.id)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+    [sessions, app?.id]
+  );
 
   const [request, setRequest] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [iterateOpen, setIterateOpen] = useState(false);
   // Bumped to force the iframe to re-navigate (a same-src assignment is a
   // no-op). Also bumped on every fresh `last_built_at`, so a finished rebuild
   // swaps in without the user reaching for reload.
@@ -115,6 +146,8 @@ export function ApplicationView({
     try {
       upsertApplication(await buildApplication(token, app.id, prompt));
       setRequest("");
+      // The status badge in this same header takes over from here.
+      setIterateOpen(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to start the build");
     } finally {
@@ -180,18 +213,100 @@ export function ApplicationView({
             >
               <IconArchive size={16} />
             </button>
-            {app.session_id && (
-              <Button
-                variant="outline"
-                size="sm"
-                className="btn-application-open-session"
-                onClick={openBuildSession}
-                title={`Open the build session${agent ? ` with ${agent.name}` : ""}`}
-              >
-                <IconMessage size={15} />
-                <span className="hidden sm:inline">Build session</span>
-              </Button>
+            {app.backend && <BackendPanel backend={app.backend} />}
+
+            {conversations.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className="btn-application-chats inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-gray-700 transition-colors hover:bg-gray-100 hover:text-gray-950"
+                    title="Conversations this app has had with an agent"
+                  >
+                    <IconMessages size={16} />
+                    <span className="font-mono text-[11px]">
+                      {conversations.length}
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-64">
+                  <DropdownMenuLabel>App ↔ agent conversations</DropdownMenuLabel>
+                  {conversations.slice(0, 12).map((c) => (
+                    <DropdownMenuItem
+                      key={c.id}
+                      className="application-chat-item"
+                      onClick={() => selectSession(c.id, c.agent_id ?? null)}
+                    >
+                      <span className="truncate">{c.name}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
+
+            <Popover
+              open={iterateOpen}
+              onClose={() => setIterateOpen(false)}
+              label={`Ask ${agent?.name ?? "the agent"} for a change`}
+              panelClassName="w-[320px]"
+              trigger={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="btn-application-iterate"
+                  onClick={() => setIterateOpen((v) => !v)}
+                  aria-expanded={iterateOpen}
+                  title={`Ask ${agent?.name ?? "the agent"} for a change`}
+                >
+                  <IconWand size={15} />
+                  <span className="hidden sm:inline">Iterate</span>
+                </Button>
+              }
+            >
+              {error && (
+                <div className="application-compose-error mb-2 rounded-lg border-[0.7px] border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+                  {error}
+                </div>
+              )}
+              <textarea
+                className="application-request-input w-full min-h-[72px] max-h-40 resize-none rounded-xl border-[0.7px] border-gray-400 bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/70 focus:ring-[3px] focus:ring-primary/10"
+                value={request}
+                onChange={(e) => setRequest(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    askForChanges();
+                  }
+                }}
+                autoFocus
+                rows={3}
+                placeholder={`Ask ${agent?.name || "the agent"} for a change — "add a dark mode toggle"`}
+              />
+              <div className="mt-2 flex items-center justify-between gap-2">
+                {app.session_id ? (
+                  <button
+                    className="btn-application-open-session inline-flex items-center gap-1.5 rounded-lg px-1.5 py-1 text-[12.5px] text-gray-700 transition-colors hover:text-primary"
+                    onClick={openBuildSession}
+                    title={`Open the build session${agent ? ` with ${agent.name}` : ""}`}
+                  >
+                    <IconMessage size={14} />
+                    Build session
+                  </button>
+                ) : (
+                  <span />
+                )}
+                <Button
+                  className="btn-application-request"
+                  size="sm"
+                  onClick={askForChanges}
+                  disabled={busy || !request.trim()}
+                  title="Send the change request"
+                  aria-label="Send the change request"
+                >
+                  <IconArrowUp size={15} />
+                  Send
+                </Button>
+              </div>
+            </Popover>
           </>
         }
       />
@@ -241,46 +356,13 @@ export function ApplicationView({
               {app.error || `${app.entrypoint} is missing.`}
             </p>
             <p className="text-xs text-muted-foreground">
-              Ask for a fix below — it runs in the same session.
+              Ask for a fix from <strong className="font-semibold">Iterate</strong>{" "}
+              up top — it runs in the same session.
             </p>
           </div>
         )}
       </div>
 
-      {app.backend && <BackendPanel backend={app.backend} />}
-
-      <div className="application-compose shrink-0 border-t border-border bg-background px-4 py-2">
-        {error && (
-          <div className="application-compose-error mb-2 rounded-lg border-[0.7px] border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
-            {error}
-          </div>
-        )}
-        <div className="flex items-end gap-2">
-          <textarea
-            className="application-request-input flex-1 min-h-9 max-h-32 resize-none rounded-xl border-[0.7px] border-gray-400 bg-card px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground outline-none transition-colors focus:border-primary/70 focus:ring-[3px] focus:ring-primary/10"
-            value={request}
-            onChange={(e) => setRequest(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                askForChanges();
-              }
-            }}
-            rows={1}
-            placeholder={`Ask ${agent?.name || "the agent"} for a change — "add a dark mode toggle"`}
-          />
-          <Button
-            className="btn-application-request"
-            size="icon"
-            onClick={askForChanges}
-            disabled={busy || !request.trim()}
-            title="Send the change request"
-            aria-label="Send the change request"
-          >
-            <IconArrowUp size={18} />
-          </Button>
-        </div>
-      </div>
     </div>
   );
 }

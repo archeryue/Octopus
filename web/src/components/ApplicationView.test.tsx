@@ -49,6 +49,12 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let cookieWrites: string[];
 let restoreCookie: (() => void) | null = null;
 
+/** Open the header's Iterate popover — where the change-request composer and
+ * the build-session link live now (app-agent-access.md §7). */
+function openIterate() {
+  fireEvent.click(document.querySelector(".btn-application-iterate")!);
+}
+
 function mount(app: Application) {
   useSessionStore.setState({
     token: "tok",
@@ -159,6 +165,7 @@ describe("ApplicationView", () => {
 
   it("a change request POSTs to the build route and clears the box", async () => {
     mount(application());
+    openIterate();
     const box = screen.getByPlaceholderText(/Ask Octo for a change/);
     fireEvent.change(box, { target: { value: "add a dark mode" } });
     fireEvent.click(screen.getByLabelText("Send the change request"));
@@ -175,11 +182,21 @@ describe("ApplicationView", () => {
         })
       ).toBe(true)
     );
-    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(""));
+    // The panel closes itself on success — the status badge in the same
+    // header takes over from there.
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText(/Ask Octo for a change/)).toBeNull()
+    );
+    openIterate();
+    expect(
+      (screen.getByPlaceholderText(/Ask Octo for a change/) as HTMLTextAreaElement)
+        .value
+    ).toBe("");
   });
 
   it("Enter sends, Shift+Enter doesn't", async () => {
     mount(application());
+    openIterate();
     const box = screen.getByPlaceholderText(/Ask Octo for a change/);
 
     fireEvent.change(box, { target: { value: "tweak it" } });
@@ -205,6 +222,7 @@ describe("ApplicationView", () => {
         })
     );
     mount(application());
+    openIterate();
     fireEvent.change(screen.getByPlaceholderText(/Ask Octo for a change/), {
       target: { value: "fix it" },
     });
@@ -214,6 +232,7 @@ describe("ApplicationView", () => {
 
   it("opening the build session switches the pane back to chat", async () => {
     mount(application());
+    openIterate();
     fireEvent.click(screen.getByTitle("Open the build session with Octo"));
     await waitFor(() =>
       expect(useSessionStore.getState().activeSessionId).toBe("s1")
@@ -249,6 +268,7 @@ describe("ApplicationView", () => {
     );
     useSessionStore.setState({ sessions: [] });
     mount(application());
+    openIterate();
     fireEvent.click(screen.getByTitle("Open the build session with Octo"));
 
     await waitFor(() =>
@@ -260,6 +280,68 @@ describe("ApplicationView", () => {
     expect(added.messages).toBeUndefined();
     expect(added.next_message_seq).toBeUndefined();
     expect(useSessionStore.getState().messages["s1"]).toHaveLength(1);
+  });
+
+  it("keeps the page free of chrome — no composer bar under the app", () => {
+    const { container } = mount(application());
+    // The bar used to cost ~60px of every application, forever, to serve
+    // something you do rarely.
+    expect(container.querySelector(".application-compose")).toBeNull();
+    expect(screen.queryByPlaceholderText(/Ask Octo for a change/)).toBeNull();
+    expect(container.querySelector(".btn-application-iterate")).toBeTruthy();
+  });
+
+  it("closes the iterate panel on Escape without sending", () => {
+    mount(application());
+    openIterate();
+    fireEvent.change(screen.getByPlaceholderText(/Ask Octo for a change/), {
+      target: { value: "half a thought" },
+    });
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByPlaceholderText(/Ask Octo for a change/)).toBeNull();
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes("/build"))
+    ).toBe(false);
+  });
+
+  it("lists the app's own agent conversations, and opens one", async () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: "c1",
+          name: "SmartReader — 09:12",
+          origin: "app",
+          app_id: "a1",
+          agent_id: "ag1",
+          created_at: "2026-01-02T00:00:00Z",
+        },
+        // Another app's thread, and an ordinary session: neither is ours.
+        { id: "c2", name: "Other app", origin: "app", app_id: "zz", agent_id: "ag1", created_at: "2026-01-03T00:00:00Z" },
+        { id: "s9", name: "my own chat", origin: "user", agent_id: "ag1", created_at: "2026-01-04T00:00:00Z" },
+      ] as unknown as ReturnType<typeof useSessionStore.getState>["sessions"],
+    });
+    const { container } = mount(application());
+
+    // Radix opens on pointerdown, which jsdom doesn't synthesize; the
+    // keyboard path is equivalent (and what a keyboard user takes).
+    fireEvent.keyDown(container.querySelector(".btn-application-chats")!, {
+      key: "Enter",
+    });
+    const items = await screen.findAllByText(/SmartReader — 09:12/);
+    expect(items).toHaveLength(1);
+    expect(screen.queryByText("Other app")).toBeNull();
+    expect(screen.queryByText("my own chat")).toBeNull();
+
+    fireEvent.click(items[0]);
+    await waitFor(() =>
+      expect(useSessionStore.getState().activeSessionId).toBe("c1")
+    );
+  });
+
+  it("offers no conversations menu before the app has had any", () => {
+    useSessionStore.setState({ sessions: [] });
+    const { container } = mount(application());
+    expect(container.querySelector(".btn-application-chats")).toBeNull();
   });
 
   it("degrades gracefully when the application is gone", () => {

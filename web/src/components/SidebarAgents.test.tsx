@@ -172,6 +172,40 @@ describe("SidebarAgents fold state", () => {
     expect(useSessionStore.getState().sidebarCollapsed).toBe(false);
   });
 
+  it("keeps an application's own agent conversations out of the rail", async () => {
+    // An app that chats with an agent all day would otherwise bury the
+    // user's sessions — and make the agent look permanently busy for work
+    // nobody started (app-agent-access.md §7).
+    fetchMock.mockImplementation(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/agents")) return jsonRes(AGENTS);
+      if (u.includes("/api/sessions"))
+        return jsonRes([
+          ...SESSIONS,
+          session({
+            id: "c1",
+            name: "SmartReader — 09:12",
+            origin: "app",
+            app_id: "app1",
+            status: "running",
+          }),
+        ]);
+      if (u.includes("/api/backends")) return jsonRes({ available: ["claude-code"] });
+      return jsonRes([]);
+    });
+    const { container } = mount();
+    await waitFor(() => expect(screen.getByText("Octo")).toBeTruthy());
+
+    // Not even as a running badge on the agent row.
+    expect(container.querySelector(".agent-running")).toBeNull();
+
+    fireEvent.click(screen.getByText("Octo").closest(".agent-item") as HTMLElement);
+    await waitFor(() =>
+      expect(container.querySelectorAll(".session-item")).toHaveLength(2)
+    );
+    expect(screen.queryByText("SmartReader — 09:12")).toBeNull();
+  });
+
   it("unfolds the agent whose new-session + was pressed", async () => {
     const { container } = mount();
     await waitFor(() => expect(screen.getByText("Researcher")).toBeTruthy());

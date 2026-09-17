@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- render "Octo asked: «…»" without rummaging through the first message.
     -- NULL on every non-delegation session.
     delegation_request TEXT,
+    -- The application this session belongs to, for the two kinds a running
+    -- app owns: its build session and the conversations the app itself holds
+    -- with an agent (origin='app'). It's what lets a route prove a
+    -- conversation belongs to the app asking for it, what the sidebar filters
+    -- on, and what deleting an application follows to take its threads with
+    -- it. NULL on every ordinary session. (app-agent-access.md §3)
+    app_id TEXT,
     -- Session tree-rewind / fork (session-rewind.md §4). A fork is a
     -- clone of a parent session up to (but not including) a chosen user
     -- message. All NULL/0 on non-fork sessions. forked_from_session_id is a
@@ -536,6 +543,14 @@ class Database:
             except Exception:
                 pass
 
+        # Applications that talk to agents (app-agent-access.md §3). One
+        # nullable column naming the owning application; `origin` gains an
+        # 'app' value, which is a caller change, not a DDL one.
+        try:
+            await self._conn.execute("ALTER TABLE sessions ADD COLUMN app_id TEXT")
+        except Exception:
+            pass
+
         # Session tree-rewind / fork (session-rewind.md §4). Six nullable
         # columns on sessions + two on messages, all additive. forked_from has
         # no FK action on purpose (dangling reference survives parent delete).
@@ -843,14 +858,15 @@ class Database:
         backend: str = "claude-code",
         parent_session_id: str | None = None,
         delegation_request: str | None = None,
+        app_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
         await self._conn.execute(
             "INSERT INTO sessions "
             "(id, name, working_dir, created_at, claude_session_id, "
             " credential_id, agent_id, origin, backend, "
-            " parent_session_id, delegation_request) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " parent_session_id, delegation_request, app_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 name,
@@ -863,6 +879,7 @@ class Database:
                 backend,
                 parent_session_id,
                 delegation_request,
+                app_id,
             ),
         )
         await self._conn.commit()
@@ -939,7 +956,7 @@ class Database:
             "credential_id, archived, agent_id, origin, backend, "
             "parent_session_id, delegation_request, forked_from_session_id, "
             "fork_after_seq, fork_needs_replay, fork_metadata, "
-            "fork_revert_record, fork_status FROM sessions"
+            "fork_revert_record, fork_status, app_id FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -965,6 +982,7 @@ class Database:
                 "fork_metadata": row[15],
                 "fork_revert_record": row[16],
                 "fork_status": row[17],
+                "app_id": row[18],
             }
             for row in rows
         ]

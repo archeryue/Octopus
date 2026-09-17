@@ -148,10 +148,14 @@ already has the context) plus the same closing verification requirement.
   name, a status dot, and a hover delete button. **+** opens the create pane.
 * `ApplicationCreate` — the main-pane form: name, description, agent picker,
   optional extra instructions. Submitting POSTs and selects the new app.
-* `ApplicationView` — the main-pane app host: header (icon, name, status,
-  reload / open-in-tab / open-build-session), the iframe, and a "request
-  changes" composer. While `building` it shows a spinner panel instead of the
-  frame; while `failed`, the error plus a retry composer.
+* `ApplicationView` — the main-pane app host: a header (icon, name, status,
+  reload / open-in-tab / archive, the backend readout, the app's own agent
+  conversations, and **Iterate**) over the iframe, and nothing else. Asking
+  for a change lives in the Iterate popover along with the build-session
+  link; it used to be a composer bar pinned under the page, which cost ~60px
+  of every application forever to serve something you do rarely
+  (app-agent-access.md §7). While `building` it shows a spinner panel instead
+  of the frame; while `failed`, the error and where to ask for a fix.
 
 Routing is store-level, not URL-level (Octopus has no router): `mainView` is
 `"chat" | "application" | "application-create"`, and picking a session flips

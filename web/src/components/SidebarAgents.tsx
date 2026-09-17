@@ -193,7 +193,14 @@ export function SidebarAgents() {
       <div className="agent-list-items flex flex-col">
         {agents.map((a) => {
           const isExpanded = expanded.has(a.id);
-          const agentSessions = sessions.filter((s) => s.agent_id === a.id);
+          // Conversations an application is holding with this agent are its
+          // business, not the rail's (app-agent-access.md §7): they're
+          // reachable from the app's own header, and an app that chats ten
+          // times an hour would otherwise bury the user's sessions — and
+          // make the agent look permanently busy for work nobody started.
+          const agentSessions = sessions.filter(
+            (s) => s.agent_id === a.id && s.origin !== "app"
+          );
           const visible = showDelegations
             ? agentSessions
             : agentSessions.filter((s) => s.origin !== "delegation");

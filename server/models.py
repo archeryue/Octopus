@@ -107,6 +107,11 @@ class SessionInfo(BaseModel):
     # (agent-collaboration.md §4.1)
     parent_session_id: str | None = None
     delegation_request: str | None = None
+    # Set on an application's build session and on the conversations the
+    # running app holds with an agent (origin='app'). The sidebar hides the
+    # latter — an app that talks to an agent all day must not bury the
+    # user's own sessions. (app-agent-access.md §3/§7)
+    app_id: str | None = None
     # Whether a message typed while this session is running can be handed to
     # the turn in flight instead of queueing behind it (inline-steering.md §8).
     # A backend capability, like `can_fork` below: only a harness that takes
@@ -625,3 +630,62 @@ class ApplicationBuildRequest(BaseModel):
     """Another build turn — "add a dark mode", "the header should stick"."""
 
     prompt: str = Field(min_length=1)
+
+
+# --------------------------------------------------------------------------
+# An application talking to an agent (app-agent-access.md §2). These are the
+# app's API, not the SPA's: the caller is a page in the iframe or the app's
+# own backend script.
+# --------------------------------------------------------------------------
+
+
+class AppAgentTurnRequest(BaseModel):
+    """One message from an application to an agent."""
+
+    message: str = Field(min_length=1)
+    # What the app wants the agent to look at — the article, the selection,
+    # the row. Kept separate from `message` so the agent can be told it's
+    # material rather than instructions.
+    context: str | None = None
+    # Agent name. Omitted → the application's own agent, so the common case
+    # needs no configuration.
+    agent: str | None = None
+    # Omitted → a new conversation; the id comes back in the response.
+    conversation_id: str | None = None
+    # Names a new conversation (ignored when continuing one).
+    title: str | None = None
+
+
+class AppAgentReply(BaseModel):
+    conversation_id: str
+    reply: str
+    cost: float | None = None
+
+
+class AppAgentInfo(BaseModel):
+    """An agent as an application sees it: addressable by name, with nothing
+    about how it's wired up."""
+
+    name: str
+    description: str = ""
+    avatar: str = ""
+    is_default: bool = False
+
+
+class AppConversationMessage(BaseModel):
+    role: str
+    text: str | None = None
+    seq: int
+
+
+class AppConversation(BaseModel):
+    id: str
+    title: str
+    agent_id: str | None = None
+    created_at: str
+    message_count: int = 0
+    running: bool = False
+
+
+class AppConversationDetail(AppConversation):
+    messages: list[AppConversationMessage] = []

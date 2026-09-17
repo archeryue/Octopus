@@ -24,6 +24,7 @@ from .database import Database
 from .notifiers import notifier_manager
 from .agent_manager import AgentManager
 from .app_backends import backend_supervisor
+from .app_agent import app_agent_manager
 from .applications import application_manager
 from .connector_manager import ConnectorManager
 from .routers import agents, applications as applications_router, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
@@ -105,6 +106,12 @@ async def lifespan(app: FastAPI):
     # Applications with a backend (application-backends.md): stop the ones
     # nobody is using, and never leave one running past our own exit.
     backend_supervisor.start_reaper()
+    # Applications talking to agents (app-agent-access.md). Also a bus
+    # subscriber: it turns a conversation session's events into the small
+    # vocabulary an app consumes.
+    app_agent_manager.bind(
+        session_mgr=session_manager, db=db, app_mgr=application_manager
+    )
 
     # Native deep research (native-deep-research.md). Tracks research jobs as
     # async tasks; injects the final report back into the session.
@@ -143,6 +150,7 @@ async def lifespan(app: FastAPI):
     await codex_login_manager.shutdown()
 
     await bg_task_manager.shutdown()
+    app_agent_manager.shutdown()
     application_manager.shutdown()
     delegation_manager.shutdown()
     await schedule_runner.shutdown()
