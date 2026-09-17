@@ -492,14 +492,27 @@ body {
    the screen for no reason. */
 .chat-input-bar,
 .sidebar-account-bar {
+  /* The home indicator's safe area is 34pt, but the indicator itself is a
+     ~5pt pill and only the bottom ~20pt intercepts swipes. Clearing the full
+     34 leaves the composer visibly floating; clearing the swipe zone is what
+     the rule is actually for. `max()` so a device without an indicator (inset
+     0) still gets the bar's own padding. */
   padding-bottom: max(
-    var(--bottom-bar-pad, 0.625rem),
-    env(safe-area-inset-bottom, 0px)
+    var(--bottom-bar-pad, 0.5rem),
+    calc(env(safe-area-inset-bottom, 0px) - 12px)
   );
 }
 
 .chat-input-bar {
   --bottom-bar-pad: 1.25rem;
+}
+
+@media (max-width: 768px) {
+  /* A phone has no room to spend 20px of screen under the composer. */
+  .chat-input-bar {
+    --bottom-bar-pad: 0.5rem;
+    padding-top: 0.25rem;
+  }
 }
 
 /* A tap should feel like a press, and should never be mistaken for a
