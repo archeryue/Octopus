@@ -45,7 +45,10 @@ export function shouldApplyWsEvent(
   return seq > b;
 }
 
-function handleWsMessage(data: Record<string, unknown>) {
+/** Exported for tests: the whole switch is a side-effecting reducer over the
+ * store, and the token cases are ones a regression would silently sign
+ * everyone out (or fail to). */
+export function handleWsMessage(data: Record<string, unknown>) {
   const {
     addMessage,
     updateSessionStatus,
@@ -84,6 +87,15 @@ function handleWsMessage(data: Record<string, unknown>) {
     case "assistant_delta":
       appendStreamingText(sessionId, data.content as string);
       break;
+
+    // The token was rotated from another tab (or this one). A new token means
+    // this client carries on; none means the rotation revoked other clients,
+    // so this one has to sign in again (token-rotation.md §3).
+    case "auth_token_rotated": {
+      const next = data.token as string | null | undefined;
+      getState().setToken(typeof next === "string" && next ? next : "");
+      break;
+    }
 
     case "assistant_text":
       addMessage(sessionId, {
@@ -519,8 +531,17 @@ export function useWebSocket() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         getState().setConnected(false);
+        // 4001 is the server saying this token is not accepted (it was
+        // rotated while we were away, or revoked). Reconnecting every three
+        // seconds behind a "Disconnected" badge tells the user nothing and
+        // can never recover — ask for the new token instead
+        // (token-rotation.md §3).
+        if (event.code === 4001) {
+          getState().setToken("");
+          return;
+        }
         reconnectTimer.current = setTimeout(connect, 3000);
       };
 

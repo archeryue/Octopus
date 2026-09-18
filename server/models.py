@@ -412,6 +412,22 @@ class AgentUpdate(BaseModel):
     subagents: list[SubagentDefinition] | None = None
 
 
+class TokenRotateRequest(BaseModel):
+    """Change the access token (token-rotation.md)."""
+
+    new_token: str = Field(min_length=1)
+    # True when the old token leaked: other signed-in clients are dropped to
+    # the login screen instead of being handed the new one.
+    revoke_other_clients: bool = False
+
+
+class TokenRotateResponse(BaseModel):
+    # Which env files were rewritten, and how many secrets were re-keyed per
+    # table — the UI says this back so a rotation is never a silent success.
+    env_files: list[str] = []
+    reencrypted: dict[str, int] = {}
+
+
 # Backend credentials
 
 

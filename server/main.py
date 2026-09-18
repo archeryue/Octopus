@@ -27,7 +27,7 @@ from .app_backends import backend_supervisor
 from .app_agent import app_agent_manager
 from .applications import application_manager
 from .connector_manager import ConnectorManager
-from .routers import agents, applications as applications_router, attachments, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
+from .routers import agents, applications as applications_router, attachments, auth as auth_router, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 
@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
     agents.set_manager(AgentManager(db))
     connectors.set_manager(ConnectorManager(db))
     applications_router.set_manager(application_manager)
+    auth_router.set_db(db)
     credentials.set_db(db)
     notifiers.set_db(db)
     notifier_manager.set_db(db)
@@ -202,6 +203,7 @@ app.include_router(research_router.router)
 app.include_router(questions.router)
 app.include_router(schedules.router)
 app.include_router(credentials.router)
+app.include_router(auth_router.router)
 app.include_router(connectors.router)
 app.include_router(connectors.agent_router)
 app.include_router(notifiers.router)

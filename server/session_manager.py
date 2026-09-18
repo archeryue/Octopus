@@ -2684,6 +2684,14 @@ class SessionManager:
         if session is None:
             return
 
+        # Token deltas are a live view of a block that is about to arrive
+        # complete. Out of turn there is nothing live to view — the turn's
+        # stream is closed and the UI has already painted its final text — so
+        # delivering them repaints a stale partial *after* the answer. Drop
+        # them; the completed `text` that follows is the real event.
+        if event.type == "text_delta":
+            return
+
         if event.type == "subagent" and event.subagent is not None:
             self._record_subagent(session, event.subagent)
         elif event.type == "session_started" and event.session_id:

@@ -698,3 +698,40 @@ def test_the_trail_is_bounded():
     (run,) = session._subagents.values()
     assert len(run.steps) == MAX_SUBAGENT_STEPS
     assert run.steps[-1] == f"step {MAX_SUBAGENT_STEPS + 24}"
+
+
+@pytest.mark.asyncio
+async def test_out_of_turn_token_deltas_are_dropped(client):
+    """A delta is a live view of a block that is about to arrive complete.
+
+    Out of turn there is nothing live to view: the UI has already painted the
+    final text, so delivering a trailing delta repaints a stale partial on top
+    of the answer. An e2e run caught this under load, where a short reply's
+    completed block beat its own deltas.
+    """
+    from server.harness import HarnessEvent
+    from server.session_manager import session_manager
+
+    agents = (await client.get("/api/agents", headers=HEADERS)).json()
+    made = await client.post(
+        "/api/sessions",
+        json={"name": "Deltas", "working_dir": "/tmp", "agent_id": agents[0]["id"]},
+        headers=HEADERS,
+    )
+    sid = made.json()["id"]
+
+    broadcast: list[dict] = []
+    session_manager.on_broadcast("delta-test", lambda m: _collect(broadcast, m))
+    try:
+        await session_manager._handle_idle_event(
+            sid, HarnessEvent(type="text_delta", content="stale part")
+        )
+        await session_manager._handle_idle_event(
+            sid, HarnessEvent(type="text", content="the real answer")
+        )
+    finally:
+        session_manager.remove_broadcast("delta-test")
+
+    kinds = [m["type"] for m in broadcast]
+    assert "assistant_delta" not in kinds
+    assert "assistant_text" in kinds

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   IconCheck,
   IconCopy,
+  IconKey,
   IconLogout,
   IconPlus,
   IconX,
@@ -123,6 +124,8 @@ export function SettingsDialog({ open, onOpenChange }: Props) {
                 </Button>
               </div>
             </div>
+            <RotateTokenPanel token={token} />
+
             <div className="settings-row pt-2 border-t border-border">
               <Button
                 className="btn-signout"
@@ -147,6 +150,111 @@ export function SettingsDialog({ open, onOpenChange }: Props) {
 // ---------------------------------------------------------------------------
 // Notifier panel — list / add / delete webhook targets
 // ---------------------------------------------------------------------------
+
+/** Change the access token (token-rotation.md).
+ *
+ * One button, because rotating is one operation: the server re-encrypts every
+ * stored secret with the new key, writes it to the env file it actually reads,
+ * swaps its own live setting and hands the new token to the clients already
+ * signed in — so this tab, and every other one, carries on without a
+ * re-login. No file to edit, no restart, nothing to keep in sync by hand.
+ */
+function RotateTokenPanel({ token }: { token: string }) {
+  const [next, setNext] = useState("");
+  const [revoke, setRevoke] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
+
+  const rotate = async () => {
+    if (!next.trim() || busy) return;
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      const res = await fetch(`${window.location.origin}/api/auth/rotate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          new_token: next.trim(),
+          revoke_other_clients: revoke,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || `HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as {
+        env_files: string[];
+        reencrypted: Record<string, number>;
+      };
+      const secrets = Object.values(body.reencrypted).reduce((a, b) => a + b, 0);
+      // The token this client uses arrives over the WebSocket, so by the time
+      // this renders the tab is already on the new one.
+      setDone(
+        `Rotated. ${secrets} stored secret${secrets === 1 ? "" : "s"} re-encrypted; ` +
+          `wrote ${body.env_files.join(", ")}.`
+      );
+      setNext("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Rotation failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="settings-row rotate-token space-y-1.5 border-t border-border pt-3">
+      <div className="settings-label text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Change token
+      </div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        Re-encrypts every stored credential with the new token and updates the
+        env file — no restart. Signed-in devices keep working unless you revoke
+        them.
+      </p>
+      <div className="flex items-center gap-2">
+        <Input
+          className="input-new-token flex-1 font-mono"
+          type="password"
+          autoComplete="new-password"
+          placeholder="New token (12+ characters)"
+          value={next}
+          onChange={(e) => setNext(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") rotate();
+          }}
+        />
+        <Button
+          className="btn-rotate-token"
+          variant="outline"
+          size="sm"
+          onClick={rotate}
+          disabled={busy || !next.trim()}
+        >
+          <IconKey size={16} />
+          {busy ? "Rotating…" : "Rotate"}
+        </Button>
+      </div>
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <input
+          type="checkbox"
+          className="input-revoke-others"
+          checked={revoke}
+          onChange={(e) => setRevoke(e.target.checked)}
+        />
+        Sign out other devices (use when the old token leaked)
+      </label>
+      {error && (
+        <p className="rotate-token-error text-xs text-destructive">{error}</p>
+      )}
+      {done && <p className="rotate-token-done text-xs text-success">{done}</p>}
+    </div>
+  );
+}
 
 function NotifierPanel({ token }: { token: string }) {
   const [items, setItems] = useState<NotifierInfo[]>([]);

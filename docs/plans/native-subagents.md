@@ -141,6 +141,12 @@ Session status deliberately stays `idle` through all of this: there is no
 `_active_task` to interrupt, and showing "running" would offer a stop button
 that stops nothing.
 
+Token deltas are the one thing the idle handler drops. A delta is a live view
+of a block that is about to arrive complete; out of turn there is nothing live
+to view, and a trailing delta repaints a stale partial on top of an answer the
+UI has already painted. (Found by an e2e run under load, where a short reply's
+completed block beat its own deltas.)
+
 The other half of the same problem: a sub-agent lives *inside* the CLI
 process, so when the idle reaper stops it (or a restart does), anything still
 marked running is over. Releasing a process closes out its runs — a card that
