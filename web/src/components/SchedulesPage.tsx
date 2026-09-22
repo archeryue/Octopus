@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from "react";
 import { IconArrowRight, IconClock, IconTrash } from "@tabler/icons-react";
 import { useSessionStore, type Agent, type Schedule } from "../stores/sessionStore";
+import { refreshSchedules } from "../lib/refreshSchedules";
 import { selectSession } from "../lib/selectSession";
 import { PageHeader } from "./PageHeader";
 
@@ -55,7 +56,6 @@ export function SchedulesPage({
   const token = useSessionStore((s) => s.token);
   const agents = useSessionStore((s) => s.agents);
   const schedules = useSessionStore((s) => s.schedules);
-  const setSchedules = useSessionStore((s) => s.setSchedules);
   const showChat = useSessionStore((s) => s.showChat);
 
   const headers = {
@@ -63,12 +63,9 @@ export function SchedulesPage({
     "Content-Type": "application/json",
   };
 
-  const fetchSchedules = useCallback(async () => {
-    const resp = await fetch(`${API}/api/schedules`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (resp.ok) setSchedules(await resp.json());
-  }, [token, setSchedules]);
+  // Shared with the WebSocket `schedules_changed` handler, so a schedule an
+  // agent sets for itself shows up here without a reload.
+  const fetchSchedules = useCallback(() => refreshSchedules(), []);
 
   useEffect(() => {
     fetchSchedules();

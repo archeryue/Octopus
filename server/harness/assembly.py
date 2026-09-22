@@ -34,6 +34,9 @@ _BUILTIN_MODULES = {
     # Native deep research (native-deep-research.md §7). Thin shim to the
     # /api/sessions/{sid}/research routes in front of ResearchManager.
     "research": "server.mcp_servers.research",
+    # The agent's own schedules (schedule-tool.md §4). Thin shim to the
+    # session-scoped /api/sessions/{sid}/schedules routes.
+    "schedule": "server.mcp_servers.schedule",
 }
 
 
@@ -84,6 +87,11 @@ def select_mcp_servers(
         "research": {
             "command": sys.executable,
             "args": ["-m", _BUILTIN_MODULES["research"]],
+            "env": dict(callback_env),
+        },
+        "schedule": {
+            "command": sys.executable,
+            "args": ["-m", _BUILTIN_MODULES["schedule"]],
             "env": dict(callback_env),
         },
     }

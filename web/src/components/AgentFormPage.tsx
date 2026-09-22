@@ -14,7 +14,7 @@ import { Label } from "./ui/label";
 const API = `${window.location.origin}/api/agents`;
 
 /** Built-in MCP servers every agent gets unless told otherwise. */
-const BUILTIN_MCP = ["ask", "bg", "ask_agent", "research"] as const;
+const BUILTIN_MCP = ["ask", "bg", "ask_agent", "research", "schedule"] as const;
 
 type Tab = "archived" | "create";
 

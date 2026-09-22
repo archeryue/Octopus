@@ -4,6 +4,7 @@ import {
   hydrateSession,
   sessionInfoFromDetail,
 } from "../lib/hydrateSession";
+import { refreshSchedules } from "../lib/refreshSchedules";
 import {
   useSessionStore,
   type Application,
@@ -86,6 +87,13 @@ export function handleWsMessage(data: Record<string, unknown>) {
     // the completed block lands, so there's nothing to clear here.
     case "assistant_delta":
       appendStreamingText(sessionId, data.content as string);
+      break;
+
+    // A schedule was created, changed or deleted — by this browser, another
+    // tab, or an agent using its own schedule tool (schedule-tool.md §6).
+    // The payload says only that the list moved; we refetch it.
+    case "schedules_changed":
+      void refreshSchedules();
       break;
 
     // The token was rotated from another tab (or this one). A new token means

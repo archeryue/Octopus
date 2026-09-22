@@ -8,14 +8,18 @@ import pytest
 from server import schedule_ai
 from server.schedule_ai import (
     ScheduleParseError,
+    build_explicit_schedule,
     derive_name,
+    describe_cron,
     extract_json,
     format_interval,
+    local_timezone,
     normalize_timezone,
     parse_interval_token,
     parse_rigid,
     parse_schedule_text,
     recurrence_label_for,
+    resolve_timezone,
     validate_parsed,
 )
 
@@ -310,3 +314,165 @@ async def test_parse_schedule_text_no_harness_no_runner_raises():
     explicit error, not a silent fallback to some hardcoded CLI."""
     with pytest.raises(ScheduleParseError):
         await parse_schedule_text("do something clever sometime")
+
+
+# --- explicit (structured) recurrence: the agent-facing path ---------------- #
+#
+# `build_explicit_schedule` is what the schedule MCP tool lands in
+# (schedule-tool.md §3): no AI, the caller states the recurrence outright.
+
+
+def test_local_timezone_is_a_real_zone():
+    """Whatever the host is set to, the answer has to load as a zone — the
+    default for every agent-created cron depends on it."""
+    from zoneinfo import ZoneInfo
+
+    ZoneInfo(local_timezone())
+
+
+def test_local_timezone_prefers_tz_env(monkeypatch):
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    assert local_timezone() == "Asia/Shanghai"
+
+
+def test_local_timezone_ignores_a_bogus_tz_env(monkeypatch):
+    """A nonsense TZ falls through to the next source rather than crashing
+    every schedule creation on the box."""
+    monkeypatch.setenv("TZ", "Mars/Olympus_Mons")
+    from zoneinfo import ZoneInfo
+
+    ZoneInfo(local_timezone())
+
+
+def test_resolve_timezone_rejects_an_unknown_name():
+    """Unlike the AI path, an explicitly-passed zone is never silently
+    swapped for UTC — that would move every fire without saying so."""
+    with pytest.raises(ScheduleParseError) as e:
+        resolve_timezone("PST")
+    assert "IANA" in str(e.value)
+
+
+def test_resolve_timezone_defaults_to_the_host():
+    assert resolve_timezone(None) == local_timezone()
+    assert resolve_timezone("  ") == local_timezone()
+
+
+@pytest.mark.parametrize(
+    "cron,expected",
+    [
+        ("0 9 * * *", "Every day at 09:00"),
+        ("30 18 * * 1", "Every Mon at 18:30"),
+        ("0 9 * * 1-5", "Weekdays at 09:00"),
+        ("5 4 * * 0,6", "Weekends at 04:05"),
+        ("*/15 * * * *", "Every 15 minutes"),
+        ("0 */2 * * *", "Every 2 hours"),
+        ("0 9 1 * *", "Monthly on day 1 at 09:00"),
+    ],
+)
+def test_describe_cron_common_shapes(cron, expected):
+    assert describe_cron(cron) == expected
+
+
+@pytest.mark.parametrize("cron", ["0 9 1 * 1", "0 9 * 3 *", "0 9 * * MON", "nonsense"])
+def test_describe_cron_declines_what_it_would_paraphrase_badly(cron):
+    """None, not a wrong sentence: the caller falls back to printing the
+    expression itself."""
+    assert describe_cron(cron) is None
+
+
+def test_build_explicit_requires_exactly_one_recurrence():
+    with pytest.raises(ScheduleParseError) as e:
+        build_explicit_schedule(prompt="x")
+    assert "exactly one" in str(e.value)
+    with pytest.raises(ScheduleParseError) as e:
+        build_explicit_schedule(prompt="x", cron="0 9 * * *", interval_seconds=300)
+    assert "cron" in str(e.value) and "interval_seconds" in str(e.value)
+
+
+def test_build_explicit_requires_a_prompt():
+    with pytest.raises(ScheduleParseError):
+        build_explicit_schedule(prompt="   ", interval_seconds=300)
+
+
+def test_build_explicit_interval():
+    p = build_explicit_schedule(prompt="check the build", interval_seconds=1800)
+    assert (p.interval_seconds, p.cron, p.run_at) == (1800, None, None)
+    assert p.recurrence_label == "Every 30m"
+    assert p.name == "check the build"
+    # An interval has no clock time, so it carries no timezone.
+    assert p.timezone is None
+
+
+def test_build_explicit_interval_floor():
+    with pytest.raises(ScheduleParseError) as e:
+        build_explicit_schedule(prompt="x", interval_seconds=30)
+    assert "60" in str(e.value)
+
+
+def test_build_explicit_cron_keeps_the_expression_and_labels_it():
+    p = build_explicit_schedule(
+        prompt="summarize the week",
+        name="Weekly wrap",
+        cron="0 17 * * 5",
+        tz="Asia/Shanghai",
+    )
+    assert p.cron == "0 17 * * 5"
+    assert p.timezone == "Asia/Shanghai"
+    assert p.recurrence_label == "Every Fri at 17:00"
+    assert p.name == "Weekly wrap"
+
+
+def test_build_explicit_cron_must_have_five_fields():
+    with pytest.raises(ScheduleParseError) as e:
+        build_explicit_schedule(prompt="x", cron="0 9 * *")
+    assert "5-field" in str(e.value)
+
+
+def test_build_explicit_cron_must_be_valid():
+    with pytest.raises(ScheduleParseError):
+        build_explicit_schedule(prompt="x", cron="99 99 * * *")
+
+
+def test_build_explicit_run_at_attaches_the_zone_and_must_be_future():
+    from datetime import datetime, timedelta, timezone as dt_tz
+
+    soon = datetime.now(dt_tz.utc) + timedelta(hours=3)
+    p = build_explicit_schedule(
+        prompt="ping me", run_at=soon.isoformat(), tz="America/Los_Angeles"
+    )
+    assert p.run_at is not None and p.cron is None and p.interval_seconds is None
+    assert p.recurrence_label.startswith("Once on ")
+
+    past = datetime.now(dt_tz.utc) - timedelta(minutes=1)
+    with pytest.raises(ScheduleParseError) as e:
+        build_explicit_schedule(prompt="ping me", run_at=past.isoformat())
+    assert "past" in str(e.value)
+
+
+def test_build_explicit_run_at_naive_is_read_in_the_schedule_zone():
+    """A wall-clock time with no offset means that time *there* — the whole
+    point of carrying a zone."""
+    from datetime import datetime, timedelta
+
+    from zoneinfo import ZoneInfo
+
+    local = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)
+    p = build_explicit_schedule(
+        prompt="ping", run_at=local.replace(tzinfo=None).isoformat(), tz="Asia/Shanghai"
+    )
+    assert datetime.fromisoformat(p.run_at).utcoffset() == local.utcoffset()
+
+
+def test_build_explicit_run_at_rejects_nonsense():
+    with pytest.raises(ScheduleParseError) as e:
+        build_explicit_schedule(prompt="x", run_at="tomorrow afternoon")
+    assert "ISO" in str(e.value)
+
+
+def test_build_explicit_can_skip_the_future_check_for_a_stored_value():
+    """Re-reading an existing one-time schedule (a timezone edit, say) must
+    not fail on the value it already has."""
+    p = build_explicit_schedule(
+        prompt="x", run_at="2020-01-01T09:00", require_future=False
+    )
+    assert p.run_at.startswith("2020-01-01T09:00")

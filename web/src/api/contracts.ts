@@ -981,6 +981,47 @@ export interface paths {
         patch: operations["update_schedule_api_schedules__schedule_id__patch"];
         trace?: never;
     };
+    "/api/sessions/{session_id}/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Session Schedules */
+        get: operations["list_session_schedules_api_sessions__session_id__schedules_get"];
+        put?: never;
+        /**
+         * Create Session Schedule
+         * @description Create a schedule for this session's agent, with the recurrence stated
+         *     outright (no AI parse). `in_session` decides where the fires land: this
+         *     conversation, or a throwaway session per fire.
+         */
+        post: operations["create_session_schedule_api_sessions__session_id__schedules_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/sessions/{session_id}/schedules/{schedule_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Session Schedule */
+        delete: operations["delete_session_schedule_api_sessions__session_id__schedules__schedule_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Session Schedule */
+        patch: operations["update_session_schedule_api_sessions__session_id__schedules__schedule_id__patch"];
+        trace?: never;
+    };
     "/api/credentials": {
         parameters: {
             query?: never;
@@ -1132,6 +1173,31 @@ export interface paths {
         put?: never;
         /** Codex Login Cancel */
         post: operations["codex_login_cancel_api_credentials_codex_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate Token
+         * @description Change the access token everywhere it lives.
+         *
+         *     Authenticated with the **old** token — which is exactly who is allowed to
+         *     do this — and, unless `revoke_other_clients` is set, the new token is
+         *     broadcast to clients already holding the old one so open tabs carry on
+         *     without a re-login (§3).
+         */
+        post: operations["rotate_token_api_auth_rotate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1578,6 +1644,35 @@ export interface components {
              * @default 0
              */
             active_session_count: number;
+        };
+        /**
+         * AgentScheduleRequest
+         * @description A schedule an agent sets for itself (schedule-tool.md §3).
+         *
+         *     Recurrence is stated outright — exactly one of `cron` (+`timezone`),
+         *     `interval_seconds`, or `run_at` (ISO datetime, fires once). Bounds are
+         *     checked in `schedule_ai.build_explicit_schedule` rather than here, so the
+         *     caller gets one sentence explaining what to pass instead of a pydantic
+         *     constraint dump.
+         */
+        AgentScheduleRequest: {
+            /** Prompt */
+            prompt: string;
+            /** Name */
+            name?: string | null;
+            /** Cron */
+            cron?: string | null;
+            /** Interval Seconds */
+            interval_seconds?: number | null;
+            /** Run At */
+            run_at?: string | null;
+            /** Timezone */
+            timezone?: string | null;
+            /**
+             * In Session
+             * @default true
+             */
+            in_session: boolean;
         };
         /** AgentUpdate */
         AgentUpdate: {
@@ -2710,6 +2805,34 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
+        /**
+         * TokenRotateRequest
+         * @description Change the access token (token-rotation.md).
+         */
+        TokenRotateRequest: {
+            /** New Token */
+            new_token: string;
+            /**
+             * Revoke Other Clients
+             * @default false
+             */
+            revoke_other_clients: boolean;
+        };
+        /** TokenRotateResponse */
+        TokenRotateResponse: {
+            /**
+             * Env Files
+             * @default []
+             */
+            env_files: string[];
+            /**
+             * Reencrypted
+             * @default {}
+             */
+            reencrypted: {
+                [key: string]: number;
+            };
+        };
         /** UpdateConnectorRequest */
         UpdateConnectorRequest: {
             /** Label */
@@ -2735,7 +2858,13 @@ export interface components {
             /** Enabled */
             enabled?: boolean | null;
         };
-        /** UpdateScheduleRequest */
+        /**
+         * UpdateScheduleRequest
+         * @description A change to an existing schedule. Recurrence fields are mutually
+         *     exclusive — setting one clears the other two (a schedule has exactly one
+         *     recurrence), and `timezone` alone re-reads the existing cron in the new
+         *     zone.
+         */
         UpdateScheduleRequest: {
             /** Name */
             name?: string | null;
@@ -2743,6 +2872,12 @@ export interface components {
             prompt?: string | null;
             /** Interval Seconds */
             interval_seconds?: number | null;
+            /** Cron */
+            cron?: string | null;
+            /** Run At */
+            run_at?: string | null;
+            /** Timezone */
+            timezone?: string | null;
             /** Enabled */
             enabled?: boolean | null;
         };
@@ -4886,6 +5021,138 @@ export interface operations {
             };
         };
     };
+    list_session_schedules_api_sessions__session_id__schedules_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_session_schedule_api_sessions__session_id__schedules_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentScheduleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_session_schedule_api_sessions__session_id__schedules__schedule_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_session_schedule_api_sessions__session_id__schedules__schedule_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                schedule_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateScheduleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_credentials_api_credentials_get: {
         parameters: {
             query?: never;
@@ -5183,6 +5450,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rotate_token_api_auth_rotate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TokenRotateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TokenRotateResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

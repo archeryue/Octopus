@@ -205,6 +205,61 @@ test.describe("Scheduled Tasks UI @llm", () => {
       page.locator(".schedules-page .schedule-item", { hasText: PROMPT })
     ).toHaveCount(0);
   });
+
+  test("an agent sets a schedule for itself and the sidebar updates live", async ({
+    page,
+    request,
+  }) => {
+    // The whole point of the schedule MCP tool (schedule-tool.md): the user
+    // asks for something recurring in chat, and the agent arranges it —
+    // no /schedule command, no visit to the Schedules page.
+    await createSessionApi(request, "Agent Schedule Test");
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Agent Schedule Test" })
+      .click();
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
+      "Agent Schedule Test"
+    );
+
+    const summary = page.locator(".btn-manage-schedules .manage-summary");
+    const before = Number((await summary.innerText()).trim().split(" ")[0]) || 0;
+
+    // A single token the model will copy verbatim into the schedule's prompt,
+    // so the row is findable however it words the rest.
+    const TASK = "e2e-agent-schedule-probe";
+    await page
+      .locator(".chat-input-bar textarea")
+      .fill(
+        `Using your Octopus schedule tool, set yourself a schedule that runs ` +
+          `every 90 minutes with the task "${TASK}". Don't touch the system ` +
+          `crontab. Reply with the schedule id when it's set.`
+      );
+    await page.locator("button.btn-send").click();
+
+    // The count moves while we are still in the chat view — the server
+    // broadcast the change and this tab refetched, with no reload and no
+    // navigation (schedule-tool.md §6).
+    await expect(summary).toContainText(String(before + 1), {
+      timeout: 120_000,
+    });
+    await expect(page.locator(".chat-header .status-idle")).toBeVisible({
+      timeout: 120_000,
+    });
+
+    await page.locator(".btn-manage-schedules").click();
+    const agentRow = page.locator(".schedules-page .schedule-item", {
+      hasText: TASK,
+    });
+    await expect(agentRow).toHaveCount(1);
+    await expect(agentRow.locator(".schedule-interval")).toContainText("90m");
+
+    page.once("dialog", (d) => d.accept());
+    await agentRow.locator(".btn-delete").click();
+    await expect(
+      page.locator(".schedules-page .schedule-item", { hasText: TASK })
+    ).toHaveCount(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

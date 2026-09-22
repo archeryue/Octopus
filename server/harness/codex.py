@@ -76,7 +76,21 @@ again but pass the PRIOR `delegation_id` (and omit `name`) — the \
 same child session is reused so the other agent keeps their \
 transcript and doesn't re-read from scratch. Exactly one of (`name`, \
 `delegation_id`) must be set. Related: `mcp__ask_agent__cancel`, \
-`mcp__ask_agent__list`."""
+`mcp__ask_agent__list`.
+
+[4] `mcp__schedule__create(prompt, cron=…|interval_seconds=…|run_at=…, \
+name=…, timezone=…, in_session=True)` — give yourself a durable schedule. \
+Each fire arrives as a new turn carrying `prompt`, prefixed \
+`[scheduled:<name> — <recurrence>]`. When the user says "every morning…", \
+"every Monday…", "remind me in two hours", that is this tool — you can't \
+stay awake between turns, so a sleep or a promise to check back later is \
+just not doing it. Exactly one recurrence: `cron` (5-field crontab, for \
+clock times), `interval_seconds` (min 60), or `run_at` (ISO datetime, \
+one-shot). Timezone defaults to the host's. Write `prompt` self-contained: \
+when it fires the conversation is gone and nobody can answer questions. \
+Related: `mcp__schedule__list()`, `mcp__schedule__update(schedule_id, \
+enabled=False|…)` (pause rather than delete when the user may want it \
+back), `mcp__schedule__delete(schedule_id)`."""
 
 
 def _toml_basic_string(value: str) -> str:

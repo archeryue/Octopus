@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone as dt_timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.triggers.cron import CronTrigger
@@ -95,6 +97,237 @@ def derive_name(prompt: str) -> str:
     if len(first_line) <= 48:
         return first_line
     return first_line[:47].rstrip() + "…"
+
+
+# --------------------------------------------------------------------------- #
+# Explicit (structured) recurrence — the agent-facing path
+# --------------------------------------------------------------------------- #
+
+
+def local_timezone() -> str:
+    """The host's IANA timezone name.
+
+    The browser sends its own tz with `/schedule`, so a human's "9am" is
+    their 9am. An agent calling the schedule tool has no browser, and
+    defaulting to UTC would quietly turn "every day at 9am" into 9am UTC —
+    on this box, eight hours out. The host clock is the honest default;
+    resolution mirrors what the OS itself reads, and UTC is only the answer
+    when none of it is legible.
+    """
+    candidates: list[str] = [(os.environ.get("TZ") or "").strip()]
+    try:
+        candidates.append(Path("/etc/timezone").read_text().strip())
+    except OSError:
+        pass
+    try:
+        link = os.path.realpath("/etc/localtime")
+        if "/zoneinfo/" in link:
+            candidates.append(link.split("/zoneinfo/", 1)[1])
+    except OSError:
+        pass
+    for name in candidates:
+        if not name:
+            continue
+        try:
+            ZoneInfo(name)
+            return name
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            continue
+    return "UTC"
+
+
+def resolve_timezone(tz: str | None) -> str:
+    """Validate an explicitly-given IANA zone, or fall back to the host's.
+
+    Unlike `normalize_timezone` (which absorbs whatever the AI emitted), a
+    name passed deliberately and not recognised is an error: silently
+    substituting UTC would move every fire without saying so.
+    """
+    if not (tz or "").strip():
+        return local_timezone()
+    tz = tz.strip()
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        raise ScheduleParseError(
+            f"Unknown timezone {tz!r} — use an IANA name like "
+            "'America/Los_Angeles' or 'Asia/Shanghai'."
+        )
+    return tz
+
+
+_DOW_NAMES = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
+
+
+def _dow_list(field: str) -> list[int] | None:
+    """The day-of-week field as sorted unique 0-6 ints, or None if it uses a
+    form we don't put into words (steps, names, anything unexpected)."""
+    days: set[int] = set()
+    for part in field.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, _, hi = part.partition("-")
+            if not (lo.isdigit() and hi.isdigit()):
+                return None
+            span = range(int(lo), int(hi) + 1)
+        elif part.isdigit():
+            span = range(int(part), int(part) + 1)
+        else:
+            return None
+        for d in span:
+            if not 0 <= d <= 7:
+                return None
+            days.add(0 if d == 7 else d)
+    return sorted(days) or None
+
+
+def describe_cron(cron: str) -> str | None:
+    """A crontab expression in words, for the common shapes — or None when it
+    is one we'd only paraphrase badly.
+
+    The label is what the sidebar and the Schedules page show; "0 9 * * 1-5"
+    printed twice (once as the cron, once as its own label) tells the user
+    nothing they didn't already see.
+    """
+    parts = cron.split()
+    if len(parts) != 5:
+        return None
+    minute, hour, dom, month, dow = parts
+    if month != "*" or (dom != "*" and dow != "*"):
+        return None
+
+    if dom == "*" and dow == "*":
+        if hour == "*" and minute.startswith("*/") and minute[2:].isdigit():
+            return f"Every {int(minute[2:])} minutes"
+        if minute.isdigit() and hour.startswith("*/") and hour[2:].isdigit():
+            every = f"Every {int(hour[2:])} hours"
+            return every if int(minute) == 0 else f"{every} at :{int(minute):02d}"
+
+    if not (minute.isdigit() and hour.isdigit()):
+        return None
+    at = f"{int(hour):02d}:{int(minute):02d}"
+    if dom != "*":
+        return f"Monthly on day {int(dom)} at {at}" if dom.isdigit() else None
+    if dow == "*":
+        return f"Every day at {at}"
+    days = _dow_list(dow)
+    if days is None:
+        return None
+    if days == [1, 2, 3, 4, 5]:
+        return f"Weekdays at {at}"
+    if days == [0, 6]:
+        return f"Weekends at {at}"
+    return f"Every {', '.join(_DOW_NAMES[d] for d in days)} at {at}"
+
+
+def build_explicit_schedule(
+    *,
+    prompt: str,
+    name: str | None = None,
+    cron: str | None = None,
+    interval_seconds: int | None = None,
+    run_at: str | None = None,
+    tz: str | None = None,
+    now: datetime | None = None,
+    require_future: bool = True,
+) -> ParsedSchedule:
+    """Validate a recurrence that was stated outright, with no AI in the loop.
+
+    `/schedule` has to read English because a human typed it. A model calling
+    the schedule tool doesn't: it can write the crontab field itself, and
+    having it do so keeps a tool call free of a second model call — no extra
+    latency, no extra cost, no second parse to fail. The checks are the ones
+    `validate_parsed` runs on the AI's JSON, applied to arguments instead, and
+    every message is written to be read by whoever passed the bad value.
+    """
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise ScheduleParseError("`prompt` is required — say what should run.")
+
+    given = [
+        key
+        for key, value in (
+            ("cron", cron),
+            ("interval_seconds", interval_seconds),
+            ("run_at", run_at),
+        )
+        if value not in (None, "")
+    ]
+    if len(given) != 1:
+        raise ScheduleParseError(
+            "Pass exactly one of `cron`, `interval_seconds` or `run_at` "
+            f"(got: {', '.join(given) or 'none'})."
+        )
+    label = (name or "").strip() or derive_name(prompt)
+
+    if given == ["interval_seconds"]:
+        seconds = _coerce_int(interval_seconds)
+        if seconds is None or seconds < MIN_INTERVAL_SECONDS:
+            raise ScheduleParseError(
+                f"`interval_seconds` must be a whole number of seconds, "
+                f"at least {MIN_INTERVAL_SECONDS}."
+            )
+        return ParsedSchedule(
+            name=label,
+            prompt=prompt,
+            interval_seconds=seconds,
+            cron=None,
+            timezone=None,
+            recurrence_label=f"Every {format_interval(seconds)}",
+        )
+
+    zone = resolve_timezone(tz)
+
+    if given == ["cron"]:
+        expr = str(cron).strip()
+        if len(expr.split()) != 5:
+            raise ScheduleParseError(
+                "`cron` must be a 5-field crontab expression: "
+                "'<minute> <hour> <day-of-month> <month> <day-of-week>' "
+                "(e.g. '0 9 * * 1-5' for weekdays at 9am)."
+            )
+        try:
+            CronTrigger.from_crontab(expr, timezone=ZoneInfo(zone))
+        except (ValueError, ZoneInfoNotFoundError) as e:
+            raise ScheduleParseError(f"`cron` isn't a valid crontab expression: {e}")
+        return ParsedSchedule(
+            name=label,
+            prompt=prompt,
+            interval_seconds=None,
+            cron=expr,
+            timezone=zone,
+            recurrence_label=describe_cron(expr) or f"Cron {expr}",
+        )
+
+    try:
+        when = datetime.fromisoformat(str(run_at).strip())
+    except ValueError:
+        raise ScheduleParseError(
+            "`run_at` must be an ISO datetime like '2026-09-22T15:00' "
+            "(local to the schedule's timezone unless it carries an offset)."
+        )
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=ZoneInfo(zone))
+    if require_future:
+        reference = now or datetime.now(dt_timezone.utc)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=ZoneInfo(zone))
+        # A one-time schedule in the past never fires — it is deleted on the
+        # next boot as a missed run. Say so now rather than accept it.
+        if when <= reference + timedelta(seconds=5):
+            raise ScheduleParseError(
+                f"`run_at` is in the past ({when.isoformat()}); a one-time "
+                "schedule has to be in the future."
+            )
+    return ParsedSchedule(
+        name=label,
+        prompt=prompt,
+        interval_seconds=None,
+        cron=None,
+        timezone=zone,
+        recurrence_label=f"Once on {when:%Y-%m-%d} at {when:%H:%M}",
+        run_at=when.isoformat(),
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -161,7 +161,15 @@ concurrently. Exactly one of (`name`, `delegation_id`) must be set.
 
 Related: `mcp__ask_agent__cancel(delegation_id, reason?)` to stop \
 an in-flight delegation, `mcp__ask_agent__list()` to see recent \
-delegations from this session."""
+delegations from this session.
+
+[4] `mcp__schedule__create(prompt, cron=…|interval_seconds=…|run_at=…, name=…, timezone=…, in_session=True)` — give yourself a schedule. Octopus keeps it durably (it survives restarts) and sends you `prompt` as a new turn each time it fires, prefixed `[scheduled:<name> — <recurrence>]`.
+
+When the user says "every morning…", "every Monday…", "check this hourly", "remind me in two hours", "from now on, at 9am…" — that is this tool, not something to promise and forget. You cannot stay awake between turns: a `sleep`, a bg task that waits, or "I'll check back later" are all ways of not doing it. Set the schedule.
+
+Pass exactly one recurrence: `cron="0 9 * * 1-5"` (5-field crontab, the right choice for clock times), `interval_seconds=1800` (every N seconds, min 60), or `run_at="2026-09-22T15:00"` (once, then it deletes itself). Timezone defaults to the host's; pass `timezone` when the user names another. Write `prompt` self-contained — when it fires, this conversation's context is long gone and nobody is waiting to answer questions.
+
+Related: `mcp__schedule__list()` (ids, next fire times — call it before changing anything), `mcp__schedule__update(schedule_id, enabled=False | cron=… | prompt=…)` (pausing is usually what "stop doing X for now" means), `mcp__schedule__delete(schedule_id)`."""
 
 
 def _apply_env_credential(env: dict[str, str], credential: HarnessCredential | None) -> None:

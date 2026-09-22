@@ -320,10 +320,40 @@ class ShowMeResolveResponse(BaseModel):
     message: str | None = None
 
 
+class AgentScheduleRequest(BaseModel):
+    """A schedule an agent sets for itself (schedule-tool.md §3).
+
+    Recurrence is stated outright — exactly one of `cron` (+`timezone`),
+    `interval_seconds`, or `run_at` (ISO datetime, fires once). Bounds are
+    checked in `schedule_ai.build_explicit_schedule` rather than here, so the
+    caller gets one sentence explaining what to pass instead of a pydantic
+    constraint dump.
+    """
+
+    prompt: str = Field(min_length=1)
+    name: str | None = None
+    cron: str | None = None
+    interval_seconds: int | None = None
+    run_at: str | None = None
+    timezone: str | None = None
+    # True: fires append into the conversation the agent asked from, so the
+    # run shows up where the schedule was set up. False: each fire gets a
+    # throwaway session (continuity comes from agent memory).
+    in_session: bool = True
+
+
 class UpdateScheduleRequest(BaseModel):
+    """A change to an existing schedule. Recurrence fields are mutually
+    exclusive — setting one clears the other two (a schedule has exactly one
+    recurrence), and `timezone` alone re-reads the existing cron in the new
+    zone."""
+
     name: str | None = None
     prompt: str | None = None
-    interval_seconds: int | None = Field(default=None, ge=60)
+    interval_seconds: int | None = None
+    cron: str | None = None
+    run_at: str | None = None
+    timezone: str | None = None
     enabled: bool | None = None
 
 
@@ -387,6 +417,9 @@ class AgentCreate(BaseModel):
     model: str | None = None
     credential_id: str | None = None
     backend: BackendKind = BackendKind.claude_code
+    # Legacy default for API callers that don't name a set. The UI sends the
+    # full built-in list (AgentFormPage's BUILTIN_MCP); a brand-new row that
+    # names nothing gets the DB default instead.
     mcp_servers: list[str] = ["ask", "bg"]
     tool_allow: str = ""
     tool_deny: str = ""

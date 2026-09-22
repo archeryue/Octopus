@@ -1,15 +1,35 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
-from ..models import CreateScheduleRequest, ScheduleInfo, UpdateScheduleRequest
-from ..schedule_ai import recurrence_label_for
+from ..models import (
+    AgentScheduleRequest,
+    CreateScheduleRequest,
+    ScheduleInfo,
+    UpdateScheduleRequest,
+)
+from ..schedule_ai import (
+    ScheduleParseError,
+    build_explicit_schedule,
+    recurrence_label_for,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/schedules", tags=["schedules"])
+
+# Session-scoped schedule routes (`/api/sessions/{sid}/schedules`), the
+# surface the `schedule` MCP server calls from inside a turn
+# (schedule-tool.md §4). Separate router, same module: the scoping rule —
+# an agent sees and touches only its own schedules — is derived from the
+# session, but everything below it is the same create/update/delete code
+# the `/api/schedules` routes use.
+session_router = APIRouter(prefix="/api/sessions", tags=["schedules"])
 
 # Injected at startup via app.state
 _db = None
@@ -40,6 +60,22 @@ def to_schedule_info(row: dict) -> ScheduleInfo:
             "next_run_at": next_run_at,
         }
     )
+
+
+async def _broadcast_change() -> None:
+    """Tell every open client the schedule list moved.
+
+    A browser refetches after its own edit, so this exists for the changes it
+    didn't make: another tab, and — the reason it was added — an agent setting
+    a schedule for itself mid-conversation. The payload is deliberately empty;
+    one code path reloads the list however it changed.
+    """
+    from ..session_manager import session_manager
+
+    try:
+        await session_manager._broadcast({"type": "schedules_changed"})
+    except Exception:  # pragma: no cover - a dead socket must not fail a write
+        logger.debug("schedules_changed broadcast failed", exc_info=True)
 
 
 async def create_schedule_for_agent(
@@ -95,7 +131,62 @@ async def create_schedule_for_agent(
         run_at=run_at,
     )
     await _get_runner().add(row)
+    await _broadcast_change()
     return row
+
+
+def schedule_updates(existing: dict, req: UpdateScheduleRequest) -> dict:
+    """The column changes a PATCH implies, recurrence included.
+
+    Name/prompt/enabled are taken as given. Recurrence is not a column but a
+    choice between three: setting one has to clear the other two, or a
+    schedule that used to run every 30m and now runs at 9am would still carry
+    its old interval and fire on whichever the runner reads first. So any
+    recurrence field (or a bare `timezone`, which re-reads the existing cron
+    in a new zone) revalidates the whole thing and writes all four columns.
+    """
+    fields = req.model_dump(exclude_none=True)
+    updates = {k: v for k, v in fields.items() if k in ("name", "prompt", "enabled")}
+
+    given = {
+        k: fields[k]
+        for k in ("cron", "interval_seconds", "run_at")
+        if fields.get(k) is not None
+    }
+    if len(given) > 1:
+        raise ScheduleParseError(
+            "Pass exactly one of `cron`, `interval_seconds` or `run_at` "
+            f"(got: {', '.join(sorted(given))})."
+        )
+    if not given and "timezone" not in fields:
+        return updates
+
+    reused = not given
+    if reused:
+        given = {
+            k: existing.get(k)
+            for k in ("cron", "interval_seconds", "run_at")
+            if existing.get(k) is not None
+        }
+    parsed = build_explicit_schedule(
+        prompt=updates.get("prompt") or existing["prompt"],
+        name=updates.get("name") or existing.get("name"),
+        cron=given.get("cron"),
+        interval_seconds=given.get("interval_seconds"),
+        run_at=given.get("run_at"),
+        tz=fields.get("timezone") or existing.get("timezone"),
+        # Re-reading a one-time schedule that is already due (a timezone
+        # change, say) must not fail on its own stored value.
+        require_future=not reused,
+    )
+    updates.update(
+        cron=parsed.cron,
+        interval_seconds=parsed.interval_seconds,
+        run_at=parsed.run_at,
+        timezone=parsed.timezone,
+        recurrence_label=parsed.recurrence_label,
+    )
+    return updates
 
 
 @router.get("", response_model=list[ScheduleInfo])
@@ -144,13 +235,17 @@ async def update_schedule(
     if not existing:
         raise HTTPException(status_code=404, detail="Schedule not found")
 
-    updates = req.model_dump(exclude_none=True)
+    try:
+        updates = schedule_updates(existing, req)
+    except ScheduleParseError as e:
+        raise HTTPException(422, str(e))
     if not updates:
         return to_schedule_info(existing)
 
     await db.update_schedule(schedule_id, **updates)
     existing.update(updates)
     await _get_runner().reschedule(existing)
+    await _broadcast_change()
     return to_schedule_info(existing)
 
 
@@ -158,3 +253,124 @@ async def update_schedule(
 async def delete_schedule(schedule_id: str, _: str = Depends(verify_token)):
     await _get_runner().remove(schedule_id)
     await _get_db().delete_schedule(schedule_id)
+    await _broadcast_change()
+
+
+# --------------------------------------------------------------------------- #
+# Session-scoped: an agent's own schedules (schedule-tool.md §4)
+# --------------------------------------------------------------------------- #
+
+
+def _session_agent_id(session_id: str) -> str:
+    """The agent that owns this session — the only agent these routes act for.
+
+    Scoping is derived, never passed: the caller is an MCP shim running inside
+    the turn, and the one thing it can be trusted with is which session it was
+    spawned for. An agent can therefore neither read nor rewrite another
+    agent's schedules through this surface.
+    """
+    from ..session_manager import session_manager
+
+    session = session_manager.get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
+        )
+    return session.agent_id
+
+
+async def _owned_row(schedule_id: str, agent_id: str) -> dict:
+    rows = await _get_db().load_schedules()
+    row = next(
+        (r for r in rows if r["id"] == schedule_id and r["agent_id"] == agent_id),
+        None,
+    )
+    if row is None:
+        # Another agent's schedule is reported as missing rather than
+        # forbidden: from inside this session it may as well not exist.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
+    return row
+
+
+@session_router.get("/{session_id}/schedules", response_model=list[ScheduleInfo])
+async def list_session_schedules(session_id: str, _: str = Depends(verify_token)):
+    agent_id = _session_agent_id(session_id)
+    rows = await _get_db().load_schedules()
+    return [to_schedule_info(r) for r in rows if r["agent_id"] == agent_id]
+
+
+@session_router.post(
+    "/{session_id}/schedules",
+    response_model=ScheduleInfo,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_session_schedule(
+    session_id: str, req: AgentScheduleRequest, _: str = Depends(verify_token)
+):
+    """Create a schedule for this session's agent, with the recurrence stated
+    outright (no AI parse). `in_session` decides where the fires land: this
+    conversation, or a throwaway session per fire."""
+    agent_id = _session_agent_id(session_id)
+    try:
+        parsed = build_explicit_schedule(
+            prompt=req.prompt,
+            name=req.name,
+            cron=req.cron,
+            interval_seconds=req.interval_seconds,
+            run_at=req.run_at,
+            tz=req.timezone,
+        )
+    except ScheduleParseError as e:
+        raise HTTPException(422, str(e))
+
+    row = await create_schedule_for_agent(
+        agent_id,
+        parsed.name,
+        parsed.prompt,
+        interval_seconds=parsed.interval_seconds,
+        cron=parsed.cron,
+        tz=parsed.timezone,
+        recurrence_label=parsed.recurrence_label,
+        run_at=parsed.run_at,
+        origin_session_id=session_id if req.in_session else None,
+    )
+    return to_schedule_info(row)
+
+
+@session_router.patch(
+    "/{session_id}/schedules/{schedule_id}", response_model=ScheduleInfo
+)
+async def update_session_schedule(
+    session_id: str,
+    schedule_id: str,
+    req: UpdateScheduleRequest,
+    _: str = Depends(verify_token),
+):
+    agent_id = _session_agent_id(session_id)
+    existing = await _owned_row(schedule_id, agent_id)
+    try:
+        updates = schedule_updates(existing, req)
+    except ScheduleParseError as e:
+        raise HTTPException(422, str(e))
+    if not updates:
+        return to_schedule_info(existing)
+
+    await _get_db().update_schedule(schedule_id, **updates)
+    existing.update(updates)
+    await _get_runner().reschedule(existing)
+    await _broadcast_change()
+    return to_schedule_info(existing)
+
+
+@session_router.delete(
+    "/{session_id}/schedules/{schedule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_session_schedule(
+    session_id: str, schedule_id: str, _: str = Depends(verify_token)
+):
+    agent_id = _session_agent_id(session_id)
+    await _owned_row(schedule_id, agent_id)
+    await _get_runner().remove(schedule_id)
+    await _get_db().delete_schedule(schedule_id)
+    await _broadcast_change()

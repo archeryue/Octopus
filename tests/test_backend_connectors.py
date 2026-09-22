@@ -79,7 +79,7 @@ def test_claude_no_connectors_unchanged():
     cfg = json.loads(_arg_after(argv, "--mcp-config"))["mcpServers"]
     # Default built-in MCP set: bg + ask + ask_agent + research
     # (agent-collaboration.md §5.1; native-deep-research.md §7).
-    assert set(cfg) == {"bg", "ask", "ask_agent", "research"}
+    assert set(cfg) == {"bg", "ask", "ask_agent", "research", "schedule"}
     assert "== Connectors ==" not in _arg_after(argv, "--append-system-prompt")
 
 

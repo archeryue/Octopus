@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Built-in MCP servers attached to the Default Agent (and the default for
 # any newly-created agent). Kept here so the migration backfill and the
 # CREATE TABLE default stay in lock-step.
-_DEFAULT_MCP_SERVERS = ["ask", "bg", "ask_agent", "research"]
+_DEFAULT_MCP_SERVERS = ["ask", "bg", "ask_agent", "research", "schedule"]
 _DEFAULT_MCP_SERVERS_JSON = json.dumps(_DEFAULT_MCP_SERVERS)
 
 _SCHEMA = """
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS agents (
     model TEXT,                             -- e.g. "claude-opus-4-7"; null = backend default
     credential_id TEXT REFERENCES backend_credentials(id) ON DELETE SET NULL,
     backend TEXT NOT NULL DEFAULT 'claude-code',  -- default harness for new sessions
-    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","ask_agent","research"]',
+    mcp_servers TEXT NOT NULL DEFAULT '["ask","bg","ask_agent","research","schedule"]',
                                             -- JSON array of built-in Octopus MCP server ids.
     tool_allow TEXT NOT NULL DEFAULT '',    -- newline-separated tool/MCP names; empty = allow all
     tool_deny  TEXT NOT NULL DEFAULT '',    -- newline-separated; deny takes precedence over allow
@@ -614,11 +614,14 @@ class Database:
 
         # Backfill default built-in MCP servers into every existing agent's
         # mcp_servers list as new ones land (`ask_agent` —
-        # agent-collaboration.md §5.1; `research` — native-deep-research.md §7).
-        # The CREATE TABLE default applies only to brand-new rows on fresh
-        # databases — pre-existing rows already have a stored value and need
-        # this catch-up. Idempotent: set-membership means re-running is a no-op.
-        await self._backfill_builtin_mcp_servers(("ask_agent", "research"))
+        # agent-collaboration.md §5.1; `research` — native-deep-research.md §7;
+        # `schedule` — schedule-tool.md §4). The CREATE TABLE default applies
+        # only to brand-new rows on fresh databases — pre-existing rows already
+        # have a stored value and need this catch-up. Idempotent:
+        # set-membership means re-running is a no-op.
+        await self._backfill_builtin_mcp_servers(
+            ("ask_agent", "research", "schedule")
+        )
 
     async def _backfill_builtin_mcp_servers(self, names: tuple[str, ...]) -> None:
         cursor = await self._conn.execute("SELECT id, mcp_servers FROM agents")
@@ -1325,6 +1328,7 @@ class Database:
             "prompt",
             "interval_seconds",
             "cron",
+            "run_at",
             "timezone",
             "recurrence_label",
             "enabled",
