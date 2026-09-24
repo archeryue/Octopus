@@ -1,3 +1,5 @@
+
+
 # Octopus
 
 **Octopus is a personal agent platform.** It turns **Claude Code** and **Codex**
@@ -187,6 +189,8 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 cd web && bun run test            # 84 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
 cd web && bun run test:e2e        # 67 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI). Split into `:fast` (35 UI-only, ~16s) and `:llm` (32 real Claude/Codex, ~3min) for dev iteration.
+cd web && bun run test:e2e:fast   # 35 UI-only tests (~16s)
+cd web && bun run test:e2e:llm    # 32 real LLM tests (~3min)
 ```
 
 ### Pre-commit hooks (optional)
