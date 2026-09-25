@@ -62,12 +62,22 @@ def select_mcp_servers(
     mcp_servers: list[str] | None,
     connectors: list[tuple[Any, Any]],
     callback_env: dict[str, str],
+    session_id: str | None = None,
 ) -> list[McpServerEntry]:
     """The built-in servers the agent enabled (None = all builtins) plus one
     entry per enabled connector installation. Order is stable: bg, ask, then
     connectors — so rendered argv is deterministic for tests. Unknown names in
     `mcp_servers` (e.g. a legacy `"viewer"` from before the viewer became a
-    client-only flow) are silently filtered."""
+    client-only flow) are silently filtered.
+
+    With a `session_id` the entries are **streamable-HTTP**, pointing at the
+    namespaces this app already serves — nothing is spawned
+    (polish-2026-09.md §4 B1). Without one there is no session to scope a
+    bearer to, so they fall back to the stdio form; `build_argv` uses that for
+    argv inspection, and it is the only remaining caller of the old shape.
+    """
+    if session_id:
+        return _http_entries(mcp_servers, connectors, session_id)
     builtin_specs: dict[str, dict[str, Any]] = {
         "bg": {
             "command": sys.executable,
@@ -119,6 +129,56 @@ def select_mcp_servers(
             )
         )
     return entries
+
+
+def _http_entries(
+    mcp_servers: list[str] | None,
+    connectors: list[tuple[Any, Any]],
+    session_id: str,
+) -> list[McpServerEntry]:
+    """The same namespaces, served over HTTP by this process.
+
+    Two things stay exactly as they were, deliberately. The **key** is
+    unchanged, because both CLIs build the tool name from it — a different key
+    would rename every `mcp__<key>__<tool>` and invalidate every prompt that
+    documents them. And connector keys stay per-installation even though all
+    installations of a kind share one URL: the key and the URL are independent,
+    so the name can stay stable while the mount is shared, and which
+    installation a call belongs to comes from its bearer instead.
+    """
+    from ..config import settings as _settings
+    from ..mcp_http import mount_path
+    from ..mcp_identity import mint
+
+    base = f"http://127.0.0.1:{_settings.port}"
+
+    def entry(key: str, namespace: str, installation_id: str | None = None) -> McpServerEntry:
+        return McpServerEntry(
+            key=key,
+            url=f"{base}{mount_path(namespace)}/mcp",
+            credential=mint(session_id, installation_id),
+        )
+
+    names = list(_BUILTIN_MODULES) if mcp_servers is None else [
+        n for n in _BUILTIN_MODULES if n in mcp_servers
+    ]
+    entries = [entry(n, n) for n in names]
+    for connector, installation in connectors:
+        entries.append(
+            entry(
+                connector.mcp_key(installation),
+                _connector_namespace(connector),
+                installation.get("id") if isinstance(installation, dict) else None,
+            )
+        )
+    return entries
+
+
+def _connector_namespace(connector: Any) -> str:
+    """Which mount serves this connector. Built-ins have their own module;
+    every user-defined kind is served by the generic one."""
+    kind = getattr(connector, "kind", "") or ""
+    return kind if kind in ("github", "gmail") else "custom"
 
 
 def render_memory_blurb(memory_dir: str) -> str:

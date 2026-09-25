@@ -32,6 +32,7 @@ from .harness import Harness
 from .login import LoginMethod
 from .profile import (
     EventParser,
+    McpServerEntry,
     OneShotContext,
     ParseOutput,
     RuntimeProfile,
@@ -241,6 +242,22 @@ _CLAUDE_WEB_LEAF_DENY = (
 )
 
 
+def _mcp_entry(e: McpServerEntry) -> dict[str, Any]:
+    """One `mcpServers` value, in whichever shape the entry's transport needs.
+
+    Claude Code accepts arbitrary per-server `headers`, which is where the
+    session bearer goes for an HTTP entry. (Codex has no equivalent — see
+    `codex._mcp_config_args` — which is why the credential, not a custom
+    header, carries the identity.)"""
+    if e.is_http:
+        return {
+            "type": "http",
+            "url": e.url,
+            "headers": {"Authorization": f"Bearer {e.credential}"},
+        }
+    return {"command": e.command, "args": e.args, "env": e.env}
+
+
 def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
     """Render a `claude --print` command for one turn (VM0 shape).
 
@@ -250,14 +267,7 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
     `mcp__ask__user` replacement) plus any agent denies; `--mcp-config` JSON
     for the in-process servers; `--append-system-prompt`; optional
     `--allowedTools`/`--model`/`--resume`; `--` then the prompt."""
-    mcp_config = json.dumps(
-        {
-            "mcpServers": {
-                e.key: {"command": e.command, "args": e.args, "env": e.env}
-                for e in ctx.mcp_servers
-            }
-        }
-    )
+    mcp_config = json.dumps({"mcpServers": {e.key: _mcp_entry(e) for e in ctx.mcp_servers}})
     disallowed = ["AskUserQuestion", *(ctx.tool_deny or [])]
     if ctx.web_research:
         # A research leaf may search/read the web but must not touch the box or

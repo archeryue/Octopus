@@ -56,7 +56,6 @@ result is delivered as an injected follow-up turn.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -68,7 +67,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import httpx  # noqa: E402
-from mcp.server.fastmcp import FastMCP  # noqa: E402
+from mcp.server.fastmcp import FastMCP
+
+from . import _host  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,9 +83,12 @@ mcp = FastMCP("octopus-ask-agent")
 
 
 def _required_env(name: str) -> str | None:
-    v = os.environ.get(name)
+    """Resolved from the request scope and settings rather than the process
+    environment: this namespace is served in-process now, so one process
+    handles every session (polish-2026-09.md §4 B1)."""
+    v = _host.resolve(name)
     if not v:
-        logger.error("Required env var %s not set", name)
+        logger.error("%s unavailable for this call", name)
     return v
 
 

@@ -120,6 +120,18 @@ def _apply_home_dir(env: dict[str, str], credential: HarnessCredential | None) -
         env["CODEX_HOME"] = credential.home_dir
 
 
+def _apply_mcp_bearers(env: dict[str, str], ctx: TurnContext) -> None:
+    """Put each HTTP MCP server's bearer where Codex will look for it.
+
+    `_mcp_config_args` tells Codex the *name* of an env var per server
+    (`bearer_token_env_var`); this defines those vars. Claude needs no
+    equivalent because it takes the credential inline as a header — the
+    difference is Codex's, and it stops here at the profile boundary."""
+    for e in ctx.mcp_servers:
+        if e.is_http:
+            env[_bearer_env_var(e.key)] = e.credential
+
+
 def _mcp_config_args(ctx: TurnContext) -> list[str]:
     """`-c mcp_servers.<key>.*` overrides for the assembled MCP servers. We
     use per-invocation `-c` overrides (not a config.toml) so per-session
@@ -128,11 +140,31 @@ def _mcp_config_args(ctx: TurnContext) -> list[str]:
     args: list[str] = []
     for e in ctx.mcp_servers:
         base = f"mcp_servers.{e.key}"
+        if e.is_http:
+            # Codex takes a URL plus the NAME OF AN ENV VAR to read the bearer
+            # from — `--env` is stdio-only here, so unlike Claude there is no
+            # way to pass an arbitrary header. That asymmetry is why the
+            # session identity rides in the credential itself; see
+            # McpServerEntry. The var is per-key so two namespaces (or two
+            # connector installations) never read each other's.
+            args += ["-c", f"{base}.url={_toml_basic_string(e.url)}"]
+            args += [
+                "-c",
+                f"{base}.bearer_token_env_var={_toml_basic_string(_bearer_env_var(e.key))}",
+            ]
+            continue
         args += ["-c", f"{base}.command={_toml_basic_string(e.command)}"]
         args += ["-c", f"{base}.args={_toml_string_array(e.args)}"]
         for env_key, env_val in e.env.items():
             args += ["-c", f"{base}.env.{env_key}={_toml_basic_string(env_val)}"]
     return args
+
+
+def _bearer_env_var(key: str) -> str:
+    """The env var Codex reads an HTTP MCP server's bearer from. Per-key so
+    namespaces stay isolated; uppercased because env vars conventionally are,
+    and `-` is not legal in a shell identifier."""
+    return f"OCTOPUS_MCP_BEARER_{key.upper().replace('-', '_')}"
 
 
 # ------------------------------------------------------------------ turn argv
@@ -172,6 +204,7 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
 
     env = os.environ.copy()
     _apply_home_dir(env, ctx.credential)
+    _apply_mcp_bearers(env, ctx)
     return argv, {"cwd": ctx.working_dir, "env": env}
 
 

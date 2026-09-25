@@ -23,6 +23,8 @@ from .config import settings
 from .connector_manager import ConnectorManager
 from .database import Database
 from .delegations import delegation_manager
+from .mcp_http import lifespan as mcp_lifespan
+from .mcp_http import mount_all as mount_mcp
 from .notifiers import notifier_manager
 from .research import research_manager
 from .routers import (
@@ -150,7 +152,13 @@ async def lifespan(app: FastAPI):
     # drops the ones that stop earning their ~255MB.
     session_manager.start_reaper()
 
-    yield
+    # The MCP tool namespaces are served from this app rather than spawned per
+    # session (polish-2026-09.md §4 B1). Each one's session manager has to be
+    # running before it will answer, and mounting does not start it, so they run
+    # for the lifetime of the app.
+    async with mcp_lifespan(app):
+        logger.info("MCP namespaces served in-process: %s", ", ".join(_mcp_mounts))
+        yield
 
     await session_manager.stop_reaper()
     await session_manager.stop_all_held_processes()
@@ -176,6 +184,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Octopus", version="0.1.0", lifespan=lifespan)
+
+# Mounted before the routers so the /mcp/* prefix is claimed explicitly, and at
+# import time because `lifespan` needs the same server instances (module import
+# is cached, so both see one object per namespace).
+_mcp_mounts = mount_mcp(app)
 
 
 @app.middleware("http")

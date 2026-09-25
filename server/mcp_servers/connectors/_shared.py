@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any
 
 import httpx
+
+from .. import _host
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +37,22 @@ class ConnectorContext:
         self._access_token: str | None = None
         self._token_exp: float = 0.0
 
+    # Resolved per call from the request's verified scope and from settings.
+    # These used to read the process environment, which worked when each
+    # installation had its own sidecar; served in-process one module handles
+    # every installation, so the installation has to come from the call
+    # (polish-2026-09.md §4 B1).
     @property
     def api_base(self) -> str | None:
-        return os.environ.get("OCTOPUS_API_BASE")
+        return _host.resolve("OCTOPUS_API_BASE")
 
     @property
     def auth_token(self) -> str | None:
-        return os.environ.get("OCTOPUS_AUTH_TOKEN")
+        return _host.resolve("OCTOPUS_AUTH_TOKEN")
 
     @property
     def installation_id(self) -> str | None:
-        return os.environ.get("OCTOPUS_INSTALLATION_ID")
+        return _host.resolve("OCTOPUS_INSTALLATION_ID")
 
     def ready(self) -> bool:
         return bool(self.api_base and self.auth_token and self.installation_id)

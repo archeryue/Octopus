@@ -19,6 +19,11 @@ _DEFAULT_MCP_SERVERS = ["ask", "bg", "ask_agent", "research", "schedule"]
 _DEFAULT_MCP_SERVERS_JSON = json.dumps(_DEFAULT_MCP_SERVERS)
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
+
 -- Agents are the durable definition of an assistant (agent-refactor.md §4.1):
 -- identity + system prompt + model + credential + built-in MCP set + tool
 -- policy. They OWN sessions, schedules and bridge bindings. Memory (the
@@ -421,208 +426,178 @@ class Database:
         await self._apply_migrations()
         await self.conn.commit()
 
+    # Additive column migrations, as (table, column, DDL). Declared as data so
+    # the list reads as an inventory and every entry goes through the same
+    # guarded path. Order matters only where a later rebuild would drop a
+    # column: `bridge_mappings.verbose` is applied after `_migrate_agents`,
+    # which rebuilds that table.
+    _COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        # Per-backend auth.
+        ("sessions", "credential_id", "ALTER TABLE sessions ADD COLUMN credential_id TEXT"),
+        # /archive — hides the row from the default list, keeps it in the DB.
+        ("sessions", "archived",
+         "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"),
+        # Credential status / refresh tracking (B-4/B-5).
+        ("backend_credentials", "status",
+         "ALTER TABLE backend_credentials ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"),
+        ("backend_credentials", "token_expires_at",
+         "ALTER TABLE backend_credentials ADD COLUMN token_expires_at TEXT"),
+        ("backend_credentials", "needs_reconnect",
+         "ALTER TABLE backend_credentials ADD COLUMN needs_reconnect INTEGER NOT NULL DEFAULT 0"),
+        ("backend_credentials", "last_refresh_error_code",
+         "ALTER TABLE backend_credentials ADD COLUMN last_refresh_error_code TEXT"),
+        # File/image upload.
+        ("messages", "attachments", "ALTER TABLE messages ADD COLUMN attachments TEXT"),
+        # codex-backend.md §4.1 — DEFAULT backfills existing rows, no behaviour change.
+        ("sessions", "backend",
+         "ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL DEFAULT 'claude-code'"),
+        # Application archive/restore.
+        ("applications", "archived",
+         "ALTER TABLE applications ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"),
+        # The app's own icon, re-evaluated on each build; NULL until then.
+        ("applications", "icon_src", "ALTER TABLE applications ADD COLUMN icon_src TEXT"),
+    )
+
+    # Applied after `_migrate_agents` / the schedule migrations, because those
+    # rebuild `bridge_mappings` and `schedules` and a column added earlier
+    # would not survive the rebuild.
+    _LATE_COLUMN_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+        # Default harness for an agent's new sessions.
+        ("agents", "backend",
+         "ALTER TABLE agents ADD COLUMN backend TEXT NOT NULL DEFAULT 'claude-code'"),
+        # Per-chat verbosity — quiet by default (only replies/errors/approvals).
+        ("bridge_mappings", "verbose",
+         "ALTER TABLE bridge_mappings ADD COLUMN verbose INTEGER NOT NULL DEFAULT 0"),
+        # agent-collaboration.md §4.1 — a delegation child points at its parent
+        # (SET NULL on parent delete: orphaning beats mass-delete) and carries
+        # the original request for the UI header. `origin` gains 'delegation',
+        # which is a caller change, not DDL.
+        ("sessions", "parent_session_id",
+         "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT "
+         "REFERENCES sessions(id) ON DELETE SET NULL"),
+        ("sessions", "delegation_request",
+         "ALTER TABLE sessions ADD COLUMN delegation_request TEXT"),
+        # native-subagents.md §6 — '[]' means "the CLI's built-ins only".
+        ("agents", "subagents",
+         "ALTER TABLE agents ADD COLUMN subagents TEXT NOT NULL DEFAULT '[]'"),
+        # app-agent-access.md §3 — names the owning application; `origin` gains
+        # 'app' as a caller change.
+        ("sessions", "app_id", "ALTER TABLE sessions ADD COLUMN app_id TEXT"),
+        # session-rewind.md §4 — six nullable columns on sessions, two on
+        # messages. forked_from deliberately has no FK action, so a dangling
+        # reference survives a parent delete.
+        ("sessions", "forked_from_session_id",
+         "ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT"),
+        ("sessions", "fork_after_seq", "ALTER TABLE sessions ADD COLUMN fork_after_seq INTEGER"),
+        ("sessions", "fork_needs_replay",
+         "ALTER TABLE sessions ADD COLUMN fork_needs_replay INTEGER NOT NULL DEFAULT 0"),
+        ("sessions", "fork_metadata", "ALTER TABLE sessions ADD COLUMN fork_metadata TEXT"),
+        ("sessions", "fork_revert_record",
+         "ALTER TABLE sessions ADD COLUMN fork_revert_record TEXT"),
+        ("sessions", "fork_status", "ALTER TABLE sessions ADD COLUMN fork_status TEXT"),
+        ("messages", "git_head", "ALTER TABLE messages ADD COLUMN git_head TEXT"),
+        ("messages", "git_status_clean",
+         "ALTER TABLE messages ADD COLUMN git_status_clean INTEGER"),
+    )
+
+    async def _stamp(self, version: str) -> None:
+        """Record a migration as applied. The ledger exists so "what has run"
+        is a fact in the database rather than an inference from the schema."""
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, datetime.now(UTC).isoformat()),
+        )
+
+    async def _add_column(self, table: str, column: str, ddl: str) -> None:
+        """Apply one additive column migration, guarded by introspection.
+
+        This replaces `try: ALTER ...; except Exception: pass`. SQLite has no
+        `ADD COLUMN IF NOT EXISTS`, and the old form papered over that by
+        swallowing *every* exception — a misspelled column, a renamed table, a
+        locked database and a full disk all looked identical to "already
+        applied", so a broken migration silently no-opped and resurfaced much
+        later as an inexplicably missing column. Asking `PRAGMA table_info`
+        first means the expected case is tested for, and anything else raises.
+
+        Stamping after a column is found to *already* exist is deliberate: on a
+        database that predates the ledger the column is the evidence, so we
+        record what we verified rather than assuming a clean history.
+        """
+        if await self._has_column(table, column):
+            await self._stamp(f"column:{table}.{column}")
+            return
+        await self.conn.execute(ddl)
+        await self._stamp(f"column:{table}.{column}")
+        logger.info("migration applied: %s.%s", table, column)
+
     async def _apply_migrations(self) -> None:
-        """Idempotent additive migrations for tables that pre-existed."""
-        # sessions.credential_id was added when per-backend auth landed.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE sessions ADD COLUMN credential_id TEXT"
-            )
-        except Exception:
-            # Column already exists — SQLite has no IF NOT EXISTS for ALTER COLUMN
-            pass
+        """Bring an existing database up to the current schema.
 
-        # sessions.archived for /archive feature (hides old session row from
-        # the default list, keeps it in DB so it could be surfaced later).
-        try:
-            await self.conn.execute(
-                "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
-            )
-        except Exception:
-            pass
+        Idempotent and safe on every boot. Every step either verifies it has
+        already been applied or applies it; nothing is inferred from a
+        swallowed exception, so a genuine DDL failure now propagates instead of
+        masquerading as "already done".
+        """
+        for table, column, ddl in self._COLUMN_MIGRATIONS:
+            await self._add_column(table, column, ddl)
 
-        # backend_credentials gained status / refresh-tracking columns (B-4/B-5).
-        # Each ALTER is wrapped because SQLite has no IF NOT EXISTS for them.
-        for ddl in (
-            "ALTER TABLE backend_credentials ADD COLUMN "
-            "status TEXT NOT NULL DEFAULT 'active'",
-            "ALTER TABLE backend_credentials ADD COLUMN token_expires_at TEXT",
-            "ALTER TABLE backend_credentials ADD COLUMN "
-            "needs_reconnect INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE backend_credentials ADD COLUMN "
-            "last_refresh_error_code TEXT",
-        ):
-            try:
-                await self.conn.execute(ddl)
-            except Exception:
-                pass
-
-        # Storage split (B-4): copy any existing legacy secrets into the
-        # dedicated credential_secrets table. New writes go there directly;
-        # this catch-up only runs once per pre-split row.
+        # Storage split (B-4): copy pre-split secrets into their own table.
+        # New writes go there directly; this is a one-off catch-up, and
+        # INSERT OR IGNORE makes re-running a no-op. Kept in a try because it
+        # reads a legacy column that fresh databases do not have at all — the
+        # one place where "the statement may be invalid here" is the expected
+        # case rather than a bug, so it logs instead of passing silently.
         try:
             await self.conn.execute(
                 "INSERT OR IGNORE INTO credential_secrets "
                 "(credential_id, secret_encrypted) "
                 "SELECT id, secret_encrypted FROM backend_credentials"
             )
+            await self._stamp("backfill:credential_secrets")
         except Exception:
             logger.exception("credential storage-split backfill failed")
 
-        # messages.attachments was added with the file/image upload feature.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE messages ADD COLUMN attachments TEXT"
-            )
-        except Exception:
-            pass
-
-        # sessions.backend ('claude-code' | 'codex') — codex-backend.md §4.1.
-        # DEFAULT backfills existing rows to claude-code → no behavior change.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL "
-                "DEFAULT 'claude-code'"
-            )
-        except Exception:
-            pass
-
-        # applications.archived — added with the archived/restore flow. The
-        # DEFAULT backfills existing rows to "live", so no behavior change.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE applications ADD COLUMN "
-                "archived INTEGER NOT NULL DEFAULT 0"
-            )
-        except Exception:
-            pass
-
-        # applications.icon_src — the app's own icon, discovered from its files
-        # after each build. Nullable with no default: an existing row simply has
-        # no discovered icon until its next build re-evaluates it.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE applications ADD COLUMN icon_src TEXT"
-            )
-        except Exception:
-            pass
-
         # The applications name index was originally unconditional, which
-        # reserved a name forever once used — archiving an app would then
-        # block re-using its name. Rebuild it as live-only (same rule as
-        # agents). Cheap and idempotent: the schema recreates it right after.
-        try:
-            cur = await self.conn.execute(
-                "SELECT sql FROM sqlite_master WHERE type = 'index' "
-                "AND name = 'applications_name_unique'"
+        # reserved a name forever: archiving an app then blocked reusing it.
+        # Rebuild it live-only (the same rule agents use). Guarded on the
+        # index's own SQL, so it runs exactly once.
+        cur = await self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'applications_name_unique'"
+        )
+        row = await cur.fetchone()
+        if row and row[0] and "archived" not in row[0]:
+            await self.conn.execute("DROP INDEX applications_name_unique")
+            await self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique"
+                " ON applications(name COLLATE NOCASE) WHERE archived = 0"
             )
-            row = await cur.fetchone()
-            if row and row[0] and "archived" not in row[0]:
-                await self.conn.execute("DROP INDEX applications_name_unique")
-                await self.conn.execute(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique"
-                    " ON applications(name COLLATE NOCASE) WHERE archived = 0"
-                )
-        except Exception:
-            logger.exception("applications name-index migration failed")
+            logger.info("migration applied: applications_name_unique -> live-only")
+        await self._stamp("index:applications_name_unique_live_only")
 
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
         await self._migrate_schedule_run_at()
 
-        # agents.backend — default harness for an agent's new sessions. DEFAULT
-        # backfills existing agents to claude-code → no behavior change.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE agents ADD COLUMN backend TEXT NOT NULL "
-                "DEFAULT 'claude-code'"
-            )
-        except Exception:
-            pass
+        for table, column, ddl in self._LATE_COLUMN_MIGRATIONS:
+            await self._add_column(table, column, ddl)
 
-        # bridge_mappings.verbose — per-chat output verbosity (quiet by
-        # default: only octo replies/errors/approvals). DEFAULT 0 backfills
-        # existing chats to quiet. Runs after `_migrate_agents`, which may
-        # rebuild bridge_mappings, so the column survives that rebuild.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE bridge_mappings ADD COLUMN verbose INTEGER "
-                "NOT NULL DEFAULT 0"
-            )
-        except Exception:
-            pass
+        await self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_forked_from "
+            "ON sessions(forked_from_session_id)"
+        )
+        await self._stamp("index:idx_sessions_forked_from")
 
-        # Agent-to-agent collaboration (agent-collaboration.md §4.1). A
-        # delegation child session points at the parent session via
-        # parent_session_id (SET NULL on parent delete — orphaning beats
-        # mass-delete) and carries the original delegation prompt in
-        # delegation_request for the UI header. Both columns NULL on
-        # non-delegation sessions. origin gains a 'delegation' value
-        # (TEXT column — no DDL change, only callers).
-        for ddl in (
-            "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT "
-            "REFERENCES sessions(id) ON DELETE SET NULL",
-            "ALTER TABLE sessions ADD COLUMN delegation_request TEXT",
-        ):
-            try:
-                await self.conn.execute(ddl)
-            except Exception:
-                pass
-
-        # Agents that bring their own sub-agents (native-subagents.md §6).
-        # Additive; '[]' means "the CLI's built-in sub-agents only", which is
-        # every pre-existing row.
-        try:
-            await self.conn.execute(
-                "ALTER TABLE agents ADD COLUMN subagents TEXT NOT NULL DEFAULT '[]'"
-            )
-        except Exception:
-            pass
-
-        # Applications that talk to agents (app-agent-access.md §3). One
-        # nullable column naming the owning application; `origin` gains an
-        # 'app' value, which is a caller change, not a DDL one.
-        try:
-            await self.conn.execute("ALTER TABLE sessions ADD COLUMN app_id TEXT")
-        except Exception:
-            pass
-
-        # Session tree-rewind / fork (session-rewind.md §4). Six nullable
-        # columns on sessions + two on messages, all additive. forked_from has
-        # no FK action on purpose (dangling reference survives parent delete).
-        for ddl in (
-            "ALTER TABLE sessions ADD COLUMN forked_from_session_id TEXT",
-            "ALTER TABLE sessions ADD COLUMN fork_after_seq INTEGER",
-            "ALTER TABLE sessions ADD COLUMN fork_needs_replay INTEGER "
-            "NOT NULL DEFAULT 0",
-            "ALTER TABLE sessions ADD COLUMN fork_metadata TEXT",
-            "ALTER TABLE sessions ADD COLUMN fork_revert_record TEXT",
-            "ALTER TABLE sessions ADD COLUMN fork_status TEXT",
-            "ALTER TABLE messages ADD COLUMN git_head TEXT",
-            "ALTER TABLE messages ADD COLUMN git_status_clean INTEGER",
-        ):
-            try:
-                await self.conn.execute(ddl)
-            except Exception:
-                pass
-        try:
-            await self.conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sessions_forked_from "
-                "ON sessions(forked_from_session_id)"
-            )
-        except Exception:
-            pass
-
-        # Backfill default built-in MCP servers into every existing agent's
-        # mcp_servers list as new ones land (`ask_agent` —
-        # agent-collaboration.md §5.1; `research` — native-deep-research.md §7;
-        # `schedule` — schedule-tool.md §4). The CREATE TABLE default applies
-        # only to brand-new rows on fresh databases — pre-existing rows already
-        # have a stored value and need this catch-up. Idempotent:
-        # set-membership means re-running is a no-op.
+        # Backfill default built-in MCP servers into every existing agent as new
+        # ones land (`ask_agent` — agent-collaboration.md §5.1; `research` —
+        # native-deep-research.md §7; `schedule` — schedule-tool.md §4). The
+        # CREATE TABLE default only reaches brand-new rows on fresh databases;
+        # pre-existing rows already hold a value and need this catch-up.
+        # Set-membership makes re-running a no-op.
         await self._backfill_builtin_mcp_servers(
             ("ask_agent", "research", "schedule")
         )
+        await self._stamp("backfill:builtin_mcp_servers_v3")
 
     async def _backfill_builtin_mcp_servers(self, names: tuple[str, ...]) -> None:
         cursor = await self.conn.execute("SELECT id, mcp_servers FROM agents")

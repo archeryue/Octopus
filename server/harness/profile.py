@@ -27,16 +27,39 @@ from .login import LoginDriver
 
 @dataclass
 class McpServerEntry:
-    """Backend-neutral MCP server spec (the connector `mcp_entry` shape).
+    """Backend-neutral MCP server spec.
 
     Built once by `assembly.select_mcp_servers`; each profile renders the
     list into its own config form (`--mcp-config` JSON for Claude,
-    `-c mcp_servers.*` TOML for Codex)."""
+    `-c mcp_servers.*` TOML for Codex).
+
+    Two transports, distinguished by whether `url` is set:
+
+    - **stdio** (`command` + `args` + `env`): the CLI spawns the server as a
+      subprocess. This is the connector `mcp_entry` shape.
+    - **streamable-HTTP** (`url` + `credential`): the CLI connects to a server
+      the main app already hosts, so nothing is spawned. `credential` is the
+      per-session bearer the server resolves an identity from — with stdio it
+      travelled in `env`, which an HTTP server has no equivalent of.
+
+    `key` is the namespace either way, and it is load-bearing: both CLIs derive
+    the tool name from it (`mcp__<key>__<tool>`), so a key change renames every
+    tool and invalidates every prompt that documents them.
+    """
 
     key: str
-    command: str
-    args: list[str]
-    env: dict[str, str]
+    command: str = ""
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    url: str = ""
+    credential: str = ""
+
+    @property
+    def is_http(self) -> bool:
+        """Whether this entry is served over streamable-HTTP rather than
+        spawned. Derived from the data, so no caller has to track a mode flag
+        (the same reasoning as the profile's derived capabilities)."""
+        return bool(self.url)
 
 
 @dataclass(frozen=True)
