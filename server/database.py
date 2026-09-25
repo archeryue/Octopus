@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +12,12 @@ from typing import Any
 import aiosqlite
 
 logger = logging.getLogger(__name__)
+
+# Bounds on the deferred commit (B4). Whichever trips first flushes, so the
+# worst case is ~half a second or ~32 messages of transcript at risk from a
+# hard kill, instead of an entire turn.
+_FLUSH_AFTER_SECONDS = 0.5
+_FLUSH_EVERY_APPENDS = 32
 
 # Built-in MCP servers attached to the Default Agent (and the default for
 # any newly-created agent). Kept here so the migration backfill and the
@@ -417,11 +424,22 @@ class Database:
         self._conn: aiosqlite.Connection | None = None
         self._dirty: bool = False
         self._closed: bool = False
+        self._pending_appends: int = 0
+        self._last_flush: float = time.monotonic()
 
     async def initialize(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
         await self.conn.execute("PRAGMA journal_mode=WAL")
         await self.conn.execute("PRAGMA foreign_keys=ON")
+        # Wait rather than fail if another connection holds the write lock —
+        # the CLI's own tooling and the test suite both open this file, and the
+        # default is to raise "database is locked" immediately (B5).
+        await self.conn.execute("PRAGMA busy_timeout=5000")
+        # NORMAL is the standard pairing with WAL: a commit does not fsync, so
+        # a crash can lose the last commits but cannot corrupt the database.
+        # Stated explicitly because the durability story below (the timed
+        # flush) depends on knowing which it is.
+        await self.conn.execute("PRAGMA synchronous=NORMAL")
         await self.conn.executescript(_SCHEMA)
         await self._apply_migrations()
         await self.conn.commit()
@@ -860,6 +878,31 @@ class Database:
         if self._dirty:
             await self.conn.commit()
             self._dirty = False
+            self._pending_appends = 0
+            self._last_flush = time.monotonic()
+
+    async def _maybe_flush(self) -> None:
+        """Commit if the pending batch has grown old or large enough.
+
+        `append_message` sets `_dirty` and defers the commit, which is the right
+        trade for a per-token-ish append path — but it was unbounded. Only three
+        call sites flushed explicitly and no timer existed, so a hard kill lost
+        everything since the last incidental flush, and a long tool-heavy turn
+        with no intervening read lost the most. The production WAL sitting at
+        7 MB was this batching visible on disk.
+
+        Whichever bound trips first wins, so the exposure is sub-second in wall
+        time and bounded in rows regardless of traffic shape (B4). Note reads
+        also flush — `load_messages` calls flush() for write-visibility — so in
+        practice this is the floor, not the only trigger.
+        """
+        if not self._dirty:
+            return
+        if (
+            self._pending_appends >= _FLUSH_EVERY_APPENDS
+            or (time.monotonic() - self._last_flush) >= _FLUSH_AFTER_SECONDS
+        ):
+            await self.flush()
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -1068,24 +1111,51 @@ class Database:
             ),
         )
         self._dirty = True
+        self._pending_appends += 1
+        await self._maybe_flush()
 
     async def load_messages(
-        self, session_id: str, limit: int = 0, offset: int = 0
+        self,
+        session_id: str,
+        limit: int = 0,
+        offset: int = 0,
+        *,
+        max_seq: int | None = None,
+        newest_first: bool = False,
     ) -> list[dict[str, Any]]:
+        """Messages for a session, oldest first by default.
+
+        `max_seq` bounds the range in SQL. Callers that wanted a prefix used to
+        load the whole transcript and drop the tail in a list comprehension —
+        on the largest session here that is 4,600 rows read to keep a handful
+        (polish-2026-09.md §4 B3). `idx_messages_session(session_id, seq)`
+        makes the bounded form a range scan.
+
+        `newest_first` exists for windowing: taking the most recent N means
+        ordering descending, limiting, and reversing — otherwise LIMIT would
+        return the *oldest* N. The result is still returned oldest-first so no
+        caller has to care which direction it was fetched in.
+        """
         await self._ensure_connected()
         await self.flush()  # ensure pending writes are visible
         query = (
             "SELECT seq, role, type, content, tool_name, tool_input, tool_use_id, "
             "is_error, session_id_ref, cost, attachments, git_head, "
             "git_status_clean "
-            "FROM messages WHERE session_id = ? ORDER BY seq"
+            "FROM messages WHERE session_id = ?"
         )
         params: list = [session_id]
+        if max_seq is not None:
+            query += " AND seq <= ?"
+            params.append(max_seq)
+        query += " ORDER BY seq DESC" if newest_first else " ORDER BY seq"
         if limit > 0:
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
         cursor = await self.conn.execute(query, params)
-        rows = await cursor.fetchall()
+        rows = list(await cursor.fetchall())
+        if newest_first:
+            rows.reverse()  # fetched newest-first for the LIMIT; hand back in order
         results = []
         for row in rows:
             content = json.loads(row[3]) if row[3] is not None else None

@@ -61,6 +61,11 @@ pre-commit:
       run: .venv/bin/pytest tests/ -m "not real" -q --tb=short
       fail_text: "Backend tests failed. Run '.venv/bin/pytest tests/ -m \"not real\" -v' for detail."
 
+    architecture-nag:
+      tags: backend
+      glob: "server/**/*.py"
+      run: ./scripts/nag-architecture.sh
+
     contracts:
       tags: backend
       # web/src/api/contracts.ts is generated from the OpenAPI schema; these

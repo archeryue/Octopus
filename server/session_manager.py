@@ -1964,10 +1964,12 @@ class SessionManager:
                     if session.fork_after_seq is not None
                     else -1
                 )
+                # Bounded in SQL rather than loaded whole and filtered: the
+                # prefix is all that is wanted, and on a long session the
+                # discarded remainder is the bulk of it (B3).
                 copied = [
                     MessageContent(**m)
-                    for m in await self.db.load_messages(session.id)
-                    if m["seq"] <= cutoff
+                    for m in await self.db.load_messages(session.id, max_seq=cutoff)
                 ]
                 augmented_prompt = fork_helpers.wrap_for_fork_replay(
                     augmented_prompt, copied
