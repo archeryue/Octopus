@@ -25,7 +25,6 @@ for _d in [
     if _d and _d not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
-from tests.cli_gate import claude_cli_works  # noqa: E402
 
 from server.agent_manager import AgentManager  # noqa: E402
 from server.app_agent import AppAgentManager, ORIGIN_APP  # noqa: E402
@@ -34,7 +33,7 @@ from server.config import settings  # noqa: E402
 from server.database import Database  # noqa: E402
 from server.session_manager import SessionManager  # noqa: E402
 
-HAS_CLAUDE = claude_cli_works()
+pytestmark = pytest.mark.real
 
 # A word the model would never produce on its own, so "it answered" can't be
 # confused with "something echoed the prompt".
@@ -42,7 +41,7 @@ CODEWORD = "PERIWINKLE7731"
 
 
 @pytest.mark.asyncio
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not installed or not signed in")
+@pytest.mark.real_claude
 async def test_an_app_asks_a_real_agent_about_its_context(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "applications_dir", str(tmp_path / "applications"))
     db = Database(":memory:")

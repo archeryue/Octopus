@@ -51,12 +51,10 @@ for _d in [
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
 
-from tests.cli_gate import claude_cli_works, codex_cli_works
 
 # Gate on the CLI being installed AND signed in — a logged-out binary would
 # otherwise fail these with a confusing 401 instead of skipping.
-HAS_CLAUDE = claude_cli_works()
-HAS_CODEX = codex_cli_works()
+pytestmark = pytest.mark.real
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +186,7 @@ async def _wait_for(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_real_two_hop_claude_to_claude(tmp_path, monkeypatch):
     """Octo (claude-code) delegates to Vera (claude-code). Vera's
@@ -231,7 +229,7 @@ async def test_real_two_hop_claude_to_claude(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_real_question_loop_claude_to_claude(tmp_path, monkeypatch):
     """Real-LLM check that a child's ``ask`` MCP question bubbles up
@@ -323,10 +321,8 @@ async def test_real_question_loop_claude_to_claude(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not (HAS_CLAUDE and HAS_CODEX),
-    reason="both claude and codex CLIs need to be on PATH",
-)
+@pytest.mark.real_claude
+@pytest.mark.real_codex
 @pytest.mark.asyncio
 async def test_real_two_hop_claude_to_codex(tmp_path, monkeypatch):
     """Octo (claude-code) delegates to Vera, who runs the codex
@@ -367,7 +363,7 @@ async def test_real_two_hop_claude_to_codex(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_real_three_hop_chain(tmp_path, monkeypatch):
     """Octo asks Vera; Vera asks Pete; Pete replies with a token.

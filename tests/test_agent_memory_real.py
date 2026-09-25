@@ -18,10 +18,11 @@ import os
 
 import pytest
 
-from tests.cli_gate import claude_cli_works, codex_cli_works
 from server import agent_memory
 from server.config import settings
 from server.harness import HarnessEvent, RunConfig, get_harness
+
+pytestmark = pytest.mark.real
 
 for _d in [
     os.path.expanduser("~/.local/bin"),
@@ -82,7 +83,7 @@ async def _recall(backend: str, cfg: dict, wd: str) -> str:
     return _text(events)
 
 
-@pytest.mark.skipif(not claude_cli_works(), reason="claude CLI unavailable or not signed in")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_claude_reads_per_agent_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "agents_dir", str(tmp_path / "agents"))
@@ -96,7 +97,7 @@ async def test_claude_reads_per_agent_memory(tmp_path, monkeypatch):
     assert CODENAME in out.upper()
 
 
-@pytest.mark.skipif(not codex_cli_works(), reason="codex CLI unavailable or not signed in")
+@pytest.mark.real_codex
 @pytest.mark.asyncio
 async def test_codex_reads_per_agent_memory(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "agents_dir", str(tmp_path / "agents"))
@@ -110,7 +111,7 @@ async def test_codex_reads_per_agent_memory(tmp_path, monkeypatch):
     assert CODENAME in out.upper()
 
 
-@pytest.mark.skipif(not claude_cli_works(), reason="claude CLI unavailable or not signed in")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_claude_resume_survives_memory_override(tmp_path, monkeypatch):
     """With memory pointed at the per-agent dir, --resume must still find the

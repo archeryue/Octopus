@@ -19,13 +19,9 @@ import asyncio
 
 import pytest
 
-from tests.cli_gate import codex_cli_works
 from server.harness import HarnessEvent, RunConfig, get_harness
 
-pytestmark = pytest.mark.skipif(
-    not codex_cli_works(),
-    reason="codex CLI not on PATH or no ~/.codex login; skipping real-CLI tests",
-)
+pytestmark = [pytest.mark.real, pytest.mark.real_codex]
 
 
 def _codex_run(**cfg):

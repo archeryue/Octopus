@@ -34,12 +34,10 @@ for _d in [
     if _d and _d not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
-from tests.cli_gate import claude_cli_works, codex_cli_works
 
 # Gate on the CLI being installed AND signed in — a logged-out binary would
 # otherwise fail these with a confusing 401 instead of skipping.
-HAS_CLAUDE = claude_cli_works()
-HAS_CODEX = codex_cli_works()
+pytestmark = pytest.mark.real
 
 
 async def _bootstrap(tmp_path, monkeypatch):
@@ -110,7 +108,7 @@ def _user_seqs(msgs):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_claude_fork_resumes_pre_branch_context(tmp_path, monkeypatch):
     """Plant MARIGOLD (turn 1), then ZEPHYR (turn 2). Fork rewinding to turn 2.
@@ -168,7 +166,7 @@ async def test_claude_fork_resumes_pre_branch_context(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not HAS_CODEX, reason="codex CLI not on PATH")
+@pytest.mark.real_codex
 @pytest.mark.asyncio
 async def test_codex_fork_history_replay_then_native_resume(tmp_path, monkeypatch):
     db, mgr, am = await _bootstrap(tmp_path, monkeypatch)
@@ -228,7 +226,7 @@ def _git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_claude_fork_safe_revert_real_repo(tmp_path, monkeypatch):
     """A real turn writes a file into a clean git repo; forking at M=0 with

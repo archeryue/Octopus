@@ -28,12 +28,8 @@ for _d in _EXTRA_BIN_DIRS:
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
 
-from tests.cli_gate import claude_cli_works
 
-pytestmark = pytest.mark.skipif(
-    not claude_cli_works(),
-    reason="claude CLI unavailable or not signed in; skip real-CLI tests",
-)
+pytestmark = [pytest.mark.real, pytest.mark.real_claude]
 
 CWD = os.getcwd()
 

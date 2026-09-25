@@ -57,10 +57,19 @@ def _usable_codex_credential() -> str | None:
     return None
 
 
-pytestmark = pytest.mark.skipif(
-    _usable_codex_credential() is None,
-    reason="no signed-in codex credential available for a real research run",
-)
+pytestmark = [pytest.mark.real, pytest.mark.real_codex]
+
+
+@pytest.fixture(autouse=True)
+def _require_signed_in_codex_credential():
+    """This suite needs more than a signed-in CLI: it needs a usable codex
+    credential resolvable from the DB. That probe is file-local (it shells
+    out), so it cannot be a conftest marker — but it must still not run at
+    import time. An autouse fixture runs at setup, which is the same
+    deferral the markers get.
+    """
+    if _usable_codex_credential() is None:
+        pytest.skip("no signed-in codex credential available for a real research run")
 
 
 @pytest.mark.asyncio

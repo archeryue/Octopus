@@ -10,12 +10,9 @@ import asyncio
 import pytest
 
 from server import codex_login
-from server.harness.run import _which_with_fallback
 from server.config import settings
 
-pytestmark = pytest.mark.skipif(
-    _which_with_fallback("codex") is None, reason="needs the codex CLI on PATH"
-)
+pytestmark = [pytest.mark.real, pytest.mark.codex_bin]
 
 
 @pytest.mark.asyncio

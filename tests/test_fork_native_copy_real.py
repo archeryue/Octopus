@@ -26,6 +26,8 @@ from server.harness import claude_code as cc
 from server.harness import codex as cx
 from server.harness.events import HarnessCredential
 
+pytestmark = pytest.mark.real
+
 # Substrings that mark an ENVIRONMENTAL CLI failure (auth/quota/provider), not a
 # fork-logic bug — when a non-zero call shows one, we skip instead of fail.
 _ENV_FAIL_MARKERS = (
@@ -46,7 +48,7 @@ def _skip_if_env_failure(proc: subprocess.CompletedProcess, what: str) -> None:
         pytest.skip(f"{what}: environmental CLI failure (auth/rate-limit)")
 
 
-@pytest.mark.skipif(_which_with_fallback("claude") is None, reason="claude CLI not installed")
+@pytest.mark.claude_bin
 @pytest.mark.asyncio
 async def test_claude_native_copy_resume_recalls_context(tmp_path):
     exe = _which_with_fallback("claude")
@@ -99,7 +101,7 @@ def _codex_home_with_auth() -> str | None:
     return None
 
 
-@pytest.mark.skipif(_which_with_fallback("codex") is None, reason="codex CLI not installed")
+@pytest.mark.codex_bin
 @pytest.mark.asyncio
 async def test_codex_native_copy_resume_recalls_context(tmp_path):
     exe = _which_with_fallback("codex")

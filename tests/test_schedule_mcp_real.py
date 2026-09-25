@@ -39,10 +39,8 @@ for _d in [
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
 
-from tests.cli_gate import claude_cli_works, codex_cli_works  # noqa: E402
 
-HAS_CLAUDE = claude_cli_works()
-HAS_CODEX = codex_cli_works()
+pytestmark = pytest.mark.real
 
 
 async def _serve_schedule_api() -> tuple[int, "uvicorn.Server", asyncio.Task]:
@@ -115,7 +113,7 @@ async def _turn(session_id: str, prompt: str) -> None:
         pass
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_real_claude_schedules_a_weekday_morning_run(tmp_path, monkeypatch):
     """"Every weekday at 9am" has to come out as a crontab expression that
@@ -159,7 +157,7 @@ async def test_real_claude_schedules_a_weekday_morning_run(tmp_path, monkeypatch
         await teardown()
 
 
-@pytest.mark.skipif(not HAS_CLAUDE, reason="claude CLI not on PATH")
+@pytest.mark.real_claude
 @pytest.mark.asyncio
 async def test_real_claude_finds_and_pauses_an_existing_schedule(tmp_path, monkeypatch):
     """"Stop the queue poll for now" means list, match by name, pause — and
@@ -196,7 +194,7 @@ async def test_real_claude_finds_and_pauses_an_existing_schedule(tmp_path, monke
         await teardown()
 
 
-@pytest.mark.skipif(not HAS_CODEX, reason="codex CLI not on PATH")
+@pytest.mark.real_codex
 @pytest.mark.asyncio
 async def test_real_codex_schedules_an_interval_run(tmp_path, monkeypatch):
     """The same tool, driven by the other harness — the MCP surface is

@@ -25,14 +25,10 @@ for _d in [
     if _d and _d not in os.environ.get("PATH", "").split(os.pathsep):
         os.environ["PATH"] = _d + os.pathsep + os.environ.get("PATH", "")
 
-from tests.cli_gate import claude_cli_works  # noqa: E402
 
 from server.harness import HarnessEvent, RunConfig, get_harness  # noqa: E402
 
-pytestmark = pytest.mark.skipif(
-    not claude_cli_works(),
-    reason="claude CLI unavailable or not signed in; skip real-CLI tests",
-)
+pytestmark = [pytest.mark.real, pytest.mark.real_claude]
 
 MARKER = "MARKER_ZX9"
 

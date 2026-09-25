@@ -20,14 +20,10 @@ from __future__ import annotations
 
 import pytest
 
-from tests.cli_gate import claude_cli_works
 from server.harness import get_harness
 from server.showme_ai import resolve_showme_reference
 
-pytestmark = pytest.mark.skipif(
-    not claude_cli_works(),
-    reason="claude CLI unavailable or not signed in",
-)
+pytestmark = [pytest.mark.real, pytest.mark.real_claude]
 
 
 @pytest.mark.asyncio

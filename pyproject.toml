@@ -31,3 +31,22 @@ include = ["server*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "--strict-markers"
+# The real-CLI tier. `real` is the umbrella every tests/*_real.py file
+# carries, so `-m "not real"` is the hermetic tier (1,147 of 1,181 tests)
+# — it replaces hand-listing --ignore for each file. The rest say WHICH
+# CLI a test needs and how strongly: `*_bin` wants only the binary on
+# PATH (a login test must NOT require being logged in), `real_claude` /
+# `real_codex` want one that is signed in and actually answers.
+#
+# These are markers rather than module-level skipif calls so the probe
+# happens in pytest_runtest_setup (tests/conftest.py) instead of at
+# import: evaluating them during collection made plain `--collect-only`
+# spawn a real `claude --print` (0.80 s hermetic vs 16.44 s full).
+markers = [
+    "real: talks to a real CLI/model; deselect with -m 'not real'",
+    "real_claude: needs a claude CLI that is installed AND signed in",
+    "real_codex: needs a codex CLI that is installed AND signed in",
+    "claude_bin: needs only the claude binary on PATH, not a login",
+    "codex_bin: needs only the codex binary on PATH, not a login",
+]

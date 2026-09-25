@@ -7,14 +7,10 @@ live CLI, not just mocks."""
 
 import pytest
 
-from tests.cli_gate import claude_cli_works
 from server.harness import get_harness
 from server.schedule_ai import parse_schedule_text
 
-pytestmark = pytest.mark.skipif(
-    not claude_cli_works(),
-    reason="claude CLI unavailable or not signed in",
-)
+pytestmark = [pytest.mark.real, pytest.mark.real_claude]
 
 
 @pytest.mark.asyncio
