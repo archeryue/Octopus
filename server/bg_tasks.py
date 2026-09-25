@@ -35,7 +35,7 @@ import signal
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .database import Database
@@ -98,7 +98,7 @@ class BgTaskRecord:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _short_id() -> str:
@@ -213,7 +213,7 @@ class BgTaskManager:
             if rt.task and not rt.task.done():
                 try:
                     await asyncio.wait_for(rt.task, timeout=5.0)
-                except (asyncio.TimeoutError, Exception):
+                except (TimeoutError, Exception):
                     pass
 
     # ------------------------------------------------------------------ public API (called by MCP / REST)
@@ -437,7 +437,7 @@ class BgTaskManager:
         try:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=timeout_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 timed_out = True
                 logger.warning(
                     "bg task %s timed out after %ds", rt.record.id, timeout_seconds
@@ -446,7 +446,7 @@ class BgTaskManager:
                 await self._terminate_proc(rt)
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
             # Drain readers — wait_for returns when proc exits, but
@@ -454,7 +454,7 @@ class BgTaskManager:
             for r in readers:
                 try:
                     await asyncio.wait_for(r, timeout=2.0)
-                except (asyncio.TimeoutError, Exception):
+                except (TimeoutError, Exception):
                     r.cancel()
 
         except asyncio.CancelledError:
@@ -463,7 +463,7 @@ class BgTaskManager:
             await self._terminate_proc(rt)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             raise
 

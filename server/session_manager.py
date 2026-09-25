@@ -7,21 +7,23 @@ import os
 import shutil
 import time
 import uuid
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
+from . import fork_helpers
 from .attachments import (
     MAX_ATTACHMENTS_PER_MESSAGE,
-    AttachmentError,
     delete_session_attachments,
+)
+from .attachments import (
     get_path as get_attachment_path,
 )
-from .large_prompts import (
-    delete_session_large_prompts,
-    spill_if_large,
-)
+from .config import settings
+from .crypto import decrypt, encrypt
+from .database import Database
 from .harness import (
     BackendForkNotSupported,
     HarnessCredential,
@@ -31,21 +33,20 @@ from .harness import (
     SubagentUpdate,
     get_harness,
 )
-from . import fork_helpers
-from .config import settings
-from .crypto import decrypt, encrypt
-from .database import Database
-from .oauth_errors import RefreshErrorCode
-from .oauth_providers import OAuthTokenSet, get_provider
+from .large_prompts import (
+    delete_session_large_prompts,
+    spill_if_large,
+)
 from .models import (
     AttachmentMetadata,
     CredentialStatus,
     MessageContent,
     MessageRole,
-    PendingQuestionInfo,
     SessionDetail,
     SessionStatus,
 )
+from .oauth_errors import RefreshErrorCode
+from .oauth_providers import OAuthTokenSet, get_provider
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +217,7 @@ class Session:
     name: str
     working_dir: str
     status: SessionStatus = SessionStatus.idle
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     claude_session_id: str | None = None
     credential_id: str | None = None
     # Owning agent (agent-refactor.md). agent_id is required for any session
@@ -644,7 +645,7 @@ class SessionManager:
             summary = await fork_helpers.classify_side_effects(self.db, parent_id, M)
 
             # 5. DB-only transaction: insert fork row + copied messages.
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             # A fork is a rewind, not a sibling branch: it inherits the
             # parent's exact name so it slots into the sidebar as the original
             # session (the parent is archived below). An explicit `label` still
@@ -823,7 +824,9 @@ class SessionManager:
         # Normalize both sides (expanduser + abspath) so a `~/.octopus/fork/...`
         # style row still classifies — otherwise it would leak rather than be
         # swept (Vera review hardening).
-        norm = lambda p: os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+        def norm(p: str) -> str:
+            return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+
         base = norm(SessionManager._fork_copy_base())
         wd = norm(working_dir)
         return wd != base and (wd + os.sep).startswith(base + os.sep)
@@ -911,7 +914,7 @@ class SessionManager:
                     reason="copy_failed", status_code=500,
                 )
 
-            now = datetime.now(timezone.utc).isoformat()
+            now = datetime.now(UTC).isoformat()
             fork_name = label or f"{parent.name} (fork)"
             # The fork's metadata, written at INSERT so it survives a prepare
             # failure: `full_copy`/`duplicated_from` drive the UI, and
@@ -1135,7 +1138,7 @@ class SessionManager:
 
         if not name:
             label = (agent or {}).get("name", "Agent")
-            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+            stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
             name = f"{label} — {stamp}"
 
         sid = uuid.uuid4().hex[:12]
@@ -1871,7 +1874,7 @@ class SessionManager:
 
         try:
             await asyncio.wait_for(session._lock.acquire(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise ValueError(f"Session {session_id} is busy")
 
         try:
@@ -2191,7 +2194,7 @@ class SessionManager:
                 self._forget_backend(session)
                 try:
                     await asyncio.wait_for(stale.stop(), timeout=_HELD_STOP_TIMEOUT)
-                except (asyncio.TimeoutError, Exception):
+                except (TimeoutError, Exception):
                     logger.warning(
                         "session %s: abandoning a process we couldn't stop", session.id
                     )
@@ -2714,7 +2717,7 @@ class SessionManager:
                 ws_event["seq"] = msg_seq
             await self._broadcast(ws_event)
 
-    async def _try_steer(self, session: "Session", queued: QueuedPrompt) -> bool:
+    async def _try_steer(self, session: Session, queued: QueuedPrompt) -> bool:
         """Offer a message to the running turn. True if it was accepted.
 
         Everything that isn't accepted falls through to the normal queue, so
@@ -2737,7 +2740,7 @@ class SessionManager:
             session._steer_ready.set()
         return True
 
-    async def _steer_writer(self, session: "Session", backend: HarnessRun) -> int:
+    async def _steer_writer(self, session: Session, backend: HarnessRun) -> int:
         """The turn's only writer of mid-turn user frames.
 
         Waits on `_steer_ready` rather than on the event stream, because during
@@ -2908,7 +2911,7 @@ class SessionManager:
                 # a reason to hang the server.
                 await asyncio.wait_for(backend.stop(), timeout=_HELD_STOP_TIMEOUT)
                 stopped += 1
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "held process for session %s didn't stop in %.0fs; abandoning it",
                     session.id,
@@ -3242,7 +3245,7 @@ class SessionManager:
             settings.auth_token,
         )
         token_expires_at = datetime.fromtimestamp(
-            new_ts.expires_at_epoch, tz=timezone.utc
+            new_ts.expires_at_epoch, tz=UTC
         ).isoformat()
         await self.db.update_credential(
             credential_id,
@@ -3257,7 +3260,7 @@ class SessionManager:
 
     def _start_turn_watchdog(
         self, backend: HarnessRun, state: dict[str, Any]
-    ) -> "asyncio.Task | None":
+    ) -> asyncio.Task | None:
         """Stop `backend` if the turn goes silent for `turn_idle_timeout_seconds`
         or runs past `turn_max_seconds` (turn-safety.md §3). Returns the watchdog
         task (or None if both checks are disabled). On a trip it records
@@ -3762,7 +3765,7 @@ class SessionManager:
             return ans
         try:
             await asyncio.wait_for(ev.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         return session._pending_question_answers.get(question_id)
 

@@ -88,7 +88,7 @@ async def run_web_leaf(
                     error = error or (ev.content or "web leaf error")
 
         await asyncio.wait_for(_consume(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         error = "web leaf timed out"
     except asyncio.CancelledError:
         raise

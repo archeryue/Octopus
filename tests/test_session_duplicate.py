@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from server import session_manager as sm
 from server.database import Database
 from server.main import app
-from server import session_manager as sm
 from server.session_manager import ForkError, QueuedPrompt, SessionManager
 from server.session_manager import session_manager as global_sm
 
@@ -128,7 +128,7 @@ async def test_duplicate_native_copy_when_parent_has_transcript(manager, tmp_pat
     # The copied transcript exists at the fork's own slug under its new id.
     copied = cc._claude_project_dir(fork.working_dir) / f"{fork.claude_session_id}.jsonl"
     assert copied.is_file()
-    rows = [json.loads(l) for l in copied.read_text().splitlines() if l]
+    rows = [json.loads(line) for line in copied.read_text().splitlines() if line]
     assert {r["sessionId"] for r in rows} == {fork.claude_session_id}
     assert {r["cwd"] for r in rows if "cwd" in r} == {fork.working_dir}
 
@@ -146,7 +146,8 @@ async def test_duplicate_pins_cleanup_credential_for_codex(manager, tmp_path, mo
     cx_fork = await manager.duplicate_session(cx_parent.id)
     assert json.loads(cx_fork.fork_metadata)["cleanup_credential_id"] == "cred-1"
 
-    b = tmp_path / "b"; b.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     cl_parent = await _seed_parent(manager, _repo(b), backend="claude-code")
     cl_parent.credential_id = "cred-2"
     await manager.db.update_session_field(cl_parent.id, credential_id="cred-2")

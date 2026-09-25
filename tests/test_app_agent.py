@@ -23,17 +23,19 @@ from httpx import ASGITransport, AsyncClient
 from server import app_agent as app_agent_mod
 from server.agent_manager import AgentManager
 from server.app_agent import (
+    ORIGIN_APP,
     AppAgentError,
     AppAgentManager,
-    ORIGIN_APP,
 )
 from server.app_backends import script_env
 from server.applications import (
     ApplicationManager,
     app_scope_token,
-    application_manager as singleton_application_manager,
     data_dir_for,
     is_app_scope_token,
+)
+from server.applications import (
+    application_manager as singleton_application_manager,
 )
 from server.config import settings
 from server.database import Database

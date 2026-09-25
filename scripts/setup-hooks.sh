@@ -18,8 +18,8 @@ fi
 lefthook install
 
 echo "Hooks installed. From now on, commits will run:"
-echo "  - tsc --noEmit + vitest      (when web/src TS changes)"
-echo "  - pytest -m 'not real'       (when server/ or tests/ Python changes)"
+echo "  - eslint + tsc --noEmit + vitest   (when web TS changes)"
+echo "  - ruff + mypy + pytest -m 'not real'  (when Python changes)"
 echo "  - contracts.ts drift check   (when routes or pydantic models change)"
 echo
 echo "To run all of them at once, regardless of what changed:"

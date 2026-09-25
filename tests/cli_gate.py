@@ -20,7 +20,6 @@ namespace package — `import conftest` is NOT reliable under pytest).
 from __future__ import annotations
 
 import functools
-import os
 import shutil
 import subprocess
 
@@ -55,7 +54,7 @@ def _probe(argv: list[str], *, timeout: float, cwd: str | None = None) -> bool:
     is not load, and is reported rather than swallowed.
     """
     last: Exception | None = None
-    for attempt, limit in enumerate((timeout, timeout * 2)):
+    for _attempt, limit in enumerate((timeout, timeout * 2)):
         try:
             proc = subprocess.run(
                 argv, stdin=subprocess.DEVNULL, capture_output=True,

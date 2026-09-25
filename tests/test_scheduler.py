@@ -3,9 +3,9 @@
 import pytest
 
 from server.database import Database
+from server.models import SessionStatus
 from server.scheduler import ScheduleRunner
 from server.session_manager import SessionManager
-from server.models import SessionStatus
 
 
 @pytest.fixture

@@ -20,7 +20,7 @@ import asyncio
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from ..config import settings
@@ -44,7 +44,7 @@ class ResearchError(Exception):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _research_dir() -> str:
@@ -57,12 +57,12 @@ class ResearchManager:
     """App-lifetime singleton; bound in main.py's lifespan."""
 
     def __init__(self) -> None:
-        self.session_mgr: "SessionManager | None" = None
-        self.db: "Database | None" = None
+        self.session_mgr: SessionManager | None = None
+        self.db: Database | None = None
         self._tasks: dict[str, asyncio.Task] = {}
         self._job_sem: asyncio.Semaphore | None = None
 
-    def bind(self, session_mgr: "SessionManager", db: "Database") -> None:
+    def bind(self, session_mgr: SessionManager, db: Database) -> None:
         self.session_mgr = session_mgr
         self.db = db
         self._job_sem = asyncio.Semaphore(max(1, settings.research_max_concurrent_jobs))
@@ -110,7 +110,9 @@ class ResearchManager:
         task = asyncio.create_task(self._run_job(job_id, session_id, question))
         self._tasks[job_id] = task
         task.add_done_callback(lambda _t, jid=job_id: self._tasks.pop(jid, None))
-        return await self.db.get_research_job(job_id)
+        row = await self.db.get_research_job(job_id)
+        assert row is not None  # written immediately above
+        return row
 
     # ------------------------------------------------------------------- run
 
@@ -178,7 +180,7 @@ class ResearchManager:
         except asyncio.CancelledError:
             await self._finalize_failed(job_id, session_id, "cancelled", "cancelled by user")
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._finalize_failed(
                 job_id, session_id, "failed",
                 f"research exceeded {settings.research_job_timeout_seconds}s and was stopped",
@@ -265,7 +267,9 @@ class ResearchManager:
         task = self._tasks.get(job_id)
         if task and not task.done():
             task.cancel()  # reaps in-flight leaves via CancelledError
-        return await self.db.get_research_job(job_id)
+        row = await self.db.get_research_job(job_id)
+        assert row is not None  # written immediately above
+        return row
 
     # --------------------------------------------------------------- helpers
 

@@ -49,7 +49,7 @@ async def _drain(backend, timeout: float = 60.0) -> list[HarnessEvent]:
 
     try:
         await asyncio.wait_for(collect(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise AssertionError(
             f"stream() didn't terminate within {timeout}s. "
             f"Collected so far: {[e.type for e in events]}"
@@ -259,7 +259,7 @@ async def test_real_interrupt_terminates_in_flight_turn():
     # Consumer should wrap up promptly after interrupt + stop
     try:
         await asyncio.wait_for(consumer, timeout=15.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         consumer.cancel()
         raise AssertionError(
             f"stream() didn't terminate after interrupt; collected {len(events)} events"

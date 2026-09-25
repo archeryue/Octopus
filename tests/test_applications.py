@@ -30,11 +30,13 @@ from server.applications import (
     ApplicationError,
     ApplicationManager,
     allocate_app_dir,
-    application_manager as singleton_application_manager,
     is_inside_root,
     is_safe_relative_path,
     resolve_within,
     slugify,
+)
+from server.applications import (
+    application_manager as singleton_application_manager,
 )
 from server.config import settings
 from server.database import Database
@@ -920,7 +922,7 @@ def test_icon_escaping_the_app_dir_is_rejected(tmp_path):
 def test_oversized_icon_file_is_skipped(tmp_path):
     """A stray large asset isn't a sidebar icon, and would be fetched on every
     render of every row."""
-    from server.applications import discover_icon_src, _MAX_ICON_BYTES
+    from server.applications import _MAX_ICON_BYTES, discover_icon_src
 
     d = _app(tmp_path)
     (Path(d) / "index.html").write_text("<html></html>")
@@ -930,7 +932,7 @@ def test_oversized_icon_file_is_skipped(tmp_path):
 
 def test_oversized_inline_icon_is_skipped(tmp_path):
     """An inline icon ships in every API response, so it has to stay small."""
-    from server.applications import discover_icon_src, _MAX_DATA_ICON_CHARS
+    from server.applications import _MAX_DATA_ICON_CHARS, discover_icon_src
 
     d = _app(tmp_path)
     huge = "data:image/svg+xml," + ("a" * (_MAX_DATA_ICON_CHARS + 1))

@@ -43,8 +43,8 @@ def pytest_runtest_setup(item):
     so the cost is paid at most once per CLI per session no matter how many
     marked tests run.
     """
-    from tests.cli_gate import claude_cli_works, codex_cli_works
     from server.harness.run import _which_with_fallback
+    from tests.cli_gate import claude_cli_works, codex_cli_works
 
     checks = (
         # marker         predicate                                    skip reason

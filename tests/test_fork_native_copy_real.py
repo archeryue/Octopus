@@ -21,10 +21,10 @@ import uuid
 
 import pytest
 
-from server.harness.run import _which_with_fallback
 from server.harness import claude_code as cc
 from server.harness import codex as cx
 from server.harness.events import HarnessCredential
+from server.harness.run import _which_with_fallback
 
 pytestmark = pytest.mark.real
 
@@ -52,8 +52,10 @@ def _skip_if_env_failure(proc: subprocess.CompletedProcess, what: str) -> None:
 @pytest.mark.asyncio
 async def test_claude_native_copy_resume_recalls_context(tmp_path):
     exe = _which_with_fallback("claude")
-    src = tmp_path / "src"; src.mkdir()
-    dst = tmp_path / "dst"; dst.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    dst = tmp_path / "dst"
+    dst.mkdir()
 
     r = subprocess.run(
         [exe, "--print", "--output-format=json", "--dangerously-skip-permissions",
@@ -108,8 +110,10 @@ async def test_codex_native_copy_resume_recalls_context(tmp_path):
     codex_home = _codex_home_with_auth()
     if codex_home is None:
         pytest.skip("no signed-in CODEX_HOME found")
-    src = tmp_path / "src"; src.mkdir()
-    dst = tmp_path / "dst"; dst.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
+    dst = tmp_path / "dst"
+    dst.mkdir()
     cred = HarnessCredential(backend="codex", auth_type="oauth", home_dir=codex_home)
     env = {**os.environ, "CODEX_HOME": codex_home}
 

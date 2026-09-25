@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class DelegationRunState:
     target_agent_name: str
     request: str
     created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+        default_factory=lambda: datetime.now(UTC).isoformat()
     )
     state: str = "running"  # "running" | "completed" | "failed" | "cancelled"
     captured_text: list[str] = field(default_factory=list)
@@ -144,12 +144,12 @@ class DelegationManager:
         # policy can trim this, but at single-user scale a flat dict
         # is fine.
         self._records: dict[str, DelegationRunState] = {}
-        self.session_mgr: "SessionManager | None" = None
-        self.db: "Database | None" = None
+        self.session_mgr: SessionManager | None = None
+        self.db: Database | None = None
 
     # ------------------------------------------------------------ wiring
 
-    def bind(self, session_mgr: "SessionManager", db: "Database") -> None:
+    def bind(self, session_mgr: SessionManager, db: Database) -> None:
         """Subscribe to the session manager's broadcast bus. Idempotent
         on repeat calls (last writer wins on the key)."""
         self.session_mgr = session_mgr
@@ -260,7 +260,7 @@ class DelegationManager:
             )
             rec.state = "failed"
             rec.error = f"failed to start child session: {exc}"
-            rec.finished_at = datetime.now(timezone.utc).isoformat()
+            rec.finished_at = datetime.now(UTC).isoformat()
             await self._inject_terminal(rec)
             raise DelegationError(
                 f"failed to start delegation: {exc}", status_code=500
@@ -304,7 +304,7 @@ class DelegationManager:
         # guards against that as long as we flip state first.
         rec.state = "cancelled"
         rec.error = reason or "cancelled by caller"
-        rec.finished_at = datetime.now(timezone.utc).isoformat()
+        rec.finished_at = datetime.now(UTC).isoformat()
         try:
             await self.session_mgr.interrupt(delegation_id)
         except Exception:
@@ -435,7 +435,7 @@ class DelegationManager:
             )
             rec.state = "failed"
             rec.error = f"failed to start follow-up: {exc}"
-            rec.finished_at = datetime.now(timezone.utc).isoformat()
+            rec.finished_at = datetime.now(UTC).isoformat()
             await self._inject_terminal(rec)
             raise DelegationError(
                 f"failed to start follow-up: {exc}", status_code=500
@@ -806,13 +806,13 @@ class DelegationManager:
                 rec.error = "child session reported an error result"
             else:
                 rec.state = "completed"
-            rec.finished_at = datetime.now(timezone.utc).isoformat()
+            rec.finished_at = datetime.now(UTC).isoformat()
             await self._inject_terminal(rec)
             return
         if kind == "error":
             rec.state = "failed"
             rec.error = str(msg.get("message") or "child session error")
-            rec.finished_at = datetime.now(timezone.utc).isoformat()
+            rec.finished_at = datetime.now(UTC).isoformat()
             await self._inject_terminal(rec)
             return
 

@@ -63,7 +63,7 @@ class SubagentUpdate:
     # give for a run that makes eighty tool calls.
     steps: list[str] = field(default_factory=list)
 
-    def merged_with(self, older: "SubagentUpdate | None") -> "SubagentUpdate":
+    def merged_with(self, older: SubagentUpdate | None) -> SubagentUpdate:
         """This observation, carrying forward anything it doesn't restate.
 
         Progress events are partial by design — `task_updated` is only a

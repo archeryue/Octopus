@@ -358,7 +358,7 @@ def test_observations_merge_onto_the_run():
 
 
 def test_runs_are_bounded_per_session():
-    from server.session_manager import SessionManager, _MAX_SUBAGENTS_PER_SESSION
+    from server.session_manager import _MAX_SUBAGENTS_PER_SESSION, SessionManager
 
     session = _session()
     for i in range(_MAX_SUBAGENTS_PER_SESSION + 20):
@@ -631,8 +631,8 @@ async def test_the_run_hands_post_turn_events_to_the_idle_handler():
     """Below the session layer: once a turn's stream is closed, further
     events go to the handler instead of the floor."""
     from server.harness import HarnessEvent
-    from server.harness.run import HarnessRun
     from server.harness.registry import get_harness
+    from server.harness.run import HarnessRun
 
     run = get_harness("claude-code").create_run()
     seen: list[HarnessEvent] = []

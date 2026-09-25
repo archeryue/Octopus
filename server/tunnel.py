@@ -89,7 +89,7 @@ class CloudflareTunnel:
         """Read stderr lines until we find the tunnel URL or timeout."""
         try:
             return await asyncio.wait_for(self._read_until_url(), timeout=timeout)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             return None
 
     async def _read_until_url(self) -> str:
@@ -169,7 +169,7 @@ class CloudflareTunnel:
             self._process.terminate()
             try:
                 await asyncio.wait_for(self._process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("cloudflared did not exit in time, killing...")
                 self._process.kill()
                 await self._process.wait()

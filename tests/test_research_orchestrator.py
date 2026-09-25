@@ -10,10 +10,9 @@ import asyncio
 
 import pytest
 
+from server.research import schemas
 from server.research.leaf import LeafResult
 from server.research.orchestrator import ResearchLimits, run_research
-from server.research import schemas
-
 
 # --------------------------------------------------------------- schemas (pure)
 

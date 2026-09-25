@@ -13,7 +13,7 @@ from __future__ import annotations
 import glob
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -27,7 +27,7 @@ for _d in [
 
 
 from server.agent_manager import AgentManager  # noqa: E402
-from server.app_agent import AppAgentManager, ORIGIN_APP  # noqa: E402
+from server.app_agent import ORIGIN_APP, AppAgentManager  # noqa: E402
 from server.applications import ApplicationManager, data_dir_for  # noqa: E402
 from server.config import settings  # noqa: E402
 from server.database import Database  # noqa: E402
@@ -60,7 +60,7 @@ async def test_an_app_asks_a_real_agent_about_its_context(tmp_path, monkeypatch)
         app_id = uuid.uuid4().hex[:12]
         app_dir = str(tmp_path / "applications" / "smartreader")
         os.makedirs(app_dir, exist_ok=True)
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await db.save_application(
             app_id=app_id,
             name="SmartReader",

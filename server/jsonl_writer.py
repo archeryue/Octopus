@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid as uuid_mod
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .models import MessageContent
@@ -92,7 +92,7 @@ def write_jsonl_file(
                 line["uuid"] = line_uuid
                 line["parentUuid"] = parent_uuid
                 line["version"] = _JSONL_VERSION
-                line["timestamp"] = datetime.now(timezone.utc).isoformat()
+                line["timestamp"] = datetime.now(UTC).isoformat()
                 line["isSidechain"] = False
                 line["userType"] = "external"
                 f.write(json.dumps(line) + "\n")

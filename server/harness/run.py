@@ -107,7 +107,7 @@ def prepare_spawn(
     return argv, {**kwargs, "env": env, "start_new_session": True}
 
 
-def _terminate_process_group(proc: "asyncio.subprocess.Process", sig: int) -> bool:
+def _terminate_process_group(proc: asyncio.subprocess.Process, sig: int) -> bool:
     """Signal the whole process group led by `proc` (so nested CLI children die
     with it), falling back to the direct child if the group can't be resolved.
     Returns True if a group signal was sent. Idempotent / best-effort —
@@ -443,7 +443,7 @@ class HarnessRun:
         if proc.returncode is None:
             try:
                 await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Escalate to the whole process GROUP so nested CLI children
                 # (MCP servers, subagents) die too, not just the direct child
                 # (turn-safety.md §2).
@@ -451,7 +451,7 @@ class HarnessRun:
                 _terminate_process_group(proc, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=2.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.warning("CLI didn't exit on SIGTERM, killing group")
                     _terminate_process_group(proc, signal.SIGKILL)
                     await proc.wait()
@@ -506,7 +506,7 @@ class HarnessRun:
     # ------------------------------------------------------------------ readers
 
     def set_idle_handler(
-        self, handler: "Callable[[HarnessEvent], Awaitable[None]] | None"
+        self, handler: Callable[[HarnessEvent], Awaitable[None]] | None
     ) -> None:
         """Where events go when no turn is in flight.
 

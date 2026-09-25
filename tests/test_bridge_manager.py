@@ -8,7 +8,7 @@ docs/plans/agent-refactor.md §5.5 / §8.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,7 +16,6 @@ import pytest
 from server.bridges.base import Bridge
 from server.bridges.manager import BridgeManager
 from server.database import Database
-
 
 # --- Mock Bridge ---
 
@@ -81,6 +80,7 @@ class MockSessionManager:
         self._sessions: dict[str, MockSession] = {}
         self._broadcasts: list = []
         self._db = db
+        self.decisions: list[tuple[str, str, str, str]] = []
 
     async def create_session(
         self, agent_id, name=None, working_dir=None, credential_id=None, origin="user"
@@ -110,11 +110,17 @@ class MockSessionManager:
     async def send_message(self, session_id, prompt):
         yield {"type": "result", "session_id": session_id, "cost": 0.0, "is_error": False}
 
-    def approve_tool(self, session_id, tool_use_id):
-        pass
+    # `async def` to match SessionManager. These were plain `def` here, which
+    # made the fake agree with a call site that forgot to await — so the fake
+    # certified the bug instead of catching it. Decisions are recorded so a
+    # test can assert the decision actually arrived.
+    async def approve_tool(self, session_id, tool_use_id):
+        self.decisions.append(("approve", session_id, tool_use_id, ""))
+        return True
 
-    def deny_tool(self, session_id, tool_use_id, reason=""):
-        pass
+    async def deny_tool(self, session_id, tool_use_id, reason=""):
+        self.decisions.append(("deny", session_id, tool_use_id, reason))
+        return True
 
     def on_broadcast(self, key, callback):
         self._broadcasts.append(callback)
@@ -197,7 +203,7 @@ class TestCommands:
         assert second is not None and second != first
 
     async def test_cmd_agent_rebinds_and_clears_sticky(self, manager, bridge, db):
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await db.save_agent(agent_id="ag2", name="Helper", created_at=now, updated_at=now)
         await manager.handle_incoming("mock", "c1", "hello", bridge)
         assert manager.get_session_id("mock", "c1") is not None
@@ -254,7 +260,7 @@ class TestCommands:
 
     async def test_cmd_switch_other_agent_rejected(self, manager, bridge, session_mgr, db):
         # A session under a different agent can't be switched to.
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await db.save_agent(agent_id="ag-other", name="Foreign", created_at=now, updated_at=now)
         other = await session_mgr.create_session("ag-other", name="Foreign")
         await manager.handle_incoming("mock", "c1", "hello", bridge)  # binds default
@@ -402,8 +408,49 @@ class TestVerbosity:
         assert mgr2._binding("mock", "c1").verbose is True
 
     async def test_verbose_survives_agent_rebind(self, manager, bridge, db):
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await db.save_agent(agent_id="ag2", name="Helper", created_at=now, updated_at=now)
         await manager.handle_incoming("mock", "c1", "/verbose", bridge)
         await manager.handle_incoming("mock", "c1", "/agent Helper", bridge)
         assert manager._binding("mock", "c1").verbose is True
+
+
+class TestToolDecision:
+    """`handle_tool_decision` is the bridge's Allow/Deny path.
+
+    Nothing covered it end-to-end before: test_bridge_telegram.py replaces the
+    whole manager method with an AsyncMock, so it proves Telegram *calls* the
+    manager and stops there. The manager's own two lines forgot to await the
+    (async) approve_tool / deny_tool, so every Telegram approval silently did
+    nothing — and MockSessionManager declared those two as plain `def`, which
+    made the fake agree with the bug rather than catch it. These assert the
+    decision actually arrives at the session manager.
+    """
+
+    async def test_approval_reaches_the_session_manager(
+        self, manager, session_mgr, bridge
+    ):
+        await manager.handle_incoming("mock", "c1", "hi", bridge)
+        sid = manager.get_session_id("mock", "c1")
+        session_mgr.decisions.clear()
+
+        await manager.handle_tool_decision(
+            "mock", "c1", "tool-use-9", approved=True
+        )
+
+        assert session_mgr.decisions == [("approve", sid, "tool-use-9", "")]
+
+    async def test_denial_carries_its_reason(self, manager, session_mgr, bridge):
+        await manager.handle_incoming("mock", "c1", "hi", bridge)
+        sid = manager.get_session_id("mock", "c1")
+        session_mgr.decisions.clear()
+
+        await manager.handle_tool_decision(
+            "mock", "c1", "tool-use-9", approved=False, reason="nope"
+        )
+
+        assert session_mgr.decisions == [("deny", sid, "tool-use-9", "nope")]
+
+    async def test_unmapped_chat_is_a_no_op(self, manager, session_mgr):
+        await manager.handle_tool_decision("mock", "unknown", "t-1", approved=True)
+        assert session_mgr.decisions == []

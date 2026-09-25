@@ -47,30 +47,32 @@ _RECONNECT_MSG = (
 )
 
 
-def _api(method: str, path: str, **kw: Any) -> tuple[Any | None, str | None]:
-    """Authenticated Gmail call. Returns (parsed_body, None) or (None, error)."""
+def _api(method: str, path: str, **kw: Any) -> tuple[Any, str | None]:
+    """Authenticated Gmail call. Returns (parsed_body, None) on success or
+    ({}, error) on failure. The failure body is an empty dict, never None —
+    see the note on github.py's _gh for why."""
     token = ctx.access_token()
     if token is None:
-        return None, "Error: connector unavailable — reconnect Gmail in Octopus."
+        return {}, "Error: connector unavailable — reconnect Gmail in Octopus."
     headers = {"Authorization": f"Bearer {token}"}
     url = path if path.startswith("http") else f"{_API}{path}"
     for attempt in range(3):
         try:
             r = httpx.request(method, url, headers=headers, timeout=30.0, **kw)
         except httpx.HTTPError as e:
-            return None, f"Error: Gmail request failed: {e}"
+            return {}, f"Error: Gmail request failed: {e}"
         if r.status_code == 401:
             ctx.mark_needs_reconnect("invalid_grant")
-            return None, _RECONNECT_MSG
+            return {}, _RECONNECT_MSG
         if r.status_code == 429 or r.status_code >= 500:
             if attempt < 2:
                 time.sleep(min(float(r.headers.get("Retry-After", "1") or 1), 5.0))
                 continue
-            return None, f"Error: Gmail temporarily unavailable ({r.status_code})."
+            return {}, f"Error: Gmail temporarily unavailable ({r.status_code})."
         if r.status_code >= 400:
-            return None, f"Error: Gmail {r.status_code}: {r.text[:300]}"
+            return {}, f"Error: Gmail {r.status_code}: {r.text[:300]}"
         return (r.json() if r.content else {}), None
-    return None, "Error: Gmail rate-limited; try again shortly."
+    return {}, "Error: Gmail rate-limited; try again shortly."
 
 
 def _b64url_decode(data: str) -> bytes:

@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from server.tunnel import CloudflareTunnel, _TUNNEL_URL_RE
-
+from server.tunnel import _TUNNEL_URL_RE, CloudflareTunnel
 
 # --- Regex tests ---
 

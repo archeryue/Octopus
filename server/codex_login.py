@@ -171,7 +171,7 @@ class CodexLoginManager:
             await asyncio.wait_for(
                 asyncio.shield(session._scraped.wait()), _SCRAPE_TIMEOUT_SECONDS
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             if session.state == CodexLoginState.pending and not session.verification_url:
                 await self._fail(
                     session,
@@ -231,7 +231,7 @@ class CodexLoginManager:
             return
         try:
             await asyncio.wait_for(asyncio.shield(session._task), timeout=5.0)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             pass
 
     async def _fail(self, session: CodexLoginSession, message: str) -> None:

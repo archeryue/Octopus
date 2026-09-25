@@ -165,7 +165,7 @@ async def test_custom_connector_identity_is_display_name():
 async def test_resolve_connector(db):
     assert (await resolve_connector(db, "github")).kind == "github"
     assert await resolve_connector(db, "ghost") is None
-    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    now = dt.datetime.now(dt.UTC).isoformat()
     await db.save_custom_connector(
         kind="linear", display_name="Linear", authorize_url="a", token_url="t",
         scopes=["x"], pkce=True, api_base="https://api.linear.app", now=now,

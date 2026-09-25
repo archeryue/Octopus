@@ -11,7 +11,7 @@ not go through this manager.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from . import agent_memory
@@ -59,7 +59,7 @@ class AgentManager:
         if await self.db.get_agent_by_name(name) is not None:
             raise AgentError(f"An agent named {name!r} already exists")
         agent_id = uuid.uuid4().hex[:12]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await self.db.save_agent(
             agent_id=agent_id,
             name=name,

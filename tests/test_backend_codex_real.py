@@ -40,7 +40,7 @@ async def _drain(backend, timeout: float = 150.0) -> list[HarnessEvent]:
 
     try:
         await asyncio.wait_for(collect(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise AssertionError(
             f"stream() didn't terminate within {timeout}s. "
             f"Collected: {[e.type for e in events]}"

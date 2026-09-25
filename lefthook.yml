@@ -8,8 +8,8 @@
 #   ./scripts/setup-hooks.sh
 #
 # What it does, by what you touched:
-# - Python in server/ or tests/  → the hermetic pytest tier
-# - TS in web/src/               → tsc --noEmit, and the vitest suite
+# - Python in server/ or tests/  → ruff, mypy, and the hermetic pytest tier
+# - TS in web/src/               → eslint, tsc --noEmit, and the vitest suite
 # - routes or pydantic models    → the generated contracts.ts drift check
 # - nothing relevant (docs only) → nothing runs
 #
@@ -17,12 +17,29 @@
 # only fires when its own files moved). `./scripts/check.sh` runs the same
 # set unconditionally, plus `--e2e` for Playwright.
 #
-# Not here: eslint. It currently reports 20 findings, so gating on it would
-# block every commit — see docs/plans/polish-2026-09.md §8 F2.
+# `ruff format` is not run by any gate — see the note in scripts/check.sh.
 
 pre-commit:
   parallel: true
   commands:
+    ruff:
+      tags: backend
+      glob: "{server,tests}/**/*.py"
+      run: .venv/bin/ruff check .
+      fail_text: "Ruff found problems. Run '.venv/bin/ruff check .' (many are auto-fixable with --fix)."
+
+    mypy:
+      tags: backend
+      glob: "server/**/*.py"
+      run: .venv/bin/mypy
+      fail_text: "mypy found type errors. Run '.venv/bin/mypy' for detail."
+
+    eslint:
+      tags: frontend
+      glob: "web/{src,e2e}/**/*.{ts,tsx}"
+      run: cd web && bun run lint
+      fail_text: "ESLint found problems. Run 'cd web && bun run lint' for detail."
+
     tsc:
       tags: frontend
       glob: "web/src/**/*.{ts,tsx}"

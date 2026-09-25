@@ -1,7 +1,5 @@
 import os
 
-import pytest
-
 
 def test_settings_defaults():
     """Config loads with sensible defaults."""

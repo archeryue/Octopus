@@ -20,15 +20,15 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..auth import verify_token
-from ..session_manager import session_manager
 from ..config import settings
 from ..crypto import encrypt
+from ..harness import LoginMethod, get_harness, has_backend
 from ..models import (
     AuthType,
     BackendKind,
@@ -37,9 +37,9 @@ from ..models import (
     CredentialStatus,
     UpdateCredentialRequest,
 )
-from ..harness import LoginMethod, get_harness, has_backend
 from ..oauth_login import LoginState
 from ..oauth_providers import OAuthTokenSet
+from ..session_manager import session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ async def create_credential(
 ):
     db = _require_db()
     cid = uuid.uuid4().hex[:12]
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = datetime.now(UTC).isoformat()
     secret_encrypted = encrypt(req.secret, settings.auth_token)
     await db.save_credential(
         credential_id=cid,
@@ -263,7 +263,7 @@ async def oauth_complete(
             detail=session.message or "login completed without a usable result",
         )
 
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = datetime.now(UTC).isoformat()
 
     if session.token:
         # API-key path: long-lived sk-ant- key from create_api_key endpoint.
@@ -276,7 +276,7 @@ async def oauth_complete(
             _serialize_oauth_tokens(ts), settings.auth_token
         )
         token_expires_at = datetime.fromtimestamp(
-            ts.expires_at_epoch, tz=timezone.utc
+            ts.expires_at_epoch, tz=UTC
         ).isoformat()
     else:
         # State machine guarantees one of the two is set on success, but
@@ -435,7 +435,7 @@ async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
                 await db.get_credential(session.credential_id)
             )
         else:
-            created_at = datetime.now(timezone.utc).isoformat()
+            created_at = datetime.now(UTC).isoformat()
             await db.save_credential(
                 credential_id=session.credential_id,
                 backend=BackendKind.codex.value,

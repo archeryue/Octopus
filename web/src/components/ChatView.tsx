@@ -315,7 +315,6 @@ export function ChatView({
       if (room <= 0) return;
       const accepted = files.slice(0, room).filter((f) => {
         if (f.size > MAX_FILE_BYTES) {
-          // eslint-disable-next-line no-console
           console.warn(`Attachment ${f.name} exceeds 25MB cap, skipping`);
           return false;
         }

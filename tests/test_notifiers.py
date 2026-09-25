@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,7 +10,6 @@ import pytest
 from server.database import Database
 from server.notifiers import NotifierEvent, NotifierManager
 from server.notifiers.webhook import WebhookNotifier
-
 
 # ---------------------------------------------------------------------------
 # database CRUD
@@ -26,7 +25,7 @@ async def db():
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 @pytest.mark.asyncio

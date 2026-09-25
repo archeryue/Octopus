@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -387,14 +388,14 @@ async def test_showme_resolve_attached_credential_is_normalized(
     credential must trigger the credential resolver, so the harness receives
     a `HarnessCredential` (decrypted, right shape) rather than the raw DB row.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from server.crypto import encrypt
     from server.harness.events import HarnessCredential
 
     sid, _ = session_with_files
     db = session_manager.db
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     secret = encrypt("sk-ant-test", TOKEN)
     await db.save_credential(
         credential_id="cred-1",

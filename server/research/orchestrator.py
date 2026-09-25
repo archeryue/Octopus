@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from .leaf import LeafResult, run_reason_leaf, run_web_leaf
 from .schemas import (
@@ -122,7 +123,7 @@ async def run_research(
           for a in angles)
     )
     findings: list[Finding] = []
-    for angle, res in zip(angles, search_results):
+    for angle, res in zip(angles, search_results, strict=True):
         cost += res.cost or 0.0
         findings.extend(
             parse_findings(res.text, angle=angle, max_findings=limits.max_findings_per_angle)
@@ -148,7 +149,7 @@ async def run_research(
     survivors: list[Finding] = []
     if claims:
         verdicts = await asyncio.gather(*(_verify(f) for f in claims))
-        for f, (survived, c) in zip(claims, verdicts):
+        for f, (survived, c) in zip(claims, verdicts, strict=True):
             cost += c
             if survived:
                 survivors.append(f)

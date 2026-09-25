@@ -7,13 +7,11 @@ file paths and prepends an `<attachments>` header to the prompt.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server import attachments as att
 from server.attachments import (
     MAX_FILE_BYTES,
     AttachmentError,

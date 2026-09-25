@@ -204,7 +204,6 @@ test.afterAll(async ({ request }) => {
 test.describe("Handoff & Pull CLI @llm", () => {
   test("handoff — imports a local JSONL session into the web UI", async ({
     page,
-    request,
   }) => {
     const tmpDir = makeTempDir();
     const sessionId = crypto.randomUUID();

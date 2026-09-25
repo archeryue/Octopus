@@ -21,8 +21,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..config import settings
-
-logger = logging.getLogger(__name__)
 from ..file_viewer import (
     FileNotFound,
     FileTooLarge,
@@ -35,6 +33,8 @@ from ..harness import get_harness
 from ..models import ShowMeResolveRequest, ShowMeResolveResponse
 from ..session_manager import session_manager
 from ..showme_ai import resolve_showme_reference
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["files"])
 

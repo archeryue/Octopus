@@ -22,7 +22,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone as dt_timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -309,7 +309,7 @@ def build_explicit_schedule(
     if when.tzinfo is None:
         when = when.replace(tzinfo=ZoneInfo(zone))
     if require_future:
-        reference = now or datetime.now(dt_timezone.utc)
+        reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
             reference = reference.replace(tzinfo=ZoneInfo(zone))
         # A one-time schedule in the past never fires — it is deleted on the

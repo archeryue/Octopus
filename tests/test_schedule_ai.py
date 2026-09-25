@@ -3,9 +3,10 @@
 The pure helpers are tested directly; the AI path is tested with an injected
 fake runner so no real `claude` CLI is needed."""
 
+from datetime import UTC
+
 import pytest
 
-from server import schedule_ai
 from server.schedule_ai import (
     ScheduleParseError,
     build_explicit_schedule,
@@ -22,7 +23,6 @@ from server.schedule_ai import (
     resolve_timezone,
     validate_parsed,
 )
-
 
 # --- interval token + formatting ------------------------------------------- #
 
@@ -434,16 +434,16 @@ def test_build_explicit_cron_must_be_valid():
 
 
 def test_build_explicit_run_at_attaches_the_zone_and_must_be_future():
-    from datetime import datetime, timedelta, timezone as dt_tz
+    from datetime import datetime, timedelta
 
-    soon = datetime.now(dt_tz.utc) + timedelta(hours=3)
+    soon = datetime.now(UTC) + timedelta(hours=3)
     p = build_explicit_schedule(
         prompt="ping me", run_at=soon.isoformat(), tz="America/Los_Angeles"
     )
     assert p.run_at is not None and p.cron is None and p.interval_seconds is None
     assert p.recurrence_label.startswith("Once on ")
 
-    past = datetime.now(dt_tz.utc) - timedelta(minutes=1)
+    past = datetime.now(UTC) - timedelta(minutes=1)
     with pytest.raises(ScheduleParseError) as e:
         build_explicit_schedule(prompt="ping me", run_at=past.isoformat())
     assert "past" in str(e.value)
@@ -453,7 +453,6 @@ def test_build_explicit_run_at_naive_is_read_in_the_schedule_zone():
     """A wall-clock time with no offset means that time *there* — the whole
     point of carrying a zone."""
     from datetime import datetime, timedelta
-
     from zoneinfo import ZoneInfo
 
     local = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)

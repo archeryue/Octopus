@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   IconCheck,
   IconCopy,
@@ -263,10 +263,18 @@ function NotifierPanel({ token }: { token: string }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
+  // Memoized so the reference is stable across renders. As a plain object it
+  // was rebuilt every render, which meant fetchItems could not list it as a
+  // dependency without re-firing the effect below on every render — so it was
+  // omitted, and React Compiler then refused to preserve the memoization at
+  // all. Stable identity fixes both.
+  const headers = useMemo(
+    () => ({
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    }),
+    [token]
+  );
 
   const fetchItems = useCallback(async () => {
     try {
@@ -275,9 +283,16 @@ function NotifierPanel({ token }: { token: string }) {
     } catch {
       // ignore
     }
-  }, [token]);
+  }, [headers]);
 
+  // Load-on-mount. The rule is aimed at setState called *synchronously* in
+  // an effect body, which cascades renders; here the only setState is
+  // setItems inside fetchItems, after `await fetch(...)` has resolved. React's
+  // own guidance treats fetching-to-sync-with-an-external-system in an effect
+  // as correct — the lint cannot see through the async boundary to tell the
+  // two cases apart.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchItems();
   }, [fetchItems]);
 

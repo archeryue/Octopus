@@ -7,7 +7,12 @@ imported here so a single `import server.connectors` populates the registry.
 
 from __future__ import annotations
 
-from .base import ConnectorBase, ConnectorInstallation, HealthStatus, MAX_TOOL_NAME_LEN
+# Kind modules self-register on import.
+from . import (
+    github,  # noqa: E402,F401  (Phase B)
+    gmail,  # noqa: E402,F401  (Phase C)
+)
+from .base import MAX_TOOL_NAME_LEN, ConnectorBase, ConnectorInstallation, HealthStatus
 from .oauth import (
     ConnectorLoginError,
     ConnectorLoginManager,
@@ -16,10 +21,6 @@ from .oauth import (
     PendingLogin,
 )
 from .registry import KIND_REGISTRY, all_connectors, get_connector, register
-
-# Kind modules self-register on import.
-from . import github  # noqa: E402,F401  (Phase B)
-from . import gmail  # noqa: E402,F401  (Phase C)
 
 __all__ = [
     "ConnectorBase",

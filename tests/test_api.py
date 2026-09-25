@@ -1,5 +1,7 @@
 """End-to-end tests for REST API using FastAPI TestClient."""
 
+from datetime import UTC
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -201,7 +203,8 @@ async def test_create_session_with_codex_backend(client):
 async def test_create_session_rejects_credential_backend_mismatch(client):
     """A Codex session must not run a claude-code credential (codex-backend.md
     §4.2) — the route returns 400."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
@@ -212,7 +215,7 @@ async def test_create_session_rejects_credential_backend_mismatch(client):
         label="L",
         auth_type="api_key",
         secret_encrypted=enc,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     resp = await client.post(
         "/api/sessions",

@@ -57,7 +57,7 @@ async def _drain(run, timeout: float = 150.0) -> list[HarnessEvent]:
 
     try:
         await asyncio.wait_for(collect(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise AssertionError(f"stream didn't end in {timeout}s: {[e.type for e in events]}")
     return events
 

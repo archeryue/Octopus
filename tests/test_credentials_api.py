@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -166,7 +168,6 @@ class _StubLoginSession:
         oauth_tokens=None,
         message=None,
     ):
-        from server.oauth_login import LoginState
 
         self.id = "login-xyz"
         self.state = state
@@ -280,6 +281,7 @@ async def test_oauth_complete_persists_oauth_token_bundle(client, monkeypatch):
     Router should store the full bundle as JSON + populate token_expires_at."""
     import json
     import time
+
     from server import oauth_login
     from server.crypto import decrypt
     from server.oauth_login import LoginState
@@ -408,7 +410,8 @@ async def test_oauth_endpoints_require_auth(client):
 
 
 async def _flagged_credential(db, *, cid, backend, auth_type, secret):
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
@@ -418,7 +421,7 @@ async def _flagged_credential(db, *, cid, backend, auth_type, secret):
         label="Personal",
         auth_type=auth_type,
         secret_encrypted=encrypt(secret, settings.auth_token),
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     await db.update_credential(
         cid,

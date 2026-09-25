@@ -4,11 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from server.jsonl_parser import (
-    ParsedSession,
-    SessionMetadata,
     _consolidate_messages,
     _convert_line,
     _extract_session_metadata,
@@ -16,8 +12,7 @@ from server.jsonl_parser import (
     parse_jsonl_file,
     parse_jsonl_lines,
 )
-from server.models import MessageContent
-from server.models import MessageRole
+from server.models import MessageContent, MessageRole
 
 
 def _make_line(type_: str, role: str, content, session_id: str = "sess-1", **extra):

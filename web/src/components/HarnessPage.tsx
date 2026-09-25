@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   IconCheck,
   IconCopy,
@@ -97,10 +97,16 @@ export function HarnessPage({
   // new credential and stranding every binding on the dead one.
   const [reauthId, setReauthId] = useState<string | null>(null);
 
-  const headers = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
+  // Memoized for a stable reference — see the same note in SettingsDialog:
+  // rebuilt per render it could not be a declared dependency without the
+  // effect below re-firing every render.
+  const headers = useMemo(
+    () => ({
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    }),
+    [token]
+  );
 
   const fetchCredentials = useCallback(async () => {
     try {
@@ -112,7 +118,7 @@ export function HarnessPage({
     } catch {
       // ignore
     }
-  }, [token, setCredentials]);
+  }, [headers, setCredentials]);
 
   useEffect(() => {
     fetchCredentials();

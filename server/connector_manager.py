@@ -11,12 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
-
-import re
 
 from .config import settings
 from .connectors.base import ConnectorInstallation
@@ -65,7 +64,7 @@ def _deserialize_token_set(blob: str) -> OAuthTokenSet:
 def _expires_iso(epoch: float) -> str | None:
     if not epoch:
         return None
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
 def _env_client_creds(kind: str) -> tuple[str, str] | None:
@@ -110,7 +109,7 @@ class ConnectorManager:
             raise ConnectorError(f"{kind!r} is a built-in connector")
         if await self.db.get_custom_connector(kind) is not None:
             raise ConnectorError(f"a custom connector {kind!r} already exists")
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await self.db.save_custom_connector(
             kind=kind,
             display_name=display_name.strip() or kind,
@@ -152,7 +151,7 @@ class ConnectorManager:
     ) -> None:
         if await resolve_connector(self.db, kind) is None:
             raise ConnectorError(f"unknown connector kind: {kind}")
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await self.db.set_connector_oauth_client(
             kind, client_id, encrypt(client_secret, settings.auth_token), now
         )
@@ -254,7 +253,7 @@ class ConnectorManager:
                 label=label,
                 auth_type="oauth",
                 secret_encrypted=blob,
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
                 external_account_id=external_id or None,
                 scopes=list(token_set.scopes),
                 token_expires_at=token_expires_at,

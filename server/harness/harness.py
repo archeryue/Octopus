@@ -218,7 +218,7 @@ class Harness:
 
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _reap()
             try:
                 await proc.wait()  # reap the killed leader (no zombie)

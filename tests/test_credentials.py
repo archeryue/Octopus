@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from server.crypto import decrypt, encrypt
 from server.database import Database
-
 
 # ---------------------------------------------------------------------------
 # crypto
@@ -52,7 +51,7 @@ async def db():
 
 @pytest.mark.asyncio
 async def test_save_and_load_credential(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         credential_id="c-1",
         backend="claude-code",
@@ -77,7 +76,7 @@ async def test_get_credential_returns_none_for_unknown(db):
 
 @pytest.mark.asyncio
 async def test_update_credential_label_and_secret(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-2", "claude-code", "Old", "api_key", encrypt("old", "k"), now
     )
@@ -93,7 +92,7 @@ async def test_update_credential_label_and_secret(db):
 @pytest.mark.asyncio
 async def test_update_credential_partial_keeps_other_fields(db):
     """Only `label` changes — secret should stay the same."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-3", "claude-code", "L", "api_key", encrypt("kept", "k"), now
     )
@@ -105,7 +104,7 @@ async def test_update_credential_partial_keeps_other_fields(db):
 
 @pytest.mark.asyncio
 async def test_delete_credential(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-4", "codex", "L", "api_key", encrypt("x", "k"), now
     )
@@ -121,7 +120,7 @@ async def test_delete_credential(db):
 
 @pytest.mark.asyncio
 async def test_save_writes_to_credential_secrets_table(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     enc = encrypt("split-secret", "k")
     await db.save_credential("c-split", "claude-code", "L", "api_key", enc, now)
 
@@ -139,7 +138,7 @@ async def test_load_prefers_split_secret_over_legacy_column(db):
     """get_credential reads from credential_secrets via JOIN; if a future
     rotation only updates the split table, the read should still surface
     the fresh value."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-rot", "claude-code", "L", "api_key", encrypt("first", "k"), now
     )
@@ -156,7 +155,7 @@ async def test_load_prefers_split_secret_over_legacy_column(db):
 
 @pytest.mark.asyncio
 async def test_default_metadata_fields(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-meta", "claude-code", "L", "api_key", encrypt("s", "k"), now
     )
@@ -169,7 +168,7 @@ async def test_default_metadata_fields(db):
 
 @pytest.mark.asyncio
 async def test_update_refresh_state(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-fail", "claude-code", "L", "oauth", encrypt("s", "k"), now
     )
@@ -187,7 +186,7 @@ async def test_update_refresh_state(db):
 
 @pytest.mark.asyncio
 async def test_delete_cascades_to_credential_secrets(db):
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_credential(
         "c-del", "claude-code", "L", "api_key", encrypt("s", "k"), now
     )

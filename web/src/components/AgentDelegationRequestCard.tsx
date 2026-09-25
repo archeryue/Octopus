@@ -137,6 +137,14 @@ export function AgentDelegationRequestCard({
       cancelled = true;
       window.clearInterval(id);
     };
+    // `match?.state` is the precise dependency, and listing `match` itself
+    // would be a bug rather than a fix: this effect calls setDelegations,
+    // which replaces the store entry, which yields a fresh `match` object on
+    // the next render — so depending on the object would tear down and
+    // rebuild the interval on every poll. Only `.state` is read (the early
+    // return); `url` is built from sessionId. See CLAUDE.md Conventions on
+    // avoiding re-render loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [match?.state, sessionId, token, setDelegations]);
 
   const openChild = async () => {

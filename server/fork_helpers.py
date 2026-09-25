@@ -81,7 +81,7 @@ async def _git(working_dir: str, *args: str, timeout: float = 10.0) -> tuple[int
         return (-1, "", "git not spawnable")
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:

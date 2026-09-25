@@ -229,10 +229,11 @@ class BackendSupervisor:
             self._log(st, st.error)
             return False
 
+        assert proc.stdout is not None  # spawned with stdout=PIPE
         pump = asyncio.create_task(self._pump(st, proc.stdout, "install"))
         try:
             code = await asyncio.wait_for(proc.wait(), timeout=INSTALL_TIMEOUT_S)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _kill_group(proc)
             st.state = FAILED
             st.error = f"install.sh timed out after {INSTALL_TIMEOUT_S:.0f}s"
@@ -318,6 +319,7 @@ class BackendSupervisor:
 
         st.process = proc
         st.pid = proc.pid
+        assert proc.stdout is not None  # spawned with stdout=PIPE
         st._readers = [asyncio.create_task(self._pump(st, proc.stdout, "app"))]
 
         deadline = time.monotonic() + READY_TIMEOUT_S
@@ -372,7 +374,7 @@ class BackendSupervisor:
         _kill_group(proc, signal.SIGTERM)
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _kill_group(proc, signal.SIGKILL)
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(proc.wait(), timeout=5.0)

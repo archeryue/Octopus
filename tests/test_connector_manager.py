@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -117,7 +117,7 @@ def _token_set(expires_in: float = 3600.0) -> OAuthTokenSet:
 
 
 async def _agent(db: Database, agent_id: str = "a-1") -> None:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     await db.save_agent(agent_id=agent_id, name=agent_id, created_at=now, updated_at=now)
 
 

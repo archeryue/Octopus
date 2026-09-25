@@ -203,9 +203,9 @@ async def create_agent_schedule_from_text(
     agent = await _get_manager().get_agent(agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
-    from .schedules import create_schedule_for_agent, to_schedule_info
     from ..harness import get_harness
     from ..schedule_ai import ScheduleParseError, parse_schedule_text
+    from .schedules import create_schedule_for_agent, to_schedule_info
 
     # The AI parse runs on the agent's own harness (claude-code or codex —
     # both support one-shot, D2), with its own model + credential resolved in

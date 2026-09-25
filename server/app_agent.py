@@ -26,16 +26,17 @@ import asyncio
 import logging
 import os
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from .applications import data_dir_for
 
 if TYPE_CHECKING:
+    from .applications import ApplicationManager
     from .database import Database
     from .session_manager import SessionManager
-    from .applications import ApplicationManager
 
 logger = logging.getLogger(__name__)
 
@@ -98,16 +99,16 @@ class AppAgentManager:
     """Registry + lifecycle for application↔agent conversations."""
 
     def __init__(self) -> None:
-        self.session_mgr: "SessionManager | None" = None
-        self.db: "Database | None" = None
-        self.app_mgr: "ApplicationManager | None" = None
+        self.session_mgr: SessionManager | None = None
+        self.db: Database | None = None
+        self.app_mgr: ApplicationManager | None = None
         self._turns: dict[str, _Turn] = {}
 
     def bind(
         self,
-        session_mgr: "SessionManager",
-        db: "Database",
-        app_mgr: "ApplicationManager",
+        session_mgr: SessionManager,
+        db: Database,
+        app_mgr: ApplicationManager,
     ) -> None:
         self.session_mgr = session_mgr
         self.db = db
@@ -198,7 +199,7 @@ class AppAgentManager:
         turn = await self.begin_turn(app_row, **kwargs)
         try:
             await asyncio.wait_for(turn.done.wait(), timeout=ASK_TIMEOUT_SECONDS)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise AppAgentError(
                 "The agent is still working — read the conversation later for "
                 "the answer",
@@ -234,7 +235,7 @@ class AppAgentManager:
                     event = await asyncio.wait_for(
                         turn.queue.get(), timeout=ASK_TIMEOUT_SECONDS
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {
                         "type": "error",
                         "message": "the agent stopped responding",
@@ -369,7 +370,7 @@ class AppAgentManager:
         work_dir = data_dir_for(app_row["app_dir"])
         os.makedirs(work_dir, exist_ok=True)
 
-        stamp = datetime.now(timezone.utc).strftime("%H:%M")
+        stamp = datetime.now(UTC).strftime("%H:%M")
         name = (title or "").strip() or f"{app_row['name']} — {stamp}"
         session = await mgr.create_session(
             agent_id=agent["id"],
@@ -477,12 +478,12 @@ class AppAgentManager:
             raise AppAgentError("conversation not found", status_code=404)
         return session
 
-    def _require_session_mgr(self) -> "SessionManager":
+    def _require_session_mgr(self) -> SessionManager:
         if self.session_mgr is None:
             raise AppAgentError("agent access is not available", status_code=503)
         return self.session_mgr
 
-    def _require_db(self) -> "Database":
+    def _require_db(self) -> Database:
         if self.db is None:
             raise AppAgentError("agent access is not available", status_code=503)
         return self.db

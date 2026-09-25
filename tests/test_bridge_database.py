@@ -1,5 +1,7 @@
 """Tests for bridge_mappings database operations (agent-bound shape)."""
 
+from datetime import UTC
+
 import pytest
 
 from server.database import Database
@@ -117,9 +119,9 @@ class TestBridgeMappings:
 
     async def test_cascade_delete_on_agent_removal(self, db: Database):
         """Deleting an agent cascades to its bridge bindings."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await db.save_agent(agent_id="ag1", name="Temp", created_at=now, updated_at=now)
         await db.save_bridge_mapping("telegram", "12345", "ag1")
         await db.save_bridge_mapping("discord", "67890", "ag1")
@@ -165,9 +167,9 @@ class TestBridgeVerbose:
 
     async def test_rebind_preserves_verbose(self, db: Database):
         """Re-saving a mapping (e.g. /agent rebind) must not reset verbose."""
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         agent_id = await _agent_id(db)
         await db.save_agent(agent_id="ag2", name="Helper", created_at=now, updated_at=now)
         await db.save_bridge_mapping("telegram", "12345", agent_id)

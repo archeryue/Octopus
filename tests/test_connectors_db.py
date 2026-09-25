@@ -3,7 +3,8 @@ CRUD + the agent-scoped enable join, including cascade + dedup invariants."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import sqlite3
+from datetime import UTC, datetime
 
 import pytest
 
@@ -20,7 +21,7 @@ async def db():
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 async def _make_agent(db: Database, agent_id: str, name: str) -> None:
@@ -94,7 +95,7 @@ async def test_get_installation_by_account(db):
 async def test_duplicate_account_rejected(db):
     """UNIQUE(kind, external_account_id) blocks a second install of one account."""
     await _make_installation(db, "i-1", kind="gmail", external_account_id="me@x.com")
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         await _make_installation(db, "i-2", kind="gmail", external_account_id="me@x.com")
 
 

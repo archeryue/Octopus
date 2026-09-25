@@ -28,6 +28,107 @@ octopus = "server.cli:main"
 [tool.setuptools.packages.find]
 include = ["server*"]
 
+[tool.ruff]
+# server/ and tests/ are the hand-written Python; .venv and generated
+# artefacts are not ours to lint.
+target-version = "py312"
+line-length = 88
+exclude = [".venv", "web", "docs"]
+
+[tool.ruff.lint]
+# Deliberately a narrow starting set: pyflakes (real errors), pycodestyle,
+# isort, pyupgrade, flake8-bugbear. Broad rule sets on 28k lines of working
+# code produce a wall of stylistic noise that nobody reads, which is how a
+# linter becomes decoration. Widen this once the current set is clean.
+select = ["F", "E", "W", "I", "UP", "B"]
+ignore = [
+    # The codebase uses long explanatory comments and prose docstrings that
+    # read better unwrapped than hard-folded at 88 columns. Code length is
+    # still enforced by the formatter.
+    "E501",
+
+    # raise-without-from-inside-except. NOT a backlog item — a policy call.
+    # There are 86 sites and they split between two different correct
+    # answers: `server/harness/*` re-raises domain errors where `from e`
+    # belongs, while `server/routers/*` deliberately converts an internal
+    # exception into an HTTPException response, where `from None` is the
+    # more honest form. Ruff cannot fix either automatically (not even
+    # under --unsafe-fixes), so enforcing it would mean 86 per-site
+    # judgements. Inserting `from e` blindly across all of them would look
+    # like quality without being it.
+    "B904",
+
+    # replace-str-enum. `class SessionStatus(str, Enum)` appears 13 times,
+    # several in `server/models.py`, where the members are serialized into
+    # API responses and thence into the generated web/src/api/contracts.ts.
+    # StrEnum differs from (str, Enum) in __str__/__format__ behavior, so
+    # this "modernization" can change wire output. Not worth the risk for a
+    # cosmetic gain.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Several MCP server modules must set sys.path / env before importing the
+# package, so their imports legitimately come after executable statements.
+"server/mcp_servers/*.py" = ["E402"]
+"server/mcp_servers/connectors/*.py" = ["E402"]
+"tests/*.py" = ["E402"]
+# `Depends()` in an argument default IS the FastAPI idiom — B008 is a false
+# positive on every dependency-injected route and on the shared auth helper.
+"server/auth.py" = ["B008"]
+"server/routers/*.py" = ["B008"]
+"server/app_agent.py" = ["B008"]
+
+[tool.mypy]
+# Non-strict on purpose (docs/plans/polish-2026-09.md §8 F1). The annotations
+# are thorough — 89% return coverage — but were never checked, so a strict
+# first run would be a tarpit that stalls the A1 refactor instead of enabling
+# it. Ratchet these on once the baseline is clean.
+python_version = "3.12"
+files = ["server"]
+exclude = ["^\\.venv/", "^web/"]
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = false
+disallow_untyped_defs = false
+warn_return_any = false
+# The two that catch real defects without demanding new annotations:
+warn_redundant_casts = true
+no_implicit_optional = true
+
+# Enabling mypy on 28k previously-unchecked lines found 316 errors. 246 are
+# fixed (see the F1 commit); these six codes hold the residue, disabled with a
+# reason each rather than left to fail the gate. Everything NOT listed here is
+# enforced from now on — including `return-value`, which was cleared, and
+# `unused-coroutine`, which caught a real bug (an un-awaited approve_tool that
+# made Telegram's Allow/Deny buttons silently do nothing).
+disable_error_code = [
+    # 44 remaining, and 26 of those are one attribute: SessionManager.db,
+    # typed `Database | None` because it is assigned in initialize() rather
+    # than __init__. 33 of its 59 read sites already guard with `if self.db:`,
+    # so the Database.conn trick (a property that asserts) is NOT available —
+    # it would turn those guards into AssertionErrors. Fixing it properly
+    # means settling an initialization contract, which is exactly what A1's
+    # extraction decides. Deferred to A1/A4 because those items rewrite these
+    # very call sites; doing it now means doing it twice.
+    "union-attr",
+    # The same deferred-initialization shape seen from other angles: an
+    # attribute declared None and assigned during startup (main.py's db /
+    # scheduler), or a local mypy cannot re-narrow after a branch.
+    "assignment",
+    "index",
+    "has-type",
+    # 13 remaining. Mostly Pydantic field narrowing — a `str` reaching a field
+    # typed as a Literal/Enum (BackendKind, CredentialStatus, AuthType).
+    # Pydantic validates these at runtime, so the runtime behaviour is already
+    # correct and the annotation is merely imprecise; tightening them means
+    # threading Literal types through the DB layer, which A4 is doing anyway.
+    "arg-type",
+    # 4 remaining, all "Cannot infer type of lambda" in add_done_callback /
+    # sort keys. Cosmetic: mypy cannot infer a bare lambda's parameter types.
+    "misc",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

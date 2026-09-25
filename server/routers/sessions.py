@@ -4,7 +4,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
 from ..harness import BackendForkNotSupported, StdinMode, get_harness
-from ..models import CreateSessionRequest, DuplicateSessionRequest, ForkSessionRequest, ImportSessionRequest, MessageContent, PendingQuestionInfo, SessionDetail, SessionInfo, SessionStatus, SessionUpdate, SubagentRun
+from ..models import (
+    CreateSessionRequest,
+    DuplicateSessionRequest,
+    ForkSessionRequest,
+    ImportSessionRequest,
+    MessageContent,
+    PendingQuestionInfo,
+    SessionDetail,
+    SessionInfo,
+    SessionUpdate,
+    SubagentRun,
+)
 from ..session_manager import ForkError, fork_info_fields, session_manager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])

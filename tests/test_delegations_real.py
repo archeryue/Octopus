@@ -29,6 +29,10 @@ test's direct calls still act on the same objects.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation-only; the runtime import is local
+    import uvicorn
 import glob
 import os
 
@@ -62,7 +66,7 @@ pytestmark = pytest.mark.real
 # ---------------------------------------------------------------------------
 
 
-async def _serve_callback_api() -> tuple[int, "uvicorn.Server", asyncio.Task]:
+async def _serve_callback_api() -> tuple[int, uvicorn.Server, asyncio.Task]:
     """Serve the routes the in-turn MCP shims POST back to, on a free port.
 
     `mcp__ask__user` and `mcp__ask_agent__*` are real subprocesses making real
@@ -138,7 +142,7 @@ async def _bootstrap(tmp_path, monkeypatch):
         server.should_exit = True
         try:
             await asyncio.wait_for(task, timeout=10.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
         dm.shutdown()
         # Release any CLI process a finished turn is holding. Without this each

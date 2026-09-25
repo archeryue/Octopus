@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -98,7 +98,7 @@ async def create_schedule_for_agent(
     session the command was issued from) makes each fire append into that
     conversation instead of a throwaway session."""
     schedule_id = uuid.uuid4().hex[:12]
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     label = recurrence_label or recurrence_label_for(
         {"interval_seconds": interval_seconds, "cron": cron, "run_at": run_at}
     )
@@ -275,6 +275,11 @@ def _session_agent_id(session_id: str) -> str:
     if session is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
+        )
+    if session.agent_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Session {session_id} is not bound to an agent",
         )
     return session.agent_id
 

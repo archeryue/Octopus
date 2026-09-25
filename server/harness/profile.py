@@ -174,7 +174,7 @@ class RuntimeProfile:
     auth_error_patterns: tuple[str, ...] = ()
     # Web search/fetch capability for native deep research (§4); None = the
     # backend has no web tools, so research is gated off on it.
-    web: "WebCapability | None" = None
+    web: WebCapability | None = None
     # Lowercased substrings that identify a TRANSIENT provider-reliability
     # failure (5xx / overloaded / dropped connection / timeout) in this
     # backend's CLI error output (harness-transient-retry.md §3). A failed

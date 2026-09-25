@@ -33,7 +33,7 @@ class ConnectorInstallation:
     needs_reconnect: bool = False
 
     @classmethod
-    def from_row(cls, row: dict[str, Any]) -> "ConnectorInstallation":
+    def from_row(cls, row: dict[str, Any]) -> ConnectorInstallation:
         return cls(
             id=row["id"],
             kind=row["kind"],
@@ -52,7 +52,7 @@ class HealthStatus:
 
 
 def render_connectors_blurb(
-    connectors: list[tuple["ConnectorBase", "ConnectorInstallation"]],
+    connectors: list[tuple[ConnectorBase, ConnectorInstallation]],
 ) -> str:
     """The `== Connectors ==` system-prompt section (connectors.md §5.8) for a
     list of (connector, installation) tuples. Shared by both backends."""

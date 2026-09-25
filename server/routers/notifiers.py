@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -61,7 +61,7 @@ async def create_notifier(
 ):
     db = _require_db()
     nid = uuid.uuid4().hex[:12]
-    created_at = datetime.now(timezone.utc).isoformat()
+    created_at = datetime.now(UTC).isoformat()
     await db.save_notifier(
         notifier_id=nid,
         type=req.type.value,

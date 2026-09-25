@@ -28,8 +28,8 @@ import os
 import re
 import shutil
 import uuid
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from .config import settings
@@ -73,7 +73,7 @@ def app_scope_token(app_id: str) -> str:
     """
     return hmac.new(
         settings.auth_token.encode("utf-8"),
-        f"app:{app_id}".encode("utf-8"),
+        f"app:{app_id}".encode(),
         hashlib.sha256,
     ).hexdigest()
 
@@ -86,7 +86,7 @@ def is_app_scope_token(app_id: str, candidate: str | None) -> bool:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def applications_root() -> str:
@@ -270,7 +270,7 @@ def discover_icon_src(app_dir: str, entrypoint: str) -> str | None:
         return None
     try:
         # The link lives in <head>; no need to read a large document.
-        with open(entry, "r", encoding="utf-8", errors="replace") as fh:
+        with open(entry, encoding="utf-8", errors="replace") as fh:
             head = fh.read(64 * 1024)
     except OSError:
         return None
@@ -306,10 +306,10 @@ class ApplicationManager:
     BROADCAST_KEY = "application-manager"
 
     def __init__(self) -> None:
-        self.session_mgr: "SessionManager | None" = None
-        self.db: "Database | None" = None
+        self.session_mgr: SessionManager | None = None
+        self.db: Database | None = None
 
-    def bind(self, session_mgr: "SessionManager", db: "Database") -> None:
+    def bind(self, session_mgr: SessionManager, db: Database) -> None:
         self.session_mgr = session_mgr
         self.db = db
         session_mgr.on_broadcast(self.BROADCAST_KEY, self._on_broadcast)
@@ -318,7 +318,7 @@ class ApplicationManager:
         if self.session_mgr is not None:
             self.session_mgr.remove_broadcast(self.BROADCAST_KEY)
 
-    def _require_db(self) -> "Database":
+    def _require_db(self) -> Database:
         if self.db is None:
             raise ApplicationError("ApplicationManager not bound", status_code=500)
         return self.db
@@ -429,6 +429,7 @@ class ApplicationManager:
             )
             row = await db.get_application(app_id)
             await self._broadcast_application("application_updated", row)
+        assert row is not None  # written immediately above
         return row
 
     # ------------------------------------------------------------------ build
@@ -488,6 +489,7 @@ class ApplicationManager:
         updated = await db.get_application(app_id)
         await self._broadcast_application("application_updated", updated)
         await self.session_mgr.start_message(session.id, body)
+        assert updated is not None  # written immediately above
         return updated
 
     # ----------------------------------------------------------------- update
@@ -521,6 +523,7 @@ class ApplicationManager:
             updates["entrypoint"] = ep
 
         if not updates:
+            assert row is not None  # just written above
             return row
         updates["updated_at"] = _now()
         await db.update_application(app_id, **updates)
@@ -530,6 +533,7 @@ class ApplicationManager:
             await self._evaluate(app_id, broadcast=False)
         updated = await db.get_application(app_id)
         await self._broadcast_application("application_updated", updated)
+        assert updated is not None  # written immediately above
         return updated
 
     # ---------------------------------------------------------------- archive
@@ -545,6 +549,7 @@ class ApplicationManager:
         db = self._require_db()
         row = await self.get_application(app_id)
         if bool(row["archived"]) == archived:
+            assert row is not None  # just written above
             return row
         if not archived:
             clash = await db.get_application_by_name(row["name"])
@@ -562,6 +567,7 @@ class ApplicationManager:
             "application_archived" if archived else "application_updated",
             updated,
         )
+        assert updated is not None  # written immediately above
         return updated
 
     # ----------------------------------------------------------------- delete
@@ -628,7 +634,7 @@ class ApplicationManager:
 
     def is_built(self, row: dict[str, Any]) -> bool:
         path = self.entrypoint_path(row)
-        return bool(path) and os.path.isfile(path)
+        return path is not None and os.path.isfile(path)
 
     async def refresh_icons(self) -> int:
         """Re-discover every live application's own icon. Returns how many changed.

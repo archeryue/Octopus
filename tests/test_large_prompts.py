@@ -8,11 +8,8 @@ rationale.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from server import large_prompts as lp
 from server.large_prompts import (
     LARGE_PROMPT_THRESHOLD_BYTES,
     delete_session_large_prompts,
@@ -188,8 +185,8 @@ async def test_send_message_hands_backend_pointer_for_huge_prompt(
     is faithful to what the user sent), but the backend receives the
     pointer, not the 100 KB blob. Without this, the spill module is
     decoupled from the path that actually triggers E2BIG."""
-    from server.harness import HarnessEvent
     from server.database import Database
+    from server.harness import HarnessEvent
     from server.session_manager import SessionManager
     from tests.fake_run import FakeRunBase
 

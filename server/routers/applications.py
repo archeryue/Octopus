@@ -17,21 +17,20 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from ..app_agent import AppAgentError, app_agent_manager
+from ..app_backends import ABSENT, RUNNING, backend_supervisor
 from ..applications import (
     ApplicationError,
     ApplicationManager,
     is_app_scope_token,
     resolve_within,
 )
-from ..app_backends import ABSENT, RUNNING, backend_supervisor
 from ..auth import verify_token
 from ..config import settings
 from ..models import (
@@ -440,7 +439,7 @@ def _sse(events) -> AsyncIterator[bytes]:
     async def gen() -> AsyncIterator[bytes]:
         async for event in events:
             payload = json.dumps(event, ensure_ascii=False)
-            yield f"event: {event['type']}\ndata: {payload}\n\n".encode("utf-8")
+            yield f"event: {event['type']}\ndata: {payload}\n\n".encode()
 
     return gen()
 

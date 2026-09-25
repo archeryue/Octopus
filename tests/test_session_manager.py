@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -263,7 +264,7 @@ async def test_interrupt_cancels_current_and_advances_queue(manager, monkeypatch
     await manager.interrupt(session.id)
     try:
         await asyncio.wait_for(session._active_task, timeout=1)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         pass
 
 
@@ -318,7 +319,7 @@ async def test_interrupt_twice_in_a_row_each_works(manager, monkeypatch):
 
     try:
         await asyncio.wait_for(session._active_task, timeout=1)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         pass
 
 
@@ -366,14 +367,14 @@ async def test_interrupt_does_not_wedge_on_slow_backend_stop(manager, monkeypatc
     # interrupt() must return within the backend-interrupt timeout (2s) + a margin
     try:
         ok = await asyncio.wait_for(manager.interrupt(session.id), timeout=4.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pytest.fail("interrupt() blocked on hanging backend — WS would be wedged")
 
     assert ok is True
 
     try:
         await asyncio.wait_for(session._active_task, timeout=2)
-    except (asyncio.TimeoutError, asyncio.CancelledError):
+    except (TimeoutError, asyncio.CancelledError):
         pass
 
 
@@ -584,11 +585,12 @@ async def test_event_to_message_content_maps_question_request():
 async def test_resolve_credential_returns_decrypted_secret(manager):
     """When a session has credential_id, _resolve_credential should fetch
     and decrypt the row."""
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     enc = encrypt("sk-ant-secret", settings.auth_token)
     await manager.db.save_credential(
         credential_id="c-1",
@@ -623,7 +625,8 @@ async def test_resolve_credential_oauth_bundle_returns_oauth_credential(manager)
     return BackendCredential(auth_type='oauth', secret=access_token)."""
     import json
     import time
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
@@ -644,7 +647,7 @@ async def test_resolve_credential_oauth_bundle_returns_oauth_credential(manager)
         label="Pro/Max",
         auth_type="oauth",
         secret_encrypted=enc,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     session = await _new(manager,"S-oauth", credential_id="c-oauth")
     from server.harness import get_harness
@@ -662,7 +665,8 @@ async def test_resolve_credential_refreshes_expired_oauth_token(manager, monkeyp
     hand back the fresh access_token."""
     import json
     import time
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server import oauth_providers as op
     from server.config import settings
     from server.crypto import decrypt, encrypt
@@ -685,7 +689,7 @@ async def test_resolve_credential_refreshes_expired_oauth_token(manager, monkeyp
         label="Stale",
         auth_type="oauth",
         secret_encrypted=enc,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
 
     captured_refresh: list[str] = []
@@ -736,7 +740,8 @@ async def test_resolve_credential_marks_needs_reconnect_on_refresh_failure(
     falls back to no credential rather than firing a broken request)."""
     import json
     import time
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server import oauth_providers as op
     from server.config import settings
     from server.crypto import encrypt
@@ -757,7 +762,7 @@ async def test_resolve_credential_marks_needs_reconnect_on_refresh_failure(
         label="Dead",
         auth_type="oauth",
         secret_encrypted=enc,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
 
     async def fake_refresh(refresh_token):
@@ -792,7 +797,8 @@ async def test_oauth_credential_env_var_reaches_subprocess(manager, monkeypatch)
     on the subprocess env. Mirrors the existing ANTHROPIC_API_KEY test."""
     import json
     import time
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
@@ -812,7 +818,7 @@ async def test_oauth_credential_env_var_reaches_subprocess(manager, monkeypatch)
         label="EnvOAuth",
         auth_type="oauth",
         secret_encrypted=enc,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     session = await _new(manager,
         "EnvSessionOAuth", credential_id="c-env-oauth"
@@ -843,7 +849,8 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
     Covers the chain: DB row → _resolve_credential → HarnessCredential →
     SessionManager._make_run → HarnessRun.build_argv.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
@@ -855,7 +862,7 @@ async def test_credential_env_var_reaches_spawned_subprocess(manager):
         label="EnvTest",
         auth_type="api_key",
         secret_encrypted=enc,
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     session = await _new(manager,"EnvSession", credential_id="c-env")
 
@@ -905,9 +912,9 @@ async def test_make_run_applies_agent_config(manager):
     model / MCP set / tool allow-deny (agent-refactor.md §5.2)."""
     import json as _json
     import uuid as _uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     aid = _uuid.uuid4().hex[:12]
     await manager.db.save_agent(
         agent_id=aid,
@@ -1469,7 +1476,8 @@ class _FakeBackend(FakeRunBase):
 
 
 async def _bind_credential(manager, backend, secret="sk-ant-x"):
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     from server.config import settings
     from server.crypto import encrypt
 
@@ -1480,7 +1488,7 @@ async def _bind_credential(manager, backend, secret="sk-ant-x"):
         label="Bound",
         auth_type="api_key" if backend == "claude-code" else "oauth",
         secret_encrypted=encrypt(secret, settings.auth_token),
-        created_at=datetime.now(timezone.utc).isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
     )
     return cid
 
@@ -1975,7 +1983,7 @@ class _DripBackend(FakeRunBase):
                 yield HarnessEvent(type="text", content="…")
                 try:
                     await asyncio.wait_for(self._unblock.wait(), timeout=self.interval)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
         return _gen()
 
@@ -2122,6 +2130,7 @@ async def test_reaper_drops_idle_processes_and_keeps_fresh_ones():
     """Idle past the cutoff goes; recently used stays. A reaped session is not
     broken — its next turn just spawns again."""
     import time as _time
+
     from server.session_manager import _HELD_PROCESS_IDLE_SECONDS
 
     mgr = SessionManager()
@@ -2140,6 +2149,7 @@ async def test_reaper_caps_total_held_processes():
     """Memory is the cost of holding a process (~255MB each), so only a bounded
     number are kept — the least recently used are dropped first."""
     import time as _time
+
     from server.session_manager import _MAX_HELD_PROCESSES
 
     mgr = SessionManager()
@@ -2177,6 +2187,7 @@ async def test_held_cap_is_enforced_without_the_reaper():
     depended on it, finished sessions would each pin ~255MB in between — which
     is how the backend suite got OOM-killed while this was being built."""
     import time as _time
+
     from server.session_manager import _MAX_HELD_PROCESSES
 
     mgr = SessionManager()
@@ -2221,6 +2232,7 @@ async def test_shutdown_sweep_is_bounded_by_a_hung_process():
     escalates stdin-close → SIGTERM → SIGKILL; if even that doesn't return, the
     sweep abandons it rather than hanging the process forever."""
     import time as _time
+
     from server.session_manager import _HELD_STOP_TIMEOUT
 
     class _HangingStop(FakeRunBase):
@@ -2317,7 +2329,7 @@ async def test_steer_refused_once_the_window_shuts():
 async def test_steer_backlog_is_bounded():
     """It's a person typing. Past the cap the message queues for the next turn
     instead of being refused outright — it still runs."""
-    from server.session_manager import QueuedPrompt, _MAX_PENDING_STEERS
+    from server.session_manager import _MAX_PENDING_STEERS, QueuedPrompt
 
     mgr = SessionManager()
     sess = _steerable_session(mgr)

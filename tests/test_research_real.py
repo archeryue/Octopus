@@ -23,7 +23,8 @@ from server.codex_login import codex_home_for
 from server.database import Database
 from server.research import manager as rm_mod
 from server.research.manager import ResearchManager
-from server.research.orchestrator import ResearchLimits, run_research as _real_run
+from server.research.orchestrator import ResearchLimits
+from server.research.orchestrator import run_research as _real_run
 from server.session_manager import SessionManager
 from tests.cli_gate import _resolve_cli
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from .events import HarnessCredential, HarnessEvent, SubagentUpdate
@@ -545,7 +546,7 @@ async def _fork_prepare_replay(
     working_dir: str,
     resume_id_hint: str | None,
     fork_id: str,
-) -> "Any":
+) -> Any:
     """No on-disk work (session-rewind.md §5.3.2). Codex's resume state is
     internal to the binary and has no transcript codec, so the first fork turn
     instead carries the truncated history wrapped into its USER PROMPT (done in
@@ -557,13 +558,11 @@ async def _fork_prepare_replay(
     return ForkArtifact(resume_id=None, needs_replay=True)
 
 
-def _codex_sessions_dir(credential: Any) -> "Path":
+def _codex_sessions_dir(credential: Any) -> Path:
     """CODEX_HOME/sessions — codex's rollout store (date-partitioned files named
     ``rollout-<ts>-<id>.jsonl``). The id is cwd-independent, so a copy resumes
     from anywhere. Uses the credential's CODEX_HOME, else the host default
     ~/.codex."""
-    from pathlib import Path
-
     home = (
         credential.home_dir
         if credential is not None and getattr(credential, "home_dir", None)
@@ -572,7 +571,7 @@ def _codex_sessions_dir(credential: Any) -> "Path":
     return Path(home) / "sessions"
 
 
-def _rollout_meta_id(p: "Path") -> "str | None":
+def _rollout_meta_id(p: Path) -> str | None:
     """The `session_meta.payload.id` of a rollout (its first line), or None."""
     try:
         with p.open() as f:
@@ -589,7 +588,7 @@ def _rollout_meta_id(p: "Path") -> "str | None":
     return None
 
 
-def _find_rollout(sessions_dir: "Path", resume_id: str) -> "Path | None":
+def _find_rollout(sessions_dir: Path, resume_id: str) -> Path | None:
     """Locate the rollout whose `session_meta.id` == resume_id. The filename
     usually embeds the id, but since this also drives DELETION we CONFIRM against
     session_meta before returning a match (Vera review) — never delete on a mere
@@ -614,7 +613,7 @@ async def _fork_copy(
     parent_credential: Any = None,
     dest_working_dir: str,  # unused: codex rollouts are keyed by id, not cwd
     new_resume_id: str,
-) -> "Any":
+) -> Any:
     """Full-copy fork (session-fork.md): copy the parent's rollout to a new
     rollout file under the SAME CODEX_HOME with `session_meta.id` rewritten to
     `new_resume_id`, so the fork resumes the whole conversation natively — no

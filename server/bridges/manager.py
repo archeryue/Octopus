@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -224,10 +223,14 @@ class BridgeManager:
         if not session_id:
             return
 
+        # Both are `async def` on SessionManager. Without the await the
+        # coroutine was created and dropped, so a Telegram Allow/Deny button
+        # silently did nothing — the web path (routers/ws.py) always awaited
+        # them, which is why this only ever broke on the bridge.
         if approved:
-            self.session_mgr.approve_tool(session_id, tool_use_id)
+            await self.session_mgr.approve_tool(session_id, tool_use_id)
         else:
-            self.session_mgr.deny_tool(session_id, tool_use_id, reason)
+            await self.session_mgr.deny_tool(session_id, tool_use_id, reason)
 
     # --- Broadcast handler ---
 

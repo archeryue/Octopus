@@ -148,7 +148,7 @@ def _rewrite_env_file(path: Path, token: str) -> None:
 
 
 async def rotate_auth_token(
-    db: "Database",
+    db: Database,
     new_token: str,
     *,
     session_mgr: Any | None = None,
@@ -220,7 +220,7 @@ def _restore(previous: dict[Path, str]) -> None:
 
 
 async def _reencrypt_secrets(
-    db: "Database", old_token: str, new_token: str
+    db: Database, old_token: str, new_token: str
 ) -> dict[str, int]:
     """Re-key every stored secret. All of them, or none.
 
@@ -239,7 +239,7 @@ async def _reencrypt_secrets(
     # `test_a_secret_that_cannot_be_decrypted_changes_nothing`.)
     updates: list[tuple[str, str, str, str, str]] = []
     for table, key_col, secret_col in _SECRET_COLUMNS:
-        cursor = await db._conn.execute(f"SELECT {key_col}, {secret_col} FROM {table}")
+        cursor = await db.conn.execute(f"SELECT {key_col}, {secret_col} FROM {table}")
         rows = await cursor.fetchall()
         counts[table] = len(rows)
         for key, ciphertext in rows:
@@ -258,13 +258,13 @@ async def _reencrypt_secrets(
 
     try:
         for table, key_col, secret_col, key, ciphertext in updates:
-            await db._conn.execute(
+            await db.conn.execute(
                 f"UPDATE {table} SET {secret_col} = ? WHERE {key_col} = ?",
                 (ciphertext, key),
             )
-        await db._conn.commit()
+        await db.conn.commit()
     except Exception:
-        await db._conn.rollback()
+        await db.conn.rollback()
         raise
     return counts
 

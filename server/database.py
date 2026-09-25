@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
@@ -414,17 +415,17 @@ class Database:
 
     async def initialize(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
-        await self._conn.execute("PRAGMA journal_mode=WAL")
-        await self._conn.execute("PRAGMA foreign_keys=ON")
-        await self._conn.executescript(_SCHEMA)
+        await self.conn.execute("PRAGMA journal_mode=WAL")
+        await self.conn.execute("PRAGMA foreign_keys=ON")
+        await self.conn.executescript(_SCHEMA)
         await self._apply_migrations()
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def _apply_migrations(self) -> None:
         """Idempotent additive migrations for tables that pre-existed."""
         # sessions.credential_id was added when per-backend auth landed.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE sessions ADD COLUMN credential_id TEXT"
             )
         except Exception:
@@ -434,7 +435,7 @@ class Database:
         # sessions.archived for /archive feature (hides old session row from
         # the default list, keeps it in DB so it could be surfaced later).
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"
             )
         except Exception:
@@ -452,7 +453,7 @@ class Database:
             "last_refresh_error_code TEXT",
         ):
             try:
-                await self._conn.execute(ddl)
+                await self.conn.execute(ddl)
             except Exception:
                 pass
 
@@ -460,7 +461,7 @@ class Database:
         # dedicated credential_secrets table. New writes go there directly;
         # this catch-up only runs once per pre-split row.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "INSERT OR IGNORE INTO credential_secrets "
                 "(credential_id, secret_encrypted) "
                 "SELECT id, secret_encrypted FROM backend_credentials"
@@ -470,7 +471,7 @@ class Database:
 
         # messages.attachments was added with the file/image upload feature.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE messages ADD COLUMN attachments TEXT"
             )
         except Exception:
@@ -479,7 +480,7 @@ class Database:
         # sessions.backend ('claude-code' | 'codex') — codex-backend.md §4.1.
         # DEFAULT backfills existing rows to claude-code → no behavior change.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE sessions ADD COLUMN backend TEXT NOT NULL "
                 "DEFAULT 'claude-code'"
             )
@@ -489,7 +490,7 @@ class Database:
         # applications.archived — added with the archived/restore flow. The
         # DEFAULT backfills existing rows to "live", so no behavior change.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE applications ADD COLUMN "
                 "archived INTEGER NOT NULL DEFAULT 0"
             )
@@ -500,7 +501,7 @@ class Database:
         # after each build. Nullable with no default: an existing row simply has
         # no discovered icon until its next build re-evaluates it.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE applications ADD COLUMN icon_src TEXT"
             )
         except Exception:
@@ -511,14 +512,14 @@ class Database:
         # block re-using its name. Rebuild it as live-only (same rule as
         # agents). Cheap and idempotent: the schema recreates it right after.
         try:
-            cur = await self._conn.execute(
+            cur = await self.conn.execute(
                 "SELECT sql FROM sqlite_master WHERE type = 'index' "
                 "AND name = 'applications_name_unique'"
             )
             row = await cur.fetchone()
             if row and row[0] and "archived" not in row[0]:
-                await self._conn.execute("DROP INDEX applications_name_unique")
-                await self._conn.execute(
+                await self.conn.execute("DROP INDEX applications_name_unique")
+                await self.conn.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique"
                     " ON applications(name COLLATE NOCASE) WHERE archived = 0"
                 )
@@ -532,7 +533,7 @@ class Database:
         # agents.backend — default harness for an agent's new sessions. DEFAULT
         # backfills existing agents to claude-code → no behavior change.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE agents ADD COLUMN backend TEXT NOT NULL "
                 "DEFAULT 'claude-code'"
             )
@@ -544,7 +545,7 @@ class Database:
         # existing chats to quiet. Runs after `_migrate_agents`, which may
         # rebuild bridge_mappings, so the column survives that rebuild.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE bridge_mappings ADD COLUMN verbose INTEGER "
                 "NOT NULL DEFAULT 0"
             )
@@ -564,7 +565,7 @@ class Database:
             "ALTER TABLE sessions ADD COLUMN delegation_request TEXT",
         ):
             try:
-                await self._conn.execute(ddl)
+                await self.conn.execute(ddl)
             except Exception:
                 pass
 
@@ -572,7 +573,7 @@ class Database:
         # Additive; '[]' means "the CLI's built-in sub-agents only", which is
         # every pre-existing row.
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE agents ADD COLUMN subagents TEXT NOT NULL DEFAULT '[]'"
             )
         except Exception:
@@ -582,7 +583,7 @@ class Database:
         # nullable column naming the owning application; `origin` gains an
         # 'app' value, which is a caller change, not a DDL one.
         try:
-            await self._conn.execute("ALTER TABLE sessions ADD COLUMN app_id TEXT")
+            await self.conn.execute("ALTER TABLE sessions ADD COLUMN app_id TEXT")
         except Exception:
             pass
 
@@ -601,11 +602,11 @@ class Database:
             "ALTER TABLE messages ADD COLUMN git_status_clean INTEGER",
         ):
             try:
-                await self._conn.execute(ddl)
+                await self.conn.execute(ddl)
             except Exception:
                 pass
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_forked_from "
                 "ON sessions(forked_from_session_id)"
             )
@@ -624,7 +625,7 @@ class Database:
         )
 
     async def _backfill_builtin_mcp_servers(self, names: tuple[str, ...]) -> None:
-        cursor = await self._conn.execute("SELECT id, mcp_servers FROM agents")
+        cursor = await self.conn.execute("SELECT id, mcp_servers FROM agents")
         rows = list(await cursor.fetchall())
         for agent_id, raw in rows:
             try:
@@ -641,7 +642,7 @@ class Database:
                     current.append(name)
                     added = True
             if added:
-                await self._conn.execute(
+                await self.conn.execute(
                     "UPDATE agents SET mcp_servers = ? WHERE id = ?",
                     (json.dumps(current), agent_id),
                 )
@@ -660,7 +661,7 @@ class Database:
         if not await self._has_column(
             "schedules", "cron"
         ) and await self._has_column("schedules", "interval_seconds"):
-            await self._conn.executescript(
+            await self.conn.executescript(
                 """
                 CREATE TABLE schedules__rec (
                     id TEXT PRIMARY KEY,
@@ -687,7 +688,7 @@ class Database:
         # origin_session_id is additive on top of the recurrence shape. Guarded
         # so re-running (and fresh DBs that already have it from _SCHEMA) no-op.
         if not await self._has_column("schedules", "origin_session_id"):
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE schedules ADD COLUMN origin_session_id TEXT"
             )
 
@@ -695,20 +696,20 @@ class Database:
         """Add run_at column to schedules (one-time schedule support). Fresh DBs
         already have it from _SCHEMA; re-runs are no-ops."""
         if not await self._has_column("schedules", "run_at"):
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE schedules ADD COLUMN run_at TEXT"
             )
-            await self._conn.commit()
+            await self.conn.commit()
         # Which session the last fire ran in. Additive; NULL on every
         # pre-existing row means "we don't know", which both readers handle.
         if not await self._has_column("schedules", "last_run_session_id"):
-            await self._conn.execute(
+            await self.conn.execute(
                 "ALTER TABLE schedules ADD COLUMN last_run_session_id TEXT"
             )
-            await self._conn.commit()
+            await self.conn.commit()
 
     async def _column_info(self, table: str) -> list[tuple[Any, ...]]:
-        cursor = await self._conn.execute(f"PRAGMA table_info({table})")
+        cursor = await self.conn.execute(f"PRAGMA table_info({table})")
         return list(await cursor.fetchall())
 
     async def _has_column(self, table: str, column: str) -> bool:
@@ -747,19 +748,19 @@ class Database:
             "REFERENCES agents(id) ON DELETE CASCADE",
         ):
             try:
-                await self._conn.execute(ddl)
+                await self.conn.execute(ddl)
             except Exception:
                 pass
 
         # 2. The protected Default Agent — exactly one, created once.
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT id FROM agents WHERE is_system = 1 LIMIT 1"
         )
         row = await cursor.fetchone()
         if row is None:
             default_id = uuid.uuid4().hex[:12]
-            now = datetime.now(timezone.utc).isoformat()
-            await self._conn.execute(
+            now = datetime.now(UTC).isoformat()
+            await self.conn.execute(
                 "INSERT INTO agents "
                 "(id, name, description, system_prompt, mcp_servers, "
                 " is_system, created_at, updated_at) "
@@ -773,7 +774,7 @@ class Database:
             # user-renamed system agent is left alone; try/except so it no-ops
             # if an agent named 'Octo' already exists (unique-name index).
             try:
-                await self._conn.execute(
+                await self.conn.execute(
                     "UPDATE agents SET name = 'Octo' "
                     "WHERE id = ? AND name = 'Default'",
                     (default_id,),
@@ -782,7 +783,7 @@ class Database:
                 pass
 
         # 3. Backfill sessions → Default Agent. (origin defaults to 'user'.)
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE sessions SET agent_id = ? WHERE agent_id IS NULL",
             (default_id,),
         )
@@ -791,17 +792,17 @@ class Database:
         #    session_id, then rebuild the table without it. Guarded on the
         #    presence of session_id so it runs exactly once.
         if await self._has_column("schedules", "session_id"):
-            await self._conn.execute(
+            await self.conn.execute(
                 "UPDATE schedules SET agent_id = ("
                 "  SELECT s.agent_id FROM sessions s WHERE s.id = schedules.session_id"
                 ") WHERE agent_id IS NULL"
             )
             # Orphans whose session was deleted fall back to Default.
-            await self._conn.execute(
+            await self.conn.execute(
                 "UPDATE schedules SET agent_id = ? WHERE agent_id IS NULL",
                 (default_id,),
             )
-            await self._conn.executescript(
+            await self.conn.executescript(
                 """
                 CREATE TABLE schedules__new (
                     id TEXT PRIMARY KEY,
@@ -827,17 +828,17 @@ class Database:
         #    session_id's NOT NULL into a nullable sticky pointer. Guarded
         #    on the old NOT NULL shape so it runs exactly once.
         if await self._column_is_not_null("bridge_mappings", "session_id"):
-            await self._conn.execute(
+            await self.conn.execute(
                 "UPDATE bridge_mappings SET agent_id = ("
                 "  SELECT s.agent_id FROM sessions s "
                 "  WHERE s.id = bridge_mappings.session_id"
                 ") WHERE agent_id IS NULL"
             )
-            await self._conn.execute(
+            await self.conn.execute(
                 "UPDATE bridge_mappings SET agent_id = ? WHERE agent_id IS NULL",
                 (default_id,),
             )
-            await self._conn.executescript(
+            await self.conn.executescript(
                 """
                 CREATE TABLE bridge_mappings__new (
                     platform TEXT NOT NULL,
@@ -872,9 +873,9 @@ class Database:
     async def close(self) -> None:
         if self._conn:
             if self._dirty:
-                await self._conn.commit()
+                await self.conn.commit()
                 self._dirty = False
-            await self._conn.close()
+            await self.conn.close()
             self._conn = None
         self._closed = True
 
@@ -882,7 +883,7 @@ class Database:
         """Commit pending writes."""
         await self._ensure_connected()
         if self._dirty:
-            await self._conn.commit()
+            await self.conn.commit()
             self._dirty = False
 
     @property
@@ -906,7 +907,7 @@ class Database:
         app_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO sessions "
             "(id, name, working_dir, created_at, claude_session_id, "
             " credential_id, agent_id, origin, backend, "
@@ -927,12 +928,12 @@ class Database:
                 app_id,
             ),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def delete_session(self, session_id: str) -> None:
         await self._ensure_connected()
-        await self._conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        await self._conn.commit()
+        await self.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        await self.conn.commit()
 
     async def create_fork_session(
         self,
@@ -962,7 +963,7 @@ class Database:
         flush (Vera review SHOULD-FIX #1)."""
         await self._ensure_connected()
         try:
-            await self._conn.execute(
+            await self.conn.execute(
                 "INSERT INTO sessions "
                 "(id, name, working_dir, created_at, claude_session_id, "
                 " credential_id, agent_id, origin, backend, "
@@ -976,7 +977,7 @@ class Database:
                     fork_metadata,
                 ),
             )
-            await self._conn.execute(
+            await self.conn.execute(
                 "INSERT INTO messages "
                 "(session_id, seq, role, type, content, tool_name, tool_input, "
                 " tool_use_id, is_error, session_id_ref, cost, attachments, "
@@ -987,9 +988,9 @@ class Database:
                 "FROM messages WHERE session_id = ? AND seq <= ?",
                 (fork_id, parent_id, fork_after_seq),
             )
-            await self._conn.commit()
+            await self.conn.commit()
         except Exception:
-            await self._conn.rollback()
+            await self.conn.rollback()
             raise
 
     async def load_sessions(
@@ -1005,7 +1006,7 @@ class Database:
         )
         if not include_archived:
             query += " WHERE archived = 0"
-        cursor = await self._conn.execute(query)
+        cursor = await self.conn.execute(query)
         rows = await cursor.fetchall()
         return [
             {
@@ -1034,7 +1035,7 @@ class Database:
 
     async def count_messages(self, session_id: str) -> int:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
         )
         row = await cursor.fetchone()
@@ -1068,7 +1069,7 @@ class Database:
             int(git_status_clean) if git_status_clean is not None else None
         )
 
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
             "tool_use_id, is_error, session_id_ref, cost, attachments, "
@@ -1108,7 +1109,7 @@ class Database:
         if limit > 0:
             query += " LIMIT ? OFFSET ?"
             params.extend([limit, offset])
-        cursor = await self._conn.execute(query, params)
+        cursor = await self.conn.execute(query, params)
         rows = await cursor.fetchall()
         results = []
         for row in rows:
@@ -1150,26 +1151,26 @@ class Database:
         on conflict so a rebind preserves the chat's `verbose` preference
         (a chat-level setting that outlives any single agent/thread)."""
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO bridge_mappings "
             "(platform, chat_id, agent_id, session_id) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(platform, chat_id) DO UPDATE SET "
             "agent_id = excluded.agent_id, session_id = excluded.session_id",
             (platform, chat_id, agent_id, session_id),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def set_bridge_verbose(
         self, platform: str, chat_id: str, verbose: bool
     ) -> None:
         """Set a chat's output verbosity (quiet = octo replies only)."""
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE bridge_mappings SET verbose = ? "
             "WHERE platform = ? AND chat_id = ?",
             (1 if verbose else 0, platform, chat_id),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def set_bridge_sticky_session(
         self, platform: str, chat_id: str, session_id: str | None
@@ -1177,36 +1178,36 @@ class Database:
         """Repoint a chat's sticky session (or clear it with None) without
         touching its agent binding."""
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE bridge_mappings SET session_id = ? "
             "WHERE platform = ? AND chat_id = ?",
             (session_id, platform, chat_id),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def clear_bridge_sticky_for_session(self, session_id: str) -> int:
         """Null every sticky pointer aimed at a session that's going away
         (archived). The chat keeps its agent binding; the next inbound
         message opens a fresh thread. Returns rows updated."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "UPDATE bridge_mappings SET session_id = NULL WHERE session_id = ?",
             (session_id,),
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount
 
     async def delete_bridge_mapping(self, platform: str, chat_id: str) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "DELETE FROM bridge_mappings WHERE platform = ? AND chat_id = ?",
             (platform, chat_id),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_bridge_mappings(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT platform, chat_id, agent_id, session_id, verbose "
             "FROM bridge_mappings"
         )
@@ -1244,7 +1245,7 @@ class Database:
         `origin_session_id`, when set, is the session the `/schedule` command was
         typed in — fires append into it instead of a throwaway session."""
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO schedules (id, agent_id, origin_session_id, name, prompt, "
             "interval_seconds, cron, timezone, recurrence_label, enabled, "
             "created_at, run_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1263,11 +1264,11 @@ class Database:
                 run_at,
             ),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_schedules(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT id, agent_id, name, prompt, interval_seconds, cron, timezone, "
             "recurrence_label, enabled, created_at, last_run_at, origin_session_id, "
             "run_at, last_run_session_id FROM schedules"
@@ -1295,8 +1296,8 @@ class Database:
 
     async def delete_schedule(self, schedule_id: str) -> None:
         await self._ensure_connected()
-        await self._conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
-        await self._conn.commit()
+        await self.conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+        await self.conn.commit()
 
     async def repoint_schedules_origin(
         self, old_session_id: str, new_session_id: str
@@ -1307,18 +1308,18 @@ class Database:
         the affected schedule rows (post-update) so the caller can re-register
         their jobs. No-op returning [] when nothing points at the old session."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT id FROM schedules WHERE origin_session_id = ?",
             (old_session_id,),
         )
         affected = {row[0] for row in await cursor.fetchall()}
         if not affected:
             return []
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE schedules SET origin_session_id = ? WHERE origin_session_id = ?",
             (new_session_id, old_session_id),
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return [r for r in await self.load_schedules() if r["id"] in affected]
 
     async def update_schedule(self, schedule_id: str, **fields: Any) -> None:
@@ -1342,11 +1343,11 @@ class Database:
             updates["enabled"] = int(updates["enabled"])
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [schedule_id]
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE schedules SET {set_clause} WHERE id = ?",
             values,
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     # --- Backend credentials ---
 
@@ -1370,7 +1371,7 @@ class Database:
         "c.last_refresh_error_code",
     )
 
-    def _row_to_credential(self, row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_credential(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row[0],
             "backend": row[1],
@@ -1394,24 +1395,24 @@ class Database:
         created_at: str,
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO backend_credentials "
             "(id, backend, label, auth_type, secret_encrypted, created_at, "
             " status, needs_reconnect) "
             "VALUES (?, ?, ?, ?, ?, ?, 'active', 0)",
             (credential_id, backend, label, auth_type, secret_encrypted, created_at),
         )
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT OR REPLACE INTO credential_secrets "
             "(credential_id, secret_encrypted) VALUES (?, ?)",
             (credential_id, secret_encrypted),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_credentials(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
         cols = ", ".join(self._CREDENTIAL_COLS)
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {cols} FROM backend_credentials c "
             "LEFT JOIN credential_secrets s ON s.credential_id = c.id "
             "ORDER BY c.created_at"
@@ -1422,7 +1423,7 @@ class Database:
     async def get_credential(self, credential_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
         cols = ", ".join(self._CREDENTIAL_COLS)
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {cols} FROM backend_credentials c "
             "LEFT JOIN credential_secrets s ON s.credential_id = c.id "
             "WHERE c.id = ?",
@@ -1464,25 +1465,25 @@ class Database:
                 applied["secret_encrypted"] = secret_value
             set_clause = ", ".join(f"{k} = ?" for k in applied)
             values = list(applied.values()) + [credential_id]
-            await self._conn.execute(
+            await self.conn.execute(
                 f"UPDATE backend_credentials SET {set_clause} WHERE id = ?",
                 values,
             )
         elif secret_value is not None:
-            await self._conn.execute(
+            await self.conn.execute(
                 "UPDATE backend_credentials SET secret_encrypted = ? WHERE id = ?",
                 (secret_value, credential_id),
             )
 
         if secret_value is not None:
-            await self._conn.execute(
+            await self.conn.execute(
                 "INSERT OR REPLACE INTO credential_secrets "
                 "(credential_id, secret_encrypted) VALUES (?, ?)",
                 (credential_id, secret_value),
             )
 
         if meta_updates or secret_value is not None:
-            await self._conn.commit()
+            await self.conn.commit()
 
     async def clear_credential_from_sessions(self, credential_id: str) -> list[str]:
         """Unbind a credential from every session that pins it, returning the
@@ -1497,25 +1498,25 @@ class Database:
         which is what the FK on `agents.credential_id` already does for agents.
         """
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT id FROM sessions WHERE credential_id = ?", (credential_id,)
         )
         ids = [row[0] for row in await cursor.fetchall()]
         if ids:
-            await self._conn.execute(
+            await self.conn.execute(
                 "UPDATE sessions SET credential_id = NULL WHERE credential_id = ?",
                 (credential_id,),
             )
-            await self._conn.commit()
+            await self.conn.commit()
         return ids
 
     async def delete_credential(self, credential_id: str) -> bool:
         await self._ensure_connected()
         # ON DELETE CASCADE on credential_secrets handles the secret row.
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM backend_credentials WHERE id = ?", (credential_id,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0
 
     # ------------------------------------------------------------------
@@ -1533,7 +1534,7 @@ class Database:
     )
 
     @staticmethod
-    def _row_to_connector(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_connector(row: sqlite3.Row) -> dict[str, Any]:
         try:
             scopes = json.loads(row[5]) if row[5] else []
         except (json.JSONDecodeError, TypeError):
@@ -1567,7 +1568,7 @@ class Database:
         token_expires_at: str | None = None,
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO connector_installations "
             "(id, kind, label, auth_type, external_account_id, scopes, "
             " enable_by_default, needs_reconnect, token_expires_at, created_at) "
@@ -1578,16 +1579,16 @@ class Database:
                 int(bool(enable_by_default)), token_expires_at, created_at,
             ),
         )
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT OR REPLACE INTO connector_installation_secrets "
             "(installation_id, secret_encrypted) VALUES (?, ?)",
             (installation_id, secret_encrypted),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_connector_installations(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
             "ORDER BY created_at"
         )
@@ -1598,7 +1599,7 @@ class Database:
         self, installation_id: str
     ) -> dict[str, Any] | None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
             "WHERE id = ?",
             (installation_id,),
@@ -1612,7 +1613,7 @@ class Database:
         """Look up by (kind, external account) — the dedup key the install
         flow upserts on."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
             "WHERE kind = ? AND external_account_id = ?",
             (kind, external_account_id),
@@ -1624,7 +1625,7 @@ class Database:
         """The encrypted token blob — only the internal /token route reads
         this."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT secret_encrypted FROM connector_installation_secrets "
             "WHERE installation_id = ?",
             (installation_id,),
@@ -1670,28 +1671,28 @@ class Database:
         if meta_updates:
             set_clause = ", ".join(f"{k} = ?" for k in meta_updates)
             values = list(meta_updates.values()) + [installation_id]
-            await self._conn.execute(
+            await self.conn.execute(
                 f"UPDATE connector_installations SET {set_clause} WHERE id = ?",
                 values,
             )
 
         if secret_value is not None:
-            await self._conn.execute(
+            await self.conn.execute(
                 "INSERT OR REPLACE INTO connector_installation_secrets "
                 "(installation_id, secret_encrypted) VALUES (?, ?)",
                 (installation_id, secret_value),
             )
 
         if meta_updates or secret_value is not None:
-            await self._conn.commit()
+            await self.conn.commit()
 
     async def delete_connector_installation(self, installation_id: str) -> bool:
         await self._ensure_connected()
         # ON DELETE CASCADE drops the secret row and any agent_connectors links.
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM connector_installations WHERE id = ?", (installation_id,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0
 
     # --- agent-scoped enablement join -------------------------------------
@@ -1702,23 +1703,23 @@ class Database:
         """Toggle one connector for one agent (presence in the join = on)."""
         await self._ensure_connected()
         if enabled:
-            await self._conn.execute(
+            await self.conn.execute(
                 "INSERT OR IGNORE INTO agent_connectors "
                 "(agent_id, installation_id) VALUES (?, ?)",
                 (agent_id, installation_id),
             )
         else:
-            await self._conn.execute(
+            await self.conn.execute(
                 "DELETE FROM agent_connectors "
                 "WHERE agent_id = ? AND installation_id = ?",
                 (agent_id, installation_id),
             )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def get_agent_connector_ids(self, agent_id: str) -> list[str]:
         """Installation ids enabled for an agent."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT installation_id FROM agent_connectors WHERE agent_id = ?",
             (agent_id,),
         )
@@ -1732,7 +1733,7 @@ class Database:
         join SessionManager reads at spawn time to build the MCP set."""
         await self._ensure_connected()
         cols = ", ".join(f"ci.{c}" for c in self._CONNECTOR_COLS.split(", "))
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {cols} FROM connector_installations ci "
             "JOIN agent_connectors ac ON ac.installation_id = ci.id "
             "WHERE ac.agent_id = ? ORDER BY ci.created_at",
@@ -1747,7 +1748,7 @@ class Database:
         self, kind: str, client_id: str, client_secret_encrypted: str, now: str
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO connector_oauth_clients "
             "(kind, client_id, client_secret_encrypted, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?) "
@@ -1757,13 +1758,13 @@ class Database:
             "updated_at=excluded.updated_at",
             (kind, client_id, client_secret_encrypted, now, now),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def get_connector_oauth_client(
         self, kind: str
     ) -> dict[str, Any] | None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT kind, client_id, client_secret_encrypted "
             "FROM connector_oauth_clients WHERE kind = ?",
             (kind,),
@@ -1779,26 +1780,26 @@ class Database:
 
     async def delete_connector_oauth_client(self, kind: str) -> bool:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM connector_oauth_clients WHERE kind = ?", (kind,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0
 
     async def delete_connector_installations_by_kind(self, kind: str) -> int:
         """Delete every installation of a kind (cascades to secrets +
         agent_connectors). Used when a custom connector is removed."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM connector_installations WHERE kind = ?", (kind,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount
 
     # --- custom (user-defined) connector definitions ----------------------
 
     @staticmethod
-    def _row_to_custom(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_custom(row: sqlite3.Row) -> dict[str, Any]:
         # Columns: kind, display_name, authorize_url, token_url, scopes, pkce,
         # api_base, created_at, updated_at.
         try:
@@ -1830,7 +1831,7 @@ class Database:
         now: str,
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO custom_connectors "
             "(kind, display_name, authorize_url, token_url, scopes, pkce, "
             " api_base, created_at, updated_at) "
@@ -1845,7 +1846,7 @@ class Database:
                 json.dumps(scopes), int(bool(pkce)), api_base, now, now,
             ),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     _CUSTOM_COLS = (
         "kind, display_name, authorize_url, token_url, scopes, pkce, "
@@ -1854,7 +1855,7 @@ class Database:
 
     async def get_custom_connector(self, kind: str) -> dict[str, Any] | None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._CUSTOM_COLS} FROM custom_connectors WHERE kind = ?",
             (kind,),
         )
@@ -1863,7 +1864,7 @@ class Database:
 
     async def list_custom_connectors(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._CUSTOM_COLS} FROM custom_connectors ORDER BY created_at"
         )
         rows = await cursor.fetchall()
@@ -1871,10 +1872,10 @@ class Database:
 
     async def delete_custom_connector(self, kind: str) -> bool:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM custom_connectors WHERE kind = ?", (kind,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0
 
     async def load_incomplete_forks(self) -> list[dict[str, Any]]:
@@ -1883,7 +1884,7 @@ class Database:
         resume id rides in `claude_session_id` (the pre-minted handle stored in
         the saga's step-5 INSERT)."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT id, forked_from_session_id, working_dir, backend, "
             "claude_session_id, fork_status, fork_revert_record, credential_id, "
             "agent_id, fork_metadata "
@@ -1948,11 +1949,11 @@ class Database:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [session_id]
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE sessions SET {set_clause} WHERE id = ?",
             values,
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     # --- Agents ---
 
@@ -1968,7 +1969,7 @@ class Database:
     )
 
     @staticmethod
-    def _row_to_agent(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_agent(row: sqlite3.Row) -> dict[str, Any]:
         try:
             mcp_servers = json.loads(row[7]) if row[7] else []
         except (json.JSONDecodeError, TypeError):
@@ -2026,7 +2027,7 @@ class Database:
         servers_json = json.dumps(
             mcp_servers if mcp_servers is not None else _DEFAULT_MCP_SERVERS
         )
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO agents "
             "(id, name, description, avatar, system_prompt, model, "
             " credential_id, backend, mcp_servers, tool_allow, tool_deny, "
@@ -2039,7 +2040,7 @@ class Database:
                 created_at, updated_at, json.dumps(subagents or []),
             ),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_agents(
         self, *, include_archived: bool = False
@@ -2052,14 +2053,14 @@ class Database:
         if not include_archived:
             query += " WHERE a.archived = 0"
         query += " ORDER BY a.is_system DESC, a.created_at"
-        cursor = await self._conn.execute(query)
+        cursor = await self.conn.execute(query)
         rows = await cursor.fetchall()
         return [self._row_to_agent(row) for row in rows]
 
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
             "WHERE a.id = ?",
             (agent_id,),
@@ -2079,7 +2080,7 @@ class Database:
         params: list[Any] = [name]
         if not include_archived:
             query += " AND a.archived = 0"
-        cursor = await self._conn.execute(query, params)
+        cursor = await self.conn.execute(query, params)
         row = await cursor.fetchone()
         return self._row_to_agent(row) if row else None
 
@@ -2087,7 +2088,7 @@ class Database:
         """The protected Default Agent (is_system=1), created by migration."""
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
             "WHERE a.is_system = 1 LIMIT 1"
         )
@@ -2118,17 +2119,17 @@ class Database:
                 updates[k] = v
         if not updates:
             return
-        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        updates["updated_at"] = datetime.now(UTC).isoformat()
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [agent_id]
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE agents SET {set_clause} WHERE id = ?", values
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def count_active_sessions_for_agent(self, agent_id: str) -> int:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND archived = 0",
             (agent_id,),
         )
@@ -2137,7 +2138,7 @@ class Database:
 
     async def count_sessions_for_agent(self, agent_id: str) -> int:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT COUNT(*) FROM sessions WHERE agent_id = ?",
             (agent_id,),
         )
@@ -2147,15 +2148,15 @@ class Database:
     async def archive_agent(self, agent_id: str) -> None:
         """Soft-delete an agent and cascade-archive its sessions."""
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE agents SET archived = 1, updated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), agent_id),
+            (datetime.now(UTC).isoformat(), agent_id),
         )
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE sessions SET archived = 1 WHERE agent_id = ?",
             (agent_id,),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def unarchive_agent(self, agent_id: str) -> None:
         """Restore an archived agent. Its sessions stay archived: they were
@@ -2163,21 +2164,21 @@ class Database:
         not what "restore this agent" means — the archived-sessions page is
         where a session comes back from."""
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "UPDATE agents SET archived = 0, updated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), agent_id),
+            (datetime.now(UTC).isoformat(), agent_id),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def delete_agent(self, agent_id: str) -> bool:
         """Hard-delete an agent. FK ON DELETE CASCADE removes its sessions,
         schedules and bridge bindings — guarded by AgentManager so this is
         only reached when the agent has no sessions."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM agents WHERE id = ?", (agent_id,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0
 
     # --- Notifiers ---
@@ -2192,16 +2193,16 @@ class Database:
         enabled: bool = True,
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO notifiers (id, type, label, config, enabled, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (notifier_id, type, label, json.dumps(config), int(enabled), created_at),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_notifiers(self) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "SELECT id, type, label, config, enabled, created_at "
             "FROM notifiers ORDER BY created_at"
         )
@@ -2220,10 +2221,10 @@ class Database:
 
     async def delete_notifier(self, notifier_id: str) -> bool:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM notifiers WHERE id = ?", (notifier_id,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0
 
     async def update_notifier(self, notifier_id: str, **fields: Any) -> None:
@@ -2243,15 +2244,15 @@ class Database:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [notifier_id]
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE notifiers SET {set_clause} WHERE id = ?", values
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     # --- Background tasks (cross-turn) ---
 
     @staticmethod
-    def _row_to_bg_task(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_bg_task(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row[0],
             "session_id": row[1],
@@ -2282,14 +2283,14 @@ class Database:
         started_at: str,
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO bg_tasks "
             "(id, session_id, command, description, working_dir, status, "
             " stdout, stderr, truncated, started_at) "
             "VALUES (?, ?, ?, ?, ?, 'running', '', '', 0, ?)",
             (task_id, session_id, command, description, working_dir, started_at),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def update_bg_task(self, task_id: str, **fields: Any) -> None:
         """Patch any of: status, exit_code, stdout, stderr, truncated, completed_at."""
@@ -2314,14 +2315,14 @@ class Database:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [task_id]
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE bg_tasks SET {set_clause} WHERE id = ?", values
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def get_bg_task(self, task_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._BG_TASK_COLS} FROM bg_tasks WHERE id = ?", (task_id,)
         )
         row = await cursor.fetchone()
@@ -2331,7 +2332,7 @@ class Database:
         self, session_id: str, *, limit: int = 200
     ) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._BG_TASK_COLS} FROM bg_tasks "
             "WHERE session_id = ? ORDER BY started_at DESC LIMIT ?",
             (session_id, limit),
@@ -2349,12 +2350,12 @@ class Database:
         spinner that will never resolve. Returns rows updated.
         """
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "UPDATE bg_tasks SET status = 'interrupted', completed_at = ? "
             "WHERE status IN ('running', 'pending')",
             (completed_at,),
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount
 
     # --- Research jobs (native-deep-research.md §6) ---
@@ -2365,7 +2366,7 @@ class Database:
     )
 
     @staticmethod
-    def _row_to_research_job(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_research_job(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row[0],
             "session_id": row[1],
@@ -2385,13 +2386,13 @@ class Database:
         self, job_id: str, session_id: str, question: str, created_at: str
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO research_jobs "
             "(id, session_id, question, status, phase, created_at, injection_status) "
             "VALUES (?, ?, ?, 'running', 'scope', ?, 'pending')",
             (job_id, session_id, question, created_at),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def update_research_job(self, job_id: str, **fields: Any) -> None:
         """Patch any of: status, phase, error, report_path, cost, completed_at,
@@ -2405,15 +2406,15 @@ class Database:
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE research_jobs SET {set_clause} WHERE id = ?",
             list(updates.values()) + [job_id],
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def get_research_job(self, job_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._RESEARCH_COLS} FROM research_jobs WHERE id = ?", (job_id,)
         )
         row = await cursor.fetchone()
@@ -2423,7 +2424,7 @@ class Database:
         self, session_id: str, *, limit: int = 200
     ) -> list[dict[str, Any]]:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._RESEARCH_COLS} FROM research_jobs "
             "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
             (session_id, limit),
@@ -2436,12 +2437,12 @@ class Database:
         gone, so flip it to `interrupted` (native-deep-research.md §6). v1 does
         not resume mid-pipeline. Returns rows updated."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "UPDATE research_jobs SET status = 'interrupted', completed_at = ? "
             "WHERE status = 'running'",
             (completed_at,),
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount
 
     # ------------------------------------------------------------ applications
@@ -2453,7 +2454,7 @@ class Database:
     )
 
     @staticmethod
-    def _row_to_application(row: tuple[Any, ...]) -> dict[str, Any]:
+    def _row_to_application(row: sqlite3.Row) -> dict[str, Any]:
         return {
             "id": row[0],
             "name": row[1],
@@ -2488,7 +2489,7 @@ class Database:
         status: str = "building",
     ) -> None:
         await self._ensure_connected()
-        await self._conn.execute(
+        await self.conn.execute(
             "INSERT INTO applications "
             "(id, name, description, icon, agent_id, session_id, app_dir, "
             " entrypoint, status, created_at, updated_at) "
@@ -2507,7 +2508,7 @@ class Database:
                 updated_at,
             ),
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def load_applications(
         self, *, include_archived: bool = False, only_archived: bool = False
@@ -2518,7 +2519,7 @@ class Database:
             where = " WHERE archived = 1"
         elif not include_archived:
             where = " WHERE archived = 0"
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._APPLICATION_COLS} FROM applications{where} "
             "ORDER BY created_at ASC"
         )
@@ -2527,7 +2528,7 @@ class Database:
 
     async def get_application(self, app_id: str) -> dict[str, Any] | None:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._APPLICATION_COLS} FROM applications WHERE id = ?",
             (app_id,),
         )
@@ -2547,7 +2548,7 @@ class Database:
         )
         if not include_archived:
             query += " AND archived = 0"
-        cursor = await self._conn.execute(query, (name,))
+        cursor = await self.conn.execute(query, (name,))
         row = await cursor.fetchone()
         return self._row_to_application(row) if row else None
 
@@ -2558,7 +2559,7 @@ class Database:
         single row) because nothing stops two applications from being built in
         the same conversation if a future flow wires it that way."""
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             f"SELECT {self._APPLICATION_COLS} FROM applications "
             "WHERE session_id = ?",
             (session_id,),
@@ -2585,16 +2586,16 @@ class Database:
         if not updates:
             return
         set_clause = ", ".join(f"{k} = ?" for k in updates)
-        await self._conn.execute(
+        await self.conn.execute(
             f"UPDATE applications SET {set_clause} WHERE id = ?",
             list(updates.values()) + [app_id],
         )
-        await self._conn.commit()
+        await self.conn.commit()
 
     async def delete_application(self, app_id: str) -> bool:
         await self._ensure_connected()
-        cursor = await self._conn.execute(
+        cursor = await self.conn.execute(
             "DELETE FROM applications WHERE id = ?", (app_id,)
         )
-        await self._conn.commit()
+        await self.conn.commit()
         return cursor.rowcount > 0

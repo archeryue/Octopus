@@ -11,10 +11,9 @@ from pathlib import Path
 
 import pytest
 
-from server.harness.events import HarnessCredential
 from server.harness import claude_code as cc
 from server.harness import codex as cx
-
+from server.harness.events import HarnessCredential
 
 # ----------------------------------------------------------------- Claude
 
@@ -66,7 +65,7 @@ async def test_claude_fork_copy_rewrites_and_resumes(tmp_path, monkeypatch):
 
     dest = cc._claude_project_dir(dest_wd) / "nid-2.jsonl"
     assert dest.is_file()
-    rows = [json.loads(l) for l in dest.read_text().splitlines() if l]
+    rows = [json.loads(line) for line in dest.read_text().splitlines() if line]
     # Every sessionId rewritten; every cwd repointed to the copied dir.
     assert {r["sessionId"] for r in rows} == {"nid-2"}
     assert {r["cwd"] for r in rows if "cwd" in r} == {dest_wd}
@@ -175,7 +174,8 @@ async def test_codex_find_rollout_confirms_session_meta(tmp_path):
     # A rollout whose FILENAME contains the id but whose session_meta.id differs
     # must NOT match — _find_rollout confirms session_meta before returning (it
     # drives deletion, so a filename-only hit could delete the wrong file).
-    home = tmp_path / "codexhome"; home.mkdir()
+    home = tmp_path / "codexhome"
+    home.mkdir()
     sess = home / "sessions" / "2026" / "06" / "15"
     sess.mkdir(parents=True)
     # filename says rid-2, content says rid-1
@@ -187,7 +187,8 @@ async def test_codex_find_rollout_confirms_session_meta(tmp_path):
 
 @pytest.mark.asyncio
 async def test_codex_fork_cleanup_reraises_on_oserror(tmp_path, monkeypatch):
-    home = tmp_path / "codexhome"; home.mkdir()
+    home = tmp_path / "codexhome"
+    home.mkdir()
     _write_codex_rollout(home, "rid-1")
     cred = HarnessCredential(backend="codex", auth_type="oauth", home_dir=str(home))
     await cx._fork_copy(
@@ -209,7 +210,7 @@ async def test_codex_fork_cleanup_removes_copy(tmp_path):
     home.mkdir()
     _write_codex_rollout(home, "rid-1")
     cred = HarnessCredential(backend="codex", auth_type="oauth", home_dir=str(home))
-    art = await cx._fork_copy(
+    await cx._fork_copy(
         parent_working_dir="/x", parent_resume_id="rid-1",
         parent_credential=cred, dest_working_dir="/y", new_resume_id="rid-2",
     )

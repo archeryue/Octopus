@@ -9,12 +9,11 @@
 # pass instead of discovering problems one commit at a time. Exit status is
 # non-zero if any gate failed.
 #
-# Deliberately NOT here yet: eslint. `bun run lint` currently reports 20
-# findings (16 errors), and 7 of them are in e2e/handoff-pull.spec.ts, which
-# eslint.config.js lints as browser React when it is Node-context Playwright.
-# Adding it as a gate needs that triage first — docs/plans/polish-2026-09.md
-# §8 F2. A lint baseline would be the "parked obligation" CLAUDE.md forbids,
-# so the gate stays out until the findings are actually resolved.
+# `ruff format` is deliberately NOT a gate. It would rewrite 124 of 177
+# files; on a codebase with hand-wrapped prose comments that is an
+# unreviewable diff that destroys git blame for no behavioural gain. Ruff is
+# used as a linter only. Adopting the formatter is a separate decision, best
+# taken after the SessionManager extraction rather than before it.
 
 set -uo pipefail
 
@@ -27,6 +26,14 @@ if [ -d "$HOME/.nvm/versions/node" ]; then
   NODE_BIN="$HOME/.nvm/versions/node/$(ls "$HOME/.nvm/versions/node" | sort -V | tail -1)/bin"
   export PATH="$NODE_BIN:$PATH"
 fi
+
+# Python block-buffers stdout when it is a pipe rather than a tty, so a long
+# pytest run can emit nothing for its whole duration and then flush at the
+# end. That looks indistinguishable from a hung process to anything watching
+# stdio — including Octopus's own bg-task idle watchdog, which SIGTERMs a
+# task silent for 60s (server/bg_tasks.py IDLE_AFTER_OUTPUT_TIMEOUT_SECS).
+# Unbuffered output keeps progress visible and the run alive.
+export PYTHONUNBUFFERED=1
 
 FAILED=()
 PASSED=()
@@ -53,9 +60,18 @@ gate_tsc() { cd "$ROOT/web" && bun run typecheck; }
 
 gate_contracts() { "$ROOT/scripts/check-contracts.sh"; }
 
+gate_ruff() { "$ROOT/.venv/bin/ruff" check .; }
+
+gate_mypy() { "$ROOT/.venv/bin/mypy"; }
+
+gate_eslint() { cd "$ROOT/web" && bun run lint; }
+
 gate_e2e() { cd "$ROOT/web" && bun run test:e2e; }
 
+run_gate "backend lint (ruff)"                 gate_ruff
+run_gate "backend types (mypy)"                gate_mypy
 run_gate "backend unit (pytest -m 'not real')" gate_pytest
+run_gate "frontend lint (eslint)"              gate_eslint
 run_gate "frontend unit (vitest)"              gate_vitest
 run_gate "typecheck (tsc --noEmit)"            gate_tsc
 run_gate "generated contracts in sync"         gate_contracts

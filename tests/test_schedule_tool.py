@@ -7,6 +7,8 @@ that matter and are tested here: the agent is *derived* from the session
 stated outright and validated rather than parsed out of English.
 """
 
+from datetime import UTC
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -117,10 +119,10 @@ async def test_create_interval_schedule_outside_this_session(client):
 
 @pytest.mark.asyncio
 async def test_create_one_time_schedule(client):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     sid = await _session(client)
-    when = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    when = (datetime.now(UTC) + timedelta(hours=2)).isoformat()
     resp = await client.post(
         f"/api/sessions/{sid}/schedules",
         json={"prompt": "remind me about the release", "run_at": when},

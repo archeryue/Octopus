@@ -17,12 +17,20 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 
 from ..attachments import (
-    AttachmentError,
     MAX_FILE_BYTES,
+    AttachmentError,
     get_path,
     get_path_with_fork_fallback,
     save_upload,

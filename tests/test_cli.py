@@ -1,17 +1,14 @@
 """Tests for the CLI module."""
 
 import json
-import tempfile
 from pathlib import Path
-
-import pytest
 
 from server.cli import (
     build_import_payload,
     build_parser,
     discover_sessions,
-    get_project_dir,
     do_pull,
+    get_project_dir,
 )
 
 

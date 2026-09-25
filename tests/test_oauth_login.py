@@ -23,9 +23,9 @@ from server.oauth_errors import ScopeMissingError
 from server.oauth_login import (
     AUTHORIZE_URL,
     CLIENT_ID,
+    SCOPES,
     LoginState,
     OAuthLoginManager,
-    SCOPES,
     _b64url,
     _challenge_from,
     _gen_state,
@@ -98,7 +98,7 @@ async def test_start_returns_authorize_url_with_pkce_params():
     assert "code_challenge_method=S256" in session.url
     assert "response_type=code" in session.url
 
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
     parts = parse_qs(urlparse(session.url).query)
     assert parts["scope"][0].split() == SCOPES
     assert parts["redirect_uri"][0].endswith("/oauth/code/callback")

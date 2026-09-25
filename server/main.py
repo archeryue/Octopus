@@ -12,24 +12,39 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from .agent_manager import AgentManager
+from .app_agent import app_agent_manager
+from .app_backends import backend_supervisor
+from .applications import application_manager
 from .auth import verify_token
-
 from .bg_tasks import bg_task_manager
-from .delegations import delegation_manager
-from .research import research_manager
 from .bridges.manager import BridgeManager
 from .config import settings
-from .tunnel import CloudflareTunnel
-from .database import Database
-from .notifiers import notifier_manager
-from .agent_manager import AgentManager
-from .app_backends import backend_supervisor
-from .app_agent import app_agent_manager
-from .applications import application_manager
 from .connector_manager import ConnectorManager
-from .routers import agents, applications as applications_router, attachments, auth as auth_router, bg_tasks as bg_tasks_router, connectors, credentials, delegations as delegations_router, files, notifiers, questions, research as research_router, schedules, sessions, ws
+from .database import Database
+from .delegations import delegation_manager
+from .notifiers import notifier_manager
+from .research import research_manager
+from .routers import (
+    agents,
+    attachments,
+    connectors,
+    credentials,
+    files,
+    notifiers,
+    questions,
+    schedules,
+    sessions,
+    ws,
+)
+from .routers import applications as applications_router
+from .routers import auth as auth_router
+from .routers import bg_tasks as bg_tasks_router
+from .routers import delegations as delegations_router
+from .routers import research as research_router
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
+from .tunnel import CloudflareTunnel
 
 logging.basicConfig(
     level=logging.INFO,

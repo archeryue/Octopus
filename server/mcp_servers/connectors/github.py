@@ -52,32 +52,41 @@ _RECONNECT_MSG = (
 )
 
 
-def _gh(method: str, path: str, **kw: Any) -> tuple[Any | None, str | None]:
+def _gh(method: str, path: str, **kw: Any) -> tuple[Any, str | None]:
     """Authenticated GitHub call. Returns (parsed_body, None) on success or
-    (None, error_message) — the error string is itself a fine tool result."""
+    ({}, error_message) on failure — the error string is itself a fine tool
+    result.
+
+    The failure body is an empty dict rather than None on purpose. Every
+    caller returns early on a non-None error, so the two are interchangeable
+    for correct code — but with None, a caller that forgot the `if err:` guard
+    raised AttributeError deep inside a tool, while an empty dict degrades to
+    an empty result. It also lets the return type drop the `| None`, so a
+    type checker stops reporting the 20-odd `data.get(...)` calls that are
+    already guarded."""
     token = ctx.access_token()
     if token is None:
-        return None, "Error: connector unavailable — reconnect GitHub in Octopus."
+        return {}, "Error: connector unavailable — reconnect GitHub in Octopus."
     headers = {**_GH_HEADERS, "Authorization": f"Bearer {token}"}
     url = path if path.startswith("http") else f"{_API}{path}"
     for attempt in range(3):
         try:
             r = httpx.request(method, url, headers=headers, timeout=30.0, **kw)
         except httpx.HTTPError as e:
-            return None, f"Error: GitHub request failed: {e}"
+            return {}, f"Error: GitHub request failed: {e}"
         if r.status_code == 401:
             ctx.mark_needs_reconnect("invalid_grant")
-            return None, _RECONNECT_MSG
+            return {}, _RECONNECT_MSG
         if r.status_code == 429 or r.status_code >= 500:
             if attempt < 2:
                 retry_after = float(r.headers.get("Retry-After", "1") or 1)
                 time.sleep(min(retry_after, 5.0))
                 continue
-            return None, f"Error: GitHub temporarily unavailable ({r.status_code})."
+            return {}, f"Error: GitHub temporarily unavailable ({r.status_code})."
         if r.status_code >= 400:
-            return None, f"Error: GitHub {r.status_code}: {r.text[:300]}"
+            return {}, f"Error: GitHub {r.status_code}: {r.text[:300]}"
         return (r.json() if r.content else {}), None
-    return None, "Error: GitHub rate-limited; try again shortly."
+    return {}, "Error: GitHub rate-limited; try again shortly."
 
 
 def _issue_brief(it: dict) -> dict:

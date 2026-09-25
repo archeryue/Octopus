@@ -77,5 +77,7 @@ __all__ = [
 
 # Profile registration: importing the profile modules runs their
 # `register(Harness(...))` side effects.
-from . import claude_code  # noqa: E402,F401  (registers the claude-code harness)
-from . import codex  # noqa: E402,F401  (registers the codex harness)
+from . import (
+    claude_code,  # noqa: E402,F401  (registers the claude-code harness)
+    codex,  # noqa: E402,F401  (registers the codex harness)
+)

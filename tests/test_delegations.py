@@ -32,6 +32,8 @@ from server.delegations import (
     DEPTH_CAP,
     DelegationError,
     DelegationManager,
+)
+from server.delegations import (
     delegation_manager as singleton_delegation_manager,
 )
 from server.main import app
@@ -641,7 +643,7 @@ async def test_chain_walk_falls_back_to_db_for_archived_ancestor(
     monkeypatch.setattr(mgr, "start_message", _noop_start_message)
     octo = await db.get_system_agent()
     vera = await _make_agent(db, "Vera")
-    pete = await _make_agent(db, "Pete")
+    await _make_agent(db, "Pete")
     # Build a valid chain Octo (root) → Vera-child (delegation).
     octo_sess = await _make_session(mgr, octo["id"], name="octo")
     vera_child = await mgr.create_session(
@@ -1876,8 +1878,9 @@ def _seed_pending_question(
     """Wire a fake pending question onto a child session without going
     through the full create_pending_question flow (which would need a
     persistence path)."""
-    from server.session_manager import PendingQuestion
     import asyncio as _asyncio
+
+    from server.session_manager import PendingQuestion
 
     child_session._pending_questions[question_id] = PendingQuestion(
         question_id=question_id, questions=questions

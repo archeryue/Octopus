@@ -615,7 +615,7 @@ async def _fork_prepare_replay(
     working_dir: str,
     resume_id_hint: str | None,
     fork_id: str,
-) -> "Any":
+) -> Any:
     """No on-disk work. The first fork turn's user prompt is wrapped with the
     truncated history (in SessionManager.send_message); `session_started`
     captures claude's real session id on turn 1; turn 2+ uses native resume of
@@ -645,7 +645,7 @@ async def _fork_copy(
     parent_credential: Any = None,  # unused: Claude transcripts live under ~/.claude
     dest_working_dir: str,
     new_resume_id: str,
-) -> "Any":
+) -> Any:
     """Full-copy fork (session-fork.md): copy the parent's REAL transcript
     into the fork's project slug under `new_resume_id`, rewriting each line's
     `cwd` -> dest and `sessionId` -> new id. The fork then resumes natively with

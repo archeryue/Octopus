@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -37,7 +37,7 @@ class ScheduleRunner:
         return run_time.isoformat() if run_time else None
 
     async def initialize(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for row in await self._db.load_schedules():
             if row.get("run_at"):
                 # One-time schedule: if the fire time is already past, it was
@@ -46,7 +46,7 @@ class ScheduleRunner:
                 try:
                     run_date = datetime.fromisoformat(row["run_at"])
                     if run_date.tzinfo is None:
-                        run_date = run_date.replace(tzinfo=timezone.utc)
+                        run_date = run_date.replace(tzinfo=UTC)
                     if run_date <= now:
                         logger.info(
                             "Removing missed one-time schedule %s (was due %s)",
@@ -116,7 +116,7 @@ class ScheduleRunner:
         One-time schedules (`run_at` is set) are deleted from the DB after firing
         regardless of success — APScheduler already removed the DateTrigger job.
         """
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         row = await self._schedule_row(schedule_id)
         body = self._compose_prompt(row, prompt)
 

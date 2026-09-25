@@ -16,6 +16,10 @@ call the tool.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation-only; the runtime import is local
+    import uvicorn
 import glob
 import os
 from datetime import datetime
@@ -43,7 +47,7 @@ for _d in [
 pytestmark = pytest.mark.real
 
 
-async def _serve_schedule_api() -> tuple[int, "uvicorn.Server", asyncio.Task]:
+async def _serve_schedule_api() -> tuple[int, uvicorn.Server, asyncio.Task]:
     import uvicorn
     from fastapi import FastAPI
 
@@ -97,7 +101,7 @@ async def _bootstrap(tmp_path, monkeypatch):
         server.should_exit = True
         try:
             await asyncio.wait_for(task, timeout=10.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except (TimeoutError, asyncio.CancelledError):
             task.cancel()
         await runner.shutdown()
         # Release the held CLI process; several of these left running is

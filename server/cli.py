@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -146,12 +146,12 @@ def do_handoff(args: argparse.Namespace) -> None:
         body = e.read().decode("utf-8", errors="replace")
         print(f"Error: HTTP {e.code} — {body}", file=sys.stderr)
         sys.exit(1)
-    except urllib.error.URLError as e:
+    except urllib.error.URLError:
         print(f"Error: Could not connect to {server}", file=sys.stderr)
-        print(f"  Is the Octopus server running? Start it with:", file=sys.stderr)
-        print(f"    octopus serve", file=sys.stderr)
-        print(f"  Or with Cloudflare Tunnel:", file=sys.stderr)
-        print(f"    octopus serve --tunnel", file=sys.stderr)
+        print("  Is the Octopus server running? Start it with:", file=sys.stderr)
+        print("    octopus serve", file=sys.stderr)
+        print("  Or with Cloudflare Tunnel:", file=sys.stderr)
+        print("    octopus serve --tunnel", file=sys.stderr)
         sys.exit(1)
 
 

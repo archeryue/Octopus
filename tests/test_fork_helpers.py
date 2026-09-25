@@ -6,14 +6,12 @@ safe-revert preflight over a real temp git repo.
 """
 
 import subprocess
-from pathlib import Path
 
 import pytest
 
-from server.database import Database
 from server import fork_helpers as fh
+from server.database import Database
 from server.models import MessageContent, MessageRole
-
 
 # ------------------------------------------------------------------ fixtures
 

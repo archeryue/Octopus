@@ -12,7 +12,6 @@ import asyncio
 
 import pytest
 
-from server.agent_manager import AgentManager
 from server.database import Database
 from server.research import manager as rm_mod
 from server.research.manager import ResearchManager

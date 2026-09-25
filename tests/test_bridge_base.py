@@ -4,10 +4,7 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 from server.bridges.base import Bridge, TextBuffer
-
 
 # --- Mock Bridge for testing ---
 

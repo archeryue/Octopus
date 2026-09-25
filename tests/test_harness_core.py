@@ -23,11 +23,11 @@ from server.harness import (
     RuntimeProfile,
     StdinMode,
     TurnContext,
+    assembly,
     available_backends,
     get_harness,
     register,
 )
-from server.harness import assembly
 from server.harness.registry import _REGISTRY
 
 FAKE_CLI = Path(__file__).parent / "_fixtures" / "fake_cli.py"
@@ -462,6 +462,7 @@ async def test_terminate_process_group_reaps_children(tmp_path):
     the orphan leak the old direct-child kill() left behind."""
     import os
     import signal as _signal
+
     from server.harness.run import _terminate_process_group, prepare_spawn
 
     def _alive(pid: int) -> bool:
@@ -497,6 +498,7 @@ async def test_run_oneshot_reaps_group_on_cancel(monkeypatch):
     """Cancelling a run_oneshot mid-flight must reap its process group, not
     orphan the CLI (Vera review). We spy on the group-kill helper."""
     import signal as _signal
+
     import server.harness.run as run_mod
 
     calls: list[int] = []
