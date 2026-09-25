@@ -7,12 +7,18 @@
 # Or run the bundled bootstrap:
 #   ./scripts/setup-hooks.sh
 #
-# What it does:
-# - When TS files change, runs `tsc --noEmit` in web/ before letting the
-#   commit through.
-# - When backend Python changes, runs the full pytest suite (~30s; fast
-#   enough for a per-commit gate).
-# - Skips both if neither set is touched (e.g. doc-only commits).
+# What it does, by what you touched:
+# - Python in server/ or tests/  → the hermetic pytest tier
+# - TS in web/src/               → tsc --noEmit, and the vitest suite
+# - routes or pydantic models    → the generated contracts.ts drift check
+# - nothing relevant (docs only) → nothing runs
+#
+# All four are fast enough for a per-commit gate (~40s worst case, and each
+# only fires when its own files moved). `./scripts/check.sh` runs the same
+# set unconditionally, plus `--e2e` for Playwright.
+#
+# Not here: eslint. It currently reports 20 findings, so gating on it would
+# block every commit — see docs/plans/polish-2026-09.md §8 F2.
 
 pre-commit:
   parallel: true
@@ -23,8 +29,25 @@ pre-commit:
       run: cd web && bun run typecheck
       fail_text: "TypeScript errors. Run 'cd web && bun run typecheck' for detail."
 
+    vitest:
+      tags: frontend
+      glob: "web/src/**/*.{ts,tsx}"
+      run: cd web && bun run test
+      fail_text: "Frontend tests failed. Run 'cd web && bun run test' for detail."
+
     pytest:
       tags: backend
+      # -m "not real" is the hermetic tier: 1174 tests, ~34s, no CLI and no
+      # model. Without it this hook ran the live-model tests too, which made a
+      # commit depend on a signed-in CLI and the provider being up.
       glob: "{server,tests}/**/*.py"
-      run: .venv/bin/pytest tests/ -q --tb=short
-      fail_text: "Backend tests failed. Run '.venv/bin/pytest tests/ -v' for detail."
+      run: .venv/bin/pytest tests/ -m "not real" -q --tb=short
+      fail_text: "Backend tests failed. Run '.venv/bin/pytest tests/ -m \"not real\" -v' for detail."
+
+    contracts:
+      tags: backend
+      # web/src/api/contracts.ts is generated from the OpenAPI schema; these
+      # are the files that can invalidate it.
+      glob: "server/{models.py,main.py,routers/**/*.py}"
+      run: ./scripts/check-contracts.sh
+      fail_text: "contracts.ts is stale. Run 'cd web && bun run generate:contracts'."
