@@ -1,5 +1,8 @@
+import asyncio
+import contextlib
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,6 +15,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import monitor as monitor_pkg
 from .agent_manager import AgentManager
 from .app_agent import app_agent_manager
 from .app_backends import backend_supervisor
@@ -25,6 +29,10 @@ from .database import Database
 from .delegations import delegation_manager
 from .mcp_http import lifespan as mcp_lifespan
 from .mcp_http import mount_all as mount_mcp
+from .monitor import Event as _MonEvent
+from .monitor import MetricsStore
+from .monitor import record as _mon_record
+from .monitor import sampler as metrics_sampler
 from .notifiers import notifier_manager
 from .research import research_manager
 from .routers import (
@@ -43,6 +51,7 @@ from .routers import applications as applications_router
 from .routers import auth as auth_router
 from .routers import bg_tasks as bg_tasks_router
 from .routers import delegations as delegations_router
+from .routers import monitor as monitor_router
 from .routers import research as research_router
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
@@ -156,9 +165,27 @@ async def lifespan(app: FastAPI):
     # session (polish-2026-09.md §4 B1). Each one's session manager has to be
     # running before it will answer, and mounting does not start it, so they run
     # for the lifetime of the app.
+    metrics = MetricsStore(settings.metrics_db_path, settings.metrics_retention_days)
+    await metrics.initialize()
+    metrics.start()
+    monitor_pkg.set_store(metrics)
+    await metrics.prune()  # honour retention on every boot, not only on a timer
+    sampler_task = asyncio.create_task(
+        metrics_sampler.run(
+            settings.db_path,
+            held_process_count=lambda: len(getattr(session_manager, "_held", {}) or {}),
+        )
+    )
+
     async with mcp_lifespan(app):
         logger.info("MCP namespaces served in-process: %s", ", ".join(_mcp_mounts))
         yield
+
+    sampler_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await sampler_task
+    monitor_pkg.set_store(None)
+    await metrics.stop()
 
     await session_manager.stop_reaper()
     await session_manager.stop_all_held_processes()
@@ -192,6 +219,27 @@ _mcp_mounts = mount_mcp(app)
 
 
 @app.middleware("http")
+async def _record_request(request, call_next):
+    """Time every request, labelled by route template.
+
+    The template matters: labelling by raw path would mint a new dimension per
+    session id and make the table useless within a day (§9 G1).
+    """
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    template = getattr(route, "path", None) or request.url.path
+    _mon_record(_MonEvent(
+        kind="http",
+        duration_ms=(time.perf_counter() - started) * 1000,
+        ok=response.status_code < 500,
+        error_code=None if response.status_code < 400 else str(response.status_code),
+        detail={"route": template, "method": request.method},
+    ))
+    return response
+
+
+@app.middleware("http")
 async def _no_store_on_missing(request, call_next):
     """Never let a 404 be cached.
 
@@ -218,6 +266,7 @@ app.add_middleware(
 )
 
 app.include_router(agents.router)
+app.include_router(monitor_router.router)
 app.include_router(applications_router.router)
 # /apps/{id}/… — the application itself. Registered before the SPA catch-all
 # mount so it wins the path (applications.md §3).

@@ -51,6 +51,9 @@ if TYPE_CHECKING:
     from .database import Database
     from .session_manager import SessionManager
 
+from .monitor import Event as _MonEvent
+from .monitor import record as _mon_record
+
 logger = logging.getLogger(__name__)
 
 
@@ -965,6 +968,15 @@ class DelegationManager:
         if rec._terminal_injected:
             return
         rec._terminal_injected = True
+        # How a delegation ENDED, not just how long it took — the question that
+        # matters when a chain misbehaves (§9 G1).
+        _mon_record(_MonEvent(
+            kind="delegation",
+            session_id=getattr(rec, "parent_session_id", None),
+            ok=getattr(rec, "state", "") not in ("error", "cancelled"),
+            error_code=getattr(rec, "state", None),
+            detail={"delegation_id": getattr(rec, "delegation_id", None)},
+        ))
         if rec.state == "completed":
             body = ("".join(rec.captured_text)).strip()
             if not body:

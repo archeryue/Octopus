@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import fork_helpers
+from . import monitor as _monitor
 from .attachments import (
     MAX_ATTACHMENTS_PER_MESSAGE,
     delete_session_attachments,
@@ -45,6 +46,7 @@ from .models import (
     SessionDetail,
     SessionStatus,
 )
+from .monitor import Event as _MonEvent
 from .oauth_errors import RefreshErrorCode
 from .oauth_providers import OAuthTokenSet, get_provider
 
@@ -2014,6 +2016,7 @@ class SessionManager:
             session._lock.release()
 
     async def interrupt(self, session_id: str) -> bool:
+        _monitor.record(_MonEvent(kind="turn_interrupt", session_id=session_id))
         """Cancel the currently running prompt. Queued prompts continue.
 
         Best-effort: if the backend subprocess is wedged (e.g. waiting on
@@ -2325,6 +2328,18 @@ class SessionManager:
                     # CLI reissued a different one mid-stream).
                     if event.type == "result":
                         saw_result = True
+                        _monitor.record(_MonEvent(
+                            kind="turn",
+                            session_id=session.id,
+                            agent_id=session.agent_id,
+                            backend=session.backend,
+                            duration_ms=event.duration_ms,
+                            ok=not event.is_error,
+                            detail={
+                                "cost": event.cost,
+                                "num_turns": event.num_turns,
+                            },
+                        ))
                         # Shut the steering window first: past this point the
                         # CLI is idle, and a frame written now would start a
                         # fresh turn rather than steer this one.

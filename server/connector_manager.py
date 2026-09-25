@@ -23,6 +23,8 @@ from .connectors.custom import CustomConnector, resolve_connector
 from .connectors.registry import all_connectors, get_connector
 from .crypto import decrypt, encrypt
 from .database import Database
+from .monitor import Event as _MonEvent
+from .monitor import record as _mon_record
 from .oauth_providers import OAuthTokenSet
 
 # Slugs reserved by routes / built-ins; a custom kind can't take these.
@@ -284,6 +286,14 @@ class ConnectorManager:
         await self.db.update_connector_installation(
             installation_id, needs_reconnect=True, last_refresh_error_code=error_code
         )
+        # The other half of the Gmail case (§9 G0): the app knew the connector
+        # was broken, but nothing counted how long it stayed that way.
+        _mon_record(_MonEvent(
+            kind="connector_reconnect_needed",
+            ok=False,
+            error_code=error_code,
+            detail={"installation_id": installation_id},
+        ))
 
     # --- token access (the internal /token route) ------------------------
 

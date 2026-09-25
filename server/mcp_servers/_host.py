@@ -54,6 +54,19 @@ def resolve(name: str) -> str | None:
     and bearer from settings — one process serves every session, so there is no
     per-session environment left to read.
     """
+    import os
+
+    # The process environment wins when it is set, and in production it never
+    # is: the sidecars that used to be spawned with these variables are gone,
+    # and `serve` does not export them. What the fallback buys is a single
+    # resolution path that still works outside a request — a test exercising a
+    # tool body directly, and `python -m server.mcp_servers.bg` for diagnosing
+    # one by hand. Checking it first, rather than last, is what makes those two
+    # cases behave identically to the request path instead of subtly differently.
+    from_env = os.environ.get(name)
+    if from_env:
+        return from_env
+
     if name == "OCTOPUS_API_BASE":
         return api_base()
     if name == "OCTOPUS_AUTH_TOKEN":
@@ -62,9 +75,7 @@ def resolve(name: str) -> str | None:
         return session_id()
     if name == "OCTOPUS_INSTALLATION_ID":
         return installation_id()
-    import os
-
-    return os.environ.get(name)
+    return None
 
 
 NO_SCOPE = (

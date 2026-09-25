@@ -5,6 +5,8 @@ import os
 import shutil
 import tempfile
 
+import pytest
+
 # Override env vars before any module imports Settings, so tests
 # don't pick up values from the user's .env file.
 os.environ["OCTOPUS_AUTH_TOKEN"] = "changeme"
@@ -60,3 +62,52 @@ def pytest_runtest_setup(item):
             import pytest
 
             pytest.skip(reason)
+
+
+@pytest.fixture
+def mcp_scope(monkeypatch):
+    """Put a tool call in a session's scope, the way a real HTTP request does.
+
+    The MCP namespaces are served in-process now rather than spawned per session
+    (docs/plans/polish-2026-09.md §4 B1), so a tool's session no longer arrives
+    as `OCTOPUS_SESSION_ID` in a process environment — one process serves every
+    session, and the session comes from the verified scope of the request. Tests
+    that used to `monkeypatch.setenv` establish a scope instead.
+
+    `api_base` is redirected too, so a test can keep asserting against a stable
+    fake host rather than whatever port `settings` happens to hold.
+    """
+    from server.mcp_identity import McpScope, reset_current_scope, set_current_scope
+    from server.mcp_servers import _host
+
+    state = {"session_id": "s1", "installation_id": None, "api_base": "http://x"}
+    monkeypatch.setattr(_host, "api_base", lambda: state["api_base"])
+
+    def _enter():
+        return set_current_scope(
+            McpScope(state["session_id"], state["installation_id"])
+        )
+
+    token = _enter()
+
+    class Control:
+        """Lets a test move the scope mid-test (e.g. to assert isolation)."""
+
+        def set(self, session_id=None, installation_id=None, api_base=None):
+            nonlocal token
+            if session_id is not None:
+                state["session_id"] = session_id
+            if installation_id is not None:
+                state["installation_id"] = installation_id
+            if api_base is not None:
+                state["api_base"] = api_base
+            reset_current_scope(token)
+            token = _enter()
+
+        def clear(self):
+            nonlocal token
+            reset_current_scope(token)
+            token = set_current_scope(None)
+
+    yield Control()
+    reset_current_scope(token)

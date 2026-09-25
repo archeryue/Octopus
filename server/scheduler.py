@@ -15,7 +15,11 @@ if TYPE_CHECKING:
     from server.database import Database
     from server.session_manager import SessionManager
 
+from .monitor import Event as _MonEvent
+from .monitor import record as _mon_record
+
 logger = logging.getLogger(__name__)
+
 
 
 class ScheduleRunner:
@@ -60,6 +64,15 @@ class ScheduleRunner:
                     continue
             if row["enabled"]:
                 self._add_job(row)
+        # Metrics retention, on the durable scheduler this class already owns
+        # rather than a second timer or a cron entry (§9 G2). Daily at 04:00
+        # local: cheap, and outside any plausible working hour.
+        self._scheduler.add_job(
+            self._prune_metrics,
+            CronTrigger(hour=4, minute=0),
+            id="__metrics_retention__",
+            replace_existing=True,
+        )
         self._scheduler.start()
 
     def _add_job(self, row: dict) -> None:
@@ -139,6 +152,9 @@ class ScheduleRunner:
                         last_run_session_id=origin_session_id,
                     )
                 except ValueError as e:
+                    _mon_record(_MonEvent(kind="schedule_fire", agent_id=agent_id,
+                                         ok=False, error_code="overlap_skip",
+                                         detail={"schedule_id": schedule_id}))
                     logger.info("Schedule %s skipped: %s", schedule_id, e)
                 except Exception:
                     logger.exception("Schedule %s failed", schedule_id)
@@ -158,6 +174,10 @@ class ScheduleRunner:
                 session = await self._session_mgr.create_session(
                     agent_id, origin="schedule"
                 )
+                _mon_record(_MonEvent(
+                    kind="schedule_fire", agent_id=agent_id, ok=True,
+                    detail={"schedule_id": schedule_id},
+                ))
                 # Recorded BEFORE the turn runs: the overlap guard on the next
                 # tick has to be able to see a fire that is still in flight,
                 # and a fire that crashes mid-turn still leaves a session the
@@ -169,6 +189,9 @@ class ScheduleRunner:
                     pass
                 await self._db.update_schedule(schedule_id, last_run_at=now)
             except ValueError as e:
+                _mon_record(_MonEvent(kind="schedule_fire", agent_id=agent_id,
+                                     ok=False, error_code="overlap_skip",
+                                     detail={"schedule_id": schedule_id}))
                 logger.info("Schedule %s skipped: %s", schedule_id, e)
             except Exception:
                 logger.exception("Schedule %s failed", schedule_id)
@@ -178,6 +201,19 @@ class ScheduleRunner:
         finally:
             if run_at is not None:
                 await self._db.delete_schedule(schedule_id)
+
+    async def _prune_metrics(self) -> None:
+        """Drop metrics past the retention window. Best-effort: a pruning
+        failure must not disturb the schedules this runner exists to fire."""
+        from . import monitor as monitor_pkg
+
+        store = monitor_pkg.monitor
+        if store is None:
+            return
+        try:
+            await store.prune()
+        except Exception:
+            logger.warning("metrics retention sweep failed", exc_info=True)
 
     async def _schedule_row(self, schedule_id: str) -> dict | None:
         """The schedule's current row, or None if it was deleted between the

@@ -80,6 +80,8 @@ class ConnectorContext:
             return None
         if r.status_code != 200:
             logger.warning("token fetch HTTP %s", r.status_code)
+            _record_connector(self.installation_id, ok=False,
+                              error_code=f"token_http_{r.status_code}")
             return None
         body = r.json()
         self._access_token = body["access_token"]
@@ -103,6 +105,26 @@ class ConnectorContext:
         # Drop the cached token so the next call re-fetches (and 401s cleanly).
         self._access_token = None
         self._token_exp = 0.0
+
+
+def _record_connector(installation_id, *, ok: bool, error_code: str | None = None,
+                      duration_ms: float | None = None) -> None:
+    """Count a connector call. This is the hook the Gmail outage needed: the
+    connector was unavailable for eleven consecutive days, a schedule failed on
+    each of them, and nothing anywhere recorded the repetition
+    (polish-2026-09.md §9 G0)."""
+    from ...mcp_identity import current_scope
+    from ...monitor import Event, record
+
+    scope = current_scope()
+    record(Event(
+        kind="connector_call",
+        session_id=scope.session_id if scope else None,
+        duration_ms=duration_ms,
+        ok=ok,
+        error_code=error_code,
+        detail={"installation_id": installation_id},
+    ))
 
 
 def truncate(text: str, cap: int = MAX_RESULT_BYTES) -> str:

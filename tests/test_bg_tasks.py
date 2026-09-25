@@ -771,8 +771,19 @@ def test_mcp_bg_list_summary(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_build_args_registers_bg_mcp_with_session_env(tmp_path):
+def test_build_args_registers_bg_mcp_over_http_scoped_to_the_session(tmp_path):
+    """The bg namespace reaches the model as an HTTP server this app hosts, not
+    a subprocess to spawn (docs/plans/polish-2026-09.md §4 B1).
+
+    Two things this pins. The key is still `bg`, because both CLIs build the
+    tool name from it — change the key and `mcp__bg__run` silently becomes
+    something else, breaking every prompt that names it. And the entry is scoped
+    to *this* session: with one endpoint serving every session, the identity
+    that used to arrive as OCTOPUS_SESSION_ID in a spawn environment now has to
+    travel with the request.
+    """
     from server.harness import RunConfig, get_harness
+    from server.mcp_identity import verify
 
     run = get_harness("claude-code").create_run(RunConfig(session_id="sess-xyz"))
     argv, spawn = run.build_argv(
@@ -780,11 +791,16 @@ def test_build_args_registers_bg_mcp_with_session_env(tmp_path):
     )
     cfg_idx = argv.index("--mcp-config") + 1
     cfg = json.loads(argv[cfg_idx])
-    assert "bg" in cfg["mcpServers"]
-    env = cfg["mcpServers"]["bg"]["env"]
-    assert env["OCTOPUS_SESSION_ID"] == "sess-xyz"
-    assert "OCTOPUS_API_BASE" in env
-    assert "OCTOPUS_AUTH_TOKEN" in env
+    assert "bg" in cfg["mcpServers"], "the key is what the tool name is built from"
+
+    entry = cfg["mcpServers"]["bg"]
+    assert entry["type"] == "http"
+    assert entry["url"].endswith("/mcp/bg/mcp")
+    assert "command" not in entry and "args" not in entry, "nothing is spawned"
+
+    bearer = entry["headers"]["Authorization"].removeprefix("Bearer ")
+    scope = verify(bearer)
+    assert scope is not None and scope.session_id == "sess-xyz"
 
 
 def test_build_args_omits_session_env_when_none(tmp_path):

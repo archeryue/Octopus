@@ -11,6 +11,9 @@ from typing import Any
 
 import aiosqlite
 
+from .monitor import Event as _MonEvent
+from .monitor import record as _mon_record
+
 logger = logging.getLogger(__name__)
 
 # Bounds on the deferred commit (B4). Whichever trips first flushes, so the
@@ -878,8 +881,15 @@ class Database:
         if self._dirty:
             await self.conn.commit()
             self._dirty = False
+            pending, waited = self._pending_appends, time.monotonic() - self._last_flush
             self._pending_appends = 0
             self._last_flush = time.monotonic()
+            _mon_record(_MonEvent(
+                kind="db_flush",
+                duration_ms=waited * 1000,
+                ok=True,
+                detail={"rows": pending},
+            ))
 
     async def _maybe_flush(self) -> None:
         """Commit if the pending batch has grown old or large enough.

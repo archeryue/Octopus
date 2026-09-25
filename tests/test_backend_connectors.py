@@ -53,11 +53,27 @@ def test_claude_merges_connector_mcp_entry():
     cfg = json.loads(_arg_after(argv, "--mcp-config"))["mcpServers"]
     key = conn.mcp_key(inst)  # dummy_abcdef
     assert key in cfg
-    assert cfg[key]["args"] == ["-m", "server.mcp_servers.connectors.dummy"]
-    # Token env: shared callback vars + the installation id.
-    assert cfg[key]["env"]["OCTOPUS_INSTALLATION_ID"] == inst.id
-    assert cfg[key]["env"]["OCTOPUS_API_BASE"].startswith("http://127.0.0.1:")
-    assert cfg[key]["env"]["OCTOPUS_SESSION_ID"] == "s1"
+
+    # The connector is served over HTTP by this app, not spawned
+    # (polish-2026-09.md §4 B1). Note what does and does not move: the KEY stays
+    # per-installation, because the tool name is built from it and
+    # `mcp__dummy_abcdef__search` must not become something else — while the URL
+    # is shared per connector *kind*, since one module serves every
+    # installation. Key and URL are independent, which is what allows both.
+    entry = cfg[key]
+    assert entry["type"] == "http"
+    assert entry["url"].endswith("/mcp/custom/mcp"), "user-defined kinds share a mount"
+    assert "command" not in entry and "args" not in entry
+
+    # Session AND installation now ride the credential, because one endpoint
+    # serves every session and every account of a kind.
+    from server.mcp_identity import verify
+
+    scope = verify(entry["headers"]["Authorization"].removeprefix("Bearer "))
+    assert scope is not None
+    assert scope.session_id == "s1"
+    assert scope.installation_id == inst.id, "the call must know WHICH account"
+
     # Built-ins still present.
     assert {"bg", "ask"} <= set(cfg)
 
@@ -95,10 +111,12 @@ def test_codex_merges_connector_overrides_and_blurb():
     joined = " ".join(argv)
     key = conn.mcp_key(inst)
 
-    assert f"mcp_servers.{key}.command=" in joined
-    assert any(
-        a.startswith(f"mcp_servers.{key}.env.OCTOPUS_INSTALLATION_ID=") for a in argv
-    )
+    # Codex gets a URL plus the NAME of an env var to read the bearer from: it
+    # has no way to take an arbitrary header (its --env is stdio-only), which is
+    # why identity rides the credential rather than a header.
+    assert f"mcp_servers.{key}.url=" in joined
+    assert f"mcp_servers.{key}.bearer_token_env_var=" in joined
+    assert f"mcp_servers.{key}.command=" not in joined, "nothing is spawned"
     # Developer-instructions blurb is injected via -c developer_instructions=…
     assert "== Connectors ==" in joined
 

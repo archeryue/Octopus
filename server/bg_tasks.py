@@ -352,6 +352,19 @@ class BgTaskManager:
 
     # ------------------------------------------------------------------ orchestration
 
+    def _record(self, rt, *, ok: bool, error_code: str | None = None,
+                duration_ms: float | None = None) -> None:
+        from .monitor import Event, record
+
+        record(Event(
+            kind="bg_task",
+            session_id=getattr(rt.record, "session_id", None),
+            duration_ms=duration_ms,
+            ok=ok,
+            error_code=error_code,
+            detail={"exit_code": getattr(rt.record, "exit_code", None)},
+        ))
+
     async def _run_task(self, rt: _RunningTask, timeout_seconds: int) -> None:
         """Read stdout/stderr concurrently, enforce timeout, persist on exit."""
         assert self._db is not None

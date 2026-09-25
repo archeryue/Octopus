@@ -312,7 +312,102 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override the working directory stored in the session",
     )
 
+    monitor_parser = subparsers.add_parser(
+        "monitor",
+        help="Read what the server has recorded about itself",
+        description=(
+            "Canned reports over octopus-metrics.db. The data is plain SQLite, "
+            "so anything not listed here is a sqlite3 query away."
+        ),
+    )
+    monitor_parser.add_argument(
+        "report",
+        nargs="?",
+        default="overview",
+        help="overview (default), turns, errors, connectors, schedules, resources, http",
+    )
+    monitor_parser.add_argument(
+        "--since",
+        default="7d",
+        metavar="WINDOW",
+        help="How far back to look: 30m, 24h, 7d (default 7d)",
+    )
+
     return parser
+
+
+def do_monitor(args) -> None:
+    """Print one report as an aligned table.
+
+    Formatting lives here rather than in `monitor/query.py` so the same
+    functions serve the API without carrying presentation with them.
+    """
+    import asyncio
+    import os
+
+    import aiosqlite
+
+    from .config import settings
+    from .monitor import query
+
+    async def run() -> int:
+        if not os.path.exists(settings.metrics_db_path):
+            print(f"No metrics file yet at {settings.metrics_db_path}.")
+            print("It is created when the server starts; give it a few minutes of traffic.")
+            return 1
+        conn = await aiosqlite.connect(
+            f"file:{settings.metrics_db_path}?mode=ro", uri=True
+        )
+        try:
+            if args.report == "overview":
+                data = await query.overview(conn, args.since)
+                print(f"Octopus — last {data['window']}\n")
+                _table("activity", data["counts"])
+                _table("turns", data["turns"])
+                _table("top errors", data["errors"])
+                _table("resources", data["resources"])
+                return 0
+            fn = query.REPORTS.get(args.report)
+            if fn is None:
+                print(f"Unknown report {args.report!r}.")
+                print("Available: overview, " + ", ".join(sorted(query.REPORTS)))
+                return 2
+            rows = await fn(conn, args.since)
+            print(f"{args.report} — last {args.since}\n")
+            _table(args.report, rows)
+            return 0
+        finally:
+            await conn.close()
+
+    raise SystemExit(asyncio.run(run()))
+
+
+def _table(title: str, rows) -> None:
+    """Minimal aligned table. Empty is stated rather than shown as blank, so
+    "nothing recorded" never reads as "nothing wrong"."""
+    if not rows:
+        print(f"  {title}: (nothing recorded in this window)\n")
+        return
+    cols = list(rows[0].keys())
+    widths = {
+        c: max(len(str(c)), *(len(_fmt(r.get(c))) for r in rows)) for c in cols
+    }
+    print(f"  {title}")
+    print("    " + "  ".join(str(c).ljust(widths[c]) for c in cols))
+    print("    " + "  ".join("-" * widths[c] for c in cols))
+    for r in rows:
+        print("    " + "  ".join(_fmt(r.get(c)).ljust(widths[c]) for c in cols))
+    print()
+
+
+def _fmt(v) -> str:
+    if v is None:
+        return "-"
+    if isinstance(v, float):
+        return f"{v:,.1f}"
+    if isinstance(v, int):
+        return f"{v:,}"
+    return str(v)
 
 
 def main() -> None:
@@ -326,6 +421,8 @@ def main() -> None:
         do_handoff(args)
     elif args.command == "pull":
         do_pull(args)
+    elif args.command == "monitor":
+        do_monitor(args)
     else:
         parser.print_help()
 

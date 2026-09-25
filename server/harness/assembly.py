@@ -168,10 +168,29 @@ def _http_entries(
             entry(
                 connector.mcp_key(installation),
                 _connector_namespace(connector),
-                installation.get("id") if isinstance(installation, dict) else None,
+                _installation_id(installation),
             )
         )
     return entries
+
+
+def _installation_id(installation: Any) -> str | None:
+    """The installation's id, however it arrives.
+
+    `ConnectorInstallation` is a model with an `.id`, which is what the
+    connector framework passes and what `mcp_key` itself reads — but the same
+    pair is a plain row in places that load it straight from the database.
+    Reading only one shape silently produced `None`, which would have left a
+    connector call unable to say *which* account it was for while still looking
+    correct in every other respect.
+    """
+    got = getattr(installation, "id", None)
+    if got:
+        return str(got)
+    if isinstance(installation, dict):
+        raw = installation.get("id")
+        return str(raw) if raw else None
+    return None
 
 
 def _connector_namespace(connector: Any) -> str:

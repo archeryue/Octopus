@@ -60,6 +60,11 @@ def test_claude_sets_memory_override_not_config_dir(monkeypatch):
 
 def test_claude_no_memory_env_without_agent(monkeypatch):
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    # `build_argv` copies os.environ, so an inherited value would satisfy the
+    # assertion below for the wrong reason — and Octopus sets exactly this
+    # variable for the agents it runs, so a session running *inside* Octopus
+    # inherits it and this test fails while passing in a plain shell.
+    monkeypatch.delenv("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE", raising=False)
     run = get_harness("claude-code").create_run(RunConfig(session_id="s1"))
     argv, kwargs = run.build_argv("hi", "/tmp", None)
     assert "CLAUDE_COWORK_MEMORY_PATH_OVERRIDE" not in kwargs["env"]

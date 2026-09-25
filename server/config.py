@@ -8,6 +8,15 @@ class Settings(BaseSettings):
     default_working_dir: str = "."
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:8000"]
     db_path: str = "octopus.db"
+    # Metrics live in their OWN file (polish-2026-09.md §9 G2). octopus.db is
+    # already ~83 MB of product data with no retention policy; keeping metrics
+    # apart means they prune on their own schedule, can be deleted outright
+    # without touching session history, and a collection bug cannot corrupt
+    # anything a user would miss.
+    metrics_db_path: str = "octopus-metrics.db"
+    # How long an event or gauge reading is kept.
+    metrics_retention_days: int = 30
+
     # User-uploaded attachments live here, one subdir per session_id.
     # `~` is expanded at use time (not config load time) so tests that
     # override $HOME via monkeypatch see the override.
