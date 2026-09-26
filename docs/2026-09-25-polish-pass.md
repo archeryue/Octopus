@@ -2,17 +2,41 @@
 
 A polish pass over Octopus: nothing here is a new product capability except
 the monitor. The rest pays down debts that had accumulated under seven months
-of fast feature work — and turned up five live defects on the way, three of
-them in code this pass had just written and two that had been shipping quietly
-for months.
+of fast feature work — and turned up **eleven live defects** on the way, which
+is the part worth dwelling on. None of them were found by looking for bugs.
+Each one was found by a gate, a measurement or a test that had not existed the
+day before, which is the argument for the whole exercise.
 
-Branch `polish-2026-09`, 20 commits, all gates green and both test tiers
-clean — the whole plan, §10 items 1 through 11, now done.
+Branch `polish-2026-09`, 24 commits, 221 files, +14,971 / −10,213. All gates
+green, both test tiers clean, deployed and verified against the live install —
+the whole plan, §10 items 1 through 11, done.
 Plan and reasoning: [`plans/polish-2026-09.md`](plans/polish-2026-09.md).
 
 ---
 
-## The five real bugs
+## What it bought
+
+| | Before | After |
+|---|---|---|
+| Automated gates | none | **8**, one command, on pre-commit |
+| Largest backend file | `session_manager.py`, 4,047 lines | six files under `server/sessions/`, largest 1,492 |
+| Second largest | `database.py`, 2,605 lines | nine files under `server/db/` |
+| Longest function | `_run_backend`, 473 lines | **68**, over five named decisions |
+| Type checking | 28,000 lines never checked | mypy clean; 3 of 6 suppressed codes now enforced |
+| MCP transport | 7 stdio subprocesses **per session** | 0 — served in-process, `mcp_sidecar_count` reads 0 |
+| Memory that bought | 21 processes, 831 MB, mean 39.6 MB each | one server process, 90.5 MB |
+| Per-session startup cost | 7 × ~247 ms of module import | none — mounted once for the process |
+| Opening a 4,888-message session | every message, every time | 200 + a cursor, paged on scroll |
+| Backend tests | 1,174 | **1,162 hermetic + 34 real** (−85 with the bridge, +73 new) |
+| Real-CLI tier | 29/34, five failing in-group | **34/34, twice in a row** |
+| Frontend / E2E | 195 / 77 | **210 / 83** |
+| Deferred work in comments | "later", in six places | nothing: each reason is now a decision, in the plan's §11 |
+
+The memory line is the one to read twice. The sidecars were ~85% of Octopus's
+own footprint, and they existed only to carry a transport — the tool
+definitions did not change at all.
+
+## The defects it turned up
 
 **Telegram's Allow/Deny buttons silently did nothing.**
 `bridges/manager.py` called `approve_tool` / `deny_tool` without awaiting
@@ -96,6 +120,57 @@ All cron building now goes through one `schedule_ai.cron_trigger`, which
 translates the day-of-week field to APScheduler's own day *names* — where there
 is no ambiguity left to get wrong. No live schedule was affected: all five on
 this box use `*` for day-of-week.
+
+---
+
+### Three the type checker had been pointing at all along
+
+A1 and A4 having landed, F1's suppressed mypy codes were looked at rather than
+re-deferred — and three of the errors were live bugs, not imprecision:
+
+* `AgentRead(**agent)` on the archive route, where `get_agent` returns
+  `dict | None`. A row that disappeared between archiving and re-reading it
+  raised `TypeError: argument of type 'NoneType' is not a mapping` *inside* a
+  500. It is a 404 now.
+* `create_session(agent_id: str)`, while `SessionCreate.agent_id` is
+  `str | None` and the column is nullable — and two callers pass `None` on
+  purpose (no system agent; an orphan session). The signature was the only
+  thing claiming otherwise.
+* deleting a credential whose backend has no login driver called
+  `.cleanup_credential` on `None`. A driverless backend has no on-disk login
+  state to revoke, so it is skipped; the five routes naming a backend that
+  *does* have one go through `_login_driver`, which answers 501 instead of
+  letting an `AttributeError` become a 500.
+
+### Two the token rotation exposed
+
+Rotating the access token — one `POST /api/auth/rotate`, no restart — broke
+every Application, and the cause was older than the rotation.
+
+**The app cookie was never percent-decoded.** The SPA writes
+`octopus_app_token` with `encodeURIComponent`, and has to: a raw `;` or `,` in
+the value would truncate the header. The server compared what arrived.
+Starlette's cookie parser strips quoting but does not decode escapes, so a
+token containing `@` reached the check as `%40`, matched nothing, and every
+`/apps/*` request 401'd — the iframe, its scripts and its own fetches with it.
+
+Nothing caught it because every token involved until then encoded to itself:
+the suite's, the default, the one on the box. It appears the first time someone
+rotates to a token that does not. Proven both ways against the live server —
+the percent-encoded cookie gave `401 Invalid token`, the raw one got past auth —
+and pinned by a test that fails without the fix.
+
+**The sidebar displayed the token.** The account row rendered `auth_token` as
+the handle, on the reasoning that in single-user mode the token *is* the
+identity. But that row is pinned under the sidebar permanently, so the
+credential was in every screenshot, every screen share and every glance over a
+shoulder. It shows a label now (`OCTOPUS_USER_LABEL`, via an authenticated
+`GET /api/auth/identity`), the avatar initial follows the label rather than the
+token's first character, and "Copy token" stays — copying on purpose is not the
+same as displaying always.
+
+Neither is in the plan. Both are the pass's own standard applied to what the
+pass turned up.
 
 ---
 
@@ -412,7 +487,7 @@ months stale and missing five subsystems — the whole Applications line.
 | ruff | clean |
 | mypy | clean |
 | pytest (hermetic) | **1,162 pass**, 0 fail |
-| pytest (real CLI) | **34 pass**, 0 fail — both backends, live models |
+| pytest (real CLI) | **34 pass**, 0 fail, **twice in a row** — both backends, live models |
 | eslint | clean |
 | vitest | **210 pass** (from 195) |
 | tsc | clean |
@@ -427,6 +502,14 @@ deselected to get there.
 Plus, outside the gates: B1 driven end-to-end against a real `claude` CLI
 (tool names preserved, exit 0), A3 rehearsed against a copy of the production
 database, and the Monitor page verified visually in a browser.
+
+And against the live install, after deploying: 48,518 messages intact,
+`bridge_mappings` gone, `schema_migrations` stamped at 28 rows, all six
+schedules re-registered, all eight namespaces answering a real MCP handshake
+with a complete body, `mcp_sidecar_count` 0 across 119 samples, and the
+windowed transcript walked back through three pages of the largest session
+without a gap or a repeat. After the token rotation: every stored secret
+decrypts with the new key and **none** with the old.
 
 ### The real-CLI tier's cross-test failure, and what it actually was
 
@@ -501,15 +584,9 @@ turn (`--strict-mcp-config`).
 a decision rather than a delay, restated in `pyproject.toml` now that A1 and A4
 have landed and the old "wait for them" reason has expired.
 
-Getting there fixed 21 errors and, with them, three real defects the type
-checker had been pointing at all along: `AgentRead(**agent)` would have raised
-`TypeError` *inside* a 500 if the row had gone between archiving and re-reading
-it; `create_session`'s signature claimed `agent_id: str` while both the model
-and the column are nullable, and two callers pass `None` deliberately; and
-deleting a credential whose backend has no login driver called
-`.cleanup_credential` on `None`. Three `SELECT COUNT(*)` call sites that each
-indexed a `Row | None` went through one `_count` helper, which is shorter at
-every site than what it replaced.
+Getting there fixed 21 errors, three of them real defects (above), and sent
+three `SELECT COUNT(*)` call sites that each indexed a `Row | None` through one
+`_count` helper, which is shorter at every site than what it replaced.
 
 What is left: `union-attr`, 26 errors and all of them `SessionManager.db` — one
 initialization contract across 203 reads, now sized and recorded in the plan's
