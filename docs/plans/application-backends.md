@@ -1,5 +1,7 @@
 # Applications with a backend — the run contract
 
+> **Status:** shipped — An app declares a backend with an executable `start.sh`; Octopus allocates a port, supervises it, proxies to it and reaps it when idle.
+
 > **Implementation status: SHIPPED.** `server/app_backends.py` (the
 > supervisor), the proxy route in `server/routers/applications.py`, the
 > directory and script helpers in `server/applications.py`, and the

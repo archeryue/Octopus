@@ -1,5 +1,7 @@
 # Agent Memory — Tech Plan (native, agent-written, per-agent)
 
+> **Status:** shipped — Per-agent native memory: one markdown directory per agent, shared by both harnesses.
+
 ## 0. What we're building, and why this shape
 
 The Agent is the durable entity that owns sessions and schedules

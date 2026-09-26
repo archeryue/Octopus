@@ -1,5 +1,7 @@
 # /fork — duplicate a session onto a copied working directory
 
+> **Status:** shipped — Duplicate a session onto an independent full copy of its working directory.
+
 ## 1. What & why
 
 `/rewind` branches the *conversation* (goes back to a message, archives the

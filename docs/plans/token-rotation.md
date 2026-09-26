@@ -1,5 +1,7 @@
 # Rotating the access token without breaking anything
 
+> **Status:** shipped — Rotating `OCTOPUS_AUTH_TOKEN`: re-key every stored secret, rewrite the env files, and keep open tabs working.
+
 > **Implementation status: SHIPPED.** `server/token_rotation.py`, the
 > `/api/auth/rotate` route, the Change-token panel in Settings, and the two
 > client paths (`auth_token_rotated`, and a WebSocket closed with `4001`).

@@ -11,9 +11,10 @@
 # - Python in server/ or tests/  → ruff, mypy, and the hermetic pytest tier
 # - TS in web/src/               → eslint, tsc --noEmit, and the vitest suite
 # - routes or pydantic models    → the generated contracts.ts drift check
-# - nothing relevant (docs only) → nothing runs
+# - a plan doc or docs/README.md → the generated plans index drift check
+# - nothing relevant             → nothing runs
 #
-# All four are fast enough for a per-commit gate (~40s worst case, and each
+# All of them are fast enough for a per-commit gate (~40s worst case, and each
 # only fires when its own files moved). `./scripts/check.sh` runs the same
 # set unconditionally, plus `--e2e` for Playwright.
 #
@@ -54,7 +55,7 @@ pre-commit:
 
     pytest:
       tags: backend
-      # -m "not real" is the hermetic tier: 1174 tests, ~34s, no CLI and no
+      # -m "not real" is the hermetic tier: ~1,140 tests, ~34s, no CLI and no
       # model. Without it this hook ran the live-model tests too, which made a
       # commit depend on a signed-in CLI and the provider being up.
       glob: "{server,tests}/**/*.py"
@@ -65,6 +66,13 @@ pre-commit:
       tags: backend
       glob: "server/**/*.py"
       run: ./scripts/nag-architecture.sh
+
+    docs-index:
+      tags: docs
+      # Each plan's Status line is the source of the table in docs/README.md.
+      glob: "docs/{README.md,plans/**/*.md}"
+      run: .venv/bin/python scripts/gen-docs-index.py --check
+      fail_text: "docs/README.md's plans index is stale. Run '.venv/bin/python scripts/gen-docs-index.py'."
 
     contracts:
       tags: backend

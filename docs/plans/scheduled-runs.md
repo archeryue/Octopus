@@ -1,5 +1,7 @@
 # Scheduled runs: what a fire is, and what stops it stacking
 
+> **Status:** shipped — What a scheduled fire is: the overlap guard, the `[scheduled:…]` marker, and the link from "last run" to the run.
+
 > **Implementation status: SHIPPED.** The overlap guard and the scheduled-turn
 > marker in `server/scheduler.py`, `schedules.last_run_session_id`, and the
 > clickable "last run" row on the Schedules page. Tests: `tests/test_scheduler.py`,

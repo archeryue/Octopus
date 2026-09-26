@@ -1,5 +1,7 @@
 # Octopus on a phone
 
+> **Status:** shipped — Octopus on a phone — the drawer that puts itself away, 16px fields, touch targets, and safe-area insets.
+
 > **Implementation status: SHIPPED.** The drawer in the store
 > (`sessionStore.sidebarOpen` + every navigation action), the mobile/touch
 > layer at the end of `web/src/index.css`, the header changes in `PageHeader`

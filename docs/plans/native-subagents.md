@@ -1,5 +1,7 @@
 # Native sub-agents, surfaced
 
+> **Status:** shipped — The CLIs' own sub-agents surfaced as one event and one card — including the ones that finish after the turn that started them.
+
 > **Implementation status: SHIPPED.** `SubagentUpdate` in
 > `server/harness/events.py`, the `task_*` branch in the Claude parser and the
 > `collab_tool_call` branch in the Codex one, `_record_subagent` +

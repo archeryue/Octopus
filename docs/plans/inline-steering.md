@@ -1,5 +1,7 @@
 # Inline steering — and the turn latency that pays for it
 
+> **Status:** shipped — A message typed mid-turn reaches the agent already running, and the held CLI process that makes a turn cheap to start.
+
 > **Implementation status: ALL THREE STAGES SHIPPED.** Three staged
 > changes (§4). Every CLI behaviour and every number below is *measured*
 > against our own `claude 2.1.272`, not assumed.

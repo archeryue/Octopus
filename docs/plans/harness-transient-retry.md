@@ -1,5 +1,7 @@
 # Harness transient-error retry
 
+> **Status:** shipped — Bounded retry on transient provider failures, kept distinct from auth failures and quota errors.
+
 ## 1. Problem
 
 Claude Code and Codex sometimes fail a turn for reasons that have nothing

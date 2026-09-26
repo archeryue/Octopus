@@ -1,5 +1,7 @@
 # Console redesign — the blue workspace UI
 
+> **Status:** shipped — The blue workspace UI — design tokens, the two-level sidebar, and every manage surface as a page rather than a dialog.
+
 > **Implementation status: SHIPPED.** The whole interface now follows the
 > "Octopus Console" design: `web/src/styles/tokens.css` carries the palette
 > and type, the sidebar is `SidebarAgents` / `SidebarApplications` /

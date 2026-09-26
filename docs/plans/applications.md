@@ -1,5 +1,7 @@
 # Applications — agent-built web apps, rendered in-app
 
+> **Status:** shipped — Agent-built web apps rendered in-app, with a build session and a status derived from the entrypoint on disk.
+
 > **Implementation status: SHIPPED.** `server/applications.py`,
 > `server/routers/applications.py`, the `applications` table, and the
 > `ApplicationList` / `ApplicationCreate` / `ApplicationView` frontend

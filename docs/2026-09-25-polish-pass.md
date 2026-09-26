@@ -4,12 +4,13 @@ A polish pass over Octopus: nothing here is a new product capability except
 the monitor. The rest pays down debts that had accumulated under seven months
 of fast feature work — and two of them turned out to be live defects.
 
-Branch `polish-2026-09`, 11 commits, all gates green.
+Branch `polish-2026-09`, 16 commits, all gates green — and the whole plan,
+§10 items 1 through 11, now done.
 Plan and reasoning: [`plans/polish-2026-09.md`](plans/polish-2026-09.md).
 
 ---
 
-## The two real bugs
+## The five real bugs
 
 **Telegram's Allow/Deny buttons silently did nothing.**
 `bridges/manager.py` called `approve_tool` / `deny_tool` without awaiting
@@ -35,6 +36,108 @@ meant to say "how many did *I* start". It now walks the parent chain.
 
 Found by the browser E2E, which is the only place it could have been found: the
 machine has to have a second Octopus on it.
+
+**Every MCP tool call deadlocked for fifteen seconds and answered "failed to
+reach Octopus".** B1's own defect, and it shipped with all seven gates green.
+FastMCP dispatches a `def` tool straight on the event loop, and every tool body
+here is sync and makes a *blocking* HTTP call back into this same process. As a
+stdio subprocess that was correct — a blocking call from another process cannot
+starve the server. Served in-process it is a deadlock: the loop cannot answer
+the loopback request until the tool returns, and the tool cannot return until
+the request is answered. Each call burned its own 15-second timeout, and any
+MCP handshake a *second* session attempted in that window failed too, which is
+how it presented — `CONNECT_TIMEOUT` on another agent's namespace discovery.
+
+The fix is one adapter in `mcp_http.build_servers`: a sync tool body is wrapped
+to run in a worker thread, with the calling context copied so the request's
+verified scope still resolves. That is what FastAPI does for a `def` endpoint,
+and it leaves nine tool modules and their unit tests untouched.
+
+**Why no gate caught it.** The tool bodies are unit-tested by calling them
+directly; the harness tests stop at the rendered config. Both pass while every
+real call fails — there was nothing in between. There is now: a hermetic test
+drives a tool over the mounted transport and asserts it answers, plus one that
+fails if any namespace ever registers a body that would run on the loop.
+
+**A held CLI process was reused after its MCP endpoint moved.**
+`spawn_signature` decides whether a live process may serve the next turn, and it
+exists precisely because everything a process bakes in at spawn — persona,
+model, tool policy, credential, MCP set — cannot be changed afterwards. It held
+the namespace *names*. Since B1 those names render into a URL carrying the
+server's port and a bearer derived from the session and the access token, and
+neither was in the signature. A process spawned against one endpoint was
+therefore reused against another: it reports every namespace as unreachable, the
+model loses its tools mid-conversation, and nothing in our own logs says why —
+the only complaint is the CLI's, inside the model's reply.
+
+Production rarely moves its port, so this surfaced in the real-CLI tier, where
+each test serves its own ephemeral one: run alone, the schedule and delegation
+tests passed; run after their neighbours, the CLI inherited a process pointed at
+a dead socket and the model reported the tool as missing. The signature now
+includes the callback environment those entries are built from, which covers the
+port, the access token, and the session at once.
+
+**Every cron with a day-of-week field fired a day late.**
+`CronTrigger.from_crontab` looks like a crontab parser and is not, in the one
+field where it matters: its `day_of_week` counts 0 = Monday, while crontab — and
+every source a user or a model will quote — counts 0 = Sunday. So
+`0 9 * * 1-5`, "weekdays at 9", fired **Tuesday to Saturday**, and
+`0 9 * * 0`, "Sundays", fired on Monday. The tool's own docstring, the
+natural-language prompt and the human-readable label all stated the crontab
+convention correctly; only the trigger disagreed.
+
+Found by the real-CLI test for the schedule tool: the model wrote
+`0 9 * * 1-5` exactly as asked, and the tool answered "next Saturday". It even
+ran `date` to check, and said Saturday was wrong, before reporting success.
+
+All cron building now goes through one `schedule_ai.cron_trigger`, which
+translates the day-of-week field to APScheduler's own day *names* — where there
+is no ambiguity left to get wrong. No live schedule was affected: all five on
+this box use `*` for day-of-week.
+
+---
+
+## Architecture — the two god classes (A1, A2, A4)
+
+`Database` held 94 methods over ten subjects; `SessionManager` held 84 over at
+least eight. Both are now one file per responsibility — `server/db/` (twelve
+files, largest 661 lines) and `server/sessions/` (ten files) — composed as
+mixins on one object, so **not a single call site changed**: `db.save_session`
+is still `db.save_session`, and `server/database.py` / `server/session_manager.py`
+remain as re-exports. A repository split would have read better on paper and
+touched 200+ call sites to buy the same file-level separation.
+
+**The dependency graph was the finding.** `sessions/turns.py` calls 26 methods
+across the other six slices. Rather than switch off mypy's `attr-defined` — the
+check that caught the database split dropping its class constants — those 26 are
+declared as explicit contracts on the base class. The bodies never run (the
+mixins precede the base in the MRO); they exist so "what does a slice need from
+another slice" is a list you can read, which is exactly what a 4,000-line class
+hides.
+
+**`_run_backend`, 473 lines, was the gravitational centre** — and the reason it
+could not be split is that eight of its branches shared eleven local variables.
+Naming that state (`_Attempt` for one CLI invocation, `_Turn` for what survives
+across invocations of one logical turn) is what made both halves extractable:
+the event loop became `for frame in await self._handle_stream_event(...)`, and
+the failure-classification tree became five methods that *return* a decision
+(`stop`, or `again(prompt, delay)`) instead of yielding from inside an async
+generator. 473 lines → 68, with the ordering that matters — a watchdog timeout
+read before anything retryable, auth before the retries, a dangling resume id
+before "transient" — stated in one docstring instead of inferred from
+indentation.
+
+One latent bug fell out: `steer_writer` was bound *inside* the `try`, so a
+spawn that raised unwound through an unbound name in the `finally` and buried
+the real error.
+
+**A2**: routers now take the session manager as a FastAPI dependency
+(`server/deps.py`) rather than importing the process singleton. The parameter is
+deliberately named `session_manager`, so no line inside a route changed; what
+changed is that a test overrides one dependency instead of monkeypatching a
+module global in each router, and nothing in the request path is bound to a
+particular instance. The singleton stays for the background paths — the
+scheduler, the delegation manager — which genuinely want the one live object.
 
 ---
 
@@ -72,17 +175,43 @@ A compatibility spike proved all three legs against both real CLIs *before* any
 of it was written. Without it, the header approach would have been built and
 would have failed on the first Codex session.
 
-### The database stops doing unbounded work (B2–B5)
+### The database stops doing unbounded work (B3–B5)
 
-- `load_messages` gained `max_seq` and `newest_first`. Fork replay used to load
-  a whole transcript and drop the tail in Python — on the largest session here
-  that is 4,600 rows read to keep ten.
+- `load_messages` gained `max_seq` and `newest_first` — the range bounds the
+  window below is built on. Fork replay used to load a whole transcript and drop
+  the tail in Python: on the largest session here, 4,600 rows read to keep ten.
 - `append_message` deferred its commit with **nothing bounding it**: three
   explicit flush sites, no timer, and the production WAL sitting at 7 MB as a
   result. Now ~0.5 s or 32 rows, whichever trips first.
 - `busy_timeout` and an explicit `synchronous=NORMAL`, so "database is locked"
   waits instead of raising, and the durability story is stated rather than
   inherited.
+
+### A transcript arrives in a window (B2, both halves)
+
+`GET /api/sessions/{id}` returned every message a session had, every time it was
+opened: 46,448 rows live here, the largest session holds 4,873, and the client
+was handed all of them to render. It now returns the most recent 200 plus a
+cursor (`oldest_loaded_seq`, `has_more_messages`), and `GET …/messages?before_seq=`
+serves the rest. Archived sessions read the same way — and their `message_count`
+and dedup baseline now come from a `COUNT(*)` rather than `len(messages)`, which
+stopped being the count the moment a window was all that was fetched.
+
+The risk in B2 was never the query; it was the client. Two things go wrong when
+a virtualized list grows at the top, and both are invisible to a unit test: the
+view jumps, and a message renders twice at the seam. The view is held by
+Virtuoso's `firstItemIndex`, decremented by exactly the number of messages
+prepended in the same tick the longer list lands in; the seam is held by seq —
+a page that overlaps what is already held is dropped rather than merged, and a
+page that adds nothing sets `has_more` to false rather than polling forever.
+
+Both are asserted in a real browser against a 260-message session: it opens at
+message 259, reaching the top loads the 60 behind the window, the message that
+was on screen is still on screen afterwards, and it is there exactly once.
+`applyTranscript` is one function because three places load a snapshot —
+selecting a session, the WebSocket reconnect refetch, the archived viewer — and
+each owes the store the messages, the dedup baseline *and* the window; a fourth
+caller cannot now get two of the three right.
 
 ---
 
@@ -187,6 +316,51 @@ effect every render, which cost React Compiler the memoization entirely.
 
 Two justified suppressions remain, each carrying its argument inline.
 
+### The silent handlers are gone (F4)
+
+26 `except Exception: pass`. The migration cluster went with A3; the remaining
+twenty were two shapes, repeated. "Cancel a task, then await it so it unwinds"
+appeared eight times as `except (asyncio.CancelledError, Exception): pass` —
+right about the cancellation, silent about everything else, on teardown paths
+which is precisely where a last exception used to disappear. Both shapes are now
+one helper each in `server/aio.py`: the cancellation is swallowed because it is
+expected, anything else is logged, and neither can raise, because every caller
+is releasing a process or a lock.
+
+The rest were narrowed to what they actually meant: `JobLookupError` for
+removing a schedule that has no job, `WebSocketDisconnect`/`RuntimeError` for
+broadcasting to a tab that closed, `IntegrityError` for the one-time agent
+rename that a name collision should skip. `server/` now contains **zero** broad
+silent handlers, and the one place catching broadly on purpose — the metrics
+sink, which must never break a turn — says so in a comment.
+
+A side effect worth the note: the `PytestUnraisableExceptionWarning` that the
+suite had been carrying (a subprocess transport collected after its loop closed)
+went with it. The suite is now warning-free, which is the state in which a *new*
+warning is worth reading.
+
+### The plans index generates itself (D2)
+
+`docs/plans/` had 23 documents and no way to tell a shipped design from an
+in-progress one from the outside, while the hand-written list in
+`docs/README.md` had drifted to 13 of them — the same failure mode as the
+hand-maintained test inventory E1 deleted. Each plan now states its status on
+one machine-readable line under its title, `scripts/gen-docs-index.py` renders
+the table, and `check.sh` plus a lefthook glob fail if it has drifted. A new
+plan cannot be added without appearing in the index.
+
+### Two smaller ones
+
+**C3**: the httpx per-request `cookies=` deprecation is gone — the cookie is set
+on the client, which is also a truer model of what a browser does.
+
+**The Telegram bridge was removed** (not a plan item): Octopus works from a
+phone browser now, which is what the bridge existed to provide. Whole — code,
+tests, settings, and the `bridge_mappings` table, because a table nothing reads
+is a question every future reader has to answer. **Breaking for an existing
+install**: `Settings` is `extra="forbid"`, so an `.env` still carrying
+`OCTOPUS_TELEGRAM_*` fails to start.
+
 ### One command for every gate (C1, F3)
 
 `scripts/check.sh` runs seven gates and continues past failures, so one pass
@@ -236,24 +410,53 @@ Plus, outside the gates: B1 driven end-to-end against a real `claude` CLI
 (tool names preserved, exit 0), A3 rehearsed against a copy of the production
 database, and the Monitor page verified visually in a browser.
 
+### One open item in the real-CLI tier
+
+Five of the 34 real-model tests **pass individually and fail when another
+`claude` test has already run in the same pytest process**: the two delegation
+cases that need a child CLI to call a tool, and the three schedule-tool cases.
+The CLI reports every namespace as `failed` (which Octopus now logs — it used to
+be visible only inside the model's reply).
+
+What has been *ruled out*, each by measurement rather than reasoning:
+
+| Suspect | Finding |
+|---|---|
+| the server | three sequential servers, five namespaces each: 0.01 s handshakes, real tool calls answered |
+| the port in argv | matches the test's server, verified from the spawn log |
+| the CLI itself | three sequential `claude --print` runs against one live mount: all five connected every time |
+| host MCP config leaking in | real, and fixed (`--strict-mcp-config`); the failure survives it |
+| a moving port between tests | fixed port tried; no difference |
+| memory pressure | 11.8 GB free, 16 cores, at the moment of failure |
+| leftover test CLIs | swept after every real test now; none survive |
+
+So the product path is verified three independent ways — the hermetic transport
+test, a real `claude`, and a real `codex` both calling `mcp__schedule__*` — and
+what is left is state inside the CLI's own process that we cannot read from here.
+The next step is its `--debug` MCP log, captured from inside the turn engine
+rather than from a standalone invocation, which is where the difference must be.
+
+Recorded rather than papered over: these tests assert something true, they are
+not marked skip, and the tier is run by hand, not by a gate.
+
 ---
 
 ## What was deliberately not done
 
-**A1 (SessionManager, 4,004 lines) and A4 (database.py, 2,646 lines).** Both
-are real and both remain in the plan. Neither was started, because
-`CLAUDE.md`'s first rule is that if the full thing is not worth doing right
-now, do not start it — and a half-decomposed god class is worse than an intact
-one. A4's groundwork is done and recorded: the migration inventory is mapped,
-and `_has_column` already exists at 7 sites, so A3 finished a transition rather
-than starting one.
+**`union-attr` and five other mypy codes**, each with its reason recorded in
+`pyproject.toml`. The largest remaining cause is `SessionManager.db`, where the
+asserting-property trick that removed 168 errors from `Database._conn` is
+unavailable: 33 of its 59 read sites guard with `if self.db:`, and an asserting
+property would turn those guards into `AssertionError`s.
 
-**B2's frontend half.** The server can now window a transcript
-(`max_seq`, `newest_first`), but `GET /sessions/{id}` still returns everything
-and `ChatView` still receives it. Windowing the client needs scroll-anchoring
-and duplicate-`seq` tests in a 1,579-line component; shipping the query without
-them would have been the MVP the rules forbid.
+**Rewriting the tool bodies onto an async HTTP client.** Threading the sync
+bodies fixed B1's deadlock and keeps nine modules and their unit tests as they
+are. The ceiling it accepts is anyio's default 40-thread limiter, i.e. 40
+concurrent *blocking* tool calls — `mcp__ask__user` can hold one for as long as
+a human takes to answer. That is far above anything one box runs, and the
+rewrite buys nothing until it is in sight.
 
-**`union-attr` and five other mypy codes**, each with its reason recorded, most
-of them concentrated in exactly the two files A1 and A4 will rewrite. Doing
-them now means doing them twice.
+**Everything §11 of the plan defers**, unchanged: alerting thresholds (they need
+30 days of collected data first), a message-retention policy for `octopus.db`
+(product data, so a user decision rather than cleanup), e2e in an automated gate,
+and splitting `ChatView.tsx`.

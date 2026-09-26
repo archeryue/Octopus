@@ -1,5 +1,7 @@
 # Agent Collaboration — Tech Plan (agent-to-agent delegation)
 
+> **Status:** shipped — Agent-to-agent delegation — the `mcp__ask_agent__*` tools, one hop, replies injected as follow-up turns. Reverses the "no A2A" carve-out in `agent-refactor.md` §40-41.
+
 > **Post-implementation refresh.** This document now describes the
 > shipped feature; see commit history for the review-driven fixes that
 > closed the plan/implementation drift.

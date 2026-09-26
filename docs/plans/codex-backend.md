@@ -1,5 +1,7 @@
 # Codex Backend — Tech Plan
 
+> **Status:** shipped — The Codex backend — the second harness, and what having a second one had to prove.
+
 ## 0. Why this exists, and how grounded this is now
 
 This is the second-backend initiative. The whole `BackendBase` /

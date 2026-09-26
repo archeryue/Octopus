@@ -1,5 +1,7 @@
 # Tech Plan: First-Class Harness Layer
 
+> **Status:** shipped — One `Harness` plus a `RuntimeProfile` per backend — the single boundary for all model/runtime interaction.
+
 Status: implemented (2026-05-23) — single `Harness` + `RuntimeProfile` model,
 **all** callers migrated (turns, one-shot/`/schedule`, login, export/import),
 `server/backends/` deleted. Grep-verified: zero backend-kind branching and

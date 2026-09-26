@@ -1,5 +1,7 @@
 # Octopus-native deep research
 
+> **Status:** shipped — Octopus-orchestrated deep research: scoped fan-out of web-search sub-turns, adversarially verified, then synthesized.
+
 > **Implementation status: SHIPPED.** The full pipeline described in this plan
 > is implemented and running: `server/research/` (manager, orchestrator, leaf
 > executor, schemas), `server/routers/research.py`, `server/mcp_servers/research.py`,

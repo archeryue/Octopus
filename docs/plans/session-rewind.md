@@ -1,6 +1,8 @@
 # Session Tree-Rewind — Tech Plan (`/rewind`)
 
-> **Draft (2026-06-06).** Inspired by Pi agent's `/tree`: rewind a
+> **Status:** shipped — Branch a conversation at any prior user message, with an optional git revert of the working tree.
+
+> **Origin (2026-06-06).** Inspired by Pi agent's `/tree`: rewind a
 > conversation to a prior user message and try again — edited,
 > redone, or replaced with a new instruction.
 >

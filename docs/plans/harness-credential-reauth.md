@@ -1,5 +1,7 @@
 # Harness credential re-authorization (reactive 401 detection)
 
+> **Status:** shipped — Reactive 401 detection: flag a credential that died mid-turn as `needs_reconnect` and offer re-authorization.
+
 ## 1. Problem
 
 A harness sign-in credential (Claude Code OAuth / API key, Codex

@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1208 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,194 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1174 tests, ~34 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,160 tests, ~34 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -52,11 +52,11 @@ You MUST verify your changes before considering them done:
    import is what used to make a plain `--collect-only` spawn a real `claude`
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
-2. **Frontend unit tests**: `cd web && bun run test` (195 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (210 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (77 tests, no skips, ~4.5 min, Playwright
+4. **E2E tests**: `cd web && bun run test:e2e` (83 tests, no skips, ~5 min, Playwright
    auto-starts servers). Split into two buckets for dev iteration —
-   `bun run test:e2e:fast` (40 pure-UI tests, ~30 s — login / sessions /
+   `bun run test:e2e:fast` (46 pure-UI tests, ~30 s — login / sessions /
    dialogs / sidebar / virtualized chat / attachments / etc.) and
    `bun run test:e2e:llm` (37 real-LLM tests, ~3 min — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
@@ -72,14 +72,14 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1174 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1160 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
-| Frontend unit | vitest | `cd web && bun run test` | 195 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 77 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (40, ~30 s) skips the `@llm` half; `:llm` (37, ~3 min) is the rest. |
+| Frontend unit | vitest | `cd web && bun run test` | 210 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 83 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (46, ~40 s) skips the `@llm` half; `:llm` (37, ~4 min) is the rest. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
-hand-written inventory of 1,208 tests cannot stay true, and it cost ~16 KB of
+hand-written inventory of 1,194 tests cannot stay true, and it cost ~16 KB of
 every session's context to try.
 
 ## Project Structure
@@ -95,7 +95,7 @@ every session's context to try.
 - `server/routers/` — REST + WebSocket routers (`sessions`, `schedules`, `agents`, `applications`, `credentials`, `connectors`, `delegations`, `research`, `ws`)
 - `server/fork_helpers.py` — Pure helpers for session tree-rewind (`/rewind`): git-anchor capture at turn-start, side-effect classification over parent rows, safe-revert preflight + git-stash execution. Backend-agnostic and side-effect-contained.
 - `server/research/` — Native deep research orchestration (`docs/plans/native-deep-research.md`): `ResearchManager` (async job lifecycle, phase pipeline, concurrency cap, cancel + reap), `orchestrator` (scope → search → dedup → verify → synthesize phases), `leaf` (throwaway `HarnessRun` sub-turns for web-search leaves and `run_oneshot` for reasoning leaves), `schemas` (JSON schemas for scope/findings/synthesis). Agent-invoked via `mcp__research__deep_research`; user-invoked via `/research <question>`. Result injected as a follow-up turn; a `ResearchCard` tracks progress in the UI.
-- `server/mcp_servers/research.py` — Stdio MCP server exposing `mcp__research__deep_research(question)` to agents; thin HTTP shim to `/api/sessions/{sid}/research`. Returns `research_id` immediately so the model's turn ends cleanly.
+- `server/mcp_servers/research.py` — MCP namespace exposing `mcp__research__deep_research(question)` to agents; thin HTTP shim to `/api/sessions/{sid}/research`. Returns `research_id` immediately so the model's turn ends cleanly.
 - `docs/plans/token-rotation.md` — `OCTOPUS_AUTH_TOKEN` is both the
   credential clients send and the key `crypto.py` derives to encrypt every
   stored secret, so changing it is one server-side operation (`POST
@@ -126,16 +126,19 @@ gained `POST /api/agents/{id}/unarchive` for the same tab).
 ### Agents, memory and delegation
 
 - `server/delegations.py` — Agent-to-agent delegation manager (`docs/plans/agent-collaboration.md`). Subscribes to the SessionManager broadcast bus; on a tracked child session's `assistant_text` / `result` / `error` / `question_request` events, captures + finalises and injects an `[agent-reply:<name> delegation=<id>]` (or `agent-question`, or `agent-error`) follow-up turn into the parent session via the same `start_message` path bg-task delivery uses. Cycle and depth-3 guards walk `parent_session_id`. `answer_pending_question(delegation_id, choice)` drains the child's oldest pending question on the parent's behalf — same Event-signal machinery the human UI uses (first to drain wins). The delegation id IS the child session id; no parallel id space, no new persistence table.
-- `server/mcp_servers/ask_agent.py` — Stdio MCP server exposing the four delegation tools to the model: `mcp__ask_agent__ask` / `cancel` / `answer` / `list` (the Python functions are `ask_agent` / `cancel_agent_task` / `answer_agent_question` / `list_agent_tasks`; the `@mcp.tool(name=…)` decorators expose the short forms). `ask(request, name=…, delegation_id=…, files=…)` is bimodal: `name` starts a fresh child session, `delegation_id` continues a prior one in the same child transcript; exactly one id is required. Same `OCTOPUS_API_BASE` / `OCTOPUS_SESSION_ID` env-injection pattern as the bg + ask built-ins; thin HTTP shim to the `/api/sessions/{sid}/delegations` routes, including continuation via `/follow-up`. Added to the default per-agent MCP set; the migration backfills it onto every pre-existing agent row.
-- `server/mcp_servers/schedule.py` — Stdio MCP server exposing an agent's own schedules (`docs/plans/schedule-tool.md`): `mcp__schedule__{create,list,update,delete}`. Thin HTTP shim to the session-scoped `/api/sessions/{sid}/schedules` routes, so the agent is derived from `OCTOPUS_SESSION_ID` and can neither see nor touch another agent's schedules. The recurrence is stated outright (`cron` / `interval_seconds` / `run_at`) rather than parsed from English — the caller is already a model, so there is no second one-shot in the loop. In the default per-agent MCP set; the startup backfill adds it to every pre-existing agent.
+- `server/mcp_servers/ask_agent.py` — MCP namespace exposing the four delegation tools to the model: `mcp__ask_agent__ask` / `cancel` / `answer` / `list` (the Python functions are `ask_agent` / `cancel_agent_task` / `answer_agent_question` / `list_agent_tasks`; the `@mcp.tool(name=…)` decorators expose the short forms). `ask(request, name=…, delegation_id=…, files=…)` is bimodal: `name` starts a fresh child session, `delegation_id` continues a prior one in the same child transcript; exactly one id is required. Same shape as the bg + ask built-ins (the session comes from the call's verified scope — `mcp_http` / `mcp_identity`); thin HTTP shim to the `/api/sessions/{sid}/delegations` routes, including continuation via `/follow-up`. Added to the default per-agent MCP set; the migration backfills it onto every pre-existing agent row.
+- `server/mcp_servers/schedule.py` — MCP namespace exposing an agent's own schedules (`docs/plans/schedule-tool.md`): `mcp__schedule__{create,list,update,delete}`. Thin HTTP shim to the session-scoped `/api/sessions/{sid}/schedules` routes, so the agent is derived from the call's session and can neither see nor touch another agent's schedules. The recurrence is stated outright (`cron` / `interval_seconds` / `run_at`) rather than parsed from English — the caller is already a model, so there is no second one-shot in the loop. In the default per-agent MCP set; the startup backfill adds it to every pre-existing agent.
 ### The harness boundary
 
+- `server/mcp_http.py` + `server/mcp_identity.py` — The tool namespaces, served in-process (`docs/plans/polish-2026-09.md` §4 B1): each is mounted at `/mcp/<key>` over streamable-HTTP instead of spawned as a stdio subprocess per session (7 per session, ~39 MB PSS each), and identity rides in a per-session bearer because Codex has no per-server header. `build_servers` also moves every `def` tool body onto a worker thread — FastMCP dispatches a sync tool on the event loop, and these bodies call back into this same process, so on the loop each call deadlocked until its own timeout.
+- `server/deps.py` — Request-scoped dependencies (`§3 A2`): routers declare `session_manager: SessionMgr` and FastAPI resolves it, so a test overrides one dependency instead of monkeypatching a module global in every router. The singleton stays for the background paths (scheduler, delegations, bridges).
+- `server/aio.py` — `drain_cancelled` / `stopped_within`: the two teardown shapes that were written as `except (asyncio.CancelledError, Exception): pass` in eight places (`§8 F4`). The cancellation is expected; anything else is the task's last words and now reaches the log.
 - `server/harness/` — Harness layer: the single boundary for all model/runtime interaction (`docs/plans/harness-layer.md`). One `Harness` class + one `HarnessRun` engine, configured by a `RuntimeProfile` *value* per backend kind (`claude_code`, `codex`) — no per-framework subclasses. Holds `assembly` (shared per-turn MCP/system-prompt assembly), `run` (subprocess+JSONL engine + PATH helpers), `registry` (`get_harness`/`available_backends`), `login` (LoginDriver protocol). Capabilities are derived from the profile; `run_oneshot` powers backend-agnostic `/schedule` parsing.
 ### Connectors
 
 - `server/connectors/` — Connector framework: `base` (ConnectorBase + backend-neutral MCP entry), `oauth` (provider protocol + redirect-URI login manager), `registry`, built-in `github`/`gmail`, and `custom` (user-defined kinds + generic OAuth provider + `resolve_connector`)
 - `server/connector_manager.py` — Connector business logic (install upsert, in-app OAuth-client config DB→env resolve, token-refresh lifecycle, custom-connector CRUD)
-- `server/mcp_servers/connectors/` — Per-kind stdio MCP servers (`github`, `gmail`, generic `custom`) + shared token/truncation helpers
+- `server/mcp_servers/connectors/` — Per-kind MCP namespaces (`github`, `gmail`, generic `custom`) + shared token/truncation helpers
 - `docs/plans/mobile.md` — Octopus on a phone: the drawer that puts itself
   away, 16px fields (iOS zoom), touch hit areas and hover-only affordances,
   headers that shed context rather than function, and the safe-area insets a

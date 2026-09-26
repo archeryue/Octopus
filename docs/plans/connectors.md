@@ -1,5 +1,7 @@
 # Connectors — Tech Plan
 
+> **Status:** shipped — The connector framework: OAuth, per-agent enablement, one MCP namespace per kind.
+
 Status: ✅ **LANDED & live-verified (2026-05-21).** This plan is kept for
 history; the sections below describe the original design. What actually shipped
 diverged in a few deliberate ways (see the banner just below). The how-to lives

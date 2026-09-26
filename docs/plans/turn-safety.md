@@ -1,5 +1,7 @@
 # Turn safety (Layer 1): timeout + process-group reaping
 
+> **Status:** shipped — The per-turn watchdog (idle + overall) and process-group reaping, so a wedged tool cannot hang a session forever.
+
 ## 1. Why
 
 A session ("stock") ran a long, tool-heavy operation (the `/deep-research`

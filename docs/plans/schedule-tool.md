@@ -1,5 +1,7 @@
 # The schedule an agent sets for itself
 
+> **Status:** shipped — `mcp__schedule__*` over session-scoped routes: an agent sets, lists, re-times and pauses its own schedules.
+
 > **Implementation status: SHIPPED.** `server/mcp_servers/schedule.py`, the
 > session-scoped routes in `server/routers/schedules.py`, the explicit-
 > recurrence validator in `server/schedule_ai.py`, the `schedules_changed`

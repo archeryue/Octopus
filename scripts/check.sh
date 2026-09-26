@@ -60,6 +60,11 @@ gate_tsc() { cd "$ROOT/web" && bun run typecheck; }
 
 gate_contracts() { "$ROOT/scripts/check-contracts.sh"; }
 
+# docs/README.md's plans table is generated from each plan's own Status line
+# (polish-2026-09.md §6 D2), so a new plan cannot be added without appearing
+# in the index.
+gate_docs_index() { "$ROOT/.venv/bin/python" "$ROOT/scripts/gen-docs-index.py" --check; }
+
 gate_ruff() { "$ROOT/.venv/bin/ruff" check .; }
 
 gate_mypy() { "$ROOT/.venv/bin/mypy"; }
@@ -75,6 +80,7 @@ run_gate "frontend lint (eslint)"              gate_eslint
 run_gate "frontend unit (vitest)"              gate_vitest
 run_gate "typecheck (tsc --noEmit)"            gate_tsc
 run_gate "generated contracts in sync"         gate_contracts
+run_gate "docs plans index in sync"            gate_docs_index
 
 if [ "${1:-}" = "--e2e" ]; then
   run_gate "e2e (playwright)" gate_e2e

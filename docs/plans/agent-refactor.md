@@ -1,5 +1,7 @@
 # Tech Plan: Introduce first-class Agents into Octopus
 
+> **Status:** shipped — First-class Agents: the durable definition that owns sessions, schedules and memory.
+
 Reference design: vm0 (`/home/start-up/vm0`), which cleanly splits **Agent (definition) ↔ Session (continuation) ↔ Run (execution)**. Octopus today only has `Session`. We adopt vm0's split *partially* (YAGNI), with a path to the full split later.
 
 ## 0. Why this exists, and the shape of this refactor

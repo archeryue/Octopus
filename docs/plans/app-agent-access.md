@@ -1,5 +1,7 @@
 # Applications that can talk to the agents
 
+> **Status:** shipped — The conversations a *running* application holds with an agent, over a per-app scoped token.
+
 > **Implementation status: SHIPPED.** `server/app_agent.py` (the manager), the
 > `/apps/{id}/agent/*` routes in `server/routers/applications.py`, the scoped
 > token in `server/applications.py` + `script_env`, the `sessions.app_id`
