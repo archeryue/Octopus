@@ -48,12 +48,30 @@ test.describe("Monitor", () => {
     await expect(page.locator("tr", { hasText: "http" }).first()).toBeVisible();
   });
 
-  test("an empty section says so rather than rendering blank", async ({ page }) => {
+  test("no section is silently blank — a table, or an explicit notice", async ({
+    page,
+  }) => {
+    // A blank panel reads as a clean bill of health when it means "nothing
+    // recorded", so every section owes the reader one or the other.
+    //
+    // Asserted per section rather than as "some section is empty": which
+    // sections have rows depends on what the rest of the suite happened to do
+    // before this spec ran, and a test whose premise is "nothing has happened
+    // yet" is only true on the first run of the day. The empty *rendering*
+    // itself is pinned in MonitorPage.test.tsx, where it costs nothing.
     await openMonitor(page);
-    // A fresh e2e backend has had no turns, so that section must be explicit.
-    await expect(
-      page.getByText(/Nothing recorded in this window/).first()
-    ).toBeVisible();
+    const sections = page.locator(".monitor-page section");
+    const count = await sections.count();
+    expect(count).toBeGreaterThan(0);
+    for (let i = 0; i < count; i++) {
+      const section = sections.nth(i);
+      const rows = await section.locator("table").count();
+      const notice = await section
+        .getByText(/Nothing recorded in this window/)
+        .count();
+      const heading = await section.locator("h3").textContent();
+      expect(rows + notice, `section "${heading?.trim()}" said nothing`).toBeGreaterThan(0);
+    }
   });
 
   test("changing the window refetches", async ({ page }) => {

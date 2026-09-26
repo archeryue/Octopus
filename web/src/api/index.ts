@@ -37,6 +37,8 @@ export type AgentConnectorsResponse = components["schemas"]["AgentConnectorsResp
 export type SubagentRun = components["schemas"]["SubagentRun"];
 export type SubagentDefinition = components["schemas"]["SubagentDefinition"];
 export type MessageContent = components["schemas"]["MessageContent"];
+// A page of older transcript (polish-2026-09.md §4 B2).
+export type MessagePage = components["schemas"]["MessagePage"];
 export type MessageRole = components["schemas"]["MessageRole"];
 export type NotifierInfo = components["schemas"]["NotifierInfo"];
 export type NotifierType = components["schemas"]["NotifierType"];

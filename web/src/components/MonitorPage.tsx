@@ -143,7 +143,7 @@ export function MonitorPage({ onToggleSidebar }: { onToggleSidebar?: () => void 
   const turnCount = data?.counts.find((c) => c.kind === "turn")?.n ?? 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="monitor-page flex h-full min-h-0 flex-col">
       <PageHeader
         icon={<IconActivity size={15} />}
         crumbs={["Monitor"]}

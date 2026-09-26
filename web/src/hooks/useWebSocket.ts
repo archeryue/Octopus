@@ -5,6 +5,7 @@ import {
   sessionInfoFromDetail,
 } from "../lib/hydrateSession";
 import { refreshSchedules } from "../lib/refreshSchedules";
+import { applyTranscript } from "../lib/transcript";
 import {
   useSessionStore,
   type Application,
@@ -491,7 +492,7 @@ export function useWebSocket() {
               .then((r) => (r.ok ? r.json() : null))
               .then((data) => {
                 if (!data) return;
-                getState().setMessages(activeSessionId, data.messages);
+                applyTranscript(activeSessionId, data);
                 getState().setPendingQueue(
                   activeSessionId,
                   data.pending_queue || []
@@ -500,15 +501,6 @@ export function useWebSocket() {
                   activeSessionId,
                   data.pending_questions || []
                 );
-                // Bump the WS-event dedup baseline so any event with
-                // seq < next_message_seq is treated as already applied
-                // (it's in the snapshot we just set).
-                if (typeof data.next_message_seq === "number") {
-                  getState().setLastAppliedSeq(
-                    activeSessionId,
-                    data.next_message_seq - 1
-                  );
-                }
               })
               .catch(() => {});
             // Bg tasks: same reload, independent endpoint. Chat history

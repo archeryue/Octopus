@@ -17,6 +17,14 @@ export const E2E_APPLICATIONS_DIR = path.join(
   "octopus-e2e-applications"
 );
 
+// And for the metrics database. The session DB is `:memory:` per run, but the
+// metrics one defaulted to `octopus-metrics.db` in the repo root — so the suite
+// wrote into the developer's own metrics file and, worse, inherited the last
+// run's rows: "an empty section says so rather than rendering blank" can only be
+// asserted against a database that is actually empty. Removed in
+// global-teardown.
+export const E2E_METRICS_DB = path.join(os.tmpdir(), "octopus-e2e-metrics.db");
+
 export default defineConfig({
   testDir: "./e2e",
   globalTeardown: "./e2e/global-teardown.ts",
@@ -65,6 +73,8 @@ export default defineConfig({
         // and leave the BgTaskChip stuck in "Waiting for bg task…".
         OCTOPUS_PORT: "8765",
         OCTOPUS_DB_PATH: ":memory:",
+        // Not the repo's octopus-metrics.db: see E2E_METRICS_DB above.
+        OCTOPUS_METRICS_DB_PATH: E2E_METRICS_DB,
         // Per-agent memory dirs (docs/plans/memory.md) live under here; keep
         // them out of the developer's real ~/.octopus/agents. Cleaned in
         // e2e/global-teardown.ts.

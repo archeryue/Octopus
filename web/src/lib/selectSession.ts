@@ -1,5 +1,6 @@
 import { addSessionInfo, sessionInfoFromDetail } from "./hydrateSession";
 import { useSessionStore } from "../stores/sessionStore";
+import { applyTranscript } from "./transcript";
 
 const API = window.location.origin;
 
@@ -33,15 +34,12 @@ export async function selectSession(
       // delegation child) may not be in the sidebar list yet. We already have
       // its detail in hand — adopt it rather than spending another request.
       addSessionInfo(sessionInfoFromDetail(data));
-      s.setMessages(sessionId, data.messages || []);
+      applyTranscript(sessionId, data);
       s.setPendingQueue(sessionId, data.pending_queue || []);
       s.setPendingQuestions(sessionId, data.pending_questions || []);
       // Sub-agent cards are live state the server remembers for us, so a
       // reload mid-run repaints them instead of showing a frozen tool call.
       s.setSubagents(sessionId, data.subagents || []);
-      if (typeof data.next_message_seq === "number") {
-        s.setLastAppliedSeq(sessionId, data.next_message_seq - 1);
-      }
     }
     if (bgRes.ok) {
       useSessionStore.getState().setBgTasks(sessionId, await bgRes.json());

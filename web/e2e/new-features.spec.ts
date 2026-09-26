@@ -25,6 +25,7 @@ const OWNED_NAMES = new Set([
   "Waiting Hint Yes",
   "Waiting Hint No",
   "Virtuoso Long Session",
+  "Windowed Transcript",
   "Queue Test",
   "Interrupt Test",
   "Asked Question",
@@ -265,6 +266,72 @@ test.describe("Scheduled Tasks UI @llm", () => {
 // ---------------------------------------------------------------------------
 // Virtualized chat (react-virtuoso)
 // ---------------------------------------------------------------------------
+
+test.describe("Windowed transcript", () => {
+  // A transcript arrives as its most recent 200 messages, and pages back from
+  // there (polish-2026-09.md §4 B2). The two things that go wrong are invisible
+  // in a unit test: the view jumping when older messages are prepended, and a
+  // message rendered twice across the seam. Both are asserted here, in a real
+  // browser, against a 260-message session — 200 in the window, 60 behind it.
+  const TOTAL = 260;
+  const WINDOW = 200;
+  const BOUNDARY = `msg-${TOTAL - WINDOW}`; // the oldest message the open returns
+
+  test("opens at the newest, pages back without jumping or duplicating", async ({
+    page,
+    request,
+  }) => {
+    await importSessionApi(
+      request,
+      "Windowed Transcript",
+      Array.from({ length: TOTAL }, (_, i) => ({
+        role: "user",
+        type: "text",
+        content: `msg-${i}`,
+      }))
+    );
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Windowed Transcript" })
+      .click();
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText(
+      "Windowed Transcript"
+    );
+
+    // It opens where the conversation left off, not at its beginning.
+    await expect(
+      page.getByText(`msg-${TOTAL - 1}`, { exact: true })
+    ).toBeVisible();
+
+    // Reaching the top is what asks for more, so go there.
+    const scroller = page.locator(".chat-messages");
+    await scroller.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await expect(page.getByText(BOUNDARY, { exact: true })).toBeVisible();
+
+    // Reaching the top starts the fetch; the notice at the top of the list is
+    // the only sign anything is missing, and it goes away when nothing is. Not
+    // asserted as *present* first: the fetch can outrun the assertion, and a
+    // test that depends on losing that race is not a test.
+    await expect(page.locator(".chat-older-notice")).toHaveCount(0, {
+      timeout: 15_000,
+    });
+
+    // The message that was on screen is still on screen: prepending 60 items
+    // must not move the view (this is what `firstItemIndex` buys).
+    await expect(page.getByText(BOUNDARY, { exact: true })).toBeVisible();
+    // And it is there exactly once — the seam is where a duplicate would land.
+    expect(await page.getByText(BOUNDARY, { exact: true }).count()).toBe(1);
+
+    // The real top is now reachable, and the first message is the first one.
+    await scroller.evaluate((el) => {
+      el.scrollTop = 0;
+    });
+    await expect(page.getByText("msg-0", { exact: true })).toBeVisible();
+    expect(await page.getByText("msg-0", { exact: true }).count()).toBe(1);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Streamed assistant text (inline-steering.md §4 S1)

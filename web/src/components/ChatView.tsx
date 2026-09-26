@@ -31,6 +31,7 @@ import {
 } from "./SlashCommandMenu";
 import { Button } from "./ui/button";
 import { isSessionBusy } from "../lib/deferredFork";
+import { loadOlderMessages } from "../lib/transcript";
 
 const EMPTY_MESSAGES: Message[] = [];
 
@@ -174,13 +175,57 @@ export function ChatView({
   };
   const virtuosoRef = useRef<VirtuosoHandle>(null);
 
+  // Scroll-back over a windowed transcript (polish-2026-09.md §4 B2). An open
+  // returns the most recent 200 messages; reaching the top asks for the page
+  // before them. Prepending has to leave the view exactly where it was, which
+  // Virtuoso does through `firstItemIndex`: the list is addressed from a large
+  // start index that decreases by the number of items added in front. It resets
+  // per session, because each carries its own window.
+  const START_INDEX = 1_000_000;
+  const [firstItemIndex, setFirstItemIndex] = useState(START_INDEX);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [startedAtBottom, setStartedAtBottom] = useState(false);
+  const hasOlder = useSessionStore((s) =>
+    activeSessionId ? Boolean(s.hasMoreMessages[activeSessionId]) : false
+  );
+  useEffect(() => {
+    setFirstItemIndex(START_INDEX);
+    setLoadingOlder(false);
+    setStartedAtBottom(false);
+  }, [activeSessionId]);
+  const loadOlder = useCallback(() => {
+    const sid = activeSessionId;
+    if (!sid) return;
+    setLoadingOlder(true);
+    void loadOlderMessages(sid).then((added) => {
+      setLoadingOlder(false);
+      // Exactly the number added, in the same tick the longer list lands in,
+      // or the list jumps by however far the two disagree.
+      if (added > 0) setFirstItemIndex((i) => i - added);
+    });
+  }, [activeSessionId]);
+
   // Scroll to the bottom when switching into a session whose history has
   // already loaded. `initialTopMostItemIndex` is captured at mount time, so
   // it doesn't help when messages arrive asynchronously after the click.
   const hasMessages = messages.length > 0;
   useEffect(() => {
     if (!activeSessionId || !hasMessages) return;
-    virtuosoRef.current?.scrollToIndex({ index: "LAST", behavior: "auto" });
+    // Re-issued over the next frames rather than once. `initialTopMostItemIndex`
+    // cannot do this job — it is captured at mount, before the transcript fetch
+    // returns — and a single `scrollToIndex` can land before Virtuoso has
+    // measured the items that just arrived, which leaves the conversation open
+    // at its oldest loaded message instead of its newest.
+    let frames = 3;
+    const park = () => {
+      virtuosoRef.current?.scrollToIndex({
+        index: "LAST",
+        align: "end",
+        behavior: "auto",
+      });
+      if (--frames > 0) requestAnimationFrame(park);
+    };
+    park();
   }, [activeSessionId, hasMessages]);
 
   // Prefilled chat input on fork open (session-rewind.md §6.1). When the
@@ -414,6 +459,27 @@ export function ChatView({
   // tool). Rendered through MessageBubble so a partial answer looks exactly
   // like the finished one and doesn't jump when it's replaced — it carries no
   // `seq`, so the fork affordance stays off it.
+  // What the top of a windowed transcript says. Silent when the whole thing is
+  // loaded, so an ordinary short conversation looks exactly as it did.
+  const olderHeader = useCallback(() => {
+    if (!hasOlder) return null;
+    return (
+      <div className="chat-older-notice px-4 py-3 text-center text-xs text-muted-foreground">
+        {loadingOlder ? (
+          <span className="chat-older-loading">Loading earlier messages…</span>
+        ) : (
+          <button
+            type="button"
+            className="btn-load-older rounded-md px-2 py-1 hover:bg-accent hover:text-foreground"
+            onClick={loadOlder}
+          >
+            Load earlier messages
+          </button>
+        )}
+      </div>
+    );
+  }, [hasOlder, loadingOlder, loadOlder]);
+
   const footer = useCallback(() => {
     if (!isRunning) return null;
     if (streamingText) {
@@ -1372,9 +1438,22 @@ export function ChatView({
         data={messages}
         itemContent={renderMessage}
         initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
+        firstItemIndex={firstItemIndex}
+        // Only after the list has actually been at the bottom once. A chat
+        // mounts empty and fills in asynchronously, so `initialTopMostItemIndex`
+        // is captured before there is anything to scroll to and the effect above
+        // is what parks it at the newest message; until that has happened the
+        // list is briefly at scroll 0, where Virtuoso reports the start as
+        // reached. Unguarded, that loads a page of older messages on open —
+        // which then holds the view at the top, exactly where the user did not
+        // want to be.
+        startReached={hasOlder && startedAtBottom ? loadOlder : undefined}
+        atBottomStateChange={(atBottom) => {
+          if (atBottom) setStartedAtBottom(true);
+        }}
         followOutput="smooth"
         increaseViewportBy={{ top: 400, bottom: 400 }}
-        components={{ Footer: footer }}
+        components={{ Header: olderHeader, Footer: footer }}
       />
 
       {activeSessionId && (

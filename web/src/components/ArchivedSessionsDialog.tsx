@@ -12,6 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./ui/dialog";
+import { applyTranscript } from "../lib/transcript";
 
 const API_URL = window.location.origin;
 
@@ -32,7 +33,6 @@ export function ArchivedSessionsDialog({ open, onOpenChange }: Props) {
   const setArchived = useSessionStore((s) => s.setArchivedSessions);
   const setActiveAgentId = useSessionStore((s) => s.setActiveAgentId);
   const setActiveSessionId = useSessionStore((s) => s.setActiveSessionId);
-  const setMessages = useSessionStore((s) => s.setMessages);
   const setPendingQueue = useSessionStore((s) => s.setPendingQueue);
   const setPendingQuestions = useSessionStore((s) => s.setPendingQuestions);
 
@@ -73,14 +73,9 @@ export function ArchivedSessionsDialog({ open, onOpenChange }: Props) {
       ]);
       if (detailRes.ok) {
         const data = await detailRes.json();
-        setMessages(s.id, data.messages || []);
+        applyTranscript(s.id, data);
         setPendingQueue(s.id, data.pending_queue || []);
         setPendingQuestions(s.id, data.pending_questions || []);
-        if (typeof data.next_message_seq === "number") {
-          useSessionStore
-            .getState()
-            .setLastAppliedSeq(s.id, data.next_message_seq - 1);
-        }
       }
       if (bgRes.ok) {
         useSessionStore.getState().setBgTasks(s.id, await bgRes.json());

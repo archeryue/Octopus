@@ -183,6 +183,27 @@ interface SessionStore {
   messages: Record<string, Message[]>;
   addMessage: (sessionId: string, msg: Message) => void;
   setMessages: (sessionId: string, msgs: Message[]) => void;
+  // The transcript arrives windowed to the most recent messages
+  // (polish-2026-09.md §4 B2): `oldestSeq` is the lowest seq held for a
+  // session and the cursor the next page asks from, `hasMoreMessages` whether
+  // there is anything before it. Both come from the snapshot, so a session
+  // whose whole transcript fits has `hasMoreMessages: false` and never asks.
+  oldestSeq: Record<string, number | null>;
+  hasMoreMessages: Record<string, boolean>;
+  setMessageWindow: (
+    sessionId: string,
+    oldestSeq: number | null,
+    hasMore: boolean
+  ) => void;
+  // Older messages, oldest-first, in front of what is already held. Returns
+  // how many were actually added, which is what the chat list needs to keep
+  // its scroll position across the prepend.
+  prependMessages: (
+    sessionId: string,
+    msgs: Message[],
+    oldestSeq: number | null,
+    hasMore: boolean
+  ) => number;
 
   // Per-session WS-event dedup baseline. Set when a snapshot is loaded
   // (`/api/sessions/{id}` returns `next_message_seq`); the WS handler
@@ -358,7 +379,7 @@ export interface Delegation {
   error: string | null;
 }
 
-export const useSessionStore = create<SessionStore>((set) => ({
+export const useSessionStore = create<SessionStore>((set, get) => ({
   token: localStorage.getItem("octopus_token") || "",
   setToken: (t) => {
     localStorage.setItem("octopus_token", t);
@@ -487,6 +508,47 @@ export const useSessionStore = create<SessionStore>((set) => ({
       // contain is stale by definition.
       streamingText: dropKey(s.streamingText, sessionId),
     })),
+
+  oldestSeq: {},
+  hasMoreMessages: {},
+  setMessageWindow: (sessionId, oldestSeq, hasMore) =>
+    set((s) => ({
+      oldestSeq: { ...s.oldestSeq, [sessionId]: oldestSeq },
+      hasMoreMessages: { ...s.hasMoreMessages, [sessionId]: hasMore },
+    })),
+  prependMessages: (sessionId, msgs, oldestSeq, hasMore) => {
+    // A page that overlaps what we hold is dropped rather than merged: two
+    // copies of one message is the failure this whole path is most likely to
+    // produce, and seq is the identity that rules it out.
+    const floor = get().oldestSeq[sessionId];
+    const fresh = msgs.filter((m) => {
+      // No seq on either side means nothing to compare, so trust the page; the
+      // server pages by seq, so that only happens on synthetic messages.
+      if (typeof m.seq !== "number" || typeof floor !== "number") return true;
+      return m.seq < floor;
+    });
+    if (fresh.length === 0) {
+      set((cur) => ({
+        hasMoreMessages: { ...cur.hasMoreMessages, [sessionId]: false },
+      }));
+      return 0;
+    }
+    // The tail is read inside the updater, not captured before it: a message
+    // can land from the WebSocket while the page is in flight, and prepending
+    // to a stale copy would lose it.
+    set((cur) => ({
+      messages: {
+        ...cur.messages,
+        [sessionId]: [...fresh, ...(cur.messages[sessionId] || [])],
+      },
+      oldestSeq: {
+        ...cur.oldestSeq,
+        [sessionId]: oldestSeq ?? fresh[0].seq ?? null,
+      },
+      hasMoreMessages: { ...cur.hasMoreMessages, [sessionId]: hasMore },
+    }));
+    return fresh.length;
+  },
 
   // Text the model is producing right now, accumulated from `assistant_delta`
   // frames. Deliberately never persisted and never part of `messages`: the

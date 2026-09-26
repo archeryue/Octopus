@@ -453,6 +453,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/sessions/{session_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Older Messages
+         * @description The page of transcript immediately before `before_seq`, oldest-first.
+         *
+         *     Scroll-back for the windowed open above. Live and archived sessions read the
+         *     same rows — the transcript lives in the database either way — so this does
+         *     not care which the id refers to; it only refuses an id with no rows at all,
+         *     which is the same 404 as opening it.
+         */
+        get: operations["older_messages_api_sessions__session_id__messages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/sessions/{session_id}/fork-preview": {
         parameters: {
             query?: never;
@@ -2408,6 +2433,28 @@ export interface components {
             seq?: number | null;
         };
         /**
+         * MessagePage
+         * @description A page of older transcript, oldest-first (polish-2026-09.md §4 B2).
+         *
+         *     `oldest_loaded_seq` is the lowest seq in this page and the cursor for the
+         *     next one; `has_more_messages` says whether anything is left before it, so a
+         *     client never has to guess from a short page.
+         */
+        MessagePage: {
+            /**
+             * Messages
+             * @default []
+             */
+            messages: components["schemas"]["MessageContent"][];
+            /** Oldest Loaded Seq */
+            oldest_loaded_seq?: number | null;
+            /**
+             * Has More Messages
+             * @default false
+             */
+            has_more_messages: boolean;
+        };
+        /**
          * MessageRole
          * @enum {string}
          */
@@ -2601,6 +2648,13 @@ export interface components {
              * @default []
              */
             messages: components["schemas"]["MessageContent"][];
+            /** Oldest Loaded Seq */
+            oldest_loaded_seq?: number | null;
+            /**
+             * Has More Messages
+             * @default false
+             */
+            has_more_messages: boolean;
             /**
              * Pending Queue
              * @default []
@@ -4048,6 +4102,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SessionDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    older_messages_api_sessions__session_id__messages_get: {
+        parameters: {
+            query: {
+                /** @description Return messages with seq < this */
+                before_seq: number;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MessagePage"];
                 };
             };
             /** @description Validation Error */
