@@ -1,9 +1,13 @@
-"""Access-token rotation (docs/plans/token-rotation.md).
+"""The access token: who holds it, and changing it.
 
-One route, because rotating the token is one operation: the secrets in the
-database are encrypted with a key derived from it, so re-keying them, changing
-what the server checks and changing what clients send all have to happen
-together or not at all.
+Rotation is one route because it is one operation (docs/plans/token-rotation.md):
+the secrets in the database are encrypted with a key derived from the token, so
+re-keying them, changing what the server checks and changing what clients send
+all have to happen together or not at all.
+
+`GET /identity` is here for the same reason it exists at all — the sidebar used
+to render the token as the account handle, so the credential was on screen for
+anyone who could see the screen. It answers with a label instead.
 """
 
 from __future__ import annotations
@@ -13,8 +17,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import verify_token
+from ..config import settings
 from ..deps import SessionMgr
-from ..models import TokenRotateRequest, TokenRotateResponse
+from ..models import IdentityResponse, TokenRotateRequest, TokenRotateResponse
 from ..token_rotation import TokenRotationError, rotate_auth_token
 
 logger = logging.getLogger(__name__)
@@ -27,6 +32,17 @@ _db = None
 def set_db(db) -> None:
     global _db
     _db = db
+
+
+@router.get("/identity", response_model=IdentityResponse)
+async def identity(_: str = Depends(verify_token)) -> IdentityResponse:
+    """The operator's handle, for the sidebar.
+
+    Authenticated, so it tells nothing to anyone not already holding the token,
+    and it returns `OCTOPUS_USER_LABEL` rather than the token, which is the
+    whole point: the account row is visible on screen at all times.
+    """
+    return IdentityResponse(label=settings.user_label)
 
 
 @router.post("/rotate", response_model=TokenRotateResponse)

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   IconArchive,
   IconCopy,
@@ -19,7 +20,13 @@ import {
  * The design gives it an identity row — initial tile, display name, handle in
  * mono — rather than a settings gear, and it stays the single home for
  * app-level actions: there are no gear icons anywhere else in the sidebar.
- * In single-user mode the token IS the identity, so it's the handle.
+ *
+ * The handle is a **label** (`OCTOPUS_USER_LABEL`, via `/api/auth/identity`),
+ * never the token. It used to be the token, on the reasoning that in
+ * single-user mode the token is the identity — but the account row is on screen
+ * permanently, so that put the credential in every screenshot, screen share and
+ * over-the-shoulder glance. Copying it is still one click; *displaying* it is
+ * not something the user ever asked for.
  */
 export function SidebarAccount({
   onSignOut,
@@ -34,11 +41,32 @@ export function SidebarAccount({
   const activeAgentId = useSessionStore((s) => s.activeAgentId);
   const openAgentForm = useSessionStore((s) => s.openAgentForm);
 
-  const token =
-    typeof localStorage !== "undefined"
-      ? localStorage.getItem("octopus_token") || ""
-      : "";
-  const initial = (token[0] || "O").toUpperCase();
+  const token = useSessionStore((s) => s.token);
+  const [label, setLabel] = useState("");
+
+  // Only this row needs it, so it asks for it here rather than through the
+  // store. Re-asked when the token changes, which includes a rotation.
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    fetch(`${window.location.origin}/api/auth/identity`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (alive && data && typeof data.label === "string") setLabel(data.label);
+      })
+      .catch(() => {
+        // An unreachable server is already visible everywhere else; the handle
+        // just stays generic rather than throwing inside the sidebar.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+
+  const handle = token ? label || "signed in" : "not signed in";
+  const initial = ((token && label[0]) || "O").toUpperCase();
 
   const editActiveAgent = () => {
     const active =
@@ -64,7 +92,7 @@ export function SidebarAccount({
               Octopus
             </span>
             <span className="account-handle mt-0.5 block truncate font-mono text-[10px] leading-tight text-gray-600">
-              {token || "not signed in"}
+              {handle}
             </span>
           </span>
         </button>

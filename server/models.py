@@ -464,6 +464,12 @@ class AgentUpdate(BaseModel):
     subagents: list[SubagentDefinition] | None = None
 
 
+class IdentityResponse(BaseModel):
+    """Who the account row says you are — a label, deliberately not the token."""
+
+    label: str
+
+
 class TokenRotateRequest(BaseModel):
     """Change the access token (token-rotation.md)."""
 

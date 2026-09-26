@@ -3,6 +3,12 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     auth_token: str = "changeme"
+    # The handle the sidebar's account row shows. It used to show `auth_token`
+    # itself — on the reasoning that in single-user mode the token *is* the
+    # identity — which meant anyone who saw the screen had the credential: a
+    # screenshot, a shared window, someone walking past. A label identifies the
+    # operator without being a secret, so it can be read out loud.
+    user_label: str = "octopus"
     host: str = "0.0.0.0"
     port: int = 8000
     default_working_dir: str = "."

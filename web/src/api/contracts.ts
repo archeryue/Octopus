@@ -1238,6 +1238,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/identity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Identity
+         * @description The operator's handle, for the sidebar.
+         *
+         *     Authenticated, so it tells nothing to anyone not already holding the token,
+         *     and it returns `OCTOPUS_USER_LABEL` rather than the token, which is the
+         *     whole point: the account row is visible on screen at all times.
+         */
+        get: operations["identity_api_auth_identity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/rotate": {
         parameters: {
             query?: never;
@@ -2379,6 +2403,14 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * IdentityResponse
+         * @description Who the account row says you are — a label, deliberately not the token.
+         */
+        IdentityResponse: {
+            /** Label */
+            label: string;
         };
         /** ImportSessionRequest */
         ImportSessionRequest: {
@@ -5645,6 +5677,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    identity_api_auth_identity_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityResponse"];
                 };
             };
         };

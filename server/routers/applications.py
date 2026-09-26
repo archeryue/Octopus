@@ -18,6 +18,7 @@ import json
 import mimetypes
 import os
 from collections.abc import AsyncIterator
+from urllib.parse import unquote
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -192,7 +193,14 @@ def _authorized(request: Request, app_id: str) -> bool:
         return True
     if request.query_params.get("token") == expected:
         return True
-    if request.cookies.get(APP_TOKEN_COOKIE) == expected:
+    # Percent-decoded, because the client writes the cookie with
+    # `encodeURIComponent` — it has to, or a token containing `;` or `,` would
+    # truncate the header. Starlette's cookie parser strips quoting but does not
+    # decode escapes, so a token with any character JS encodes (`@` in a real
+    # one) arrived here as `%40` and failed to match. Every token without such a
+    # character is unaffected either way, which is why this survived: it only
+    # appears the first time someone rotates to a token that has one.
+    if unquote(request.cookies.get(APP_TOKEN_COOKIE) or "") == expected:
         return True
     scoped = request.headers.get("x-octopus-app-token") or presented
     return is_app_scope_token(app_id, scoped)

@@ -273,3 +273,23 @@ async def test_the_route_refuses_a_weak_token_without_touching_anything(
     )
     assert resp.status_code == 400
     assert settings.auth_token == OLD
+
+
+@pytest.mark.asyncio
+async def test_identity_answers_a_label_and_never_the_token(client, monkeypatch):
+    """The sidebar's account row is on screen permanently.
+
+    It used to render `auth_token` as the handle, so the credential was in every
+    screenshot and screen share. This is what it reads instead: authenticated,
+    so it says nothing to anyone not already holding the token, and answering a
+    label that is safe to have on display.
+    """
+    monkeypatch.setattr(settings, "user_label", "archer")
+
+    assert (await client.get("/api/auth/identity")).status_code == 401
+
+    resp = await client.get("/api/auth/identity", headers=HEADERS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {"label": "archer"}
+    assert settings.auth_token not in resp.text

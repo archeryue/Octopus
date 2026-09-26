@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -760,6 +761,41 @@ async def test_static_accepts_query_token_and_cookie(client):
     client.cookies.set("octopus_app_token", TOKEN)
     assert (await client.get(f"/apps/{created['id']}/")).status_code == 200
     client.cookies.set("octopus_app_token", "wrong")
+    assert (await client.get(f"/apps/{created['id']}/")).status_code == 401
+    client.cookies.clear()
+
+
+@pytest.mark.asyncio
+async def test_static_cookie_survives_a_token_javascript_encodes(client, monkeypatch):
+    """A token containing `@` must still open the iframe.
+
+    The SPA writes this cookie with `encodeURIComponent`, and has to: a raw `;`
+    or `,` in the value would truncate the header. Starlette's cookie parser
+    strips quoting but does not decode percent escapes, so `@` reached the check
+    as `%40`, matched nothing, and every `/apps/*` request 401'd — the iframe,
+    its scripts and its own fetches with it.
+
+    Nothing caught it because every token in the suite, and the one on the box
+    that found it, happened to encode to itself. It appears the first time
+    someone rotates to a token that does not — which is exactly how it appeared.
+    """
+    from server.config import settings
+
+    created = await _api_create(client, name="Encoded")
+    with open(os.path.join(created["app_dir"], "index.html"), "w") as f:
+        f.write("ok")
+
+    # Any token with a character JS encodes reproduces it; never a real one.
+    rotated = "an@encoded-token!"
+    monkeypatch.setattr(settings, "auth_token", rotated)
+    # Character for character what the browser stores: encodeURIComponent
+    # leaves !*()' alone and percent-encodes the rest.
+    encoded = quote(rotated, safe="!*()'")
+    assert encoded != rotated, "pick a token JS actually encodes"
+
+    client.cookies.set("octopus_app_token", encoded)
+    assert (await client.get(f"/apps/{created['id']}/")).status_code == 200
+    client.cookies.set("octopus_app_token", quote("nope@wrong", safe="!*()'"))
     assert (await client.get(f"/apps/{created['id']}/")).status_code == 401
     client.cookies.clear()
 
