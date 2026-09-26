@@ -2,7 +2,8 @@
 
 A polish pass over Octopus: nothing here is a new product capability except
 the monitor. The rest pays down debts that had accumulated under seven months
-of fast feature work — and two of them turned out to be live defects.
+of fast feature work — and five of those debts turned out to be live defects,
+each one found by a gate that had not existed the day before.
 
 Branch `polish-2026-09`, 16 commits, all gates green — and the whole plan,
 §10 items 1 through 11, now done.
@@ -351,6 +352,16 @@ plan cannot be added without appearing in the index.
 
 ### Two smaller ones
 
+**The scaffolding was demolished on schedule.** `scripts/measure-footprint.py`
+was written for B1 with a stated demolition date — §10 item 3: *deleted, or
+absorbed into G's periodic sampler, once G lands*. G landed, and the sampler
+measures exactly what the script did and more: PSS from `smaps_rollup` rather
+than RSS, split into `server_pss_mb` / `engine_pss_mb` / `mcp_sidecar_pss_mb`,
+alongside `mcp_sidecar_count` — continuously, instead of when someone remembers
+to run a script. So the script is gone, and the one place in `server/` that
+cited it now cites the live gauge. A throwaway earns its place in a no-shortcuts
+plan only if the throwing away actually happens.
+
 **C3**: the httpx per-request `cookies=` deprecation is gone — the cookie is set
 on the client, which is also a truer model of what a browser does.
 
@@ -399,45 +410,86 @@ months stale and missing five subsystems — the whole Applications line.
 |---|---|
 | ruff | clean |
 | mypy | clean |
-| pytest (hermetic) | **1,228 pass** (from 1,174) |
+| pytest (hermetic) | **1,162 pass**, 0 fail |
+| pytest (real CLI) | **34 pass**, 0 fail — both backends, live models |
 | eslint | clean |
-| vitest | **202 pass** (from 195) |
+| vitest | **210 pass** (from 195) |
 | tsc | clean |
 | generated contracts | in sync |
-| Playwright (monitor) | **5 pass**, real browser |
+| Playwright | **83 pass** (46 UI, 37 real-LLM), real browser |
+
+The backend count *fell*, from 1,174, and the arithmetic is worth stating:
+removing the Telegram bridge took 85 tests with it, and this pass added 73, so
+1,174 − 85 + 73 = 1,162 across 1,196 collected. Nothing was skipped or
+deselected to get there.
 
 Plus, outside the gates: B1 driven end-to-end against a real `claude` CLI
 (tool names preserved, exit 0), A3 rehearsed against a copy of the production
 database, and the Monitor page verified visually in a browser.
 
-### One open item in the real-CLI tier
+### The real-CLI tier's cross-test failure, and what it actually was
 
-Five of the 34 real-model tests **pass individually and fail when another
-`claude` test has already run in the same pytest process**: the two delegation
-cases that need a child CLI to call a tool, and the three schedule-tool cases.
-The CLI reports every namespace as `failed` (which Octopus now logs — it used to
-be visible only inside the model's reply).
+Five of the 34 real-model tests passed individually and failed whenever another
+`claude` test had already run in the same pytest process: the two delegation
+cases whose child has to call a tool, and the three schedule-tool cases. The CLI
+reported every namespace as unreachable — which Octopus now logs, where before it
+was visible only inside the model's reply — dropped their tools, and the test
+then read exactly like a model ignoring its instructions.
 
-What has been *ruled out*, each by measurement rather than reasoning:
+It was not in the product path, and not in the CLI. It was one line of
+process-global state in `sse_starlette`:
 
-| Suspect | Finding |
-|---|---|
-| the server | three sequential servers, five namespaces each: 0.01 s handshakes, real tool calls answered |
-| the port in argv | matches the test's server, verified from the spawn log |
-| the CLI itself | three sequential `claude --print` runs against one live mount: all five connected every time |
-| host MCP config leaking in | real, and fixed (`--strict-mcp-config`); the failure survives it |
-| a moving port between tests | fixed port tried; no difference |
-| memory pressure | 11.8 GB free, 16 cores, at the moment of failure |
-| leftover test CLIs | swept after every real test now; none survive |
+1. Every MCP response is an `EventSourceResponse`, `initialize` included, and
+   sse_starlette ends one immediately if it believes the process is shutting
+   down.
+2. That belief is a **class attribute** — `AppStatus.should_exit` — latched by
+   two independent routes: sse_starlette patches `uvicorn.Server.handle_exit` at
+   import, and its per-loop watcher polls whichever server owns the SIGTERM
+   handler, found through `signal.getsignal(SIGTERM).__self__`.
+3. `Server.serve()` installs that handler itself, inside `capture_signals()`, so
+   a test server is in reach however it was configured — the long-standing
+   `install_signal_handlers = lambda: None` in the helper never mattered.
+4. Nothing resets the latch. The first host a test stops therefore poisons the
+   rest of the process: every later namespace call gets an HTTP 200 and then a
+   truncated body, forever.
 
-So the product path is verified three independent ways — the hermetic transport
-test, a real `claude`, and a real `codex` both calling `mcp__schedule__*` — and
-what is left is state inside the CLI's own process that we cannot read from here.
-The next step is its `--debug` MCP log, captured from inside the turn engine
-rather than from a standalone invocation, which is where the difference must be.
+Production is untouched by it — one server, stopped once, as the process exits.
+Only a suite that stops servers while it keeps running can reach it, which is
+why the hermetic transport tests and every standalone real run were green
+throughout.
 
-Recorded rather than papered over: these tests assert something true, they are
-not marked skip, and the tier is run by hand, not by a gate.
+The measurement that closed it is eight lines: stand a host up, ask one
+namespace to `initialize`, stop it, repeat. Rounds 0–2 answer in full; from
+round 3 on, every round gets `200` and an incomplete chunked body — no CLI
+anywhere, fresh `FastMCP` instances each round, every session manager reporting
+`started`, and no exception on the server side. Round 3 rather than round 0
+because the watcher polls at half-second intervals and the rounds take ~0.3 s,
+which is the whole reason this looked like a flake for so long. Printing the
+latch alongside each round names the cause outright, and clearing it between
+rounds takes 5 bad rounds out of 8 to none.
+
+So `tests/callback_api.py` now takes the latch away from the library: automatic
+draining off, which makes both of sse_starlette's routes inert, and
+`CallbackApi.stop()` does the draining itself — set on the way down so uvicorn's
+graceful shutdown isn't left waiting on an open stream, cleared once the server
+is gone so the next host serves. Two further things guard it:
+
+* the port is not handed out until every namespace has answered *in full*
+  (`_await_namespaces`), so a regression is a named failure at setup on the
+  namespace that broke, rather than a 25-second CLI timeout and a confusing
+  assertion further down;
+* a hermetic test — `test_a_second_host_in_the_process_still_serves` — runs two
+  hosts in sequence and sets the latch between them by hand. Setting it is not
+  cheating: it is precisely what the watcher does within half a second of the
+  first host stopping, and doing it outright is what makes the test fail on
+  every regression instead of whenever the timing lines up. Neutralise the fix
+  and it fails with `ASGI callable returned without completing response`.
+
+Two real bugs were found while chasing this and are fixed on their own merits,
+though neither was the cause: a held CLI process could be reused after its MCP
+endpoint had moved (`spawn_signature` now covers the callback environment), and
+the host's own `~/.claude.json` MCP servers were being inherited by every agent
+turn (`--strict-mcp-config`).
 
 ---
 

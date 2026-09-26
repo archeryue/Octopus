@@ -2,8 +2,9 @@
 
 Each namespace used to be a subprocess the CLI launched over stdio: seven per
 session, ~39 MB PSS each, ~85% of Octopus's own memory and ~247 ms of import
-cost apiece on the session-start path (docs/plans/polish-2026-09.md §4 B1,
-measured by scripts/measure-footprint.py). The tool definitions are unchanged;
+cost apiece on the session-start path (docs/plans/polish-2026-09.md §4 B1;
+`mcp_sidecar_count` on the monitor page is now the live version of that
+measurement, and reads 0). The tool definitions are unchanged;
 only the transport is. Both CLIs speak streamable-HTTP, and because each
 namespace keeps its own mount, the config key — and therefore every
 `mcp__<key>__<tool>` name — is preserved exactly.

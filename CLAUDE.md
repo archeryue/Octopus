@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,194 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,196 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1,160 tests, ~34 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,162 tests, ~34 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -72,7 +72,7 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1160 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1162 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
 | Frontend unit | vitest | `cd web && bun run test` | 210 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
 | E2E | Playwright | `cd web && bun run test:e2e` | 83 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (46, ~40 s) skips the `@llm` half; `:llm` (37, ~4 min) is the rest. |

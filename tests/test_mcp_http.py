@@ -54,8 +54,16 @@ class TestMountedNamespaces:
     def test_every_namespace_is_mounted(self):
         from server.main import _mcp_mounts
 
-        for name in ("bg", "ask", "ask_agent", "research", "schedule",
-                     "github", "gmail", "custom"):
+        for name in (
+            "bg",
+            "ask",
+            "ask_agent",
+            "research",
+            "schedule",
+            "github",
+            "gmail",
+            "custom",
+        ):
             assert mcp_http.mount_path(name) in _mcp_mounts
 
     def test_connectors_share_a_mount_per_kind(self):
@@ -208,3 +216,60 @@ class TestServedToolCalls:
             assert tools, f"{name} registered no tools"
             for tool_name, tool in tools.items():
                 assert tool.is_async, f"mcp__{name}__{tool_name} runs on the loop"
+
+    @pytest.mark.asyncio
+    async def test_a_second_host_in_the_process_still_serves(self):
+        """Stopping one host must not take the transport down with it.
+
+        `sse_starlette` decides whether to cut an SSE stream short from a
+        process-global class attribute that latches on the first uvicorn server
+        to stop, and every MCP response is an SSE stream — so a suite that
+        stands hosts up and tears them down used to poison itself: the second
+        host answered HTTP 200 and then a truncated body, on every namespace,
+        for the rest of the process. Under a real CLI that reads as a turn in
+        which the model had no tools, which is a long way from the cause.
+
+        Two hosts in sequence, both asked for a complete answer, with the
+        latch set between them by hand. Setting it is not cheating: it is
+        precisely what sse_starlette's own watcher does within half a second of
+        the first host stopping. Doing it here rather than waiting for the tick
+        is what makes this test fail on a regression every time instead of
+        whenever the timing lines up.
+        """
+        import httpx
+        from sse_starlette.sse import AppStatus
+
+        from server.routers import schedules as schedules_routes
+        from tests.callback_api import start_callback_api
+
+        for round_ in range(2):
+            if round_:
+                AppStatus.should_exit = True
+            api = await start_callback_api(schedules_routes.session_router)
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    reply = await client.post(
+                        f"http://127.0.0.1:{api.port}/mcp/bg/mcp",
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": 1,
+                            "method": "initialize",
+                            "params": {
+                                "protocolVersion": "2025-03-26",
+                                "capabilities": {},
+                                "clientInfo": {"name": "t", "version": "1"},
+                            },
+                        },
+                        headers={
+                            "Authorization": f"Bearer {mint('s-1')}",
+                            "Accept": "application/json, text/event-stream",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                assert reply.status_code == 200, (round_, reply.status_code)
+                assert b"serverInfo" in reply.content, (round_, reply.content)
+            finally:
+                await api.stop()
+            # And a stopped host leaves the process able to serve, which is the
+            # contract the rest of the real-CLI tier rests on.
+            assert AppStatus.should_exit is False
