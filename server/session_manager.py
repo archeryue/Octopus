@@ -226,8 +226,9 @@ class Session:
     # created post-refactor; left optional on the dataclass so legacy
     # in-memory construction paths don't break mid-migration.
     agent_id: str | None = None
-    # Who created this session: 'user' | 'schedule' | 'bridge' | 'delegation'.
-    # Scheduler fires auto-archive on idle (§5.6); bridge/user sessions
+    # Who created this session: 'user' | 'schedule' | 'delegation' | 'fork' |
+    # 'application' | 'app'. Scheduler fires auto-archive on idle (§5.6); user
+    # sessions
     # persist. 'delegation' sessions auto-archive on idle too — they're a
     # transient child spawned by an agent-to-agent ask_agent call
     # (agent-collaboration.md §5.2).
@@ -1034,9 +1035,7 @@ class SessionManager:
         `_forking` guard rejects any new turn while a fork is in flight), so the
         teardown below is defensive. Exactly like `archive_session`'s tail:
         schedules anchored on the parent follow onto the live successor (the
-        fork), and any bridge chat stuck to the parent has its sticky pointer
-        cleared so the next inbound message opens a fresh thread (a DB-only
-        repoint would diverge from the bridge's in-memory binding cache)."""
+        fork)."""
         if parent._inner_task and not parent._inner_task.done():
             parent._inner_task.cancel()
         if parent._active_task and not parent._active_task.done():
@@ -1060,7 +1059,6 @@ class SessionManager:
             if self._schedule_runner is not None:
                 for row in repointed:
                     await self._schedule_runner.reschedule(row)
-            await self.db.clear_bridge_sticky_for_session(parent.id)
 
     async def fork_preview(
         self, parent_id: str, rewind_to_msg_seq: int
@@ -1225,10 +1223,8 @@ class SessionManager:
         sessions list. The new session starts with no `claude_session_id`
         so the CLI begins a clean conversation, under the same agent.
 
-        Schedules and bridges are owned by the *Agent* now, not the
-        session, so there is nothing to repoint (agent-refactor.md §5.2).
-        The only bridge-aware step: if this session was some chat's sticky
-        pointer, null it so the next inbound message opens a fresh thread.
+        Schedules are owned by the *Agent* now, not the session, so there
+        is nothing to repoint (agent-refactor.md §5.2).
 
         If the old session has a running turn, it's interrupted first.
         """
@@ -1272,19 +1268,17 @@ class SessionManager:
             backend=old.backend,
         )
 
-        # Schedules/bridges are agent-owned, so ownership needs no repoint.
+        # Schedules are agent-owned, so ownership needs no repoint.
         # But a schedule created from this session (origin_session_id == old.id)
         # should follow the live successor thread, otherwise its runs fall back
         # to throwaway sessions. Move them onto `new`, then re-register the live
-        # jobs so the next fire targets the successor, not the archived session.
-        # Also clear any sticky bridge pointer aimed at the old session so the
-        # next inbound message opens a fresh thread.
+        # jobs so the next fire targets the successor, not the archived
+        # session.
         if self.db:
             repointed = await self.db.repoint_schedules_origin(old.id, new.id)
             if self._schedule_runner is not None:
                 for row in repointed:
                     await self._schedule_runner.reschedule(row)
-            await self.db.clear_bridge_sticky_for_session(old.id)
 
         await self._broadcast(
             {
@@ -1339,7 +1333,6 @@ class SessionManager:
             return False  # still working — don't yank it
         if self.db:
             await self.db.update_session_field(session_id, archived=True)
-            await self.db.clear_bridge_sticky_for_session(session_id)
         self.sessions.pop(session_id, None)
         await self._broadcast(
             {

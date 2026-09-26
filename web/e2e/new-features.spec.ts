@@ -1141,7 +1141,7 @@ test.describe("Real CLI end-to-end @llm", () => {
 //   3. (new feature) if no human answers within
 //      OCTOPUS_ASK_USER_QUESTION_TIMEOUT_SECONDS, the server should
 //      synthesize an "act autonomously" reply so async-driven sessions
-//      (bridges, schedules) can't wedge forever.
+//      (scheduled runs) can't wedge forever.
 //
 // Each test sends a deterministic prompt that nudges the real model to
 // invoke AskUserQuestion immediately — same trick the older

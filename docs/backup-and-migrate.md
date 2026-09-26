@@ -15,7 +15,7 @@ current list before trusting this one.
 `db_path` defaults to the *relative* path `octopus.db`, so it lands wherever
 the process was started from (for a systemd unit, its `WorkingDirectory`). It
 holds sessions, messages, agents, schedules, credentials, connector
-installations, applications and bridge mappings — everything the UI shows. Find
+installations and applications — everything the UI shows. Find
 it with:
 
 ```bash

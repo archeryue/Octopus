@@ -22,7 +22,6 @@ from .app_backends import backend_supervisor
 from .applications import application_manager
 from .auth import verify_token
 from .bg_tasks import bg_task_manager
-from .bridges.manager import BridgeManager
 from .config import settings
 from .connector_manager import ConnectorManager
 from .database import Database
@@ -69,25 +68,6 @@ async def lifespan(app: FastAPI):
     db = Database(settings.db_path)
     await db.initialize()
     await session_manager.initialize(db)
-
-    # Initialize bridge manager
-    bridge_manager = BridgeManager(session_manager, db)
-    await bridge_manager.initialize()
-    await bridge_manager.register_broadcast()
-
-    if settings.telegram_bot_token:
-        from .bridges.telegram import TelegramBridge
-
-        telegram = TelegramBridge(
-            bridge_manager,
-            token=settings.telegram_bot_token,
-            allowed_chat_ids=settings.telegram_allowed_chat_ids or None,
-            api_base_url=settings.telegram_api_base_url,
-        )
-        bridge_manager.register_bridge(telegram)
-
-    await bridge_manager.start_all()
-    app.state.bridge_manager = bridge_manager
 
     # Initialize scheduler
     schedule_runner = ScheduleRunner(session_manager, db)
@@ -205,8 +185,6 @@ async def lifespan(app: FastAPI):
     application_manager.shutdown()
     delegation_manager.shutdown()
     await schedule_runner.shutdown()
-    await bridge_manager.stop_all()
-    await bridge_manager.unregister_broadcast()
     await db.close()
 
 
@@ -304,11 +282,7 @@ async def list_backends(_: str = Depends(verify_token)):
 
 @app.get("/health")
 async def health():
-    bridges_health = {}
-    if hasattr(app.state, "bridge_manager"):
-        for name, bridge in app.state.bridge_manager._bridges.items():
-            bridges_health[name] = {"healthy": bridge.healthy}
-    return {"status": "ok", "bridges": bridges_health}
+    return {"status": "ok"}
 
 
 # Serve built frontend as static files (SPA catch-all).

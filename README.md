@@ -2,7 +2,7 @@
 
 **Octopus is a personal agent platform.** It turns **Claude Code** and **Codex**
 into durable, always-on AI agents that run on your own machine and work for you
-around the clock — reachable from your phone, any browser, or Telegram.
+around the clock — reachable from your phone or any browser.
 
 Each agent keeps its own persistent setup (prompt, model, tools, schedules,
 connectors), keeps work running in the background across turns, and can reach
@@ -13,8 +13,8 @@ Claude and ChatGPT subscriptions (or an API key you attach).
 ## How It Works
 
 ```
-Phone / Browser / Telegram
-  → REST + WebSocket / bridge → FastAPI (web UI + API on one port)
+Phone / Browser
+  → REST + WebSocket → FastAPI (web UI + API on one port)
       → Agent  (durable: prompt · model · credential · tool policy · connectors)
           → backend:  Claude Code   or   Codex      (local CLI subprocess, stream-json)
           → MCP tools: bg · ask · ask_agent · connectors (GitHub / Gmail / custom)
@@ -24,11 +24,11 @@ Phone / Browser / Telegram
 
 - **Agents** — Each agent is a durable assistant with its own system prompt,
   model, credential, tool policy, and connectors. Agents own their sessions,
-  schedules, and bridge bindings; edit an agent and its open sessions pick up
+  and schedules; edit an agent and its open sessions pick up
   the change on the next turn. The sidebar is two-pane: pick an agent, see its
   sessions.
 - **Two backends** — Run an agent on **Claude Code** or **Codex**, selectable
-  per session. Same chat UX, schedules, bridges, and in-app tools either way.
+  per session. Same chat UX, schedules, and in-app tools either way.
 - **Connectors** — Give agents OAuth access to third-party APIs as tools, set
   up entirely from the browser: built-in **GitHub** and **Gmail**, or define a
   **custom** connector for any OAuth2 API. Enabled per agent; client config +
@@ -41,11 +41,6 @@ Phone / Browser / Telegram
   port; reach it from any browser or phone. `octopus serve --tunnel` gives
   instant public HTTPS via Cloudflare Tunnel. Token auth; HTTPS/WSS behind
   tunnels and reverse proxies.
-- **Telegram** — Drive agents from a Telegram bot: each chat binds to an agent
-  with a sticky session, `/sessions` lists threads as tappable switch buttons,
-  and chats are **quiet by default** (only the agent's replies reach you —
-  `/verbose` to also see tool activity). Allow/Deny tool-approval buttons;
-  per-bridge status in `/health`.
 - **Background & scheduled work** — Agents fire off shell commands that run in
   the background **across turns** (the result arrives as a follow-up turn), and
   recurring scheduled prompts run per agent into fresh, auto-archiving sessions.
@@ -87,8 +82,7 @@ Phone / Browser / Telegram
   model call); fuzzy references like `the readme` are resolved by a
   one-shot model call that reads recent conversation. Browser-only by
   design — the agent never opens files on its own, since it can't tell
-  whether anyone is at the screen. Telegram intercepts `/showme` with a
-  "browser-only" notice.
+  whether anyone is at the screen.
 - **Built for long sessions** — Real-time WebSocket streaming with collapsible
   tool blocks; work keeps running if the browser disconnects and re-syncs on
   reconnect (with a `POST /api/sessions/{id}/reset` escape hatch); mid-turn
@@ -186,7 +180,7 @@ aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
 .venv/bin/pytest tests/ -v        # 882 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
 cd web && bun run test            # 84 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 67 Playwright e2e tests (app · handoff/pull · telegram · agents · connectors · agent-collaboration · real-CLI). Split into `:fast` (35 UI-only, ~16s) and `:llm` (32 real Claude/Codex, ~3min) for dev iteration.
+cd web && bun run test:e2e        # Playwright e2e (app · handoff/pull · agents · connectors · applications · monitor · agent-collaboration · real-CLI). Split into `:fast` (UI-only) and `:llm` (real Claude/Codex) for dev iteration.
 ```
 
 ### Pre-commit hooks (optional)

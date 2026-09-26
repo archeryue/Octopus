@@ -1322,12 +1322,11 @@ async def test_archive_hides_old_session_from_list_but_keeps_db_row(manager):
 
 
 @pytest.mark.asyncio
-async def test_archive_leaves_agent_schedules_and_nulls_bridge_sticky(manager):
-    """Schedule/bridge *ownership* is agent-scoped (agent-refactor.md §5.2), so
-    archiving a session doesn't change a schedule's owning agent (the schedule
+async def test_archive_leaves_agent_schedules_alone(manager):
+    """Schedule *ownership* is agent-scoped (agent-refactor.md §5.2), so
+    archiving a session doesn't change a schedule's owning agent. The schedule
     here has no origin session, so it isn't repointed either — that path is
-    covered by test_archive_repoints_origin_session_schedules). The only
-    bridge-aware step: a sticky pointer at the archived session is nulled."""
+    covered by test_archive_repoints_origin_session_schedules."""
     old = await _new(manager, name="Auto", working_dir="/tmp")
     agent_id = old.agent_id
     await manager.db.save_schedule(
@@ -1338,20 +1337,12 @@ async def test_archive_leaves_agent_schedules_and_nulls_bridge_sticky(manager):
         interval_seconds=300,
         created_at="2026-01-01T00:00:00+00:00",
     )
-    await manager.db.save_bridge_mapping(
-        platform="telegram", chat_id="42", agent_id=agent_id, session_id=old.id
-    )
-
     new = await manager.archive_session(old.id)
 
     # Schedule still owned by the same agent, untouched.
     schedules = await manager.db.load_schedules()
     assert schedules[0]["agent_id"] == agent_id
 
-    # Bridge keeps its agent binding; the sticky session pointer is nulled.
-    bridges = await manager.db.load_bridge_mappings()
-    assert bridges[0]["agent_id"] == agent_id
-    assert bridges[0]["session_id"] is None
     # The replacement thread is under the same agent.
     assert new.agent_id == agent_id
 

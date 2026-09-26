@@ -7,7 +7,7 @@ changes. Run from the repo root:
 
   .venv/bin/python scripts/dump-openapi.py > openapi.json
 
-Doesn't trigger the FastAPI lifespan (DB init, bridge startup, etc.);
+Doesn't trigger the FastAPI lifespan (DB init, scheduler startup, etc.);
 just walks the registered routes.
 """
 

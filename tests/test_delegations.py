@@ -1528,59 +1528,6 @@ async def test_concurrent_delegations_to_same_target(dm, mgr, db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_bridge_manager_skips_delegation_session(mgr, db, monkeypatch):
-    """The bridge broadcast filter is session-id-scoped: a chat is bound
-    to one sticky session. A delegation session has no bridge binding,
-    so events from it never reach any chat. We verify by sending a
-    broadcast for a delegation session id and confirming no bridge
-    bridge.handle_event call was attempted."""
-    from server.bridges.manager import BridgeManager
-
-    bm = BridgeManager(mgr, db)
-
-    # A chat bound to Vera but to the user-origin session of Vera, NOT
-    # to a delegation child of Vera.
-    octo = await db.get_system_agent()
-    vera = await _make_agent(db, "Vera")
-    vera_user_sess = await _make_session(mgr, vera["id"], name="vera-user")
-    # Hand-register a binding to that user session id.
-    from server.bridges.manager import ChatBinding
-
-    bm._mappings["telegram:42"] = ChatBinding(
-        agent_id=vera["id"], session_id=vera_user_sess.id, verbose=False
-    )
-
-    # Create a delegation child under Vera (parent = an Octo session).
-    octo_sess = await _make_session(mgr, octo["id"])
-    delegation_child = await mgr.create_session(
-        agent_id=vera["id"], name="d", working_dir="/tmp",
-        origin="delegation", parent_session_id=octo_sess.id,
-        delegation_request="r",
-    )
-
-    # Pretend the harness broadcast an event for the delegation child.
-    # Patch all bridge handle_event calls so we'd see any leak.
-    leaked: list[tuple[str, dict]] = []
-
-    class FakeBridge:
-        async def handle_event(self, chat_id, msg):
-            leaked.append((chat_id, msg))
-
-    bm._bridges["telegram"] = FakeBridge()
-
-    await bm._on_broadcast({
-        "type": "assistant_text", "session_id": delegation_child.id,
-        "content": "leak?",
-    })
-    assert leaked == []
-
-
-# ---------------------------------------------------------------------------
-# HTTP routes
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 async def client(db):
     """HTTP test client with the module-level singletons rebound to the

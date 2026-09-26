@@ -6,7 +6,7 @@ system works today; the rest is design history and reference.
 ## Current
 
 - **[architecture.md](architecture.md)** — the current system design: harness
-  layer, agents, sessions, backends, MCP tools, connectors, bridges, the
+  layer, agents, sessions, backends, MCP tools, connectors, the
   WebSocket protocol, the data model, and key decisions. The doc to read first.
 - **[connectors-setup.md](connectors-setup.md)** — user how-to for setting up
   GitHub / Gmail / custom OAuth connectors entirely from the browser.

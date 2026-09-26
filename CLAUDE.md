@@ -64,8 +64,7 @@ You MUST verify your changes before considering them done:
    `claude` / `codex` turn carries `@llm` in its describe title; the
    `:fast` script uses `--grep-invert @llm`. `codex.spec.ts` needs a
    signed-in `codex` (`codex login --device-auth`); a lapsed login fails
-   it rather than hiding it. Telegram bridge tests have their own config
-   and run via `test:e2e:bridge`.
+   it rather than hiding it.
 
 **Zero test failures are acceptable.** All tests must pass before committing. If a test fails, investigate and fix it — do not ignore, skip, or dismiss any failure as "flaky" or "pre-existing".
 
@@ -73,10 +72,10 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1174 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, bridges, delegations, applications, scheduler, research, token rotation. No CLI, no network. ~34 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1174 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
 | Frontend unit | vitest | `cd web && bun run test` | 195 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 77 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, Telegram bridge. `:fast` (40, ~30 s) skips the `@llm` half; `:llm` (37, ~3 min) is the rest. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 77 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (40, ~30 s) skips the `@llm` half; `:llm` (37, ~3 min) is the rest. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
@@ -97,7 +96,6 @@ every session's context to try.
 - `server/fork_helpers.py` — Pure helpers for session tree-rewind (`/rewind`): git-anchor capture at turn-start, side-effect classification over parent rows, safe-revert preflight + git-stash execution. Backend-agnostic and side-effect-contained.
 - `server/research/` — Native deep research orchestration (`docs/plans/native-deep-research.md`): `ResearchManager` (async job lifecycle, phase pipeline, concurrency cap, cancel + reap), `orchestrator` (scope → search → dedup → verify → synthesize phases), `leaf` (throwaway `HarnessRun` sub-turns for web-search leaves and `run_oneshot` for reasoning leaves), `schemas` (JSON schemas for scope/findings/synthesis). Agent-invoked via `mcp__research__deep_research`; user-invoked via `/research <question>`. Result injected as a follow-up turn; a `ResearchCard` tracks progress in the UI.
 - `server/mcp_servers/research.py` — Stdio MCP server exposing `mcp__research__deep_research(question)` to agents; thin HTTP shim to `/api/sessions/{sid}/research`. Returns `research_id` immediately so the model's turn ends cleanly.
-- `server/bridges/` — Messaging-platform integrations (`telegram`, base + manager). A chat binds to an agent with a sticky session and a per-chat `verbose` flag (quiet by default → only the agent's natural-language replies, errors and approval prompts reach the chat; `QUIET_SUPPRESSED_EVENTS` hides tool calls/results/cost/status; `/quiet`+`/verbose` toggle it, persisted in `bridge_mappings.verbose`). `/sessions` renders a tappable inline-button picker (`send_session_list`) whose `switch:<id>` callback shares `BridgeManager.switch_session` with the `/switch` command
 - `docs/plans/token-rotation.md` — `OCTOPUS_AUTH_TOKEN` is both the
   credential clients send and the key `crypto.py` derives to encrypt every
   stored secret, so changing it is one server-side operation (`POST

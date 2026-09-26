@@ -104,14 +104,6 @@ export function SidebarManage() {
           }
         />
         <ManageRow
-          icon={<IconActivity size={14} />}
-          label="Monitor"
-          className="btn-manage-monitor"
-          active={mainView === "monitor"}
-          onClick={() => openManage("monitor")}
-          summary={<span className="text-gray-600">30d</span>}
-        />
-        <ManageRow
           icon={<IconSettings size={14} />}
           label="Harness"
           className="btn-manage-harness"
@@ -131,6 +123,14 @@ export function SidebarManage() {
               />
             </>
           }
+        />
+        <ManageRow
+          icon={<IconActivity size={14} />}
+          label="Monitor"
+          className="btn-manage-monitor"
+          active={mainView === "monitor"}
+          onClick={() => openManage("monitor")}
+          summary={<span className="text-gray-600">30d</span>}
         />
       </div>
     </div>

@@ -548,7 +548,7 @@ export interface paths {
          * @description Archive the current session and return a fresh one.
          *
          *     Same name / working_dir / credential_id as the archived session,
-         *     but a brand-new id and no message history. Schedules + bridge
+         *     but a brand-new id and no message history. Schedules
          *     mappings repoint from old to new so user-facing automation
          *     continues uninterrupted.
          */

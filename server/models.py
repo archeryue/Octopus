@@ -96,7 +96,7 @@ class SessionInfo(BaseModel):
     claude_session_id: str | None = None
     credential_id: str | None = None
     # Owning agent + who created the session ('user' | 'schedule' |
-    # 'bridge' | 'delegation' | 'fork').
+    # 'delegation' | 'fork' | 'application' | 'app').
     agent_id: str | None = None
     origin: str = "user"
     # Which AI backend drives this session.

@@ -2,7 +2,7 @@
 
 **Octopus is a personal agent platform.** It turns the local **Claude Code**
 and **Codex** CLIs into durable, always-on agents you reach from a browser,
-your phone, or Telegram. It drives the `claude` / `codex` CLIs directly via
+or your phone. It drives the `claude` / `codex` CLIs directly via
 their stream-JSON protocols — there is **no `claude-code-sdk` dependency** and
 no extra per-token API cost beyond the CLI's own auth (your subscription or an
 attached API key).
@@ -15,16 +15,16 @@ the data model — this doc describes it conceptually rather than pasting SQL.
 ## System Overview
 
 ```
-        Phone / Browser / Telegram
-              │  REST + WebSocket  │  bot long-poll
-              ▼                    ▼
+             Phone / Browser
+              │  REST + WebSocket
+              ▼
         ┌──────────────────────────────────┐
         │  FastAPI server (uvicorn) :8000   │  serves API + built SPA on one port
-        │  ┌────────────┐  ┌──────────────┐ │
-        │  │ REST routers│  │ BridgeManager│ │  Telegram (extensible ABC)
-        │  │  + /ws      │  │              │ │
-        │  └─────┬───────┘  └──────┬───────┘ │
-        │        └──────┬──────────┘         │
+        │  ┌─────────────┐                  │
+        │  │ REST routers│                  │
+        │  │  + /ws      │                  │
+        │  └─────┬───────┘                  │
+        │        │                          │
         │        ┌──────▼───────┐            │
         │        │SessionManager│            │  one in-process turn engine
         │        └──────┬───────┘            │
@@ -62,12 +62,12 @@ In development, Vite serves the SPA on port 5173 with HMR and proxies `/api`,
 An **Agent** is the durable definition of an assistant: name/avatar, system
 prompt, model, default backend (`claude-code` | `codex`), an attached credential,
 its MCP/tool set, tool allow/deny policy, and enabled connectors. Agents **own**
-their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
+their Sessions and Schedules. A protected **Default Agent**
 ("Octo", `is_system=1`) always exists.
 
 - A **Session** is one conversation thread (an instance of talking to an agent).
   It carries the backend resume id, working dir, origin (`user` | `schedule` |
-  `bridge` | `delegation`), an optional `parent_session_id` (set when the
+  `delegation` | `fork` | `application` | `app`), an optional `parent_session_id` (set when the
   session was spawned by another agent via `mcp__ask_agent__ask` — see
   [`plans/agent-collaboration.md`](plans/agent-collaboration.md)), and an
   `archived` flag.
@@ -81,12 +81,12 @@ their Sessions, Schedules, and bridge bindings. A protected **Default Agent**
 
 | File | Purpose |
 |---|---|
-| `main.py` | FastAPI app + lifespan. Clears the `CLAUDECODE` env var so a nested `claude` subprocess behaves normally. Wires DB, SessionManager, BridgeManager, ScheduleRunner, ConnectorManager, AgentManager, optional CloudflareTunnel. Registers routers, `GET /api/backends`, `GET /health`, and the SPA static mount. |
+| `main.py` | FastAPI app + lifespan. Clears the `CLAUDECODE` env var so a nested `claude` subprocess behaves normally. Wires DB, SessionManager, ScheduleRunner, ConnectorManager, AgentManager, the in-process MCP namespaces, the metrics store, optional CloudflareTunnel. Registers routers, `GET /api/backends`, `GET /health`, and the SPA static mount. |
 | `config.py` | Pydantic settings from `.env` (prefix `OCTOPUS_`) — see **Configuration** below. |
 | `auth.py` | Bearer-token check for REST (`Authorization`) and WebSocket (`?token=`). |
 | `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
-| `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients and bridges, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
+| `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
 | `harness/` | The single boundary for all model/runtime interaction (see below). Also normalizes **native sub-agents** ([`plans/native-subagents.md`](plans/native-subagents.md)): Claude Code's `system/task_*` events and Codex's `collab_tool_call` items collapse onto one `SubagentUpdate`, keyed on the spawning tool call's id, and `agents.subagents` renders to `--agents` so an Octopus agent can bring its own helpers. |
 | `agent_manager.py` | Agent CRUD (the durable assistant definitions). |
 | `agent_memory.py` | Per-agent native memory provisioning (`<agents_dir>/<id>/memory/`). |
@@ -164,30 +164,6 @@ the agent↔installation join is `agent_connectors`; custom kinds in
 `custom_connectors`. The manager handles install upsert, DB→env client-config
 resolution, and server-side token refresh-on-near-expiry behind a per-install lock.
 
-### Bridge system (`server/bridges/`)
-
-Messaging-platform integrations behind an extensible `Bridge` ABC. Today:
-Telegram (long-polling `getUpdates` — no webhook/SSL needed).
-
-| File | Purpose |
-|---|---|
-| `base.py` | `Bridge` ABC + `TextBuffer` (aggregates streamed `assistant_text`, flushes on size/time) + the `handle_event` dispatcher and `QUIET_SUPPRESSED_EVENTS` policy. |
-| `manager.py` | `BridgeManager` — routes inbound messages and slash commands, binds each chat to an **agent** with a sticky session + per-chat `verbose` flag, and fans SessionManager broadcasts back to the right chat. |
-| `telegram.py` | `TelegramBridge` — long-poll loop, Markdown send + 4096-char splitting, inline keyboards (tool approval + the `/sessions` switch picker), rate-limit retry, `allowed_chat_ids` access control. |
-
-A chat binds to an agent on first contact (Default Agent) with a sticky session
-that rolls as threads come and go. **Quiet by default**: only the agent's
-natural-language replies, errors, and approval prompts reach the chat;
-`QUIET_SUPPRESSED_EVENTS` (`tool_use`, `tool_result`, `result`, `status`) are
-hidden. `/verbose` and `/quiet` toggle this per chat (persisted in
-`bridge_mappings.verbose`, preserved across `/agent` rebinds).
-
-**Slash commands:** `/new [name]`, `/agent <name|id>`, `/sessions` (tappable
-switch buttons), `/switch <id>`, `/current`, `/quiet`, `/verbose`, `/showme`
-(intercepted with a "browser-only" notice — the viewer modal can't render in
-Telegram), `/rewind` / `/fork` / `/research` (intercepted with a "browser-only"
-notice — these require the browser UI), `/help`.
-
 ### Frontend (`web/src/`)
 
 React 19 + TypeScript (strict) + Vite + zustand + Tailwind v4 + Radix.
@@ -218,19 +194,8 @@ ws.py receives → asyncio.create_task(stream)
     → Harness.run() spawns the agent's backend CLI with injected MCP servers
       → streams HarnessEvents: assistant_text / tool_use / tool_result /
         question_request / result
-      → each event is persisted (messages) and broadcast to clients + bridges
+      → each event is persisted (messages) and broadcast to clients
     → broadcast status: idle
-```
-
-### Sending a message (Telegram, quiet by default)
-
-```
-TelegramBridge poll → _handle_update → BridgeManager.handle_incoming
-  → slash command? handle it (/new, /sessions buttons, /switch, /quiet, …)
-  → else: ensure chat is bound to an agent + sticky session, then start_message
-SessionManager broadcasts events → BridgeManager._on_broadcast
-  → drop QUIET_SUPPRESSED_EVENTS unless the chat is /verbose
-  → bridge.handle_event → TextBuffer-batched replies, errors, approval prompts
 ```
 
 ### `/showme` — the in-app file viewer (browser only)
@@ -242,20 +207,19 @@ reference to `/api/sessions/{id}/showme/resolve`, and the resolver
 harness) that sees the last few messages of the conversation, returning JSON
 with either `{"path"}` or `{"message"}`. On `path`, the client opens
 `FileViewerDialog` directly — no model turn appears in the chat, no MCP tool
-fires. Telegram intercepts `/showme` with a "browser-only" notice (the modal
-can't render there). The agent is **never** instructed to open the viewer on
+fires. The agent is **never** instructed to open the viewer on
 its own: it can't tell whether anyone is at the screen.
 
 ### Questions & tool approval
 
 The `mcp__ask__user` MCP tool POSTs questions to
 `/api/sessions/{id}/questions`; SessionManager broadcasts a `question_request`
-(Web UI renders `QuestionPrompt`; Telegram surfaces it) and long-polls for the
+(the Web UI renders `QuestionPrompt`) and long-polls for the
 answer, which is delivered back to the model. An unanswered question
 auto-answers after `ask_user_question_timeout_seconds` so headless
-bridge/scheduled sessions never wedge. (Native CLI tool-approval also exists via
-`PendingApproval` futures + inline keyboards, but agents run with skip-permissions
-by default and gate sensitive actions through `ask`/connector confirms instead.)
+scheduled sessions never wedge. (Native CLI tool-approval also exists via
+`PendingApproval` futures, but agents run with skip-permissions by default and
+gate sensitive actions through `ask`/connector confirms instead.)
 
 ### Cross-turn background work
 
@@ -331,7 +295,7 @@ A backend without web tools simply returns an "unavailable" message.
 All endpoints require `Authorization: Bearer <token>`.
 
 ```
-# Agents — durable assistant definitions that own sessions/schedules/bridges
+# Agents — durable assistant definitions that own sessions and schedules
 GET/POST           /api/agents
 GET/PATCH/DELETE   /api/agents/{id}
 POST               /api/agents/{id}/archive
@@ -372,7 +336,7 @@ POST/DELETE        /api/connectors/custom[/{kind}]
 GET/POST/PATCH/DELETE  /api/notifiers[/{id}]
 
 GET                /api/backends                        # harnesses usable here
-GET                /health                              # + per-bridge health
+GET                /health
 ```
 
 ## Data model
@@ -385,7 +349,7 @@ migrations (never re-create or duplicate the schema in docs).
   credential, `mcp_servers`, tool allow/deny, `is_system`, `archived`). Owns the rest.
 - **`sessions`** — one thread: `working_dir`, `claude_session_id` (backend
   resume id, name kept for back-compat), `agent_id`, `origin`
-  (`user`|`schedule`|`bridge`|`delegation`|`fork`), `backend`, `credential_id`,
+  (`user`|`schedule`|`delegation`|`fork`|`application`|`app`), `backend`, `credential_id`,
   `archived`. Delegation rows additionally carry `parent_session_id`
   (the caller session, `ON DELETE SET NULL` — orphaning beats
   mass-delete) and `delegation_request` (the verbatim original prompt
@@ -404,8 +368,6 @@ migrations (never re-create or duplicate the schema in docs).
   safe-revert preflight can verify the working tree was clean at the branch point.
 - **`schedules`** — recurring prompts owned by an agent: `interval_seconds` **or**
   `cron`+`timezone`, `recurrence_label`, `origin_session_id`, `enabled`.
-- **`bridge_mappings`** — `(platform, chat_id)` → `agent_id` + sticky `session_id`
-  (nullable) + `verbose`.
 - **`backend_credentials`** + **`credential_secrets`** — credential metadata and
   its Fernet-encrypted secret, stored split; refresh/`needs_reconnect` lifecycle.
 - **`connector_installations`** + **`connector_installation_secrets`**,
@@ -441,7 +403,6 @@ provisioned on agent create, kept on archive, removed on hard delete.
 | `db_path` | `octopus.db` | SQLite file. |
 | `attachments_dir` / `large_prompts_dir` / `agents_dir` / `codex_home_dir` | under `~/.octopus/` | Upload cache · large-prompt spill · agent memory roots · per-credential Codex auth. |
 | `enable_tunnel` | `false` | Start a Cloudflare Tunnel. |
-| `telegram_bot_token` / `telegram_allowed_chat_ids` / `telegram_api_base_url` | — | Telegram bridge (enabled when token set). |
 | `ask_user_question_timeout_seconds` | `1800` | Auto-answer an unanswered question (so headless sessions don't wedge). |
 | `public_base_url` | computed | Stable public host for connector OAuth redirect URIs (tunnel). |
 | `gmail_/github_oauth_client_id`/`_secret` | — | Optional env fallback for connector OAuth clients (in-app config takes precedence). |
@@ -455,16 +416,13 @@ provisioned on agent create, kept on archive, removed on hard delete.
 - **CLIs, not an SDK.** Octopus spawns `claude --print` / `codex exec --json`
   and parses their stream-JSON itself (`harness/run.py`), so there's no
   `claude-code-sdk` dependency and behavior tracks the CLIs directly.
-- **Agent-centric data model.** Sessions, schedules, and bridge bindings all
-  hang off an agent; `SessionManager` reads agent config live each turn, so edits
+- **Agent-centric data model.** Sessions and schedules hang off an agent; `SessionManager` reads agent config live each turn, so edits
   take effect on the next turn without restart.
 - **Single-port, same-origin.** API + SPA on one port; the client derives all
   URLs from `window.location`, so tunnels/proxies/HTTPS work with zero config.
 - **`ask` MCP over permission prompts.** Structured questions are an MCP tool
   with a UI form + long-poll + auto-answer timeout — robust for headless
-  bridge/scheduled sessions where no human may be watching.
-- **Quiet bridges.** Telegram chats see only the agent's replies by default;
-  tool chatter is opt-in via `/verbose` (persisted per chat).
+  scheduled sessions where no human may be watching.
 - **Session branching — two commands.** `/rewind` forks a
   conversation to any prior user message; the harness layer owns the per-backend
   resume strategy (both Claude and Codex use HISTORY_REPLAY: wrap the truncated
@@ -510,10 +468,6 @@ provisioned on agent create, kept on archive, removed on hard delete.
 cd web && bun run build && cd ..    # build the SPA (once)
 octopus serve                       # API + UI on :8000
 octopus serve --tunnel              # + public HTTPS via Cloudflare Tunnel
-
-# With the Telegram bridge — add to .env, then `octopus serve`:
-#   OCTOPUS_TELEGRAM_BOT_TOKEN=...
-#   OCTOPUS_TELEGRAM_ALLOWED_CHAT_IDS=123,456     # optional access control
 
 # Development (hot reload)
 .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8000 --reload   # backend

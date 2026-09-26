@@ -155,27 +155,21 @@ async def test_fork_of_fork(manager):
 
 
 @pytest.mark.asyncio
-async def test_fork_repoints_schedules_and_clears_bridge(manager):
+async def test_fork_repoints_schedules_to_the_successor(manager):
     # Mirrors archive_session's tail: a `/schedule` anchored on the parent
-    # follows onto the fork (the successor), while a bridge chat's sticky
-    # pointer is cleared so its next message opens a fresh thread.
+    # follows onto the fork, so its next fire lands in the live thread rather
+    # than a session the user has moved on from.
     parent = await _seed_parent(manager, backend="codex")
     await manager.db.save_schedule(
         schedule_id="sch1", agent_id=parent.agent_id, name="nightly",
         prompt="do it", created_at="2026-06-08T00:00:00+00:00",
         interval_seconds=3600, origin_session_id=parent.id,
     )
-    await manager.db.save_bridge_mapping(
-        platform="telegram", chat_id="c1", agent_id=parent.agent_id,
-        session_id=parent.id,
-    )
 
     fork = await manager.fork_session(parent.id, 2)
 
     schedules = {s["id"]: s for s in await manager.db.load_schedules()}
     assert schedules["sch1"]["origin_session_id"] == fork.id
-    mappings = {m["chat_id"]: m for m in await manager.db.load_bridge_mappings()}
-    assert mappings["c1"]["session_id"] is None
 
 
 # ------------------------------------------------------------------ validation

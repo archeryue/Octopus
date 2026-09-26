@@ -19,7 +19,6 @@ export const E2E_APPLICATIONS_DIR = path.join(
 
 export default defineConfig({
   testDir: "./e2e",
-  testIgnore: ["telegram-bridge.spec.ts"],
   globalTeardown: "./e2e/global-teardown.ts",
   timeout: 30_000,
   retries: 0,
@@ -65,7 +64,6 @@ export default defineConfig({
         // default 8000 would have its callback POSTs hit a dead socket
         // and leave the BgTaskChip stuck in "Waiting for bg task…".
         OCTOPUS_PORT: "8765",
-        OCTOPUS_TELEGRAM_BOT_TOKEN: "",
         OCTOPUS_DB_PATH: ":memory:",
         // Per-agent memory dirs (docs/plans/memory.md) live under here; keep
         // them out of the developer's real ~/.octopus/agents. Cleaned in

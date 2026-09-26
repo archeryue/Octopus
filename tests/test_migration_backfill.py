@@ -1,10 +1,14 @@
 """Migration/backfill tests for the first-class Agents refactor.
 
 Boots a DB created with the *old* (pre-agents) schema — sessions without
-agent_id, schedules with a NOT NULL session_id + FK, bridge_mappings with a
-NOT NULL session_id — runs `_apply_migrations()` (twice), and asserts the
-ownership graph is rebuilt onto a Default Agent, idempotently. See
+agent_id, schedules with a NOT NULL session_id + FK, and the since-removed
+bridge_mappings — runs `_apply_migrations()` (twice), and asserts the ownership
+graph is rebuilt onto a Default Agent, idempotently. See
 docs/plans/agent-refactor.md §4.5.
+
+The old schema still creates bridge_mappings on purpose: a database made before
+2026-09-25 has that table, and the migration that drops it has to be exercised
+against one that really does.
 """
 
 import sqlite3
@@ -65,6 +69,13 @@ def _seed_old_db(path: str) -> None:
     conn.close()
 
 
+async def _table_exists(db: Database, table: str) -> bool:
+    cursor = await db.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    )
+    return await cursor.fetchone() is not None
+
+
 async def _column_names(db: Database, table: str) -> set[str]:
     cursor = await db.conn.execute(f"PRAGMA table_info({table})")
     return {row[1] for row in await cursor.fetchall()}
@@ -110,13 +121,9 @@ async def test_backfill_from_old_schema(tmp_path):
         assert schedules[0]["agent_id"] == default["id"]
         assert "session_id" not in await _column_names(db, "schedules")
 
-        # Bridge mapping bound to the agent; session_id preserved as the
-        # sticky pointer and is now nullable.
-        mappings = await db.load_bridge_mappings()
-        assert len(mappings) == 1
-        assert mappings[0]["agent_id"] == default["id"]
-        assert mappings[0]["session_id"] == "s1"
-        assert not await db._column_is_not_null("bridge_mappings", "session_id")
+        # The Telegram bridge was removed, so its table goes with it — a
+        # table nothing reads is a question every future reader has to answer.
+        assert not await _table_exists(db, "bridge_mappings")
 
         # Idempotency: a second migration run changes nothing.
         await db._apply_migrations()
@@ -124,7 +131,7 @@ async def test_backfill_from_old_schema(tmp_path):
         assert len([a for a in agents2 if a["is_system"]]) == 1
         assert (await db.get_agent(default["id"]))["id"] == default["id"]
         assert len(await db.load_schedules()) == 1
-        assert len(await db.load_bridge_mappings()) == 1
+        assert not await _table_exists(db, "bridge_mappings")
         sessions2 = await db.load_sessions()
         assert all(s["agent_id"] == default["id"] for s in sessions2)
     finally:
@@ -142,7 +149,7 @@ async def test_fresh_db_gets_default_agent(tmp_path):
         assert system["name"] == "Octo"
         # No session_id leftover on the freshly-created tables.
         assert "session_id" not in await _column_names(db, "schedules")
-        assert not await db._column_is_not_null("bridge_mappings", "session_id")
+        assert not await _table_exists(db, "bridge_mappings")
 
         # Second run no-ops (still exactly one system agent).
         await db._apply_migrations()

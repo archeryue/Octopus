@@ -19,7 +19,7 @@ What this module owns:
     keyed by child-session id.
   - The broadcast subscriber that watches the child's event stream and
     captures the events that matter for delivery (the same filter
-    bridges use for quiet mode: assistant_text + result + error).
+    the quiet-mode filter uses: assistant_text + result + error).
   - The cycle and depth guards that walk the parent chain.
   - The agent-name lookup (case-insensitive, ambiguity-rejecting).
   - The injection formatter: ``[agent-reply|agent-error:<name>
@@ -754,7 +754,7 @@ class DelegationManager:
 
     async def _on_broadcast(self, msg: dict[str, Any]) -> None:
         """Filter the session-manager broadcast bus to delegation
-        children we're tracking. Mirrors the bridge quiet-mode filter:
+        children we're tracking. Same filter quiet mode used:
         capture assistant_text, finalise on result, route error through
         the failure injection path, and route `question_request` up to
         the parent so the parent's model gets a turn to answer it

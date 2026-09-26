@@ -127,7 +127,7 @@ interface SessionStore {
   token: string;
   setToken: (t: string) => void;
 
-  // Agents own sessions/schedules/bridges (agent-refactor.md). The sidebar
+  // Agents own sessions and schedules (agent-refactor.md). The sidebar
   // is two-pane: pick an agent, then see its sessions. `activeAgentId`
   // drives the session/schedule filters.
   agents: Agent[];
