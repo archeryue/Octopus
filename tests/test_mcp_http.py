@@ -133,3 +133,78 @@ class TestRendering:
         env: dict[str, str] = {}
         codex._apply_mcp_bearers(env, ctx)
         assert env["OCTOPUS_MCP_BEARER_BG"] == e.credential
+
+
+class TestServedToolCalls:
+    """A tool call over the real transport, which is where B1's one defect was.
+
+    Nothing else in the suite drives a mounted namespace end to end: the tool
+    bodies are unit-tested by calling them directly, and the argv tests stop at
+    the config. Both pass while every actual call fails, which is exactly what
+    happened — FastMCP runs a `def` tool on the event loop, and every body here
+    makes a blocking HTTP call back into this same process, so each call
+    deadlocked for its own 15-second timeout and answered "failed to reach
+    Octopus". These tests are the missing middle.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_sync_tool_answers_over_http(self):
+        import httpx
+        from mcp import ClientSession
+        from mcp.client.streamable_http import streamable_http_client
+
+        from server.config import settings
+        from server.routers import schedules as schedules_routes
+        from tests.callback_api import start_callback_api
+
+        api = await start_callback_api(schedules_routes.session_router)
+        original_port = settings.port
+        settings.port = api.port
+        try:
+            url = f"http://127.0.0.1:{api.port}/mcp/schedule/mcp"
+            # The bearer is how a call says which session it belongs to
+            # (mcp_identity); the timeout is what makes a regression fail here
+            # rather than hang the suite — a tool that deadlocks the loop cannot
+            # finish inside it.
+            client = httpx.AsyncClient(
+                headers={"Authorization": f"Bearer {mint('no-such-session')}"},
+                timeout=15,
+            )
+            async with streamable_http_client(url, http_client=client) as (
+                read,
+                write,
+                _,
+            ):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    listed = await session.list_tools()
+                    assert {t.name for t in listed.tools} == {
+                        "create",
+                        "list",
+                        "update",
+                        "delete",
+                    }
+                    result = await session.call_tool("list", {})
+            answer = result.content[0].text  # type: ignore[union-attr]
+        finally:
+            settings.port = original_port
+            await api.stop()
+
+        # The tool reached the REST route and relayed its answer. "failed to
+        # reach Octopus … timed out" here means the loop was starved by the
+        # tool's own blocking call — the bug this pins.
+        assert "not found" in answer
+        assert "failed to reach Octopus" not in answer
+
+    @pytest.mark.asyncio
+    async def test_every_namespace_serves_its_tools_off_the_loop(self):
+        """No `def` body is left dispatching on the event loop.
+
+        Checked per namespace rather than for one, because a new tool module
+        would otherwise reintroduce the deadlock for its own namespace only.
+        """
+        for name, server in mcp_http.build_servers(fresh=True).items():
+            tools = server._tool_manager._tools
+            assert tools, f"{name} registered no tools"
+            for tool_name, tool in tools.items():
+                assert tool.is_async, f"mcp__{name}__{tool_name} runs on the loop"

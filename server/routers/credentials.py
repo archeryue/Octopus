@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from ..auth import verify_token
 from ..config import settings
 from ..crypto import encrypt
+from ..deps import SessionMgr
 from ..harness import LoginMethod, get_harness, has_backend
 from ..models import (
     AuthType,
@@ -39,7 +40,6 @@ from ..models import (
 )
 from ..oauth_login import LoginState
 from ..oauth_providers import OAuthTokenSet
-from ..session_manager import session_manager
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +138,7 @@ async def update_credential(
 
 
 @router.delete("/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_credential(credential_id: str, _: str = Depends(verify_token)):
+async def delete_credential(session_manager: SessionMgr, credential_id: str, _: str = Depends(verify_token)):
     db = _require_db()
     row = await db.get_credential(credential_id)
     # Unbind before deleting: a session pinned to a deleted credential can't

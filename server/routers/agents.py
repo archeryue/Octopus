@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..agent_manager import AgentError, AgentManager
 from ..auth import verify_token
+from ..deps import SessionMgr
 from ..models import (
     AgentCreate,
     AgentRead,
@@ -14,7 +15,6 @@ from ..models import (
     ScheduleInfo,
     SessionInfo,
 )
-from ..session_manager import session_manager
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -78,7 +78,7 @@ async def update_agent(
 
 
 @router.post("/{agent_id}/archive", response_model=AgentRead)
-async def archive_agent(agent_id: str, _: str = Depends(verify_token)):
+async def archive_agent(session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)):
     try:
         await _get_manager().archive_agent(agent_id)
     except AgentError as e:
@@ -111,7 +111,7 @@ async def delete_agent(agent_id: str, _: str = Depends(verify_token)):
 
 
 @router.get("/{agent_id}/sessions", response_model=list[SessionInfo])
-async def list_agent_sessions(agent_id: str, _: str = Depends(verify_token)):
+async def list_agent_sessions(session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)):
     if await _get_manager().get_agent(agent_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     from .sessions import _to_session_info
@@ -129,6 +129,7 @@ async def list_agent_sessions(agent_id: str, _: str = Depends(verify_token)):
     status_code=status.HTTP_201_CREATED,
 )
 async def create_agent_session(
+    session_manager: SessionMgr,
     agent_id: str, req: CreateSessionRequest, _: str = Depends(verify_token)
 ):
     """Preferred path to start a session — the agent comes from the URL, so
@@ -142,7 +143,7 @@ async def create_agent_session(
         if req.backend is not None
         else (agent.get("backend") if agent else None) or "claude-code"
     )
-    await _check_credential_backend(req.credential_id, backend)
+    await _check_credential_backend(session_manager, req.credential_id, backend)
     try:
         s = await session_manager.create_session(
             agent_id,
@@ -194,6 +195,7 @@ async def create_agent_schedule(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_agent_schedule_from_text(
+    session_manager: SessionMgr,
     agent_id: str, req: ScheduleFromTextRequest, _: str = Depends(verify_token)
 ):
     """Natural-language schedule creation. Parses `text` (rigid `<interval>

@@ -3,6 +3,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..auth import verify_token
+from ..deps import SessionMgr
 from ..harness import BackendForkNotSupported, StdinMode, get_harness
 from ..models import (
     CreateSessionRequest,
@@ -10,15 +11,23 @@ from ..models import (
     ForkSessionRequest,
     ImportSessionRequest,
     MessageContent,
+    MessagePage,
     PendingQuestionInfo,
     SessionDetail,
     SessionInfo,
     SessionUpdate,
     SubagentRun,
 )
-from ..session_manager import ForkError, fork_info_fields, session_manager
+from ..session_manager import ForkError, fork_info_fields
+from ..sessions import SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+
+# How much transcript an open returns. 46,448 messages live in this database
+# across 66 sessions, and the largest single session holds 4,873 — which the
+# client was handed in full every time it opened one (polish-2026-09.md §4 B2).
+# 200 covers the great majority of sessions whole; the rest arrive by cursor.
+MESSAGE_WINDOW = 200
 
 
 def _fork_fields(s) -> dict:
@@ -71,6 +80,7 @@ def _to_session_info(
 
 @router.get("", response_model=list[SessionInfo])
 async def list_sessions(
+    session_manager: SessionMgr,
     include_archived: bool = Query(False),
     _: str = Depends(verify_token),
 ):
@@ -81,7 +91,9 @@ async def list_sessions(
     return live + archived
 
 
-async def _check_credential_backend(credential_id: str | None, backend: str) -> None:
+async def _check_credential_backend(
+    session_manager: SessionManager, credential_id: str | None, backend: str
+) -> None:
     """A session must not run a credential whose backend differs from its own
     (codex-backend.md §4.2) — e.g. a Codex subscription on a Claude session.
     400 on mismatch. A missing credential is tolerated (resolved later)."""
@@ -100,6 +112,7 @@ async def _check_credential_backend(credential_id: str | None, backend: str) -> 
 
 @router.patch("/{session_id}", response_model=SessionInfo)
 async def update_session(
+    session_manager: SessionMgr,
     session_id: str, req: SessionUpdate, _: str = Depends(verify_token)
 ):
     """Repoint a live session — today its credential and its name.
@@ -125,7 +138,7 @@ async def update_session(
                 raise HTTPException(
                     status.HTTP_404_NOT_FOUND, "Credential not found"
                 )
-            await _check_credential_backend(cred_id, session.backend)
+            await _check_credential_backend(session_manager, cred_id, session.backend)
         updates["credential_id"] = cred_id
 
     if "name" in fields and fields["name"] is not None:
@@ -146,6 +159,7 @@ async def update_session(
 
 @router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)
 async def create_session(
+    session_manager: SessionMgr,
     req: CreateSessionRequest, _: str = Depends(verify_token)
 ):
     # A session is owned by an agent. agent_id is required, but for exactly
@@ -162,7 +176,7 @@ async def create_session(
         if req.backend is not None
         else (agent.get("backend") if agent else None) or "claude-code"
     )
-    await _check_credential_backend(req.credential_id, backend)
+    await _check_credential_backend(session_manager, req.credential_id, backend)
     try:
         s = await session_manager.create_session(
             agent_id,
@@ -178,6 +192,7 @@ async def create_session(
 
 @router.post("/import", response_model=SessionDetail, status_code=status.HTTP_201_CREATED)
 async def import_session(
+    session_manager: SessionMgr,
     req: ImportSessionRequest, _: str = Depends(verify_token)
 ):
     agent_id = req.agent_id
@@ -226,13 +241,16 @@ async def import_session(
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
-async def get_session(session_id: str, _: str = Depends(verify_token)):
+async def get_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
     # Live session: read straight from the in-memory state (includes
     # pending queue / pending questions / live status).
     s = session_manager.get_session(session_id)
     if s is not None:
-        messages_raw = await session_manager.db.load_messages(s.id)
+        messages_raw = await session_manager.db.load_messages(
+            s.id, limit=MESSAGE_WINDOW, newest_first=True
+        )
         messages = [MessageContent(**m) for m in messages_raw]
+        oldest = messages[0].seq if messages else None
         return SessionDetail(
             id=s.id,
             name=s.name,
@@ -256,6 +274,10 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
                 for q in s._pending_questions.values()
             ],
             subagents=[SubagentRun(**asdict(u)) for u in s._subagents.values()],
+            oldest_loaded_seq=oldest,
+            # seq is dense from 0, so anything above 0 means there is older
+            # transcript the window left behind.
+            has_more_messages=bool(oldest),
             # High-water mark: clients use this as the dedup baseline so any
             # WS event with seq < next_message_seq is treated as already
             # applied (it's in the messages list above).
@@ -269,8 +291,43 @@ async def get_session(session_id: str, _: str = Depends(verify_token)):
     return archived_detail
 
 
+@router.get("/{session_id}/messages", response_model=MessagePage)
+async def older_messages(
+    session_manager: SessionMgr,
+    session_id: str,
+    before_seq: int = Query(..., ge=0, description="Return messages with seq < this"),
+    limit: int = Query(MESSAGE_WINDOW, ge=1, le=500),
+    _: str = Depends(verify_token),
+):
+    """The page of transcript immediately before `before_seq`, oldest-first.
+
+    Scroll-back for the windowed open above. Live and archived sessions read the
+    same rows — the transcript lives in the database either way — so this does
+    not care which the id refers to; it only refuses an id with no rows at all,
+    which is the same 404 as opening it.
+    """
+    if session_manager.db is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "no database")
+    if session_manager.get_session(session_id) is None:
+        rows = await session_manager.db.load_sessions(include_archived=True)
+        if not any(r["id"] == session_id for r in rows):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    if before_seq == 0:
+        return MessagePage(messages=[], oldest_loaded_seq=None, has_more_messages=False)
+    raw = await session_manager.db.load_messages(
+        session_id, limit=limit, max_seq=before_seq - 1, newest_first=True
+    )
+    messages = [MessageContent(**m) for m in raw]
+    oldest = messages[0].seq if messages else None
+    return MessagePage(
+        messages=messages,
+        oldest_loaded_seq=oldest,
+        has_more_messages=bool(oldest),
+    )
+
+
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_session(session_id: str, _: str = Depends(verify_token)):
+async def delete_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
     deleted = await session_manager.delete_session(session_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
@@ -278,6 +335,7 @@ async def delete_session(session_id: str, _: str = Depends(verify_token)):
 
 @router.get("/{session_id}/fork-preview")
 async def fork_preview(
+    session_manager: SessionMgr,
     session_id: str,
     rewind_to_msg_seq: int = Query(...),
     _: str = Depends(verify_token),
@@ -298,6 +356,7 @@ async def fork_preview(
     status_code=status.HTTP_201_CREATED,
 )
 async def fork_session(
+    session_manager: SessionMgr,
     session_id: str,
     req: ForkSessionRequest,
     _: str = Depends(verify_token),
@@ -332,6 +391,7 @@ async def fork_session(
     status_code=status.HTTP_201_CREATED,
 )
 async def duplicate_session(
+    session_manager: SessionMgr,
     session_id: str,
     req: DuplicateSessionRequest,
     _: str = Depends(verify_token),
@@ -357,7 +417,7 @@ async def duplicate_session(
 
 
 @router.post("/{session_id}/reset")
-async def reset_session(session_id: str, _: str = Depends(verify_token)):
+async def reset_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
     try:
         await session_manager.reset_session(session_id)
     except ValueError:
@@ -370,7 +430,7 @@ async def reset_session(session_id: str, _: str = Depends(verify_token)):
     response_model=SessionInfo,
     status_code=status.HTTP_201_CREATED,
 )
-async def archive_session(session_id: str, _: str = Depends(verify_token)):
+async def archive_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
     """Archive the current session and return a fresh one.
 
     Same name / working_dir / credential_id as the archived session,
@@ -386,7 +446,7 @@ async def archive_session(session_id: str, _: str = Depends(verify_token)):
 
 
 @router.post("/{session_id}/unarchive", response_model=SessionInfo)
-async def unarchive_session(session_id: str, _: str = Depends(verify_token)):
+async def unarchive_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
     """Bring an archived session back as a live session.
 
     Flips the DB row's `archived=0` and reloads it into the in-memory

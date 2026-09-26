@@ -15,23 +15,19 @@ call the tool.
 
 from __future__ import annotations
 
-import asyncio
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # annotation-only; the runtime import is local
-    import uvicorn
 import glob
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-from apscheduler.triggers.cron import CronTrigger
 
 from server.config import settings
 from server.database import Database
+from server.schedule_ai import cron_trigger
 from server.scheduler import ScheduleRunner
 from server.session_manager import session_manager
+from tests.callback_api import start_callback_api
 
 # Widen PATH so the CLIs resolve in a non-interactive pytest run.
 for _d in [
@@ -45,30 +41,6 @@ for _d in [
 
 
 pytestmark = pytest.mark.real
-
-
-async def _serve_schedule_api() -> tuple[int, uvicorn.Server, asyncio.Task]:
-    import uvicorn
-    from fastapi import FastAPI
-
-    from server.routers import schedules as schedules_routes
-
-    app = FastAPI()
-    app.include_router(schedules_routes.session_router)
-
-    config = uvicorn.Config(
-        app, host="127.0.0.1", port=0, log_level="warning", lifespan="off"
-    )
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
-    task = asyncio.create_task(server.serve())
-    for _ in range(200):
-        if server.started and server.servers:
-            break
-        await asyncio.sleep(0.05)
-    else:  # pragma: no cover - a stuck uvicorn is a failure, not a skip
-        raise RuntimeError("callback API server never started")
-    return server.servers[0].sockets[0].getsockname()[1], server, task
 
 
 async def _bootstrap(tmp_path, monkeypatch):
@@ -91,18 +63,16 @@ async def _bootstrap(tmp_path, monkeypatch):
     monkeypatch.setattr(schedules_routes, "_db", db)
     monkeypatch.setattr(schedules_routes, "_runner", runner)
 
-    port, server, task = await _serve_schedule_api()
-    monkeypatch.setattr(settings, "port", port)
+    # Both halves a real tool call needs reachable: the REST route the shim
+    # posts to, and the /mcp/schedule mount the CLI itself speaks to.
+    api = await start_callback_api(schedules_routes.session_router)
+    monkeypatch.setattr(settings, "port", api.port)
 
     wd = str(tmp_path / "ws")
     os.makedirs(wd, exist_ok=True)
 
     async def teardown() -> None:
-        server.should_exit = True
-        try:
-            await asyncio.wait_for(task, timeout=10.0)
-        except (TimeoutError, asyncio.CancelledError):
-            task.cancel()
+        await api.stop()
         await runner.shutdown()
         # Release the held CLI process; several of these left running is
         # enough to get the suite OOM-killed (inline-steering.md §7).
@@ -134,10 +104,11 @@ async def test_real_claude_schedules_a_weekday_morning_run(tmp_path, monkeypatch
         await _turn(
             session.id,
             "Using your Octopus schedule tool, set yourself a recurring "
-            "schedule: every weekday at 9am, run the task 'check the build "
-            "and report failures'. Name it 'Morning build check' and use the "
-            "timezone America/Los_Angeles. Don't touch the system crontab. "
-            "Reply with the schedule id when it's set.",
+            "schedule that runs at 9am on weekdays only — Monday through "
+            "Friday, never Saturday or Sunday — with the task 'check the "
+            "build and report failures'. Name it 'Morning build check' and "
+            "use the timezone America/Los_Angeles. Don't touch the system "
+            "crontab. Reply with the schedule id when it's set.",
         )
 
         rows = await db.load_schedules()
@@ -150,7 +121,9 @@ async def test_real_claude_schedules_a_weekday_morning_run(tmp_path, monkeypatch
         # Assert the behaviour, not the spelling: "1-5" and "1,2,3,4,5" are
         # both right, and both have to fire Mon-Fri at 09:00.
         zone = ZoneInfo(row["timezone"])
-        trigger = CronTrigger.from_crontab(row["cron"], timezone=zone)
+        # Through the same builder the runner uses, so this asserts what will
+        # actually fire (schedule_ai.cron_trigger).
+        trigger = cron_trigger(row["cron"], row["timezone"])
         fire = trigger.get_next_fire_time(None, datetime.now(zone))
         assert fire is not None
         assert (fire.hour, fire.minute) == (9, 0), fire
@@ -188,7 +161,8 @@ async def test_real_claude_finds_and_pauses_an_existing_schedule(tmp_path, monke
         await _turn(
             session.id,
             "Stop my 'Queue poll' schedule for now — I want it back later, so "
-            "don't delete it. Use your Octopus schedule tools.",
+            "don't delete it. Find it with mcp__schedule__list and pause it "
+            "with mcp__schedule__update; don't use any other tool.",
         )
 
         rows = await db.load_schedules()
@@ -215,9 +189,12 @@ async def test_real_codex_schedules_an_interval_run(tmp_path, monkeypatch):
 
         await _turn(
             session.id,
-            "Using your Octopus schedule tool, set yourself a schedule that "
-            "runs every 30 minutes with the task 'ping the status endpoint'. "
-            "Don't touch the system crontab.",
+            # Named outright: the claim under test is that the same namespace
+            # works on the other harness, not that Codex picks the right tool
+            # from a hint.
+            "Call mcp__schedule__create to set yourself a schedule that runs "
+            "every 30 minutes with the task 'ping the status endpoint'. Don't "
+            "touch the system crontab and don't use any other tool.",
         )
 
         rows = await db.load_schedules()

@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..config import settings
+from ..deps import SessionMgr
 from ..file_viewer import (
     FileNotFound,
     FileTooLarge,
@@ -31,7 +32,7 @@ from ..file_viewer import (
 )
 from ..harness import get_harness
 from ..models import ShowMeResolveRequest, ShowMeResolveResponse
-from ..session_manager import session_manager
+from ..sessions import SessionManager
 from ..showme_ai import resolve_showme_reference
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,9 @@ def _verify_token(
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
 
 
-async def _working_dir_for(session_id: str) -> str:
+async def _working_dir_for(
+    session_manager: SessionManager, session_id: str
+) -> str:
     """Pull working_dir from the live session or, if archived, from the DB."""
     live = session_manager.get_session(session_id)
     if live is not None:
@@ -78,6 +81,7 @@ def _resolve_or_raise(working_dir: str, path: str) -> ResolvedFile:
 
 @router.post("/{session_id}/showme/resolve", response_model=ShowMeResolveResponse)
 async def resolve_showme(
+    session_manager: SessionMgr,
     session_id: str,
     req: ShowMeResolveRequest,
     _: str = Depends(_verify_token),
@@ -127,6 +131,7 @@ async def resolve_showme(
 
 @router.get("/{session_id}/files/meta")
 async def file_meta(
+    session_manager: SessionMgr,
     session_id: str,
     path: str = Query(...),
     _: str = Depends(_verify_token),
@@ -138,7 +143,7 @@ async def file_meta(
     file, we show the error inline rather than streaming kilobytes
     that will never render). Same security path as /files.
     """
-    working_dir = await _working_dir_for(session_id)
+    working_dir = await _working_dir_for(session_manager, session_id)
     resolved = _resolve_or_raise(working_dir, path)
     return JSONResponse(
         {
@@ -152,11 +157,12 @@ async def file_meta(
 
 @router.get("/{session_id}/files")
 async def get_file(
+    session_manager: SessionMgr,
     session_id: str,
     path: str = Query(...),
     _: str = Depends(_verify_token),
 ) -> FileResponse:
-    working_dir = await _working_dir_for(session_id)
+    working_dir = await _working_dir_for(session_manager, session_id)
     resolved = _resolve_or_raise(working_dir, path)
     # FileResponse handles streaming + ETag + Range. We override
     # media_type so e.g. .md is delivered as text/markdown rather

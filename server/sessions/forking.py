@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .. import fork_helpers
+from ..aio import stopped_within
 from ..attachments import get_path as get_attachment_path
 from ..harness import BackendForkNotSupported, get_harness
 from ..models import MessageContent
@@ -648,10 +649,9 @@ class ForkingMixin(SessionManagerBase):
         if parent._active_task and not parent._active_task.done():
             parent._active_task.cancel()
         if parent._backend:
-            try:
-                await asyncio.wait_for(parent._backend.stop(), timeout=2.0)
-            except Exception:
-                pass
+            await stopped_within(
+                parent._backend.stop(), f"session {parent.id} backend", timeout=2.0
+            )
             self._forget_backend(parent)
         parent._pending_queue.clear()
         parent._pending_questions.clear()

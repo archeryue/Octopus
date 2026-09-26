@@ -636,3 +636,50 @@ def test_spawn_signature_changes_with_anything_baked_in_at_spawn():
     # …and so must the working dir.
     same_cfg = Harness(profile).create_run(RunConfig(**base))
     assert same_cfg.spawn_signature("/elsewhere", None) != ref
+
+
+def test_spawn_signature_follows_where_the_mcp_namespaces_are_served():
+    """A held process bakes in the URL and bearer of every namespace.
+
+    Since the namespaces moved in-process (polish-2026-09.md §4 B1), an entry's
+    URL carries the server's port and its credential is derived from the session
+    and the access token. The signature used to hold only the namespace *names*,
+    so a process spawned against one port was reused against another: it
+    reported every namespace as unreachable and the model lost its tools
+    mid-conversation, with nothing in the logs but the CLI's own complaint.
+    Found by the real-CLI tier, where each test serves its own ephemeral port.
+    """
+    from server.config import settings
+
+    profile = _sig_profile()
+    cfg = RunConfig(system_prompt="P", model="m", mcp_servers=["bg"], session_id="s1")
+    run = Harness(profile).create_run(cfg)
+
+    original_port = settings.port
+    original_token = settings.auth_token
+    try:
+        settings.port = 45001
+        ref = run.spawn_signature("/tmp", None)
+        settings.port = 45002
+        assert run.spawn_signature("/tmp", None) != ref, "the URL moved"
+        settings.port = 45001
+        assert run.spawn_signature("/tmp", None) == ref, "and back again"
+        # The bearer is derived from the access token, so rotating it invalidates
+        # every minted scope — a held process must not carry the old one.
+        settings.auth_token = original_token + "-rotated"
+        assert run.spawn_signature("/tmp", None) != ref, "the bearer changed"
+    finally:
+        settings.port = original_port
+        settings.auth_token = original_token
+
+    # A session-less run renders stdio entries instead — and those carry the
+    # same base URL in their spawn environment, so it follows the port too.
+    stdio = Harness(profile).create_run(
+        RunConfig(system_prompt="P", model="m", mcp_servers=["bg"])
+    )
+    before = stdio.spawn_signature("/tmp", None)
+    settings.port = 45999
+    try:
+        assert stdio.spawn_signature("/tmp", None) != before
+    finally:
+        settings.port = original_port

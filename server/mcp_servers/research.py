@@ -1,11 +1,10 @@
-"""MCP stdio server: native deep research (native-deep-research.md §7).
+"""MCP namespace: native deep research (native-deep-research.md §7).
 
 Exposes one tool, `mcp__research__deep_research(question)`, a thin HTTP shim to
 the `/api/sessions/{sid}/research` route in front of `ResearchManager`. Like
-bg/ask_agent, this process is a child of the harness CLI (not FastAPI), so it
-calls back over HTTP using the injected env:
-
-  OCTOPUS_API_BASE / OCTOPUS_AUTH_TOKEN / OCTOPUS_SESSION_ID
+bg/ask_agent it is served in-process over streamable-HTTP and reaches that route
+over loopback, with the session coming from the call's verified scope
+(`_host.resolve`, polish-2026-09.md §4 B1).
 
 The job runs in the background; its final cited report is injected into THIS
 session as a follow-up turn prefixed `[deep-research:<id>]`. So the tool

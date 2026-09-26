@@ -29,10 +29,6 @@ test's direct calls still act on the same objects.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # annotation-only; the runtime import is local
-    import uvicorn
 import glob
 import os
 
@@ -42,7 +38,9 @@ from server.agent_manager import AgentManager
 from server.config import settings
 from server.database import Database
 from server.delegations import DelegationManager
+from server.deps import get_session_manager
 from server.session_manager import SessionManager
+from tests.callback_api import start_callback_api
 
 # Widen PATH so shutil.which finds binaries in nvm + ~/.local/bin in
 # non-interactive pytest invocations.
@@ -64,42 +62,6 @@ pytestmark = pytest.mark.real
 # ---------------------------------------------------------------------------
 # Test fixtures
 # ---------------------------------------------------------------------------
-
-
-async def _serve_callback_api() -> tuple[int, uvicorn.Server, asyncio.Task]:
-    """Serve the routes the in-turn MCP shims POST back to, on a free port.
-
-    `mcp__ask__user` and `mcp__ask_agent__*` are real subprocesses making real
-    HTTP calls to `http://127.0.0.1:{settings.port}` (see
-    `harness.assembly.build_callback_env`). With nothing listening they fail
-    with "failed to reach Octopus … timed out", which used to be misread as
-    the model declining to call the tool.
-    """
-    import uvicorn
-    from fastapi import FastAPI
-
-    from server.routers import delegations as delegations_routes
-    from server.routers import questions as questions_routes
-
-    app = FastAPI()
-    app.include_router(delegations_routes.router)
-    app.include_router(questions_routes.router)
-
-    config = uvicorn.Config(
-        app, host="127.0.0.1", port=0, log_level="warning", lifespan="off"
-    )
-    server = uvicorn.Server(config)
-    # Signal handlers belong to pytest, not to a server we start mid-test.
-    server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
-    task = asyncio.create_task(server.serve())
-    for _ in range(200):
-        if server.started and server.servers:
-            break
-        await asyncio.sleep(0.05)
-    else:  # pragma: no cover - a stuck uvicorn is a real failure, not a skip
-        raise RuntimeError("callback API server never started")
-    port = server.servers[0].sockets[0].getsockname()[1]
-    return port, server, task
 
 
 async def _bootstrap(tmp_path, monkeypatch):
@@ -124,26 +86,26 @@ async def _bootstrap(tmp_path, monkeypatch):
     wd = str(tmp_path / "ws")
     os.makedirs(wd, exist_ok=True)
 
-    # Point the routers at THIS test's managers. They hold module-global
-    # references to the process-wide singletons, which know nothing about this
-    # in-memory DB; monkeypatch restores them after the test, so nothing leaks
-    # into the rest of the suite.
+    # Point the routes at THIS test's managers, which know about its in-memory
+    # DB. The session manager arrives as a FastAPI dependency (server/deps.py),
+    # so it is overridden per app rather than monkeypatched into each router
+    # module; the delegation manager is still a module global.
     from server.routers import delegations as delegations_routes
     from server.routers import questions as questions_routes
 
-    monkeypatch.setattr(delegations_routes, "session_manager", mgr)
     monkeypatch.setattr(delegations_routes, "delegation_manager", dm)
-    monkeypatch.setattr(questions_routes, "session_manager", mgr)
 
-    port, server, task = await _serve_callback_api()
-    monkeypatch.setattr(settings, "port", port)
+    # Both halves a real tool call needs reachable: the REST routes the shims
+    # post to, and the /mcp/* mounts the CLI itself connects to.
+    api = await start_callback_api(
+        delegations_routes.router,
+        questions_routes.router,
+        overrides={get_session_manager: lambda: mgr},
+    )
+    monkeypatch.setattr(settings, "port", api.port)
 
     async def teardown() -> None:
-        server.should_exit = True
-        try:
-            await asyncio.wait_for(task, timeout=10.0)
-        except (TimeoutError, asyncio.CancelledError):
-            task.cancel()
+        await api.stop()
         dm.shutdown()
         # Release any CLI process a finished turn is holding. Without this each
         # test leaves ~255MB of live `claude` behind for the rest of the run,

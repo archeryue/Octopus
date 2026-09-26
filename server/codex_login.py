@@ -25,6 +25,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .aio import stopped_within
 from .config import settings
 from .harness.run import _which_with_fallback, augmented_path
 
@@ -229,10 +230,9 @@ class CodexLoginManager:
         misbehaving child can never wedge a request."""
         if session._task is None:
             return
-        try:
-            await asyncio.wait_for(asyncio.shield(session._task), timeout=5.0)
-        except (TimeoutError, Exception):
-            pass
+        await stopped_within(
+            asyncio.shield(session._task), "codex login watcher", timeout=5.0
+        )
 
     async def _fail(self, session: CodexLoginSession, message: str) -> None:
         session.state = CodexLoginState.error

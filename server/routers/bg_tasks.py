@@ -18,7 +18,8 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..bg_tasks import BgTaskError, BgTaskRecord, bg_task_manager
-from ..session_manager import session_manager
+from ..deps import SessionMgr
+from ..sessions import SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["bg-tasks"])
 
@@ -45,7 +46,7 @@ def _record_to_json(rec: BgTaskRecord) -> dict[str, Any]:
     }
 
 
-def _require_session(session_id: str) -> str:
+def _require_session(session_manager: SessionManager, session_id: str) -> str:
     """Live sessions only — bg tasks attach to in-memory sessions so
     the cross-turn delivery has a target. Archived sessions are
     read-only history."""
@@ -62,6 +63,7 @@ def _require_session(session_id: str) -> str:
     status_code=status.HTTP_201_CREATED,
 )
 async def start_bg_task(
+    session_manager: SessionMgr,
     session_id: str,
     req: StartBgTaskRequest,
     _: str = Depends(verify_token),
@@ -74,7 +76,7 @@ async def start_bg_task(
     """
     if not req.command.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "command must be non-empty")
-    working_dir = _require_session(session_id)
+    working_dir = _require_session(session_manager, session_id)
     try:
         rec = await bg_task_manager.start_task(
             session_id=session_id,

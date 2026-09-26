@@ -21,7 +21,8 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..delegations import DelegationError, delegation_manager
-from ..session_manager import session_manager
+from ..deps import SessionMgr
+from ..sessions import SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["delegations"])
 
@@ -62,7 +63,7 @@ class FollowUpDelegationRequest(BaseModel):
     request: str
 
 
-def _require_session(session_id: str) -> None:
+def _require_session(session_manager: SessionManager, session_id: str) -> None:
     """Live sessions only — delegations attach to in-memory sessions so
     the broadcast listener has a target. Archived sessions are
     read-only history."""
@@ -78,6 +79,7 @@ def _require_session(session_id: str) -> None:
     status_code=status.HTTP_201_CREATED,
 )
 async def start_delegation(
+    session_manager: SessionMgr,
     session_id: str,
     req: StartDelegationRequest,
     _: str = Depends(verify_token),
@@ -92,7 +94,7 @@ async def start_delegation(
       doesn't resolve
     - 409 on cycle, depth, self-delegation, or ambiguous name
     """
-    _require_session(session_id)
+    _require_session(session_manager, session_id)
     try:
         rec = await delegation_manager.start_delegation(
             parent_session_id=session_id,
@@ -147,6 +149,7 @@ async def cancel_delegation(
 
 @router.post("/{session_id}/delegations/{delegation_id}/follow-up")
 async def follow_up_delegation(
+    session_manager: SessionMgr,
     session_id: str,
     delegation_id: str,
     req: FollowUpDelegationRequest,
@@ -174,7 +177,7 @@ async def follow_up_delegation(
     # round-resets the record, starts the child, and then silently
     # drops the terminal turn because there's no live parent to
     # inject into. Matches the start_delegation route's behaviour.
-    _require_session(session_id)
+    _require_session(session_manager, session_id)
     try:
         rec = await delegation_manager.follow_up_delegation(
             parent_session_id=session_id,

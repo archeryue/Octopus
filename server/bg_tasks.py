@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from .aio import drain_cancelled, stopped_within
 from .database import Database
 
 logger = logging.getLogger(__name__)
@@ -211,10 +212,9 @@ class BgTaskManager:
         # Wait for orchestration tasks to wrap up DB writes.
         for rt in list(self._running.values()):
             if rt.task and not rt.task.done():
-                try:
-                    await asyncio.wait_for(rt.task, timeout=5.0)
-                except (TimeoutError, Exception):
-                    pass
+                await stopped_within(
+                    rt.task, f"bg task {rt.record.id} orchestration", timeout=5.0
+                )
 
     # ------------------------------------------------------------------ public API (called by MCP / REST)
 
@@ -485,11 +485,7 @@ class BgTaskManager:
             # If proc already exited it's a no-op; if we're cleaning up
             # after the watchdog itself triggered, this cancels the
             # already-returned task (no-op).
-            idle_task.cancel()
-            try:
-                await idle_task
-            except (asyncio.CancelledError, Exception):
-                pass
+            await drain_cancelled(idle_task, f"bg task {rt.record.id} idle watchdog")
 
             # The reader set {stdout,stderr}_truncated when it had to
             # drop head bytes — finalize stamps a visible marker on

@@ -508,17 +508,31 @@ class DatabaseBase:
         # 1. Additive columns (wrapped — SQLite has no IF NOT EXISTS for ALTER).
         #    Adding a column with a REFERENCES clause is allowed because the
         #    default value is NULL.
-        for ddl in (
-            "ALTER TABLE sessions ADD COLUMN agent_id TEXT "
-            "REFERENCES agents(id) ON DELETE CASCADE",
-            "ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'",
-            "ALTER TABLE schedules ADD COLUMN agent_id TEXT "
-            "REFERENCES agents(id) ON DELETE CASCADE",
+        for table, column, ddl in (
+            (
+                "sessions",
+                "agent_id",
+                "ALTER TABLE sessions ADD COLUMN agent_id TEXT "
+                "REFERENCES agents(id) ON DELETE CASCADE",
+            ),
+            (
+                "sessions",
+                "origin",
+                "ALTER TABLE sessions ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'",
+            ),
+            (
+                "schedules",
+                "agent_id",
+                "ALTER TABLE schedules ADD COLUMN agent_id TEXT "
+                "REFERENCES agents(id) ON DELETE CASCADE",
+            ),
         ):
-            try:
+            # Asked, not attempted-and-swallowed: `except Exception: pass` around
+            # an ALTER absorbs a typo'd column, a locked database and a full disk
+            # as readily as the "column already exists" it was written for
+            # (polish-2026-09.md §3 A3).
+            if not await self._has_column(table, column):
                 await self.conn.execute(ddl)
-            except Exception:
-                pass
 
         # 2. The protected Default Agent — exactly one, created once.
         cursor = await self.conn.execute(
@@ -547,8 +561,12 @@ class DatabaseBase:
                     "WHERE id = ? AND name = 'Default'",
                     (default_id,),
                 )
-            except Exception:
-                pass
+            except sqlite3.IntegrityError:
+                # An agent already holds the name 'Octo' (unique-name index).
+                # Leave the system agent's old name rather than fail the boot.
+                logger.info(
+                    "system agent kept its old name: 'Octo' is already taken"
+                )
 
         # 3. Backfill sessions → Default Agent. (origin defaults to 'user'.)
         await self.conn.execute(

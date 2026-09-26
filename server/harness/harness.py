@@ -16,6 +16,7 @@ import asyncio
 import logging
 import signal
 
+from ..aio import stopped_within
 from .events import HarnessOneshotError
 from .login import LoginDriver
 from .profile import OneShotContext, RuntimeProfile
@@ -230,10 +231,7 @@ class Harness:
             # communicate() — reap the group too, else the CLI orphans (Vera
             # review). Best-effort wait, then propagate the cancellation.
             _reap()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except Exception:
-                pass
+            await stopped_within(proc.wait(), "one-shot CLI", timeout=2.0)
             raise
         if proc.returncode != 0:
             logger.warning(

@@ -1,4 +1,4 @@
-"""MCP stdio server: agent-to-agent delegation (agent-collaboration.md).
+"""MCP namespace: agent-to-agent delegation (agent-collaboration.md).
 
 The `ask_agent` server exposes four tools to the model. Their full
 MCP names are `mcp__ask_agent__<tool>` (the prefix is the config key
@@ -34,19 +34,15 @@ the short forms ``ask`` / ``cancel`` / ``answer`` / ``list``.
     first). Useful on a resumed turn to disambiguate multiple
     concurrent delegations by id.
 
-Channel: this process is a child of the harness CLI (claude / codex),
-NOT of Octopus's FastAPI server. We can't reach the DelegationManager
-singleton directly — we have to go over HTTP. The parent Octopus
-process injects three env vars when spawning us:
-
-  OCTOPUS_API_BASE     e.g. "http://127.0.0.1:8000"
-  OCTOPUS_AUTH_TOKEN   the same bearer token everything else uses
-  OCTOPUS_SESSION_ID   the parent session this CLI invocation is bound
-                       to (the delegation will be hung off this id)
-
-The session id scopes "this delegation belongs to this chat" — we
-don't trust the model to pass it correctly, so it's not a tool
-parameter.
+Channel: the tool body runs inside Octopus's own FastAPI process, served over
+streamable-HTTP at `/mcp/<key>` rather than spawned as a stdio subprocess per
+session (polish-2026-09.md §4 B1). It still reaches the rest of the app over
+loopback HTTP — the saving was the seven interpreters, not the hop — and the
+session it belongs to comes from the call's verified bearer scope rather than
+from `OCTOPUS_SESSION_ID` in a spawn environment. `_host.resolve` hides that
+difference, so the bodies below read as they always did. The session id is not a
+tool parameter: it is what scopes every call, and the model is not asked to get
+it right.
 
 Shape mirrors `server/mcp_servers/bg.py` deliberately; the bg pattern
 is the right shape for any cross-turn fire-and-forget operation whose

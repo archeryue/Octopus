@@ -40,7 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..session_manager import session_manager
+from ..deps import SessionMgr
 
 router = APIRouter(prefix="/api/sessions", tags=["questions"])
 
@@ -68,6 +68,7 @@ class SubmitAnswerRequest(BaseModel):
     status_code=status.HTTP_201_CREATED,
 )
 async def create_question(
+    session_manager: SessionMgr,
     session_id: str,
     req: CreateQuestionRequest,
     _: str = Depends(verify_token),
@@ -89,6 +90,7 @@ async def create_question(
 
 @router.get("/{session_id}/questions/{question_id}/answer")
 async def wait_for_answer(
+    session_manager: SessionMgr,
     session_id: str,
     question_id: str,
     timeout: float = 60.0,
@@ -113,6 +115,7 @@ async def wait_for_answer(
 
 @router.post("/{session_id}/questions/{question_id}/answer")
 async def submit_answer(
+    session_manager: SessionMgr,
     session_id: str,
     question_id: str,
     req: SubmitAnswerRequest,

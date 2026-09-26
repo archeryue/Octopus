@@ -293,6 +293,15 @@ def build_turn_argv(ctx: TurnContext) -> tuple[list[str], dict[str, Any]]:
         ",".join(disallowed),
         "--mcp-config",
         mcp_config,
+        # …and ONLY those. Without this the CLI also loads whatever MCP servers
+        # the host has configured for itself — on this box that meant three
+        # remote `claude.ai` servers in every agent's startup, none of which
+        # Octopus knows about. Two costs, both real: the per-agent MCP toggles
+        # in the UI stop describing the agent's actual tool surface, and every
+        # turn pays a network handshake it did not ask for. A slow one takes the
+        # whole namespace set down with it — the CLI reports *all* servers as
+        # failed when its startup budget blows, which is how this was found.
+        "--strict-mcp-config",
         "--append-system-prompt",
         ctx.system_prompt,
     ]
@@ -351,6 +360,7 @@ class ClaudeEventParser(EventParser):
         if kind == "system":
             subtype = obj.get("subtype")
             if subtype == "init":
+                self._log_mcp_status(obj)
                 sid = obj.get("session_id")
                 self._captured_session_id = sid
                 if sid:
@@ -410,6 +420,31 @@ class ClaudeEventParser(EventParser):
         if not text:
             return ParseOutput()
         return ParseOutput(events=[HarnessEvent(type="text_delta", content=text)])
+
+    @staticmethod
+    def _log_mcp_status(obj: dict[str, Any]) -> None:
+        """Say so when the CLI could not reach one of our tool namespaces.
+
+        The init event lists every MCP server with its status, and we ignored
+        it — so a namespace that failed to connect left no trace on our side at
+        all. The only evidence was the model mentioning it in prose, inside its
+        reply, where nothing greps and nobody looks until a test fails for a
+        reason that reads like the model being uncooperative. Since these
+        namespaces are served by this very process (polish-2026-09.md §4 B1),
+        a connection failure is ours to know about.
+        """
+        servers = obj.get("mcp_servers")
+        if not isinstance(servers, list):
+            return
+        broken = [
+            f"{s.get('name')}={s.get('status')}"
+            for s in servers
+            if isinstance(s, dict) and s.get("status") not in (None, "connected")
+        ]
+        if broken:
+            logger.warning(
+                "CLI reports MCP namespace(s) not connected: %s", ", ".join(broken)
+            )
 
     def _task_event(self, subtype: str, obj: dict[str, Any]) -> ParseOutput:
         """`system/task_*` → one normalized `subagent` event.

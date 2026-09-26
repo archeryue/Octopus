@@ -158,6 +158,86 @@ def resolve_timezone(tz: str | None) -> str:
 
 _DOW_NAMES = ("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat")
 
+# APScheduler's own day-of-week vocabulary, indexed by the crontab number.
+_APS_DOW = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
+_DOW_ALIASES = {name: i for i, name in enumerate(_APS_DOW)}
+
+
+def _crontab_dow_field(field: str) -> str:
+    """A crontab day-of-week field as APScheduler day *names*.
+
+    This exists because `CronTrigger.from_crontab` is not a crontab parser in
+    the part that matters: its `day_of_week` counts 0 = **Monday**, while
+    crontab — and every source a user or a model will quote — counts
+    0 = Sunday. `0 9 * * 1-5` therefore fired Tue-Sat, and `0 9 * * 0` fired
+    Monday. Naming the days removes the ambiguity entirely; APScheduler reads
+    `mon-fri` the way everyone means it.
+
+    Every form is reduced to the set of days it matches and re-emitted as
+    names, so ranges, lists, steps, `7` for Sunday and three-letter names all
+    land in one place. Raises ValueError on anything it cannot read, which the
+    callers surface as "not a valid crontab expression".
+    """
+    field = field.strip()
+    if field in ("*", "?"):
+        return "*"
+
+    def one(token: str) -> int:
+        token = token.strip().lower()
+        if token in _DOW_ALIASES:
+            return _DOW_ALIASES[token]
+        value = int(token)
+        if not 0 <= value <= 7:
+            raise ValueError(f"day-of-week out of range: {token}")
+        return value % 7  # crontab allows 7 for Sunday
+
+    days: set[int] = set()
+    for part in field.split(","):
+        step = 1
+        if "/" in part:
+            part, _, raw_step = part.partition("/")
+            step = int(raw_step)
+            if step < 1:
+                raise ValueError("day-of-week step must be positive")
+        if part.strip() in ("*", ""):
+            span = list(range(7))
+        elif "-" in part.strip().lstrip("-"):
+            lo_raw, _, hi_raw = part.partition("-")
+            lo, hi = one(lo_raw), one(hi_raw)
+            span = (
+                list(range(lo, hi + 1))
+                if lo <= hi
+                # A wrapping range (fri-mon) is legal crontab.
+                else list(range(lo, 7)) + list(range(0, hi + 1))
+            )
+        else:
+            span = [one(part)]
+        days.update(day for i, day in enumerate(span) if i % step == 0)
+    if not days:
+        raise ValueError("day-of-week matched no days")
+    return ",".join(_APS_DOW[d] for d in sorted(days))
+
+
+def cron_trigger(expr: str, tz: str | None = None) -> CronTrigger:
+    """Build the trigger for a standard 5-field crontab expression.
+
+    The one place a cron string becomes a schedule, so the day-of-week
+    translation above cannot be forgotten by one caller — the validator, the
+    runner and the tests all come through here.
+    """
+    fields = expr.split()
+    if len(fields) != 5:
+        raise ValueError("a crontab expression has five fields")
+    minute, hour, day, month, dow = fields
+    return CronTrigger(
+        minute=minute,
+        hour=hour,
+        day=day,
+        month=month,
+        day_of_week=_crontab_dow_field(dow),
+        timezone=ZoneInfo(tz) if tz else None,
+    )
+
 
 def _dow_list(field: str) -> list[int] | None:
     """The day-of-week field as sorted unique 0-6 ints, or None if it uses a
@@ -287,7 +367,7 @@ def build_explicit_schedule(
                 "(e.g. '0 9 * * 1-5' for weekdays at 9am)."
             )
         try:
-            CronTrigger.from_crontab(expr, timezone=ZoneInfo(zone))
+            cron_trigger(expr, zone)
         except (ValueError, ZoneInfoNotFoundError) as e:
             raise ScheduleParseError(f"`cron` isn't a valid crontab expression: {e}")
         return ParsedSchedule(
@@ -507,7 +587,7 @@ def validate_parsed(obj: dict, *, default_tz: str, original_text: str) -> Parsed
             raise ScheduleParseError("Couldn't work out the timing. Try rephrasing.")
         tz = normalize_timezone(default_tz)
         try:
-            CronTrigger.from_crontab(cron, timezone=ZoneInfo(tz))
+            cron_trigger(cron, tz)
         except (ValueError, ZoneInfoNotFoundError):
             raise ScheduleParseError("Couldn't work out the timing. Try rephrasing.")
         return ParsedSchedule(

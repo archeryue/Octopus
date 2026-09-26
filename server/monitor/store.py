@@ -28,6 +28,8 @@ from typing import Any
 
 import aiosqlite
 
+from ..aio import drain_cancelled
+
 logger = logging.getLogger(__name__)
 
 # The sink is bounded and lossy on purpose. A monitor that can stall a turn, or
@@ -142,11 +144,7 @@ class MetricsStore:
     async def stop(self) -> None:
         self._stopping = True
         if self._writer:
-            self._writer.cancel()
-            try:
-                await self._writer
-            except (asyncio.CancelledError, Exception):
-                pass
+            await drain_cancelled(self._writer, "monitor writer")
             self._writer = None
         await self.drain()
         if self._conn:

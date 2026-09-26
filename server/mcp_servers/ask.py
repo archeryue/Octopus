@@ -1,4 +1,4 @@
-"""MCP stdio server exposing one tool: `user` (presented to the model
+"""MCP namespace exposing one tool: `user` (presented to the model
 as `mcp__ask__user`).
 
 Replaces the built-in `AskUserQuestion` tool, which Octopus formerly

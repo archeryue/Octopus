@@ -83,6 +83,10 @@ def test_turn_argv_full_config(tmp_path):
     assert "--" not in argv
     cfg = json.loads(argv[argv.index("--mcp-config") + 1])["mcpServers"]
     assert set(cfg) == {"bg", "ask"}  # only the selected built-ins
+    # …and nothing the host has configured for itself: an agent's tool surface
+    # is exactly what Octopus gave it, or the per-agent MCP toggles are a lie
+    # (and every turn pays for handshakes nobody asked for).
+    assert "--strict-mcp-config" in argv
     ap = argv[argv.index("--append-system-prompt") + 1]
     assert ap.startswith("PERSONA") and "Octopus in-app tools" in ap
     assert kw["cwd"] == str(tmp_path)
@@ -283,3 +287,44 @@ def test_oneshot_argv_and_parse(tmp_path):
     with pytest.raises(HarnessOneshotError) as ei:
         parse_oneshot_stdout("not json")
     assert ei.value.code == "bad_output"
+
+
+def test_a_namespace_that_failed_to_connect_is_logged(caplog):
+    """The init event lists every MCP server with its status, and a namespace
+    that failed to connect used to leave no trace on our side — the only
+    evidence was the model saying the tool was unavailable, in prose, inside its
+    reply. These namespaces are served by this very process, so a connection
+    failure is ours to know about."""
+    p = ClaudeEventParser()
+    with caplog.at_level("WARNING"):
+        out = p.parse(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+                "mcp_servers": [
+                    {"name": "bg", "status": "connected"},
+                    {"name": "ask", "status": "failed"},
+                    {"name": "schedule", "status": "needs-auth"},
+                ],
+            }
+        )
+    # Still the session_started event; the log is additional, not instead.
+    assert [e.type for e in out.events] == ["session_started"]
+    assert "ask=failed" in caplog.text
+    assert "schedule=needs-auth" in caplog.text
+    assert "bg" not in caplog.text.split("not connected:")[-1]
+
+
+def test_all_namespaces_connected_logs_nothing(caplog):
+    p = ClaudeEventParser()
+    with caplog.at_level("WARNING"):
+        p.parse(
+            {
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+                "mcp_servers": [{"name": "bg", "status": "connected"}],
+            }
+        )
+    assert "not connected" not in caplog.text

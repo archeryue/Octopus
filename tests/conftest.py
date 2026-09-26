@@ -3,13 +3,18 @@
 import atexit
 import os
 import shutil
+import signal
 import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
 # Override env vars before any module imports Settings, so tests
 # don't pick up values from the user's .env file.
 os.environ["OCTOPUS_AUTH_TOKEN"] = "changeme"
+
+_PROC = Path("/proc")
 
 # Isolate per-agent state (the canonical memory dir each agent gets) under a
 # throwaway temp root, so creating agents in tests never litters the
@@ -20,9 +25,100 @@ _TEST_AGENTS_DIR = tempfile.mkdtemp(prefix="octopus-test-agents-")
 os.environ["OCTOPUS_AGENTS_DIR"] = _TEST_AGENTS_DIR
 atexit.register(lambda: shutil.rmtree(_TEST_AGENTS_DIR, ignore_errors=True))
 
+# A wider MCP startup budget for the real-CLI tier than production needs.
+# Those tests run the callback server, the turn engine and two or three live
+# CLIs inside one process and one event loop, and each CLI opens a handshake per
+# namespace on startup. Measured in isolation a handshake takes ~0.1 s, but
+# under that pressure the CLI's default budget is occasionally missed, and the
+# CLI then reports the namespace as `CONNECT_TIMEOUT` and drops its tools — a
+# test failure that says "the model ignored the instruction" when the tool was
+# never offered. Production serves from its own process; this is test pressure,
+# so it is corrected here rather than in the product.
+os.environ.setdefault("MCP_TIMEOUT", "30000")
+
 # Real-CLI availability gates live in tests/cli_gate.py (imported by the
 # *_real.py suites as `from tests.cli_gate import …`); they're not here because
 # `import conftest` isn't reliably resolvable under pytest collection.
+
+
+def _ppid(pid: int) -> int | None:
+    """Parent pid from /proc/<pid>/stat — same trick the monitor sampler uses.
+
+    The comm field can contain spaces and parentheses, so everything up to the
+    last ')' is skipped rather than split on.
+    """
+    try:
+        raw = (_PROC / str(pid) / "stat").read_text()
+    except OSError:
+        return None
+    try:
+        return int(raw[raw.rindex(")") + 1 :].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _surviving_cli_pids() -> list[int]:
+    """Live `claude` / `codex` processes descended from this pytest run.
+
+    Ancestry is checked, not just the name: this box runs a production Octopus
+    with CLIs of its own, and a test suite has no business killing those.
+    """
+    me = os.getpid()
+    found: list[int] = []
+    for entry in _PROC.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == me:
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes().decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "claude" not in cmdline and "codex" not in cmdline:
+            continue
+        cur: int | None = pid
+        for _ in range(8):  # a CLI sits a couple of hops below us at most
+            cur = _ppid(cur) if cur else None
+            if cur is None or cur == 1:
+                break
+            if cur == me:
+                found.append(pid)
+                break
+    return found
+
+
+@pytest.fixture(autouse=True)
+def _no_cli_left_behind(request):
+    """Release every CLI a real test started, whether or not it remembered to.
+
+    A held `claude` is ~250 MB and lives until its manager is told to stop.
+    Several of the `*_real.py` suites build their own `SessionManager` and never
+    tell it, so the tier accumulated idle CLIs as it ran — which is how a suite
+    where every test passes alone starts failing in a group: the box gets slow
+    enough that a CLI's own MCP handshake times out, and the model then reports
+    the tool as unavailable. (inline-steering.md §7 records the OOM this caused
+    the first time.)
+
+    Hermetic tests spawn nothing, so this only runs for the `real` marker.
+    """
+    yield
+    if request.node.get_closest_marker("real") is None:
+        return
+    survivors = _surviving_cli_pids()
+    for pid in survivors:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    if not survivors:
+        return
+    time.sleep(0.3)
+    for pid in _surviving_cli_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
 
 
 def pytest_runtest_setup(item):

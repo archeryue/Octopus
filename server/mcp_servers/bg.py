@@ -1,4 +1,4 @@
-"""MCP stdio server: cross-turn background tasks.
+"""MCP namespace: cross-turn background tasks.
 
 The `bg` server exposes three tools to the model:
 

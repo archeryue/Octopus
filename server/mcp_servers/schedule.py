@@ -1,4 +1,4 @@
-"""MCP stdio server: an agent's own schedules (schedule-tool.md).
+"""MCP namespace: an agent's own schedules (schedule-tool.md).
 
 Octopus has had durable scheduling since agent-refactor.md — APScheduler,
 a `schedules` table, a real turn per fire — but only a human could set one
@@ -16,12 +16,15 @@ way; the full MCP names are `mcp__schedule__<tool>`:
     one. Setting a recurrence replaces whichever one it had.
   - `delete(schedule_id)` — remove it.
 
-Channel: this process is a child of the harness CLI (claude / codex), not of
-Octopus's FastAPI server, so it calls back over HTTP with the injected env —
-OCTOPUS_API_BASE / OCTOPUS_AUTH_TOKEN / OCTOPUS_SESSION_ID — exactly like
-bg / ask / ask_agent / research. The session id is not a tool parameter: it
-is what scopes every call to the agent that owns this conversation, and the
-model is not asked to get that right.
+Channel: the tool body runs inside Octopus's own FastAPI process, served over
+streamable-HTTP at `/mcp/<key>` rather than spawned as a stdio subprocess per
+session (polish-2026-09.md §4 B1). It still reaches the rest of the app over
+loopback HTTP — the saving was the seven interpreters, not the hop — and the
+session it belongs to comes from the call's verified bearer scope rather than
+from `OCTOPUS_SESSION_ID` in a spawn environment. `_host.resolve` hides that
+difference, so the bodies below read as they always did. The session id is not a
+tool parameter: it is what scopes every call, and the model is not asked to get
+it right.
 """
 
 from __future__ import annotations

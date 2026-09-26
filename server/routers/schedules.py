@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
+from ..deps import SessionMgr
 from ..models import (
     AgentScheduleRequest,
     CreateScheduleRequest,
@@ -18,6 +19,7 @@ from ..schedule_ai import (
     build_explicit_schedule,
     recurrence_label_for,
 )
+from ..sessions import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,9 @@ async def _broadcast_change() -> None:
     a schedule for itself mid-conversation. The payload is deliberately empty;
     one code path reloads the list however it changed.
     """
+    # The singleton rather than a request's: this also runs under
+    # `create_schedule_for_agent`, which non-request callers use — the same rule
+    # every non-router module follows (deps.py).
     from ..session_manager import session_manager
 
     try:
@@ -196,11 +201,10 @@ async def list_schedules(_: str = Depends(verify_token)):
 
 
 @router.post("", response_model=ScheduleInfo, status_code=status.HTTP_201_CREATED)
-async def create_schedule(req: CreateScheduleRequest, _: str = Depends(verify_token)):
+async def create_schedule(session_manager: SessionMgr, req: CreateScheduleRequest, _: str = Depends(verify_token)):
     """Create a schedule. Prefer `agent_id`; `session_id` is accepted for one
     release and resolved to the session's owning agent (agent-refactor.md
     §5.4)."""
-    from ..session_manager import session_manager
 
     agent_id = req.agent_id
     if agent_id is None and req.session_id:
@@ -261,7 +265,7 @@ async def delete_schedule(schedule_id: str, _: str = Depends(verify_token)):
 # --------------------------------------------------------------------------- #
 
 
-def _session_agent_id(session_id: str) -> str:
+def _session_agent_id(session_manager: SessionManager, session_id: str) -> str:
     """The agent that owns this session — the only agent these routes act for.
 
     Scoping is derived, never passed: the caller is an MCP shim running inside
@@ -269,7 +273,6 @@ def _session_agent_id(session_id: str) -> str:
     spawned for. An agent can therefore neither read nor rewrite another
     agent's schedules through this surface.
     """
-    from ..session_manager import session_manager
 
     session = session_manager.get_session(session_id)
     if session is None:
@@ -298,8 +301,10 @@ async def _owned_row(schedule_id: str, agent_id: str) -> dict:
 
 
 @session_router.get("/{session_id}/schedules", response_model=list[ScheduleInfo])
-async def list_session_schedules(session_id: str, _: str = Depends(verify_token)):
-    agent_id = _session_agent_id(session_id)
+async def list_session_schedules(
+    session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)
+):
+    agent_id = _session_agent_id(session_manager, session_id)
     rows = await _get_db().load_schedules()
     return [to_schedule_info(r) for r in rows if r["agent_id"] == agent_id]
 
@@ -310,12 +315,15 @@ async def list_session_schedules(session_id: str, _: str = Depends(verify_token)
     status_code=status.HTTP_201_CREATED,
 )
 async def create_session_schedule(
-    session_id: str, req: AgentScheduleRequest, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    req: AgentScheduleRequest,
+    _: str = Depends(verify_token),
 ):
     """Create a schedule for this session's agent, with the recurrence stated
     outright (no AI parse). `in_session` decides where the fires land: this
     conversation, or a throwaway session per fire."""
-    agent_id = _session_agent_id(session_id)
+    agent_id = _session_agent_id(session_manager, session_id)
     try:
         parsed = build_explicit_schedule(
             prompt=req.prompt,
@@ -346,12 +354,13 @@ async def create_session_schedule(
     "/{session_id}/schedules/{schedule_id}", response_model=ScheduleInfo
 )
 async def update_session_schedule(
+    session_manager: SessionMgr,
     session_id: str,
     schedule_id: str,
     req: UpdateScheduleRequest,
     _: str = Depends(verify_token),
 ):
-    agent_id = _session_agent_id(session_id)
+    agent_id = _session_agent_id(session_manager, session_id)
     existing = await _owned_row(schedule_id, agent_id)
     try:
         updates = schedule_updates(existing, req)
@@ -372,9 +381,12 @@ async def update_session_schedule(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_session_schedule(
-    session_id: str, schedule_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    schedule_id: str,
+    _: str = Depends(verify_token),
 ):
-    agent_id = _session_agent_id(session_id)
+    agent_id = _session_agent_id(session_manager, session_id)
     await _owned_row(schedule_id, agent_id)
     await _get_runner().remove(schedule_id)
     await _get_db().delete_schedule(schedule_id)

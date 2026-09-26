@@ -12,13 +12,22 @@ import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from .. import fork_helpers
 from .. import monitor as _monitor
+from ..aio import drain_cancelled, stopped_within
 from ..attachments import MAX_ATTACHMENTS_PER_MESSAGE
 from ..attachments import get_path as get_attachment_path
-from ..harness import HarnessEvent, HarnessRun, RunConfig, get_harness
+from ..harness import (
+    Harness,
+    HarnessCredential,
+    HarnessEvent,
+    HarnessRun,
+    RunConfig,
+    get_harness,
+)
 from ..large_prompts import spill_if_large
 from ..models import AttachmentMetadata, MessageContent, MessageRole, SessionStatus
 from ..monitor import Event as _MonEvent
@@ -35,6 +44,127 @@ from .base import (
     _split_tool_list,
     logger,
 )
+
+
+@dataclass
+class _Attempt:
+    """One CLI invocation inside a logical turn.
+
+    These eleven fields were local variables in a 473-line `_run_backend`, and
+    the fact that eight of its branches read and wrote them is precisely why
+    that method could not be split: an event handler needs the same mutable
+    view of "what this invocation has seen so far" as the failure classifiers
+    that read it afterwards. Naming that view is what makes both extractable
+    (docs/plans/polish-2026-09.md §3 A1.5).
+    """
+
+    backend: HarnessRun
+    # The prompt THIS invocation ran — the original on the first pass, and
+    # whatever the retry decided on later ones.
+    prompt: str
+    # True when the process was already holding this conversation, so the
+    # prompt goes in as the next message rather than a fresh invocation.
+    reused: bool
+    saw_result: bool = False
+    saw_tool_use: bool = False
+    # Whether any assistant text streamed — gates the transient retry (don't
+    # re-run a turn that already produced output).
+    saw_text: bool = False
+    # Terminal-error signal for post-turn auth-expiry classification.
+    saw_error_event: bool = False
+    error_text: str = ""
+    # Streaming-text coalescing (inline-steering.md §4 S1). The CLI emits one
+    # delta per token; forwarding each as its own WS frame would be a frame
+    # per token and a React render per token. We batch them into at most one
+    # frame every _DELTA_FLUSH_SECONDS, which is still far below the threshold
+    # where a human sees stepping, and flush before any non-delta event so
+    # ordering with tool calls and the final block is exact.
+    delta_buf: list[str] = field(default_factory=list)
+    delta_last_flush: float = 0.0
+    # Per-turn watchdog state (turn-safety.md §3): the watchdog stops a turn
+    # that goes silent (idle) or runs too long (overall) so it can never hang
+    # forever the way the deep-research wedge did.
+    watchdog: dict[str, Any] = field(
+        default_factory=lambda: {"last": time.monotonic(), "tripped": None}
+    )
+
+    def touch(self) -> None:
+        """Mark progress, so the idle watchdog doesn't trip on a live turn."""
+        self.watchdog["last"] = time.monotonic()
+
+    @property
+    def timeout(self) -> tuple[str, int] | None:
+        """`(reason, limit)` when the watchdog stopped this attempt."""
+        return self.watchdog["tripped"]
+
+    @property
+    def failed(self) -> bool:
+        """A turn that errored, or ended without ever saying it was done."""
+        return self.saw_error_event or not self.saw_result
+
+    @property
+    def produced_output(self) -> bool:
+        return self.saw_tool_use or self.saw_text
+
+
+@dataclass
+class _Turn:
+    """What survives across the CLI invocations of one logical turn.
+
+    The retry budgets are per turn, not per attempt — that is the whole point
+    of them — and so is the resume id the turn started from.
+    """
+
+    # The prompt the user (or the injector) actually sent. A transient retry
+    # with no output yet re-runs THIS, not whatever a later attempt was given.
+    prompt: str
+    # The prompt the next attempt will run: `prompt`, "continue", or a
+    # history-replay wrapper.
+    current_prompt: str
+    harness: Harness
+    # The effective credential id (session override, else the agent's). Used
+    # to flag the right row needs_reconnect on a mid-turn 401
+    # (harness-credential-reauth.md §4). None = host-default CLI auth.
+    cred_id: str | None
+    # The resume id this logical turn STARTED from. A transient retry re-runs
+    # the original invocation, so it must restore this — a failed no-output
+    # attempt can still emit `session_started` and mutate
+    # session.claude_session_id, which would otherwise turn the retry into a
+    # `--resume <failed-id>` of the same prompt (Vera review,
+    # harness-transient-retry.md §4).
+    resume_at_turn_start: str | None
+    recovery_attempts: int = 0
+    transient_attempts: int = 0
+    # A dangling resume id is recoverable exactly once per turn: clear it,
+    # start fresh. A second failure is a different problem.
+    stale_session_retries: int = 0
+
+
+@dataclass
+class _Decision:
+    """What one finished CLI invocation means: stop, or run it again.
+
+    `events` are the frames the user sees before either happens — the
+    explanation for whichever it is. Returning this rather than yielding in
+    place is what lets each classifier be an ordinary method instead of a
+    branch inside an async generator.
+    """
+
+    retry: bool
+    events: list[dict[str, Any]] = field(default_factory=list)
+    # The prompt the retry runs; None keeps whatever the turn already had.
+    prompt: str | None = None
+    delay: float = 0.0
+
+    @classmethod
+    def stop(cls, *events: dict[str, Any]) -> _Decision:
+        return cls(retry=False, events=list(events))
+
+    @classmethod
+    def again(
+        cls, prompt: str, *events: dict[str, Any], delay: float = 0.0
+    ) -> _Decision:
+        return cls(retry=True, events=list(events), prompt=prompt, delay=delay)
 
 
 class TurnsMixin(SessionManagerBase):
@@ -485,10 +615,9 @@ class TurnsMixin(SessionManagerBase):
         if session._active_task and not session._active_task.done():
             session._active_task.cancel()
         if session._backend:
-            try:
-                await session._backend.stop()
-            except Exception:
-                pass
+            await stopped_within(
+                session._backend.stop(), f"session {session.id} backend"
+            )
             self._forget_backend(session)
         if session._lock.locked():
             session._lock.release()
@@ -500,503 +629,628 @@ class TurnsMixin(SessionManagerBase):
             {"type": "status", "session_id": session_id, "status": "idle"}
         )
 
+    # ------------------------------------------------------------------ #
+    # One CLI invocation: acquire a process, start it, retire it
+    # ------------------------------------------------------------------ #
+
+    async def _acquire_backend(
+        self,
+        session: Session,
+        credential: HarnessCredential | None,
+        agent: dict[str, Any] | None,
+        connectors: list[tuple[Any, Any]] | None,
+    ) -> tuple[HarnessRun, bool]:
+        """The process this attempt runs in, and whether it already holds the
+        conversation.
+
+        Reuse the session's live process when nothing it baked in at spawn has
+        changed (inline-steering.md §7); otherwise spawn. Declining to reuse
+        must not simply overwrite the handle: that orphans a live ~255MB
+        process that nothing points at any more, so neither the reaper nor
+        shutdown can ever reach it. Let it go properly first.
+        """
+        reused = self._reusable_run(
+            session, session.working_dir, credential, agent, connectors
+        )
+        if reused is None and session._backend is not None:
+            stale = session._backend
+            self._forget_backend(session)
+            try:
+                await asyncio.wait_for(stale.stop(), timeout=_HELD_STOP_TIMEOUT)
+            except (TimeoutError, Exception):
+                logger.warning(
+                    "session %s: abandoning a process we couldn't stop", session.id
+                )
+        backend = reused or self._make_run(session, agent, connectors)
+        session._backend = backend
+        return backend, reused is not None
+
+    async def _start_attempt(
+        self,
+        session: Session,
+        attempt: _Attempt,
+        credential: HarnessCredential | None,
+    ) -> None:
+        """Hand this attempt's prompt to the process.
+
+        A reused process already holds this conversation, so there is no prompt
+        to re-render and no transcript to resume: just hand it the next
+        message.
+        """
+        if attempt.reused:
+            await attempt.backend.send_turn(attempt.prompt)
+        else:
+            await attempt.backend.start(
+                attempt.prompt,
+                session.working_dir,
+                session.claude_session_id,
+                credential=credential,
+            )
+
+    async def _open_steering_window(
+        self, session: Session, backend: HarnessRun
+    ) -> asyncio.Task[int] | None:
+        """Open the steering window and start the writer that drains it.
+
+        Open from here until `result` (inline-steering.md §8). Only a backend
+        that takes input on stdin can be steered; everything else keeps
+        queueing, so it gets no writer.
+        """
+        if not backend.reusable:
+            return None
+        async with session._steer_lock:
+            session._steer_open = True
+            if session._steer_queue:
+                session._steer_ready.set()
+        return asyncio.create_task(
+            self._steer_writer(session, backend),
+            name=f"steer-writer-{session.id}",
+        )
+
+    async def _close_steering_window(
+        self, session: Session, steer_writer: asyncio.Task | None
+    ) -> None:
+        """Shut the steering window and hand back anything the writer missed.
+
+        Ordering matters and is the reason this runs before anything else
+        touches the process: once the window is shut, a frame written now would
+        start a fresh turn rather than steer this one. A steer that missed its
+        turn is not dropped — it becomes a normal queued prompt and runs next
+        (inline-steering.md §9).
+        """
+        async with session._steer_lock:
+            session._steer_open = False
+        await drain_cancelled(steer_writer, f"session {session.id} steer writer")
+        async with session._steer_lock:
+            if session._steer_queue:
+                logger.info(
+                    "session %s: %d steer(s) missed the turn; queuing them",
+                    session.id,
+                    len(session._steer_queue),
+                )
+                session._pending_queue.extend(session._steer_queue)
+                session._steer_queue.clear()
+            session._steer_ready.clear()
+
+    async def _stop_watchdog(self, watchdog: asyncio.Task | None) -> None:
+        """Cancel the turn watchdog and wait for it to finish unwinding."""
+        await drain_cancelled(watchdog, "turn watchdog")
+
+    @staticmethod
+    def _turn_ended_cleanly(attempt: _Attempt) -> bool:
+        """Whether the CLI process is worth keeping for the next turn.
+
+        Only a turn that ended the way a turn is supposed to — a clean
+        `result`, nothing tripped, nothing to retry. A watchdog timeout, an
+        error or an interrupt all leave the CLI in a state we would rather not
+        inherit, so those shut it down and the next turn spawns fresh.
+        """
+        return (
+            attempt.backend.reusable
+            and attempt.backend.is_alive()
+            and attempt.saw_result
+            and not attempt.saw_error_event
+            and attempt.timeout is None
+        )
+
+    async def _retire_or_hold_process(
+        self, session: Session, attempt: _Attempt
+    ) -> None:
+        """Hold the process for the next turn, or shut it down now."""
+        if self._turn_ended_cleanly(attempt):
+            session._held_run_at = time.monotonic()
+            # Enforce the cap HERE, not only on the reaper's tick. The reaper
+            # is a background task that doesn't exist in tests and runs every
+            # 30s in production, so leaving the bound to it means N finished
+            # sessions can each pin ~255MB in between — which is exactly how
+            # the backend suite got OOM-killed.
+            await self._enforce_held_cap(keep_session_id=session.id)
+            return
+        try:
+            await attempt.backend.stop()
+        except Exception:
+            logger.exception(
+                "backend.stop() failed cleanly for session %s", session.id
+            )
+        self._forget_backend(session)
+
+    # ------------------------------------------------------------------ #
+    # One event off the stream
+    # ------------------------------------------------------------------ #
+
+    def _coalesce_delta(
+        self, session: Session, attempt: _Attempt, event: HarnessEvent
+    ) -> dict[str, Any] | None:
+        """Buffer a token delta, emitting a frame at most every flush window."""
+        if event.content:
+            attempt.delta_buf.append(event.content)
+        now = time.monotonic()
+        if now - attempt.delta_last_flush < _DELTA_FLUSH_SECONDS:
+            return None
+        attempt.delta_last_flush = now
+        return self._flush_text_deltas(session.id, attempt.delta_buf)
+
+    async def _remember_resume_id(self, session: Session, resume_id: str) -> None:
+        """Persist the engine-side conversation id this session resumes from."""
+        if session.claude_session_id == resume_id:
+            return
+        session.claude_session_id = resume_id
+        if self.db:
+            await self.db.update_session_field(
+                session.id, claude_session_id=resume_id
+            )
+
+    def _note_question_request(
+        self, session: Session, question_id: str, tool_input: dict[str, Any] | None
+    ) -> None:
+        """Track pending question state for reconnect re-render."""
+        session._pending_questions[question_id] = PendingQuestion(
+            question_id=question_id,
+            questions=(tool_input or {}).get("questions") or [],
+        )
+        self._schedule_question_timeout(session, question_id)
+
+    async def _handle_result_event(
+        self, session: Session, attempt: _Attempt, event: HarnessEvent
+    ) -> None:
+        """The turn said it was done: record it and settle the session."""
+        attempt.saw_result = True
+        _monitor.record(_MonEvent(
+            kind="turn",
+            session_id=session.id,
+            agent_id=session.agent_id,
+            backend=session.backend,
+            duration_ms=event.duration_ms,
+            ok=not event.is_error,
+            detail={"cost": event.cost, "num_turns": event.num_turns},
+        ))
+        # Shut the steering window first: past this point the CLI is idle, and
+        # a frame written now would start a fresh turn rather than steer this
+        # one.
+        async with session._steer_lock:
+            session._steer_open = False
+        # Update the resume id in case the CLI reissued a different one
+        # mid-stream.
+        if event.session_id:
+            await self._remember_resume_id(session, event.session_id)
+        # First fork turn produced a result: drop the ephemeral fork state so
+        # turn 2+ behaves like a normal resumed session (session-rewind.md
+        # §5.3.2/§5.6.5).
+        await self._clear_fork_first_turn_state(session)
+
+    @staticmethod
+    def _capture_error_text(attempt: _Attempt, event: HarnessEvent) -> None:
+        """Keep a failed turn's own words for the classifiers that run after it
+        (harness-credential-reauth.md §4). `tool_result` errors never get here
+        — a tool failing isn't the turn failing."""
+        attempt.saw_error_event = True
+        if event.content:
+            attempt.error_text += event.content + "\n"
+        if event.raw:
+            try:
+                attempt.error_text += json.dumps(event.raw) + "\n"
+            except (TypeError, ValueError):
+                pass
+
+    async def _handle_stream_event(
+        self, session: Session, attempt: _Attempt, event: HarnessEvent
+    ) -> list[dict[str, Any]]:
+        """One harness event → the WS frames it produces, in order.
+
+        The dispatch the whole loop reduces to. The event vocabulary is
+        normalized and enumerated in `harness/events.py`, so this branches on a
+        contract rather than on whatever a CLI happened to print.
+        """
+        if event.type == "text_delta":
+            flushed = self._coalesce_delta(session, attempt, event)
+            return [flushed] if flushed is not None else []
+
+        frames: list[dict[str, Any]] = []
+        # Anything else ends the current delta run: flush it first so the
+        # partial text can never arrive after the completed block that
+        # supersedes it.
+        flushed = self._flush_text_deltas(session.id, attempt.delta_buf)
+        if flushed is not None:
+            attempt.delta_last_flush = time.monotonic()
+            frames.append(flushed)
+
+        # session_started arrives on the CLI's init event, before any tool
+        # work. Persist the resume id immediately so the recovery path can use
+        # it even if the bug suppresses `result`. Internal event — never
+        # persisted or broadcast.
+        if event.type == "session_started" and event.session_id:
+            await self._remember_resume_id(session, event.session_id)
+            return frames
+
+        # A sub-agent's progress: remembered on the session so a reload can
+        # still paint the card, broadcast so the open UI paints it now, and
+        # never persisted — the Task tool call and its result are the durable
+        # record (native-subagents.md §4).
+        if event.type == "subagent" and event.subagent is not None:
+            self._record_subagent(session, event.subagent)
+
+        if event.type == "tool_use":
+            attempt.saw_tool_use = True
+        if event.type == "text" and event.content and event.content.strip():
+            attempt.saw_text = True
+
+        # Persist whichever message shape this event maps to. The returned seq
+        # goes onto the WS event so reconnecting clients can dedupe against
+        # their snapshot.
+        msg_content = self._event_to_message_content(event)
+        msg_seq: int | None = None
+        if msg_content is not None:
+            msg_seq = await self._persist_message(session, msg_content)
+
+        if event.type == "question_request" and event.tool_use_id:
+            self._note_question_request(
+                session, event.tool_use_id, event.tool_input
+            )
+        if event.type == "result":
+            await self._handle_result_event(session, attempt, event)
+        # A failed `result` or an `error` event is the turn failing; a
+        # `tool_result` error is not.
+        if event.type in ("result", "error") and event.is_error:
+            self._capture_error_text(attempt, event)
+
+        # Translate into the WS message shape the front-end expects.
+        ws_event = self._event_to_ws_message(session.id, event)
+        if ws_event is not None:
+            if msg_seq is not None:
+                ws_event["seq"] = msg_seq
+            frames.append(ws_event)
+        return frames
+
+    # ------------------------------------------------------------------ #
+    # What a finished attempt means: stop, or run the CLI again
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _failure_blob(attempt: _Attempt) -> str:
+        """Everything a failed attempt said, for the pattern matchers: the
+        terminal event's content/raw plus the CLI's stderr, capped.
+
+        getattr: a real HarnessRun exposes stderr_text; lightweight test and
+        backend stand-ins may not.
+        """
+        stderr_text = getattr(attempt.backend, "stderr_text", "") or ""
+        return (attempt.error_text + "\n" + stderr_text)[:8000]
+
+    async def _timeout_decision(
+        self, session: Session, turn: _Turn, attempt: _Attempt
+    ) -> _Decision | None:
+        """Turn watchdog tripped (idle or overall cap): the backend was stopped
+        mid-turn. Surface a clear error and STOP — this runs before the
+        auth/transient/premature-exit classifiers so a timeout is never
+        mis-read as transient or respawned (turn-safety.md §3)."""
+        if attempt.timeout is None:
+            return None
+        reason, limit = attempt.timeout
+        return _Decision.stop(
+            await self._surface_turn_timeout(
+                session, reason=reason, limit=limit, backend=turn.harness.backend
+            )
+        )
+
+    async def _auth_decision(
+        self, session: Session, turn: _Turn, blob: str
+    ) -> _Decision | None:
+        """Reactive auth-expiry: a failed turn whose error text matches this
+        backend's auth-rejection patterns means the bound credential is dead
+        (revoked / rotated / expired past what the proactive refresh caught).
+        Flag it needs_reconnect and surface a re-authorize prompt, then STOP —
+        re-auth won't fix itself, and a retry just burns the budget
+        (harness-credential-reauth.md §4)."""
+        if not turn.harness.is_auth_error(blob):
+            return None
+        return _Decision.stop(
+            await self._surface_auth_expiry(
+                session, cred_id=turn.cred_id, backend=turn.harness.backend
+            )
+        )
+
+    async def _stale_session_decision(
+        self, session: Session, turn: _Turn, blob: str
+    ) -> _Decision | None:
+        """Dangling resume id: the engine no longer holds the conversation this
+        session is pinned to (its local transcript was rotated or cleaned; ours
+        lives in the DB and is intact).
+
+        This is NOT transient — retrying the same id fails identically forever,
+        which bricks the session silently: a result with zero turns, zero cost
+        and no text. Drop the dead id and re-run the same prompt once as a
+        fresh engine-side conversation, saying out loud that the engine lost
+        its own history so the model starts this turn without it.
+        """
+        if not (
+            session.claude_session_id
+            and turn.stale_session_retries < 1
+            and turn.harness.is_stale_session_error(blob)
+        ):
+            return None
+        turn.stale_session_retries += 1
+        logger.warning(
+            "Session %s: resume id %s is gone from the engine; "
+            "clearing it and starting a fresh conversation",
+            session.id,
+            session.claude_session_id,
+        )
+        session.claude_session_id = None
+        turn.resume_at_turn_start = None
+        if self.db:
+            await self.db.update_session_field(session.id, claude_session_id=None)
+        # Don't restart cold: Octopus still has the whole conversation (the
+        # engine's transcript is a cache of ours, not the record), so replay
+        # its tail into this turn through the same channel a fork uses when its
+        # backend can't resume natively. The model continues the conversation
+        # instead of appearing to forget it.
+        replayed = 0
+        omitted = 0
+        recovery_prompt = turn.prompt
+        if self.db:
+            history = [
+                MessageContent(**m) for m in await self.db.load_messages(session.id)
+            ]
+            kept, omitted = fork_helpers.select_lost_history(history)
+            replayed = len(kept)
+            if kept:
+                recovery_prompt = spill_if_large(
+                    session.id,
+                    fork_helpers.wrap_for_lost_history(
+                        turn.prompt, kept, omitted=omitted
+                    ),
+                )
+        return _Decision.again(
+            recovery_prompt,
+            await self._surface_stale_session(
+                session,
+                backend=turn.harness.backend,
+                replayed=replayed,
+                omitted=omitted,
+            ),
+        )
+
+    async def _transient_decision(
+        self, session: Session, turn: _Turn, attempt: _Attempt, blob: str
+    ) -> _Decision | None:
+        """Transient provider-reliability failure (5xx / overloaded / dropped
+        connection / server-side throttle) → bounded retry.
+
+        TWO modes, by whether the turn already produced output:
+
+        * **no output yet** → re-run the ORIGINAL prompt from the turn-start
+          resume state (side-effect-free; discard any resume id a failed
+          no-output attempt captured — Vera).
+        * **output already streamed** (tool_use/text) AND a resume id was
+          captured → RESUME with "continue" so we pick up where it left off
+          WITHOUT re-running tools or duplicating text. This is the common
+          case: a long agent turn throttled mid-flight — the earlier
+          no-output-only gate let it stop.
+
+        Quota/credit errors match no pattern here → they surface as-is
+        (harness-transient-retry.md §4).
+        """
+        if not turn.harness.is_transient_error(blob):
+            return None
+        can_retry = turn.transient_attempts < self._MAX_TRANSIENT_RETRIES and (
+            not attempt.produced_output or bool(session.claude_session_id)
+        )
+        if not can_retry:
+            # Budget exhausted (or output with no resume id to continue from) —
+            # surface a clear error so the user knows it wasn't their request
+            # that failed.
+            return _Decision.stop(
+                await self._surface_transient_exhausted(
+                    session,
+                    backend=turn.harness.backend,
+                    attempts=turn.transient_attempts,
+                )
+            )
+
+        turn.transient_attempts += 1
+        delay = self._TRANSIENT_RETRY_BASE_DELAY * (2 ** (turn.transient_attempts - 1))
+        logger.warning(
+            "Session %s: transient backend error; retrying in "
+            "%.1fs (attempt %d/%d, resume=%s)",
+            session.id,
+            delay,
+            turn.transient_attempts,
+            self._MAX_TRANSIENT_RETRIES,
+            attempt.produced_output,
+        )
+        if attempt.produced_output:
+            # Continue the in-progress conversation from its captured resume
+            # id — no re-run, no duplication.
+            next_prompt = "continue"
+        else:
+            next_prompt = turn.prompt  # original invocation
+            if session.claude_session_id != turn.resume_at_turn_start:
+                session.claude_session_id = turn.resume_at_turn_start
+                if self.db:
+                    await self.db.update_session_field(
+                        session.id, claude_session_id=turn.resume_at_turn_start
+                    )
+        return _Decision.again(
+            next_prompt,
+            await self._surface_transient_retry(
+                session,
+                attempt=turn.transient_attempts,
+                max_attempts=self._MAX_TRANSIENT_RETRIES,
+                delay=delay,
+            ),
+            delay=delay,
+        )
+
+    async def _premature_exit_decision(
+        self, session: Session, turn: _Turn, attempt: _Attempt
+    ) -> _Decision:
+        """Whether to respawn after the CLI's premature-exit bug.
+
+        The signature is: the CLI exited without a `result` event AFTER
+        emitting a `tool_use`. Anything else — a clean turn, an immediate crash
+        with no tool use, a turn we've already retried once — is left alone.
+        This is the last word on an attempt, so it always decides.
+        """
+        if attempt.saw_result:
+            return _Decision.stop()
+        if not turn.harness.premature_exit_recovery:
+            # Harness opts out of the Claude-CLI premature-exit recovery (Codex
+            # runs exactly once per turn) — codex-backend.md §5.6.
+            return _Decision.stop()
+        if turn.recovery_attempts >= self._MAX_RECOVERY_ATTEMPTS:
+            logger.warning(
+                "Session %s: CLI premature-exit retry budget exhausted; "
+                "giving up on this turn", session.id
+            )
+            return _Decision.stop()
+        if not attempt.saw_tool_use:
+            return _Decision.stop()
+        if not session.claude_session_id:
+            # No resume id captured (init never arrived) — we can't respawn
+            # into the same conversation.
+            return _Decision.stop()
+
+        turn.recovery_attempts += 1
+        logger.warning(
+            "Session %s: detected CLI premature-exit after tool_use; "
+            "auto-respawning with 'continue' (attempt %d/%d)",
+            session.id, turn.recovery_attempts, self._MAX_RECOVERY_ATTEMPTS,
+        )
+        # Persist a discreet system marker so the UI / transcript records that
+        # a recovery happened. Uses the same shape as the (interrupted by user)
+        # marker in interrupt().
+        marker = MessageContent(
+            role=MessageRole.system,
+            type="error",
+            content="(auto-resumed after CLI exited mid-turn)",
+        )
+        marker_seq = await self._persist_message(session, marker)
+        marker_event: dict[str, Any] = {
+            "type": "error",
+            "session_id": session.id,
+            "message": "(auto-resumed after CLI exited mid-turn)",
+        }
+        if marker_seq is not None:
+            marker_event["seq"] = marker_seq
+        return _Decision.again("continue", marker_event)
+
+    async def _after_attempt(
+        self, session: Session, turn: _Turn, attempt: _Attempt
+    ) -> _Decision:
+        """Classify a finished CLI invocation.
+
+        The order is the design, not a preference. A watchdog timeout is read
+        first so it can never be mistaken for something retryable. Auth comes
+        before the retries because re-auth won't fix itself. A dangling resume
+        id comes before transient because it looks transient and is not.
+        Premature-exit recovery is last and always answers, because "the CLI
+        just stopped" is only knowable once nothing else claimed the failure.
+        """
+        decision = await self._timeout_decision(session, turn, attempt)
+        if decision is not None:
+            return decision
+
+        if attempt.failed:
+            blob = self._failure_blob(attempt)
+            decision = await self._auth_decision(session, turn, blob)
+            if decision is not None:
+                return decision
+            decision = await self._stale_session_decision(session, turn, blob)
+            if decision is not None:
+                return decision
+            decision = await self._transient_decision(session, turn, attempt, blob)
+            if decision is not None:
+                return decision
+
+        return await self._premature_exit_decision(session, turn, attempt)
+
     async def _run_backend(
         self, session: Session, prompt: str
     ) -> AsyncIterator[dict[str, Any]]:
         """Drive one logical turn through the backend, recovering from
         CLI premature-exit-after-tool-roundtrip if it fires.
 
-        Each iteration of the outer loop is one CLI invocation. The
-        loop normally runs exactly once and exits after a `result`
-        event. If the CLI exits silently after emitting a `tool_use`
-        without ever delivering `result` (the bug post-mortemed in
-        docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2), we respawn it
-        with the same resume id and a `"continue"` prompt to let the
-        model produce the missing follow-up. Bounded by
-        _MAX_RECOVERY_ATTEMPTS so a genuinely broken state can't loop.
+        Each iteration of the loop is one CLI invocation. It normally runs
+        exactly once and returns after a `result` event; `_after_attempt` is
+        what decides otherwise — a bounded retry for a transient failure, a
+        fresh conversation for a dangling resume id, a `"continue"` respawn for
+        the premature-exit bug post-mortemed in
+        docs/post-mortems/2026-05-18-bg-pipeline-hardening.md §2.
         """
-
         # Load the owning agent fresh each turn — this is the live-reference
         # point: editing an agent's prompt/model/tools/MCP affects its
         # already-open sessions on their next turn (agent-refactor.md §5.2).
         agent = await self._load_agent(session)
         harness = get_harness(session.backend)
         credential = await self._resolve_credential(session, agent, harness)
-        # The effective credential id (session override, else the agent's).
-        # Used to flag the right row needs_reconnect on a mid-turn 401
-        # (harness-credential-reauth.md §4). None = host-default CLI auth.
-        cred_id = session.credential_id or (
-            agent.get("credential_id") if agent else None
-        )
         connectors = await self._load_connectors(agent)
-        current_prompt = prompt
-        recovery_attempts = 0
-        transient_attempts = 0
-        # A dangling resume id is recoverable exactly once per turn: clear it,
-        # start fresh. A second failure is a different problem.
-        stale_session_retries = 0
-        # The resume id this logical turn STARTED from. A transient retry
-        # re-runs the original invocation, so it must restore this — a failed
-        # no-output attempt can still emit `session_started` and mutate
-        # session.claude_session_id, which would otherwise turn the retry into
-        # a `--resume <failed-id>` of the same prompt (Vera review,
-        # harness-transient-retry.md §4).
-        resume_at_turn_start = session.claude_session_id
+        turn = _Turn(
+            prompt=prompt,
+            current_prompt=prompt,
+            harness=harness,
+            cred_id=session.credential_id
+            or (agent.get("credential_id") if agent else None),
+            resume_at_turn_start=session.claude_session_id,
+        )
 
         while True:
-            # Reuse the session's live process when nothing it baked in at
-            # spawn has changed (inline-steering.md §7); otherwise spawn.
-            reused = self._reusable_run(
-                session, session.working_dir, credential, agent, connectors
+            backend, reused = await self._acquire_backend(
+                session, credential, agent, connectors
             )
-            if reused is None and session._backend is not None:
-                # Declining to reuse (config changed, or a turn still in
-                # flight) must not simply overwrite the handle: that orphans a
-                # live ~255MB process that nothing points at any more, so
-                # neither the reaper nor shutdown can ever reach it. Let it go
-                # properly first.
-                stale = session._backend
-                self._forget_backend(session)
-                try:
-                    await asyncio.wait_for(stale.stop(), timeout=_HELD_STOP_TIMEOUT)
-                except (TimeoutError, Exception):
-                    logger.warning(
-                        "session %s: abandoning a process we couldn't stop", session.id
-                    )
-            backend = reused or self._make_run(session, agent, connectors)
-            session._backend = backend
-            saw_result = False
-            saw_tool_use = False
-            # Whether any assistant text streamed this attempt — gates the
-            # transient retry (don't re-run a turn that already produced output).
-            saw_text = False
-            # Terminal-error signal for post-turn auth-expiry classification.
-            saw_error_event = False
-            error_event_text = ""
-            # Streaming-text coalescing (inline-steering.md §4 S1). The CLI
-            # emits one delta per token; forwarding each as its own WS frame
-            # would be a frame per token and a React render per token. We
-            # batch them into at most one frame every _DELTA_FLUSH_SECONDS,
-            # which is still far below the threshold where a human sees
-            # stepping, and flush before any non-delta event so ordering with
-            # tool calls and the final block is exact.
-            delta_buf: list[str] = []
-            delta_last_flush = 0.0
-            # Per-turn watchdog state (turn-safety.md §3): the watchdog stops a
-            # turn that goes silent (idle) or runs too long (overall) so it can
-            # never hang forever the way the deep-research wedge did.
-            watchdog_state = {"last": time.monotonic(), "tripped": None}
-            watchdog = self._start_turn_watchdog(backend, watchdog_state)
+            attempt = _Attempt(
+                backend=backend, prompt=turn.current_prompt, reused=reused
+            )
+            watchdog = self._start_turn_watchdog(backend, attempt.watchdog)
+            # Bound before the try: the `finally` reads it, and a spawn that
+            # raises would otherwise unwind through an unbound name and hide
+            # the real error.
+            steer_writer: asyncio.Task[int] | None = None
 
             try:
-                if reused is not None:
-                    # The process already holds this conversation, so there is
-                    # no prompt to re-render and no transcript to resume: just
-                    # hand it the next message.
-                    await backend.send_turn(current_prompt)
-                else:
-                    await backend.start(
-                        current_prompt,
-                        session.working_dir,
-                        session.claude_session_id,
-                        credential=credential,
-                    )
-
-                # The steering window is open from here until `result`
-                # (inline-steering.md §8). Only a backend that takes input on
-                # stdin can be steered; everything else keeps queueing.
-                steer_writer: asyncio.Task[int] | None = None
-                if backend.reusable:
-                    async with session._steer_lock:
-                        session._steer_open = True
-                        if session._steer_queue:
-                            session._steer_ready.set()
-                    steer_writer = asyncio.create_task(
-                        self._steer_writer(session, backend),
-                        name=f"steer-writer-{session.id}",
-                    )
-
+                await self._start_attempt(session, attempt, credential)
+                steer_writer = await self._open_steering_window(session, backend)
                 async for event in backend.stream():
-                    watchdog_state["last"] = time.monotonic()
-
-                    # Coalesce token deltas; flush on a timer.
-                    if event.type == "text_delta":
-                        if event.content:
-                            delta_buf.append(event.content)
-                        now = time.monotonic()
-                        if now - delta_last_flush >= _DELTA_FLUSH_SECONDS:
-                            delta_last_flush = now
-                            flushed = self._flush_text_deltas(session.id, delta_buf)
-                            if flushed is not None:
-                                yield flushed
-                        continue
-
-                    # Anything else ends the current delta run: flush it first
-                    # so the partial text can never arrive after the completed
-                    # block that supersedes it.
-                    flushed = self._flush_text_deltas(session.id, delta_buf)
-                    if flushed is not None:
-                        delta_last_flush = time.monotonic()
-                        yield flushed
-                    # session_started arrives on the CLI's init event,
-                    # before any tool work. Persist the resume id
-                    # immediately so the recovery path below can use
-                    # it even if the bug suppresses `result`.
-                    if event.type == "session_started" and event.session_id:
-                        if session.claude_session_id != event.session_id:
-                            session.claude_session_id = event.session_id
-                            if self.db:
-                                await self.db.update_session_field(
-                                    session.id, claude_session_id=event.session_id
-                                )
-                        # Internal event — don't persist or broadcast.
-                        continue
-
-                    # A sub-agent's progress: remembered on the session so a
-                    # reload can still paint the card, broadcast so the open
-                    # UI paints it now, and never persisted — the Task tool
-                    # call and its result are the durable record
-                    # (native-subagents.md §4).
-                    if event.type == "subagent" and event.subagent is not None:
-                        self._record_subagent(session, event.subagent)
-
-                    if event.type == "tool_use":
-                        saw_tool_use = True
-                    if event.type == "text" and event.content and event.content.strip():
-                        saw_text = True
-
-                    # Persist whichever message shape this event maps to. The
-                    # returned seq goes onto the WS event so reconnecting
-                    # clients can dedupe against their snapshot.
-                    msg_content = self._event_to_message_content(event)
-                    msg_seq: int | None = None
-                    if msg_content is not None:
-                        msg_seq = await self._persist_message(session, msg_content)
-
-                    # Track pending question state for reconnect re-render
-                    if event.type == "question_request" and event.tool_use_id:
-                        questions = (
-                            (event.tool_input or {}).get("questions") or []
-                        )
-                        session._pending_questions[event.tool_use_id] = PendingQuestion(
-                            question_id=event.tool_use_id,
-                            questions=questions,
-                        )
-                        self._schedule_question_timeout(session, event.tool_use_id)
-
-                    # Update resume id when result arrives (in case the
-                    # CLI reissued a different one mid-stream).
-                    if event.type == "result":
-                        saw_result = True
-                        _monitor.record(_MonEvent(
-                            kind="turn",
-                            session_id=session.id,
-                            agent_id=session.agent_id,
-                            backend=session.backend,
-                            duration_ms=event.duration_ms,
-                            ok=not event.is_error,
-                            detail={
-                                "cost": event.cost,
-                                "num_turns": event.num_turns,
-                            },
-                        ))
-                        # Shut the steering window first: past this point the
-                        # CLI is idle, and a frame written now would start a
-                        # fresh turn rather than steer this one.
-                        async with session._steer_lock:
-                            session._steer_open = False
-                        if event.session_id and session.claude_session_id != event.session_id:
-                            session.claude_session_id = event.session_id
-                            if self.db:
-                                await self.db.update_session_field(
-                                    session.id, claude_session_id=event.session_id
-                                )
-                        # First fork turn produced a result: drop the ephemeral
-                        # fork state so turn 2+ behaves like a normal resumed
-                        # session (session-rewind.md §5.3.2/§5.6.5).
-                        await self._clear_fork_first_turn_state(session)
-
-                    # Capture terminal-error text (a failed `result` or an
-                    # `error` event) for post-turn auth-expiry classification
-                    # (harness-credential-reauth.md §4). tool_result errors are
-                    # excluded — a tool failing isn't the turn failing.
-                    if event.type in ("result", "error") and event.is_error:
-                        saw_error_event = True
-                        if event.content:
-                            error_event_text += event.content + "\n"
-                        if event.raw:
-                            try:
-                                error_event_text += json.dumps(event.raw) + "\n"
-                            except (TypeError, ValueError):
-                                pass
-
-                    # Translate into the WS message shape the front-end expects
-                    ws_event = self._event_to_ws_message(session.id, event)
-                    if ws_event is not None:
-                        if msg_seq is not None:
-                            ws_event["seq"] = msg_seq
-                        yield ws_event
+                    attempt.touch()
+                    for frame in await self._handle_stream_event(
+                        session, attempt, event
+                    ):
+                        yield frame
             finally:
-                # Close the steering window and stop the writer before
-                # anything else touches the process. Whatever it didn't get to
-                # write becomes a normal queued prompt — a steer that missed
-                # its turn still runs, just as the next one (§9).
-                async with session._steer_lock:
-                    session._steer_open = False
-                if steer_writer is not None and not steer_writer.done():
-                    steer_writer.cancel()
-                    try:
-                        await steer_writer
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                async with session._steer_lock:
-                    if session._steer_queue:
-                        logger.info(
-                            "session %s: %d steer(s) missed the turn; queuing them",
-                            session.id,
-                            len(session._steer_queue),
-                        )
-                        session._pending_queue.extend(session._steer_queue)
-                        session._steer_queue.clear()
-                    session._steer_ready.clear()
+                # Close the steering window and stop the writer before anything
+                # else touches the process (§9), then decide the process's fate.
+                await self._close_steering_window(session, steer_writer)
+                await self._stop_watchdog(watchdog)
+                await self._retire_or_hold_process(session, attempt)
 
-                if watchdog is not None:
-                    watchdog.cancel()
-                    try:
-                        await watchdog
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                # Keep the process only when this turn ended the way a turn
-                # is supposed to: a clean `result`, nothing tripped, nothing
-                # to retry. A watchdog timeout, an error, or an interrupt all
-                # leave the CLI in a state we'd rather not inherit, so those
-                # shut it down and the next turn spawns fresh.
-                keep = (
-                    backend.reusable
-                    and backend.is_alive()
-                    and saw_result
-                    and not saw_error_event
-                    and watchdog_state["tripped"] is None
-                )
-                if keep:
-                    session._held_run_at = time.monotonic()
-                    # Enforce the cap HERE, not only on the reaper's tick.
-                    # The reaper is a background task that doesn't exist in
-                    # tests and runs every 30s in production, so leaving the
-                    # bound to it means N finished sessions can each pin
-                    # ~255MB in between — which is exactly how the backend
-                    # suite got OOM-killed.
-                    await self._enforce_held_cap(keep_session_id=session.id)
-                else:
-                    try:
-                        await backend.stop()
-                    except Exception:
-                        logger.exception(
-                            "backend.stop() failed cleanly for session %s", session.id
-                        )
-                    self._forget_backend(session)
-
-            # Turn watchdog tripped (idle or overall cap): the backend was
-            # stopped mid-turn. Surface a clear error and STOP — before the
-            # auth/transient/premature-exit dispatch, so a timeout is never
-            # mis-read as transient or respawned. turn-safety.md §3.
-            if watchdog_state["tripped"] is not None:
-                reason, limit = watchdog_state["tripped"]
-                yield await self._surface_turn_timeout(
-                    session, reason=reason, limit=limit, backend=harness.backend
-                )
+            decision = await self._after_attempt(session, turn, attempt)
+            for frame in decision.events:
+                yield frame
+            if not decision.retry:
                 return
-
-            # Reactive auth-expiry: a failed turn whose error text (terminal
-            # event content/raw + the CLI's stderr) matches this backend's
-            # auth-rejection patterns means the bound credential is dead
-            # (revoked / rotated / expired past what the proactive refresh
-            # caught). Flag it needs_reconnect and surface a re-authorize
-            # prompt, then STOP — the premature-exit "continue" respawn below
-            # must not run (re-auth won't fix itself, and the retry just burns
-            # the budget). harness-credential-reauth.md §4.
-            turn_failed = saw_error_event or not saw_result
-            if turn_failed:
-                # getattr: real HarnessRun exposes stderr_text; lightweight
-                # test/backend stand-ins may not.
-                stderr_text = getattr(backend, "stderr_text", "") or ""
-                error_blob = (error_event_text + "\n" + stderr_text)[:8000]
-
-                # (a) Auth-credential rejection → flag + stop (never retried;
-                # re-auth won't fix itself). harness-credential-reauth.md §4.
-                if harness.is_auth_error(error_blob):
-                    yield await self._surface_auth_expiry(
-                        session, cred_id=cred_id, backend=harness.backend
-                    )
-                    return
-
-                # (a2) Dangling resume id: the engine no longer holds the
-                # conversation this session is pinned to (its local transcript
-                # was rotated or cleaned; ours lives in the DB and is intact).
-                # This is NOT transient — retrying the same id fails
-                # identically forever, which bricks the session silently: a
-                # result with zero turns, zero cost and no text. Drop the dead
-                # id and re-run the same prompt once as a fresh engine-side
-                # conversation, saying out loud that the engine lost its own
-                # history so the model starts this turn without it.
-                if (
-                    session.claude_session_id
-                    and stale_session_retries < 1
-                    and harness.is_stale_session_error(error_blob)
-                ):
-                    stale_session_retries += 1
-                    logger.warning(
-                        "Session %s: resume id %s is gone from the engine; "
-                        "clearing it and starting a fresh conversation",
-                        session.id,
-                        session.claude_session_id,
-                    )
-                    session.claude_session_id = None
-                    resume_at_turn_start = None
-                    if self.db:
-                        await self.db.update_session_field(
-                            session.id, claude_session_id=None
-                        )
-                    # Don't restart cold: Octopus still has the whole
-                    # conversation (the engine's transcript is a cache of
-                    # ours, not the record), so replay its tail into this
-                    # turn through the same channel a fork uses when its
-                    # backend can't resume natively. The model continues the
-                    # conversation instead of appearing to forget it.
-                    replayed = 0
-                    omitted = 0
-                    recovery_prompt = prompt
-                    if self.db:
-                        history = [
-                            MessageContent(**m)
-                            for m in await self.db.load_messages(session.id)
-                        ]
-                        kept, omitted = fork_helpers.select_lost_history(history)
-                        replayed = len(kept)
-                        if kept:
-                            recovery_prompt = spill_if_large(
-                                session.id,
-                                fork_helpers.wrap_for_lost_history(
-                                    prompt, kept, omitted=omitted
-                                ),
-                            )
-                    yield await self._surface_stale_session(
-                        session,
-                        backend=harness.backend,
-                        replayed=replayed,
-                        omitted=omitted,
-                    )
-                    current_prompt = recovery_prompt
-                    continue
-
-                # (b) Transient provider-reliability failure (5xx / overloaded /
-                # dropped connection / server-side throttle) → bounded retry.
-                # TWO modes, by whether the turn already produced output:
-                #   - NO output yet → re-run the ORIGINAL prompt from the
-                #     turn-start resume state (side-effect-free; discard any
-                #     resume id a failed no-output attempt captured — Vera).
-                #   - output already streamed (tool_use/text) AND a resume id
-                #     was captured → RESUME with "continue" so we pick up where
-                #     it left off WITHOUT re-running tools or duplicating text.
-                #     This is the common case: a long agent turn throttled
-                #     mid-flight — the earlier no-output-only gate let it stop.
-                # Quota/credit errors match no pattern here → surface as-is.
-                # harness-transient-retry.md §4.
-                if harness.is_transient_error(error_blob):
-                    produced_output = saw_tool_use or saw_text
-                    can_retry = (
-                        transient_attempts < self._MAX_TRANSIENT_RETRIES
-                        and (not produced_output or bool(session.claude_session_id))
-                    )
-                    if can_retry:
-                        transient_attempts += 1
-                        delay = self._TRANSIENT_RETRY_BASE_DELAY * (
-                            2 ** (transient_attempts - 1)
-                        )
-                        logger.warning(
-                            "Session %s: transient backend error; retrying in "
-                            "%.1fs (attempt %d/%d, resume=%s)",
-                            session.id, delay, transient_attempts,
-                            self._MAX_TRANSIENT_RETRIES, produced_output,
-                        )
-                        if produced_output:
-                            # Continue the in-progress conversation from its
-                            # captured resume id — no re-run, no duplication.
-                            current_prompt = "continue"
-                        else:
-                            current_prompt = prompt  # original invocation
-                            if session.claude_session_id != resume_at_turn_start:
-                                session.claude_session_id = resume_at_turn_start
-                                if self.db:
-                                    await self.db.update_session_field(
-                                        session.id,
-                                        claude_session_id=resume_at_turn_start,
-                                    )
-                        yield await self._surface_transient_retry(
-                            session,
-                            attempt=transient_attempts,
-                            max_attempts=self._MAX_TRANSIENT_RETRIES,
-                            delay=delay,
-                        )
-                        await asyncio.sleep(delay)
-                        continue
-                    # Budget exhausted (or output with no resume id to continue
-                    # from) — surface a clear error so the user knows it wasn't
-                    # their request that failed.
-                    yield await self._surface_transient_exhausted(
-                        session, backend=harness.backend, attempts=transient_attempts
-                    )
-                    return
-
-            # Decide whether to recover. The bug signature is:
-            # CLI exited without a `result` event AFTER emitting a
-            # `tool_use`. Anything else (a clean turn, an immediate
-            # crash with no tool use, a turn we've already retried
-            # once) — leave it alone.
-            if saw_result:
-                return
-            if not harness.premature_exit_recovery:
-                # Harness opts out of the Claude-CLI premature-exit recovery
-                # (Codex runs exactly once per turn) — codex-backend.md §5.6.
-                return
-            if recovery_attempts >= self._MAX_RECOVERY_ATTEMPTS:
-                logger.warning(
-                    "Session %s: CLI premature-exit retry budget exhausted; "
-                    "giving up on this turn", session.id
-                )
-                return
-            if not saw_tool_use:
-                return
-            if not session.claude_session_id:
-                # No resume id captured (init never arrived) — we can't
-                # respawn into the same conversation.
-                return
-
-            recovery_attempts += 1
-            logger.warning(
-                "Session %s: detected CLI premature-exit after tool_use; "
-                "auto-respawning with 'continue' (attempt %d/%d)",
-                session.id, recovery_attempts, self._MAX_RECOVERY_ATTEMPTS,
-            )
-            # Persist a discreet system marker so the UI / transcript
-            # records that a recovery happened. Uses the same shape as
-            # the (interrupted by user) marker in interrupt().
-            marker = MessageContent(
-                role=MessageRole.system,
-                type="error",
-                content="(auto-resumed after CLI exited mid-turn)",
-            )
-            marker_seq = await self._persist_message(session, marker)
-            marker_event: dict[str, Any] = {
-                "type": "error",
-                "session_id": session.id,
-                "message": "(auto-resumed after CLI exited mid-turn)",
-            }
-            if marker_seq is not None:
-                marker_event["seq"] = marker_seq
-            yield marker_event
-
-            current_prompt = "continue"
+            if decision.prompt is not None:
+                turn.current_prompt = decision.prompt
+            if decision.delay:
+                await asyncio.sleep(decision.delay)
 
     async def _load_agent(self, session: Session) -> dict[str, Any] | None:
         """Fetch the session's owning agent row (or None for legacy/no-DB)."""

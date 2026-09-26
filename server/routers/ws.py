@@ -5,14 +5,14 @@ import uuid
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from ..config import settings
-from ..session_manager import session_manager
+from ..deps import SessionMgr
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
+async def websocket_endpoint(session_manager: SessionMgr, ws: WebSocket, token: str = Query(...)):
     if token != settings.auth_token:
         await ws.close(code=4001, reason="Unauthorized")
         return
@@ -25,8 +25,13 @@ async def websocket_endpoint(ws: WebSocket, token: str = Query(...)):
     async def broadcast(msg: dict):
         try:
             await ws.send_json(msg)
-        except Exception:
+        except (WebSocketDisconnect, RuntimeError):
+            # The client is gone, or Starlette already sent the close frame.
+            # Normal: a browser tab closing mid-broadcast lands here, and the
+            # unsubscribe below is what actually cleans up.
             pass
+        except Exception:
+            logger.debug("broadcast to %s failed", conn_id, exc_info=True)
 
     session_manager.on_broadcast(conn_id, broadcast)
 

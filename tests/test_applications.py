@@ -753,17 +753,15 @@ async def test_static_accepts_query_token_and_cookie(client):
     assert (
         await client.get(f"/apps/{created['id']}/", params={"token": TOKEN})
     ).status_code == 200
-    # The cookie the SPA sets before mounting the iframe.
-    assert (
-        await client.get(
-            f"/apps/{created['id']}/", cookies={"octopus_app_token": TOKEN}
-        )
-    ).status_code == 200
-    assert (
-        await client.get(
-            f"/apps/{created['id']}/", cookies={"octopus_app_token": "wrong"}
-        )
-    ).status_code == 401
+    # The cookie the SPA sets before mounting the iframe. Set on the client
+    # rather than per request: httpx deprecated per-request `cookies=` because
+    # what it should do about persistence is ambiguous, and a browser sends the
+    # cookie jar it has — which is what setting it on the client models.
+    client.cookies.set("octopus_app_token", TOKEN)
+    assert (await client.get(f"/apps/{created['id']}/")).status_code == 200
+    client.cookies.set("octopus_app_token", "wrong")
+    assert (await client.get(f"/apps/{created['id']}/")).status_code == 401
+    client.cookies.clear()
 
 
 @pytest.mark.asyncio

@@ -475,3 +475,88 @@ def test_build_explicit_can_skip_the_future_check_for_a_stored_value():
         prompt="x", run_at="2020-01-01T09:00", require_future=False
     )
     assert p.run_at.startswith("2020-01-01T09:00")
+
+
+# --- crontab day-of-week: 0 is Sunday -------------------------------------- #
+#
+# `CronTrigger.from_crontab` counts day-of-week from Monday while crontab counts
+# from Sunday, so every cron with a day-of-week field fired a day late:
+# "weekdays at 9" ran Tue-Sat, and "Sundays at 9" ran on Monday. Found by the
+# real-CLI test — the model wrote `0 9 * * 1-5` correctly and the tool answered
+# "next Saturday".
+
+
+def test_dow_field_is_read_as_crontab_reads_it():
+    from server.schedule_ai import _crontab_dow_field
+
+    assert _crontab_dow_field("*") == "*"
+    assert _crontab_dow_field("0") == "sun"
+    assert _crontab_dow_field("6") == "sat"
+    # crontab allows 7 for Sunday as well as 0.
+    assert _crontab_dow_field("7") == "sun"
+    assert _crontab_dow_field("1-5") == "mon,tue,wed,thu,fri"
+    assert _crontab_dow_field("0,6") == "sun,sat"
+    # A range that wraps the week is legal.
+    assert _crontab_dow_field("5-1") == "sun,mon,fri,sat"
+    assert _crontab_dow_field("*/2") == "sun,tue,thu,sat"
+    # Names, in either case, mean what they say.
+    assert _crontab_dow_field("MON-FRI") == "mon,tue,wed,thu,fri"
+
+
+def test_dow_field_rejects_nonsense():
+    from server.schedule_ai import _crontab_dow_field
+
+    for field in ("8", "-1", "mon-funday", "1-", "*/0"):
+        with pytest.raises(ValueError):
+            _crontab_dow_field(field)
+
+
+@pytest.mark.parametrize(
+    "expr,expected",
+    [
+        ("0 9 * * 1-5", "Mon 2026-09-28 09:00"),
+        ("0 9 * * 0", "Sun 2026-09-27 09:00"),
+        ("0 9 * * 6", "Sat 2026-09-26 09:00"),
+        ("30 18 * * 1", "Mon 2026-09-28 18:30"),
+        ("0 9 * * *", "Sat 2026-09-26 09:00"),
+        ("*/15 * * * *", "Fri 2026-09-25 20:45"),
+    ],
+)
+def test_cron_trigger_fires_on_the_day_the_expression_names(expr, expected):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from server.schedule_ai import cron_trigger
+
+    zone = ZoneInfo("America/Los_Angeles")
+    friday_evening = datetime(2026, 9, 25, 20, 31, tzinfo=zone)
+    fire = cron_trigger(expr, "America/Los_Angeles").get_next_fire_time(
+        None, friday_evening
+    )
+    assert fire is not None
+    assert fire.strftime("%a %Y-%m-%d %H:%M") == expected
+
+
+def test_cron_trigger_disagrees_with_from_crontab_on_purpose():
+    """The regression guard: if APScheduler ever fixes its own reading, this
+    test fails and says so, rather than the translation silently doubling up."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from apscheduler.triggers.cron import CronTrigger
+
+    from server.schedule_ai import cron_trigger
+
+    zone = ZoneInfo("America/Los_Angeles")
+    friday_evening = datetime(2026, 9, 25, 20, 31, tzinfo=zone)
+    theirs = CronTrigger.from_crontab("0 9 * * 1-5", timezone=zone)
+    ours = cron_trigger("0 9 * * 1-5", "America/Los_Angeles")
+    assert theirs.get_next_fire_time(None, friday_evening).weekday() == 5  # Saturday
+    assert ours.get_next_fire_time(None, friday_evening).weekday() == 0  # Monday
+
+
+def test_cron_trigger_needs_five_fields():
+    from server.schedule_ai import cron_trigger
+
+    with pytest.raises(ValueError):
+        cron_trigger("0 9 * *")

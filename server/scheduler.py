@@ -3,13 +3,14 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
 from .models import SessionStatus
+from .schedule_ai import cron_trigger
 
 if TYPE_CHECKING:
     from server.database import Database
@@ -89,9 +90,10 @@ class ScheduleRunner:
             run_date = datetime.fromisoformat(row["run_at"])
             self._scheduler.add_job(self._fire, DateTrigger(run_date=run_date), **common)
         elif row.get("cron"):
-            trigger = CronTrigger.from_crontab(
-                row["cron"], timezone=ZoneInfo(row.get("timezone") or "UTC")
-            )
+            # cron_trigger, not CronTrigger.from_crontab: crontab counts
+            # day-of-week from Sunday and APScheduler from Monday
+            # (schedule_ai._crontab_dow_field).
+            trigger = cron_trigger(row["cron"], row.get("timezone") or "UTC")
             self._scheduler.add_job(self._fire, trigger, **common)
         else:
             self._scheduler.add_job(
@@ -278,7 +280,9 @@ class ScheduleRunner:
     async def remove(self, schedule_id: str) -> None:
         try:
             self._scheduler.remove_job(schedule_id)
-        except Exception:
+        except JobLookupError:
+            # No job registered — a disabled schedule never had one, and
+            # removing twice is how delete-after-disable arrives here.
             pass
 
     async def reschedule(self, row: dict) -> None:

@@ -37,15 +37,16 @@ from ..attachments import (
 )
 from ..auth import verify_token
 from ..config import settings
+from ..deps import SessionMgr
 from ..models import AttachmentMetadata
-from ..session_manager import session_manager
+from ..sessions import SessionManager
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions", tags=["attachments"])
 
 
-def _require_session(session_id: str) -> None:
+def _require_session(session_manager: SessionManager, session_id: str) -> None:
     """404 if the session isn't in memory. We don't allow uploads to
     archived sessions — they're read-only history."""
     if session_manager.get_session(session_id) is None:
@@ -60,11 +61,12 @@ def _require_session(session_id: str) -> None:
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_attachment(
+    session_manager: SessionMgr,
     session_id: str,
     file: UploadFile,
     _: str = Depends(verify_token),
 ) -> AttachmentMetadata:
-    _require_session(session_id)
+    _require_session(session_manager, session_id)
 
     # Read fully into memory: the cap is small (25 MB) and the storage
     # module needs the bytes for size + write. Streaming to disk first
@@ -115,6 +117,7 @@ def _verify_download_token(
 
 @router.get("/{session_id}/attachments/{attachment_id}")
 async def download_attachment(
+    session_manager: SessionMgr,
     session_id: str,
     attachment_id: str,
     _: str = Depends(_verify_download_token),

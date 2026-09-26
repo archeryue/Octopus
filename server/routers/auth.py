@@ -13,8 +13,8 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import verify_token
+from ..deps import SessionMgr
 from ..models import TokenRotateRequest, TokenRotateResponse
-from ..session_manager import session_manager
 from ..token_rotation import TokenRotationError, rotate_auth_token
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def set_db(db) -> None:
 
 
 @router.post("/rotate", response_model=TokenRotateResponse)
-async def rotate_token(req: TokenRotateRequest, _: str = Depends(verify_token)):
+async def rotate_token(session_manager: SessionMgr, req: TokenRotateRequest, _: str = Depends(verify_token)):
     """Change the access token everywhere it lives.
 
     Authenticated with the **old** token — which is exactly who is allowed to

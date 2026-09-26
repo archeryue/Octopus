@@ -214,8 +214,27 @@ class SubagentRun(BaseModel):
     steps: list[str] = []
 
 
+class MessagePage(BaseModel):
+    """A page of older transcript, oldest-first (polish-2026-09.md §4 B2).
+
+    `oldest_loaded_seq` is the lowest seq in this page and the cursor for the
+    next one; `has_more_messages` says whether anything is left before it, so a
+    client never has to guess from a short page.
+    """
+
+    messages: list[MessageContent] = []
+    oldest_loaded_seq: int | None = None
+    has_more_messages: bool = False
+
+
 class SessionDetail(SessionInfo):
     messages: list[MessageContent] = []
+    # The transcript is windowed to the most recent MESSAGE_WINDOW messages:
+    # 46,000 rows live in this database and the largest single session holds
+    # 4,873, which the client used to be handed in full on every open. These two
+    # fields are how it asks for the rest (`GET …/messages?before_seq=`).
+    oldest_loaded_seq: int | None = None
+    has_more_messages: bool = False
     pending_queue: list[str] = []
     pending_questions: list[PendingQuestionInfo] = []
     # Sub-agents still on screen for this session (native-subagents.md §4).

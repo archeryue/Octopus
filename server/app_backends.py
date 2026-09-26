@@ -191,8 +191,10 @@ class BackendSupervisor:
         try:
             async for raw in stream:
                 self._log(st, f"[{tag}] {raw.decode(errors='replace').rstrip()}")
-        except (asyncio.CancelledError, Exception):
-            pass
+        except asyncio.CancelledError:
+            pass  # the backend is being stopped; the pump goes with it
+        except Exception:
+            logger.debug("%s pump for %s failed", tag, st.app_id, exc_info=True)
 
     # -------------------------------------------------------------- install
 

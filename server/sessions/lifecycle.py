@@ -8,11 +8,11 @@ so no call site moved.
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
+from ..aio import stopped_within
 from ..attachments import delete_session_attachments
 from ..large_prompts import delete_session_large_prompts
 from ..models import MessageContent, SessionDetail, SessionStatus
@@ -23,6 +23,12 @@ from .base import (
     fork_info_fields,
     resolve_working_dir,
 )
+
+# The window an archived open returns, matching the live one in
+# `routers/sessions.MESSAGE_WINDOW`. Declared here rather than imported to keep
+# the slice free of a router import; the read-only manage view pages back
+# through the same `…/messages` cursor.
+_ARCHIVED_MESSAGE_WINDOW = 200
 
 
 class LifecycleMixin(SessionManagerBase):
@@ -159,10 +165,9 @@ class LifecycleMixin(SessionManagerBase):
         if old._active_task and not old._active_task.done():
             old._active_task.cancel()
         if old._backend:
-            try:
-                await asyncio.wait_for(old._backend.stop(), timeout=2.0)
-            except Exception:
-                pass
+            await stopped_within(
+                old._backend.stop(), f"session {old.id} backend", timeout=2.0
+            )
             self._forget_backend(old)
         old._pending_queue.clear()
         old._pending_questions.clear()
@@ -262,10 +267,11 @@ class LifecycleMixin(SessionManagerBase):
             if session._active_task and not session._active_task.done():
                 session._active_task.cancel()
             if session._backend:
-                try:
-                    await asyncio.wait_for(session._backend.stop(), timeout=2.0)
-                except Exception:
-                    pass
+                await stopped_within(
+                    session._backend.stop(),
+                    f"session {session.id} backend",
+                    timeout=2.0,
+                )
                 self._forget_backend(session)
             session._pending_queue.clear()
             self._cancel_all_question_timers(session)
@@ -337,15 +343,22 @@ class LifecycleMixin(SessionManagerBase):
         )
         if match is None:
             return None
-        messages_raw = await self.db.load_messages(session_id)
+        # Windowed like a live open, and counted separately: `len(messages)`
+        # stopped being the message count once a window is all we fetch
+        # (polish-2026-09.md §4 B2).
+        messages_raw = await self.db.load_messages(
+            session_id, limit=_ARCHIVED_MESSAGE_WINDOW, newest_first=True
+        )
         messages = [MessageContent(**m) for m in messages_raw]
+        total = await self.db.count_messages(session_id)
+        oldest = messages[0].seq if messages else None
         return SessionDetail(
             id=match["id"],
             name=match["name"],
             working_dir=match["working_dir"],
             status=SessionStatus.idle,
             created_at=match["created_at"],
-            message_count=len(messages),
+            message_count=total,
             claude_session_id=match["claude_session_id"],
             credential_id=match.get("credential_id"),
             agent_id=match.get("agent_id"),
@@ -364,7 +377,9 @@ class LifecycleMixin(SessionManagerBase):
             messages=messages,
             pending_queue=[],
             pending_questions=[],
-            next_message_seq=len(messages),
+            oldest_loaded_seq=oldest,
+            has_more_messages=bool(oldest),
+            next_message_seq=total,
         )
 
     async def unarchive_session(self, session_id: str) -> Session:
@@ -424,10 +439,9 @@ class LifecycleMixin(SessionManagerBase):
         if session._active_task and not session._active_task.done():
             session._active_task.cancel()
         if session._backend:
-            try:
-                await session._backend.stop()
-            except Exception:
-                pass
+            await stopped_within(
+                session._backend.stop(), f"session {session.id} backend"
+            )
         # Blit attachment files into descendant forks BEFORE removing this
         # session's dir, so the read-time fallback stays valid (§5.5). Done
         # before the DB delete so the descendant message rows are still

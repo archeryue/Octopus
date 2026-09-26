@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..aio import drain_cancelled
 from . import assembly
 from .events import HarnessCredential, HarnessEvent
 from .profile import RuntimeProfile, StdinMode, TurnContext
@@ -369,6 +370,22 @@ class HarnessRun:
             self._config.system_prompt or "",
             self._config.model or "",
             ",".join(sorted(self._config.mcp_servers or [])),
+            # WHERE those namespaces are served, and with what credential. Since
+            # they moved in-process (polish-2026-09.md §4 B1) each entry's URL
+            # carries the server's port and its bearer is derived from the
+            # session and the access token — all of it baked into argv at spawn,
+            # and all of it derived from this env. A held process reused after
+            # the port moved is pointed at a socket that is not there: it
+            # reports every namespace as unreachable and the model loses its
+            # tools mid-conversation, with nothing in our logs to say why.
+            # (Hashed like everything else here, so the token is not held in
+            # readable form.)
+            ",".join(
+                f"{k}={v}"
+                for k, v in sorted(
+                    assembly.build_callback_env(self._config.session_id).items()
+                )
+            ),
             ",".join(sorted(self._config.tool_allow or [])),
             ",".join(sorted(self._config.tool_deny or [])),
             self._config.memory_dir or "",
@@ -440,8 +457,11 @@ class HarnessRun:
         if proc.stdin and not proc.stdin.is_closing():
             try:
                 proc.stdin.close()
-            except Exception:
-                pass
+            except (OSError, RuntimeError, ValueError) as e:
+                # A transport that is already gone, or an event loop that has
+                # closed under us during interpreter shutdown. Neither is worth
+                # failing a teardown over, but neither is worth hiding either.
+                logger.debug("closing stdin failed: %s", e)
 
         if proc.returncode is None:
             try:
@@ -459,13 +479,11 @@ class HarnessRun:
                     _terminate_process_group(proc, signal.SIGKILL)
                     await proc.wait()
 
-        for task in (self._stdout_task, self._stderr_task):
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
+        for task, name in (
+            (self._stdout_task, "stdout reader"),
+            (self._stderr_task, "stderr reader"),
+        ):
+            await drain_cancelled(task, name)
 
         if not self._stream_closed:
             self._stream_closed = True

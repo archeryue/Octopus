@@ -12,6 +12,7 @@ import asyncio
 import time
 from typing import Any
 
+from ..aio import drain_cancelled
 from ..harness import HarnessRun, SubagentUpdate
 from .base import (
     _HELD_PROCESS_IDLE_SECONDS,
@@ -170,12 +171,7 @@ class ProcessesMixin(SessionManagerBase):
     async def stop_reaper(self) -> None:
         task = self._reaper_task
         self._reaper_task = None
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        await drain_cancelled(task, "held-process reaper")
 
     def _reusable_run(
         self,
