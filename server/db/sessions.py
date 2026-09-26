@@ -159,12 +159,9 @@ class SessionsMixin(DatabaseBase):
         ]
 
     async def count_messages(self, session_id: str) -> int:
-        await self._ensure_connected()
-        cursor = await self.conn.execute(
+        return await self._count(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
         )
-        row = await cursor.fetchone()
-        return row[0]
 
     async def append_message(
         self,
@@ -392,22 +389,16 @@ class SessionsMixin(DatabaseBase):
         await self.conn.commit()
 
     async def count_active_sessions_for_agent(self, agent_id: str) -> int:
-        await self._ensure_connected()
-        cursor = await self.conn.execute(
+        return await self._count(
             "SELECT COUNT(*) FROM sessions WHERE agent_id = ? AND archived = 0",
             (agent_id,),
         )
-        row = await cursor.fetchone()
-        return row[0]
 
     async def count_sessions_for_agent(self, agent_id: str) -> int:
-        await self._ensure_connected()
-        cursor = await self.conn.execute(
+        return await self._count(
             "SELECT COUNT(*) FROM sessions WHERE agent_id = ?",
             (agent_id,),
         )
-        row = await cursor.fetchone()
-        return row[0]
 
     async def list_bg_tasks_for_session(
         self, session_id: str, *, limit: int = 200

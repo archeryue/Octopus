@@ -944,7 +944,7 @@ behind. If we don't have time for a phase, it doesn't start.
 
 ## 11. VM0 reference — what we borrowed, what we didn't
 
-VM0 (`/home/start-up/vm0`) was the prompt for this feature. Where
+VM0 (`~/vm0`) was the prompt for this feature. Where
 the designs diverge, here's the reasoning.
 
 **Borrowed**

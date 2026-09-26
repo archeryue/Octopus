@@ -2,11 +2,12 @@
 
 A polish pass over Octopus: nothing here is a new product capability except
 the monitor. The rest pays down debts that had accumulated under seven months
-of fast feature work — and five of those debts turned out to be live defects,
-each one found by a gate that had not existed the day before.
+of fast feature work — and turned up five live defects on the way, three of
+them in code this pass had just written and two that had been shipping quietly
+for months.
 
-Branch `polish-2026-09`, 16 commits, all gates green — and the whole plan,
-§10 items 1 through 11, now done.
+Branch `polish-2026-09`, 20 commits, all gates green and both test tiers
+clean — the whole plan, §10 items 1 through 11, now done.
 Plan and reasoning: [`plans/polish-2026-09.md`](plans/polish-2026-09.md).
 
 ---
@@ -495,11 +496,27 @@ turn (`--strict-mcp-config`).
 
 ## What was deliberately not done
 
-**`union-attr` and five other mypy codes**, each with its reason recorded in
-`pyproject.toml`. The largest remaining cause is `SessionManager.db`, where the
-asserting-property trick that removed 168 errors from `Database._conn` is
-unavailable: 33 of its 59 read sites guard with `if self.db:`, and an asserting
-property would turn those guards into `AssertionError`s.
+**Three of F1's six suppressed mypy codes are now enforced** — `has-type`,
+`assignment` and `index` — and the three that remain each have a reason that is
+a decision rather than a delay, restated in `pyproject.toml` now that A1 and A4
+have landed and the old "wait for them" reason has expired.
+
+Getting there fixed 21 errors and, with them, three real defects the type
+checker had been pointing at all along: `AgentRead(**agent)` would have raised
+`TypeError` *inside* a 500 if the row had gone between archiving and re-reading
+it; `create_session`'s signature claimed `agent_id: str` while both the model
+and the column are nullable, and two callers pass `None` deliberately; and
+deleting a credential whose backend has no login driver called
+`.cleanup_credential` on `None`. Three `SELECT COUNT(*)` call sites that each
+indexed a `Row | None` went through one `_count` helper, which is shorter at
+every site than what it replaced.
+
+What is left: `union-attr`, 26 errors and all of them `SessionManager.db` — one
+initialization contract across 203 reads, now sized and recorded in the plan's
+§11; `arg-type`, 8, being a `str` from a row meeting an enum-typed field that
+Pydantic already validates, plus two aiosqlite stub imprecisions; and `misc`, 2
+lambdas whose parameters cannot be annotated, where the only way to satisfy
+mypy is to rewrite working closures into named functions.
 
 **Rewriting the tool bodies onto an async HTTP client.** Threading the sync
 bodies fixed B1's deadlock and keeps nine modules and their unit tests as they

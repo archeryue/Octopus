@@ -388,7 +388,8 @@ class CodexEventParser(EventParser):
             ] or [(item_id, "")]
 
         for owner, tid in targets:
-            state = states.get(tid) if isinstance(states.get(tid), dict) else {}
+            raw_state = states.get(tid)
+            state = raw_state if isinstance(raw_state, dict) else {}
             raw_status = str(state.get("status") or "")
             status = (
                 "completed"

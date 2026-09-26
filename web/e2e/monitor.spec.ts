@@ -61,6 +61,12 @@ test.describe("Monitor", () => {
     // itself is pinned in MonitorPage.test.tsx, where it costs nothing.
     await openMonitor(page);
     const sections = page.locator(".monitor-page section");
+    // `openMonitor` waits for the header, which renders before the overview
+    // fetch returns; the sections arrive with the data. Wait for them — a
+    // `.count()` does not retry, so on a slow fetch a page that is merely
+    // still loading reads as a page with no sections at all. All four render
+    // in one commit, so once the first is up the rest are too.
+    await expect(sections.first()).toBeVisible();
     const count = await sections.count();
     expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {

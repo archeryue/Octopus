@@ -34,7 +34,7 @@ subscription is logged in (§12). We do not write `codex.py` against
 anything still marked unverified.
 
 **VM0 reference files** (read-only source we borrowed from; paths under
-`/home/start-up/vm0`):
+`~/vm0`):
 - `turbo/apps/cli/src/lib/events/codex-event-parser.ts` — event schema.
 - `crates/guest-agent/src/cli/command.rs` — `build_codex_args`.
 - `crates/guest-agent/src/cli/mod.rs`, `codex_auth.rs` — `CODEX_HOME`

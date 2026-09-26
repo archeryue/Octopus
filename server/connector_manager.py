@@ -169,6 +169,8 @@ class ConnectorManager:
         if await resolve_connector(self.db, kind) is None:
             raise ConnectorError(f"unknown connector kind: {kind}")
         row = await self.db.get_connector_oauth_client(kind)
+        client_id: str | None
+        source: str | None
         if row and row["client_id"]:
             client_id, source = row["client_id"], "db"
         else:

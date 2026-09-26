@@ -677,3 +677,15 @@ class DatabaseBase:
     def conn(self) -> aiosqlite.Connection:
         assert self._conn is not None, "Database not initialized"
         return self._conn
+
+    async def _count(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        """One `SELECT COUNT(*)`, as an int.
+
+        An aggregate returns exactly one row, which is what the callers that
+        used to `execute` / `fetchone` / `row[0]` were each relying on without
+        saying so. Said here once, and phrased as the one thing they all want.
+        """
+        await self._ensure_connected()
+        cursor = await self.conn.execute(sql, params)
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0

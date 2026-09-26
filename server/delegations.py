@@ -415,12 +415,10 @@ class DelegationManager:
         # Compose a thin reopen-the-conversation prompt. We don't
         # repeat the original briefing — the child already has it in
         # her transcript. We just frame the new turn as a follow-up.
+        parent = self.session_mgr.get_session(parent_session_id)
         parent_agent = (
-            await self.db.get_agent(
-                self.session_mgr.get_session(parent_session_id).agent_id
-            )
-            if self.session_mgr.get_session(parent_session_id)
-            and self.session_mgr.get_session(parent_session_id).agent_id
+            await self.db.get_agent(parent.agent_id)
+            if parent and parent.agent_id
             else None
         )
         parent_name = (parent_agent or {}).get("name") or "another agent"

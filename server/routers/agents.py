@@ -87,6 +87,8 @@ async def archive_agent(session_manager: SessionMgr, agent_id: str, _: str = Dep
     # the in-memory map so they leave the live list immediately.
     await session_manager.evict_agent_sessions(agent_id)
     agent = await _get_manager().get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
     return AgentRead(**agent)
 
 

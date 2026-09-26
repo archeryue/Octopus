@@ -29,7 +29,7 @@ from ..auth import verify_token
 from ..config import settings
 from ..crypto import encrypt
 from ..deps import SessionMgr
-from ..harness import LoginMethod, get_harness, has_backend
+from ..harness import LoginDriver, LoginMethod, get_harness, has_backend
 from ..models import (
     AuthType,
     BackendKind,
@@ -155,8 +155,13 @@ async def delete_credential(session_manager: SessionMgr, credential_id: str, _: 
     # Revoke any on-disk login state for this credential's harness (Codex
     # rmtree's its CODEX_HOME; Claude has nothing on disk). The harness owns
     # the cleanup — no backend-kind branching here.
-    if row is not None and has_backend(row.get("backend")):
-        get_harness(row["backend"]).login.cleanup_credential(credential_id)
+    driver = (
+        get_harness(row["backend"]).login
+        if row is not None and has_backend(row.get("backend"))
+        else None
+    )
+    if driver is not None:
+        driver.cleanup_credential(credential_id)
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +169,27 @@ async def delete_credential(session_manager: SessionMgr, credential_id: str, _: 
 # ---------------------------------------------------------------------------
 
 
+def _login_driver(backend: str) -> LoginDriver:
+    """The backend's login driver, or a clean 501 instead of an AttributeError.
+
+    `RuntimeProfile.login` is optional because a backend need not offer an
+    in-app login at all, while each route below names one that does. Asking
+    through here keeps that assumption in a single place.
+    """
+    driver = get_harness(backend).login
+    if driver is None:
+        raise HTTPException(
+            status_code=501, detail=f"{backend} has no in-app login"
+        )
+    return driver
+
+
 class OAuthStartRequest(BaseModel):
-    # We only support claude-code for now (codex backend itself isn't
-    # wired yet). The field lets the API stay forward-compatible.
+    # Defaults to claude-code because this is the *redirect* flow, which is
+    # Claude's login method. Codex is wired too, by device code, in the
+    # `/codex/*` routes below. `oauth_start` asks the harness and refuses any
+    # backend whose driver logs in some other way, so the field is a real
+    # choice rather than a placeholder.
     backend: BackendKind = BackendKind.claude_code
 
 
@@ -249,7 +272,7 @@ async def oauth_complete(
     """
     db = _require_db()
     try:
-        session = await get_harness(BackendKind.claude_code.value).login.submit_code(
+        session = await _login_driver(BackendKind.claude_code.value).submit_code(
             req.login_id, req.code
         )
     except KeyError:
@@ -336,7 +359,7 @@ async def oauth_complete(
 @router.post("/oauth/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def oauth_cancel(req: OAuthCancelRequest, _: str = Depends(verify_token)):
     """Abort an in-flight login (kills the subprocess). Idempotent."""
-    await get_harness(BackendKind.claude_code.value).login.cancel(req.login_id)
+    await _login_driver(BackendKind.claude_code.value).cancel(req.login_id)
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +417,7 @@ async def codex_login_start(
                 detail="credential backend mismatch for re-authorization",
             )
     try:
-        session = await get_harness(BackendKind.codex.value).login.start(
+        session = await _login_driver(BackendKind.codex.value).start(
             req.label, reauth_credential_id=req.reauth_credential_id
         )
     except RuntimeError as e:
@@ -408,7 +431,7 @@ async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
     (pointing at the CODEX_HOME dir) once and return it."""
     from ..codex_login import CodexLoginState
 
-    session = get_harness(BackendKind.codex.value).login.get(login_id)
+    session = _login_driver(BackendKind.codex.value).get(login_id)
     if session is None:
         raise HTTPException(status_code=404, detail="unknown login_id")
 
@@ -466,4 +489,4 @@ async def codex_login_status(login_id: str, _: str = Depends(verify_token)):
 async def codex_login_cancel(
     req: CodexLoginCancelRequest, _: str = Depends(verify_token)
 ):
-    await get_harness(BackendKind.codex.value).login.cancel(req.login_id)
+    await _login_driver(BackendKind.codex.value).cancel(req.login_id)

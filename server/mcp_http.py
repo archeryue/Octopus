@@ -26,6 +26,7 @@ from typing import Any
 
 import anyio.to_thread
 from fastapi import FastAPI
+from starlette.types import Receive, Scope, Send
 
 from .mcp_identity import reset_current_scope, set_current_scope, verify
 
@@ -151,7 +152,7 @@ class _ScopeMiddleware:
         self.app = app
         self.name = name
 
-    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope.get("type") != "http":
             await self.app(scope, receive, send)
             return

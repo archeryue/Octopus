@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -33,9 +34,13 @@ router = APIRouter(prefix="/api/schedules", tags=["schedules"])
 # the `/api/schedules` routes use.
 session_router = APIRouter(prefix="/api/sessions", tags=["schedules"])
 
+if TYPE_CHECKING:  # annotations only, so no import cycle at runtime
+    from ..database import Database
+    from ..scheduler import ScheduleRunner
+
 # Injected at startup via app.state
-_db = None
-_runner = None
+_db: Database | None = None
+_runner: ScheduleRunner | None = None
 
 
 def _get_db():

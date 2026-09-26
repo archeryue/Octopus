@@ -35,7 +35,7 @@ class LifecycleMixin(SessionManagerBase):
 
     async def create_session(
         self,
-        agent_id: str,
+        agent_id: str | None,
         name: str | None = None,
         working_dir: str | None = None,
         credential_id: str | None = None,

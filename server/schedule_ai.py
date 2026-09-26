@@ -143,7 +143,7 @@ def resolve_timezone(tz: str | None) -> str:
     name passed deliberately and not recognised is an error: silently
     substituting UTC would move every fire without saying so.
     """
-    if not (tz or "").strip():
+    if not tz or not tz.strip():
         return local_timezone()
     tz = tz.strip()
     try:

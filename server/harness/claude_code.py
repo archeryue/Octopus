@@ -463,8 +463,9 @@ class ClaudeEventParser(EventParser):
         name = obj.get("subagent_type") or known_name
         self._tasks[task_id] = (tool_use_id, name)
 
-        usage = obj.get("usage") if isinstance(obj.get("usage"), dict) else {}
-        patch = obj.get("patch") if isinstance(obj.get("patch"), dict) else {}
+        raw_usage, raw_patch = obj.get("usage"), obj.get("patch")
+        usage = raw_usage if isinstance(raw_usage, dict) else {}
+        patch = raw_patch if isinstance(raw_patch, dict) else {}
         status = str(obj.get("status") or patch.get("status") or "running")
         # The CLI's terminal words are "completed" / "failed" / "cancelled";
         # anything else is still in flight.

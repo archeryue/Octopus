@@ -96,36 +96,44 @@ warn_return_any = false
 warn_redundant_casts = true
 no_implicit_optional = true
 
-# Enabling mypy on 28k previously-unchecked lines found 316 errors. 246 are
-# fixed (see the F1 commit); these six codes hold the residue, disabled with a
-# reason each rather than left to fail the gate. Everything NOT listed here is
-# enforced from now on — including `return-value`, which was cleared, and
+# Enabling mypy on 28k previously-unchecked lines found 316 errors. 246 were
+# fixed in the F1 commit; six codes held the residue. Three of those six are
+# now enforced too — `has-type` (its cause went with A1's extraction),
+# `assignment` (two injected globals and one tuple now say they can be None)
+# and `index` (three `SELECT COUNT(*)` call sites went through one `_count`
+# helper instead of indexing a `Row | None`). Three remain below, each with a
+# reason that is a decision rather than a delay. Everything NOT listed is
+# enforced — including `return-value`, which was cleared, and
 # `unused-coroutine`, which caught a real bug (an un-awaited approve_tool that
 # made Telegram's Allow/Deny buttons silently do nothing).
 disable_error_code = [
-    # 44 remaining, and 26 of those are one attribute: SessionManager.db,
-    # typed `Database | None` because it is assigned in initialize() rather
-    # than __init__. 33 of its 59 read sites already guard with `if self.db:`,
-    # so the Database.conn trick (a property that asserts) is NOT available —
-    # it would turn those guards into AssertionErrors. Fixing it properly
-    # means settling an initialization contract, which is exactly what A1's
-    # extraction decides. Deferred to A1/A4 because those items rewrite these
-    # very call sites; doing it now means doing it twice.
+    # 26 remaining, and every one of them is a single attribute:
+    # `SessionManager.db`, typed `Database | None` because it is assigned in
+    # `initialize()` rather than `__init__`. The 16 errors that were NOT that
+    # attribute are fixed — one of them a latent `AttributeError` on credential
+    # delete. What is left is one initialization contract across 203 `self.db`
+    # reads, 46 of which guard with `if self.db:`. An asserting property (the
+    # `Database.conn` trick) would turn those 46 silent skips into raises,
+    # which is arguably more correct and is certainly a change in production
+    # failure modes — so it is a decision to take deliberately, not a tidy-up
+    # to slip into a polish pass. Sized and recorded in the plan's §11.
     "union-attr",
-    # The same deferred-initialization shape seen from other angles: an
-    # attribute declared None and assigned during startup (main.py's db /
-    # scheduler), or a local mypy cannot re-narrow after a branch.
-    "assignment",
-    "index",
-    "has-type",
-    # 13 remaining. Mostly Pydantic field narrowing — a `str` reaching a field
-    # typed as a Literal/Enum (BackendKind, CredentialStatus, AuthType).
-    # Pydantic validates these at runtime, so the runtime behaviour is already
-    # correct and the annotation is merely imprecise; tightening them means
-    # threading Literal types through the DB layer, which A4 is doing anyway.
+    # 8 remaining, after five were fixed — including a `create_session`
+    # signature that claimed `agent_id: str` while both the model and the column
+    # are nullable, and an `AgentRead(**agent)` that would have raised inside a
+    # 500 if the row had gone. What is left is two shapes, neither a delay:
+    # five are a `str` out of a DB row reaching a field typed as an enum
+    # (BackendKind, CredentialStatus, AuthType), where Pydantic already
+    # validates at runtime and the alternative is threading enums through the
+    # row dicts; two are aiosqlite's own stubs typing a cursor as
+    # `Iterable[Row]` where `Sized` is wanted; one is a callback whose
+    # implementation returns a bool the protocol does not ask for.
     "arg-type",
-    # 4 remaining, all "Cannot infer type of lambda" in add_done_callback /
-    # sort keys. Cosmetic: mypy cannot infer a bare lambda's parameter types.
+    # 2 remaining, both "Cannot infer type of lambda" where a lambda carries a
+    # `x=value` parameter to capture a value at definition time. A lambda's
+    # parameters cannot be annotated, so the only way to satisfy this is to
+    # rewrite working closures into named functions to please an inference
+    # limitation. Left alone on purpose.
     "misc",
 ]
 
