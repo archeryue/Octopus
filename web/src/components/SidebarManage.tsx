@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from "react";
-import { IconBolt, IconClock, IconSettings } from "@tabler/icons-react";
+import { IconActivity, IconBolt, IconClock, IconSettings } from "@tabler/icons-react";
 import { useSessionStore, type CredentialInfo, type Schedule } from "../stores/sessionStore";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
 
@@ -102,6 +102,14 @@ export function SidebarManage() {
               />
             </>
           }
+        />
+        <ManageRow
+          icon={<IconActivity size={14} />}
+          label="Monitor"
+          className="btn-manage-monitor"
+          active={mainView === "monitor"}
+          onClick={() => openManage("monitor")}
+          summary={<span className="text-gray-600">30d</span>}
         />
         <ManageRow
           icon={<IconSettings size={14} />}

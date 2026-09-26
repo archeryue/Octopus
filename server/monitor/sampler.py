@@ -44,6 +44,46 @@ def _argv(pid: str) -> list[str]:
     return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
 
 
+def _ppid(pid: str) -> str | None:
+    """Parent pid from /proc/<pid>/stat.
+
+    Field 4, and the comm field before it can contain spaces and parentheses —
+    so split after the LAST ')' rather than on whitespace from the start.
+    """
+    try:
+        stat = (_PROC / pid / "stat").read_text()
+    except (OSError, PermissionError):
+        return None
+    try:
+        after = stat[stat.rindex(")") + 1 :].split()
+        return after[1]  # ppid, counting state as after[0]
+    except (ValueError, IndexError):
+        return None
+
+
+def _is_descendant(pid: str, ancestor: str, *, max_depth: int = 12) -> bool:
+    """Whether `pid` descends from `ancestor`.
+
+    Needed because counting every `server.mcp_servers.*` process on the host
+    attributes another Octopus instance's children to this one. A browser E2E
+    run caught exactly that: the isolated instance under test spawned nothing,
+    and the gauge still read 12 — the processes belonged to the production
+    server running beside it. Walking the parent chain answers the question the
+    gauge is actually asking, "how many did *I* start".
+
+    Bounded depth so a pid-reuse cycle cannot spin.
+    """
+    seen = pid
+    for _ in range(max_depth):
+        parent = _ppid(seen)
+        if parent is None or parent == "0":
+            return False
+        if parent == ancestor:
+            return True
+        seen = parent
+    return False
+
+
 def collect() -> list[Sample]:
     """One reading of every gauge. Pure apart from reading /proc and stat()."""
     out: list[Sample] = []
@@ -67,13 +107,15 @@ def collect() -> list[Sample]:
         # the whole --mcp-config JSON on its command line, and that JSON names
         # server.mcp_servers, so a naive match counts engines as sidecars.
         if len(argv) >= 3 and argv[1] == "-m" and argv[2].startswith("server.mcp_servers"):
-            sidecars += 1
-            sidecar_pss += _pss_kb(entry.name) or 0
+            if _is_descendant(entry.name, own):
+                sidecars += 1
+                sidecar_pss += _pss_kb(entry.name) or 0
             continue
         base = argv[0].rsplit("/", 1)[-1]
         if base in ("claude", "codex") and ("--print" in argv or "exec" in argv[1:3]):
-            engines += 1
-            engine_pss += _pss_kb(entry.name) or 0
+            if _is_descendant(entry.name, own):
+                engines += 1
+                engine_pss += _pss_kb(entry.name) or 0
 
     out.append(Sample("engine_process_count", float(engines)))
     out.append(Sample("engine_pss_mb", round(engine_pss / 1024, 1)))

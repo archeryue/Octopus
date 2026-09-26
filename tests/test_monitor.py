@@ -171,6 +171,29 @@ class TestSampler:
         assert "engine_process_count" in metrics
         assert "server_pss_mb" in metrics
 
+    def test_counts_only_this_processes_own_children(self):
+        """A browser E2E run caught this: an isolated instance that had spawned
+        nothing still reported 12 sidecars, because the gauge counted every
+        matching process on the host — they belonged to the production server
+        running beside it. The gauge must answer "how many did I start"."""
+        counts = {s.metric: s.value for s in collect()}
+        # This test process spawns no sidecars and no engine CLIs, whatever else
+        # is running on the machine.
+        assert counts["mcp_sidecar_count"] == 0.0
+        assert counts["engine_process_count"] == 0.0
+
+    def test_descendant_check_walks_the_parent_chain(self):
+        import os
+
+        from server.monitor.sampler import _is_descendant, _ppid
+
+        me = str(os.getpid())
+        parent = _ppid(me)
+        assert parent, "own ppid must be readable"
+        assert _is_descendant(me, parent), "a child descends from its parent"
+        assert not _is_descendant(parent, me), "and not the other way round"
+        assert not _is_descendant(me, me), "nothing descends from itself"
+
     def test_collect_db_reads_size_and_wal(self, tmp_path):
         p = tmp_path / "x.db"
         p.write_bytes(b"0" * 3_000_000)          # 3 MB, so rounding to 2dp shows it

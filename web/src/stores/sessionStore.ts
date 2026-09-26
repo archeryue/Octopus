@@ -120,7 +120,8 @@ export type MainView =
   | "agent-form"
   | "schedules"
   | "connectors"
-  | "harness";
+  | "harness"
+  | "monitor";
 
 interface SessionStore {
   token: string;
@@ -156,7 +157,7 @@ interface SessionStore {
   openApplication: (id: string) => void;
   openApplicationCreate: () => void;
   openAgentForm: (agentId?: string | null) => void;
-  openManage: (view: "schedules" | "connectors" | "harness") => void;
+  openManage: (view: "schedules" | "connectors" | "harness" | "monitor") => void;
   showChat: () => void;
 
   // Which AI backends this host can run (GET /api/backends). 'claude-code'

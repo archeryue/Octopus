@@ -8,6 +8,7 @@ import { ChatView } from "./components/ChatView";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { FileViewerDialog } from "./components/FileViewerDialog";
 import { HarnessPage } from "./components/HarnessPage";
+import { MonitorPage } from "./components/MonitorPage";
 import { OctopusLogo } from "./components/OctopusLogo";
 import { SchedulesPage } from "./components/SchedulesPage";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -174,6 +175,9 @@ function AuthenticatedApp() {
         )}
         {mainView === "harness" && (
           <HarnessPage onToggleSidebar={toggleSidebar} />
+        )}
+        {mainView === "monitor" && (
+          <MonitorPage onToggleSidebar={toggleSidebar} />
         )}
       </div>
 
