@@ -499,10 +499,10 @@ async def test_unanswered_question_auto_answers_after_timeout(
     """Session-level auto-answer still works in VM0 shape: after the
     configured timeout, deliver the autonomy-mode text via the same
     Event mechanism, broadcast with auto=True."""
-    from server import session_manager as sm
     from server.session_manager import PendingQuestion
+    from server.sessions import questions as sm_questions
 
-    monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.05)
+    monkeypatch.setattr(sm_questions.settings, "ask_user_question_timeout_seconds", 0.05)
 
     session = await _new(manager,"AutoQ")
     events: list[dict] = []
@@ -541,10 +541,10 @@ async def test_manual_answer_cancels_auto_answer_timer(manager, monkeypatch):
     """If the user answers before the timeout, the auto-answer timer
     should be cancelled and never fire — otherwise the long-poll
     would see the autonomy-mode text instead of the user's choice."""
-    from server import session_manager as sm
     from server.session_manager import PendingQuestion
+    from server.sessions import questions as sm_questions
 
-    monkeypatch.setattr(sm.settings, "ask_user_question_timeout_seconds", 0.5)
+    monkeypatch.setattr(sm_questions.settings, "ask_user_question_timeout_seconds", 0.5)
 
     session = await _new(manager,"ManualBeatsTimer")
     session._pending_questions["q-1"] = PendingQuestion(

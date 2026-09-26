@@ -16,6 +16,7 @@ from server.database import Database
 from server.main import app
 from server.session_manager import ForkError, QueuedPrompt, SessionManager
 from server.session_manager import session_manager as global_sm
+from server.sessions import forking as sm_forking
 
 
 @pytest.fixture
@@ -245,7 +246,7 @@ async def test_duplicate_backend_not_supported(manager, tmp_path, monkeypatch):
         can_fork = False
         backend_kind = "claude_code"
 
-    monkeypatch.setattr(sm, "get_harness", lambda b: _NoFork())
+    monkeypatch.setattr(sm_forking, "get_harness", lambda b: _NoFork())
     from server.harness import BackendForkNotSupported
 
     with pytest.raises(BackendForkNotSupported):
@@ -258,7 +259,7 @@ async def test_duplicate_prepare_fork_failure_compensates(manager, tmp_path, mon
     repo = _repo(tmp_path)
     parent = await _seed_parent(manager, repo)
 
-    harness = sm.get_harness(parent.backend)
+    harness = sm_forking.get_harness(parent.backend)
 
     async def boom(*a, **k):
         raise RuntimeError("prepare blew up")
@@ -406,7 +407,7 @@ async def test_duplicate_cleanup_failure_leaves_row_and_dir(manager, tmp_path, m
     repo = _repo(tmp_path)
     parent = await _seed_parent(manager, repo)
 
-    harness = sm.get_harness(parent.backend)
+    harness = sm_forking.get_harness(parent.backend)
 
     async def boom(*a, **k):
         raise RuntimeError("prepare blew up")
@@ -447,7 +448,7 @@ async def test_recover_removes_abandoned_fork_copy_dir(manager, tmp_path, monkey
         resume_id="resume-xyz", fork_after_seq=5,
     )
 
-    harness = sm.get_harness("claude-code")
+    harness = sm_forking.get_harness("claude-code")
 
     async def fake_cleanup(*a, **k):
         return None

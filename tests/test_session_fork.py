@@ -17,6 +17,7 @@ from server.delegations import DelegationRunState, delegation_manager
 from server.harness import BackendForkNotSupported, get_harness
 from server.harness.events import HarnessEvent
 from server.session_manager import ForkError, QueuedPrompt, SessionManager
+from server.sessions import forking as sm_forking
 from tests.fake_run import FakeRunBase
 
 
@@ -213,7 +214,7 @@ async def test_fork_backend_not_supported(manager, monkeypatch):
     class _NoFork:
         can_fork = False
 
-    monkeypatch.setattr(sm, "get_harness", lambda b: _NoFork())
+    monkeypatch.setattr(sm_forking, "get_harness", lambda b: _NoFork())
     with pytest.raises(BackendForkNotSupported):
         await manager.fork_session(parent.id, 0)
     # No half-created row.
