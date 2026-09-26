@@ -2493,3 +2493,40 @@ async def test_injected_turns_are_never_steered(manager):
         assert [q.prompt for q in session._steer_queue] == ["actually, stop"]
     finally:
         session._active_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_that_raises_surfaces_its_own_error(manager):
+    """A failure starting the CLI must reach the caller as itself.
+
+    `_run_backend`'s `finally` closes the steering window, and `steer_writer`
+    used to be bound *inside* the `try` — so a spawn that raised unwound through
+    an unbound name and the caller saw `UnboundLocalError` instead of the real
+    failure. Found while splitting the method (polish-2026-09.md §3 A1.5); the
+    binding moved above the block, and this is what says so.
+    """
+    session = await _new(manager, "SpawnFails")
+
+    class ExplodingBackend(FakeRunBase):
+        name = "exploding"
+        stopped = False
+
+        async def start(self, prompt, working_dir, resume_id=None, credential=None):
+            raise RuntimeError("no such binary")
+
+        def stream(self):  # pragma: no cover - never reached
+            async def _gen():
+                yield None
+            return _gen()
+
+        async def stop(self):
+            ExplodingBackend.stopped = True
+
+    manager._make_run = lambda s, agent=None, connectors=None: ExplodingBackend()  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="no such binary"):
+        _ = [m async for m in manager._run_backend(session, "go")]
+
+    # And the teardown still ran: a spawn failure must not leak the handle.
+    assert ExplodingBackend.stopped is True
+    assert session._backend is None
