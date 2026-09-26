@@ -464,9 +464,9 @@ body {
  * below, and they don't have the same trigger:
  *
  *   - width  (`max-width: 768px`) — layout: the sidebar becomes a drawer.
- *   - input  (`hover: none`)      — touch: hit areas, and affordances that
- *                                   were hidden behind hover and would
- *                                   otherwise be unreachable.
+ *   - input  (`hover: none`)      — touch: hit areas, and hover-only
+ *                                   affordances, which follow the selection
+ *                                   instead of appearing on every row.
  *   - safe areas (`env(...)`)     — the notch and the home indicator, which
  *                                   only intrude once the page is allowed
  *                                   under them (`viewport-fit=cover`).
@@ -525,14 +525,33 @@ summary {
 }
 
 @media (hover: none) {
-  /* Every affordance that lives behind a hover is unreachable on a
-     touchscreen — there is no hover, only a tap that has already chosen
-     something. Delete buttons and the per-agent "+" are always visible here.
+  /* A hover-only affordance is unreachable on a touchscreen, so these have to
+     appear some other way. "Always" was the first answer and the wrong one: it
+     put a delete button on every session and every application at once, under
+     the thumb, and made the sidebar louder than the thing it lists.
+
+     A touchscreen has no hover but it does have a *selection*, which carries
+     the same meaning — tapping a session or an application is how you say
+     "this one", and unfolding an agent is how you say "I'm working in here".
+     So in the sidebar's lists the action appears on the row already chosen and
+     nowhere else; nothing becomes unreachable, it costs one tap on the row.
+
+     Outside those lists — the credential cards, the schedule rows, the notifier
+     list — there is no selection to hang it on, and one delete button per item
+     is the whole point of the list. Those stay revealed. `.btn-delete` is shared
+     across all of them, which is why this is two rules rather than a selector
+     list: reveal, then take it back for a row nobody has picked.
      (Unlayered, so this beats Tailwind's `opacity-0` utility.) */
   .btn-delete,
   .btn-application-delete,
   .btn-session-add {
     opacity: 1;
+  }
+
+  .session-item:not(.active) .btn-delete,
+  .application-item:not(.active) .btn-application-delete,
+  .agent-item:not(.expanded) .btn-session-add {
+    opacity: 0;
   }
 
   /* Hit areas. The icons stay 18-20px because the design is dense on

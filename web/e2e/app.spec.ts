@@ -21,6 +21,8 @@ const OWNED_NAMES = new Set([
   "Chat Test",
   "Mobile Drawer",
   "Mobile Viewport",
+  "Touch Chosen",
+  "Touch Other",
 ]);
 
 // Clean up only sessions created by this spec
@@ -220,6 +222,75 @@ test.describe("WebSocket Connection", () => {
       timeout: 5_000,
     });
     await expect(page.locator(".conn-status")).toContainText("Connected");
+  });
+});
+
+/** What a touchscreen shows instead of a hover (mobile.md §3).
+ *
+ * These set `isMobile` / `hasTouch`, not just a narrow viewport — the rest of
+ * the mobile coverage resizes the window, which triggers the `max-width`
+ * layout rules but leaves `(hover: none)` unmatched. That gap is exactly why
+ * the first version of this rule shipped wrong: it revealed every row's delete
+ * button on every row, and no test could tell.
+ */
+test.describe("Touch affordances", () => {
+  test.use({
+    viewport: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+  });
+
+  test("a row's action shows on the row you chose, and not on the others", async ({
+    page,
+    request,
+  }) => {
+    const headers = {
+      Authorization: `Bearer ${TOKEN}`,
+      "Content-Type": "application/json",
+    };
+    for (const name of ["Touch Chosen", "Touch Other"]) {
+      const created = await request.post(API, {
+        headers,
+        data: { name, working_dir: "/tmp" },
+      });
+      expect(created.ok()).toBeTruthy();
+    }
+
+    await page.goto("/");
+    await page.locator('input[type="password"]').fill(TOKEN);
+    await page.locator("button.btn-login").click();
+
+    // Without this the test proves nothing: every assertion below is about a
+    // rule that only applies when the browser reports no hover.
+    expect(await page.evaluate(() => matchMedia("(hover: none)").matches)).toBe(
+      true
+    );
+
+    const openDrawer = async () => {
+      await page.locator(".btn-menu").first().click();
+      await expect(page.locator(".sidebar")).toHaveClass(/open/);
+    };
+
+    await openDrawer();
+    const octo = page.locator(".agent-item", { hasText: "Octo" });
+
+    // Folded: the agent's "+" is not on screen. Unfolding is how you say
+    // "I'm working in here", and that is when it appears.
+    await expect(octo).not.toHaveClass(/expanded/);
+    await expect(octo.locator(".btn-session-add")).toHaveCSS("opacity", "0");
+    await octo.click();
+    await expect(octo).toHaveClass(/expanded/);
+    await expect(octo.locator(".btn-session-add")).toHaveCSS("opacity", "1");
+
+    // Picking a session closes the drawer (mobile.md §2), so reopen it to look.
+    await page.locator(".session-item", { hasText: "Touch Chosen" }).click();
+    await openDrawer();
+
+    const chosen = page.locator(".session-item", { hasText: "Touch Chosen" });
+    const other = page.locator(".session-item", { hasText: "Touch Other" });
+    await expect(chosen).toHaveClass(/active/);
+    await expect(chosen.locator(".btn-delete")).toHaveCSS("opacity", "1");
+    await expect(other.locator(".btn-delete")).toHaveCSS("opacity", "0");
   });
 });
 

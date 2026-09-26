@@ -21,7 +21,7 @@ how a "mobile fix" breaks a desktop with a touchscreen:
 | trigger | what it governs |
 |---|---|
 | `max-width: 768px` | **layout** — the sidebar becomes a drawer, headers shed context |
-| `hover: none` | **input** — hit areas, and affordances that were hidden behind hover |
+| `hover: none` | **input** — hit areas, and hover-only affordances, which follow the *selection* instead |
 | `env(safe-area-inset-*)` | **hardware** — the notch and the home indicator |
 
 ## 2. The drawer has to put itself away
@@ -77,9 +77,33 @@ hidden menu.
 
 ## 5. Touch targets and hover-only affordances
 
-Delete buttons and the per-agent "+" were `opacity-0` until hover — invisible
-on a touchscreen, where there is no hover, only a tap that has already chosen
-something. Under `hover: none` they're simply visible.
+Delete buttons and the per-agent "+" are `opacity-0` until hover — invisible on
+a touchscreen, where there is no hover. The first answer here was "then show
+them always", and it was wrong in a way only a phone reveals: a delete button on
+*every* session and *every* application at once, all of them under the thumb,
+and a sidebar louder than the thing it lists.
+
+A touchscreen has no hover but it does have a **selection**, which carries the
+same meaning hover does — tapping a session or an application is how you say
+"this one", and unfolding an agent is how you say "I'm working in here". So
+under `hover: none` the sidebar's row actions appear on the row already chosen
+(`.session-item.active`, `.application-item.active`, `.agent-item.expanded`) and
+nowhere else. Nothing becomes unreachable: pick the row, then the action — two
+taps for something destructive, which is the right number.
+
+Outside those lists the reveal stays unconditional. A credential card, a
+schedule row, a notifier entry has no selection to hang it on, and one delete
+button per item is what the list is *for*. `.btn-delete` is shared by all of
+them, so this is two rules — reveal, then take it back for an unpicked sidebar
+row — rather than one selector list. Narrowing it to the sidebar alone is a
+mistake worth naming: it silently made deleting a credential impossible on a
+phone, and the e2e caught it.
+
+Pinned by an e2e test that sets `isMobile` / `hasTouch`, not just a narrow
+viewport. That distinction is why the first version shipped wrong: resizing the
+window triggers the `max-width` rules but leaves `(hover: none)` unmatched, so
+no existing test could see this rule at all. The test asserts
+`matchMedia("(hover: none)")` first, for the same reason.
 
 Hit areas grow past the button's box with a pseudo-element (`inset: -10px`)
 rather than by resizing the button: the console's density is deliberate, and

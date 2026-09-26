@@ -212,7 +212,9 @@ export function SidebarAgents() {
           return (
             <div key={a.id} className="agent-group">
               <div
-                className="agent-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-100 transition-colors"
+                className={`agent-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-100 transition-colors${
+                  isExpanded ? " expanded" : ""
+                }`}
                 onClick={() => openAgent(a.id)}
                 onDoubleClick={() => openAgentForm(a.id)}
                 /* The name leads even when there's a description: folded to
