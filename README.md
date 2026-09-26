@@ -17,7 +17,8 @@ Phone / Browser
   → REST + WebSocket → FastAPI (web UI + API on one port)
       → Agent  (durable: prompt · model · credential · tool policy · connectors)
           → backend:  Claude Code   or   Codex      (local CLI subprocess, stream-json)
-          → MCP tools: bg · ask · ask_agent · connectors (GitHub / Gmail / custom)
+          → MCP tools: bg · ask · ask_agent · schedule · research · connectors
+                       (served in-process at /mcp/<name>, not spawned per session)
 ```
 
 ## Features
@@ -117,8 +118,39 @@ Phone / Browser
   (`~/.octopus/applications/<app>`); the moment the entry page exists, the app
   renders in the main pane like a browser tab. Ask for changes right from that
   pane — each request is another turn in the same build session, so the agent
-  keeps its context and the frame reloads itself when the rebuild lands.
-  Design: [`docs/plans/applications.md`](docs/plans/applications.md).
+  keeps its context and the frame reloads itself when the rebuild lands. An app
+  that needs a server gets one: drop an executable `start.sh` at its root and
+  Octopus allocates a port, runs it, proxies `/apps/{id}/api/*` to it and stops
+  it when idle — with the app's own state in a directory a rebuild never
+  touches. A running app can also hold conversations with your agents through
+  its own scoped token.
+  Design: [`docs/plans/applications.md`](docs/plans/applications.md),
+  [`application-backends.md`](docs/plans/application-backends.md),
+  [`app-agent-access.md`](docs/plans/app-agent-access.md).
+- **Per-agent memory** — Each agent has its own memory directory that both
+  harnesses write to and read back across sessions, so an agent accumulates what
+  it learned about your setup instead of starting cold every time. Claude's
+  native auto-memory is pointed at it; Codex is told where it is. Auth and
+  `--resume` transcripts are untouched by this.
+  Design: [`docs/plans/memory.md`](docs/plans/memory.md).
+- **Native sub-agents, surfaced** — When a model spawns its own helpers
+  (Claude Code's `Task`, Codex's `spawn_agent`), the run shows up as a live card
+  with status and token counts rather than a tool call that sits there. An
+  Octopus agent can also bring its own named sub-agents.
+  Design: [`docs/plans/native-subagents.md`](docs/plans/native-subagents.md).
+- **Monitor** — A page for what the system actually did: request and turn
+  counts, error rates, per-process memory (PSS, so shared pages are not counted
+  twice), database and WAL size. Sampled continuously, kept 30 days, and an
+  empty section says "nothing recorded" rather than rendering blank — a blank
+  panel reads as a clean bill of health.
+- **Token rotation** — Changing the access token is one operation from
+  Settings (`POST /api/auth/rotate`), with no restart and nothing to edit by
+  hand. It matters because the token is *also* the key every stored secret is
+  encrypted with: editing `.env` yourself changes what the server checks while
+  leaving the database keyed to a token nobody has. Rotation re-encrypts every
+  secret, rewrites the env files, swaps the live setting, drops the processes
+  carrying the old one, and hands the new token to tabs already open.
+  Design: [`docs/plans/token-rotation.md`](docs/plans/token-rotation.md).
 - **Local handoff** — `octopus handoff` imports local Claude Code sessions;
   `octopus pull` exports a session as JSONL for local `claude --resume`.
 - **Persistence** — SQLite (WAL, batched commits per turn); sessions, messages,
@@ -171,24 +203,35 @@ octopus pull <session-id>      # Export an Octopus session as local JSONL
 ## Tech Stack
 
 **Backend**: Python 3.12 · FastAPI · `claude` + `codex` CLI subprocesses ·
-aiosqlite · APScheduler · cryptography (Fernet) · MCP stdio servers
+aiosqlite · APScheduler · cryptography (Fernet) · MCP namespaces served
+in-process over streamable-HTTP
 **Frontend**: React 19 · TypeScript (strict) · Vite · zustand · Tailwind v4 · Radix
 
 ## Testing
 
 ```bash
-.venv/bin/pytest tests/ -v        # 882 backend tests (real-CLI tests run when `claude`/`codex` on PATH)
-cd web && bun run test            # 84 frontend unit tests (vitest)
+./scripts/check.sh                # every gate: ruff · mypy · pytest · eslint · vitest · tsc · contracts · docs index
+
+.venv/bin/pytest -m "not real"    # 1,164 backend tests, hermetic — no CLI, no network, ~34s
+.venv/bin/pytest -m real          # the 34 that drive a live model (needs a signed-in claude / codex)
+cd web && bun run test            # 214 frontend unit tests (vitest)
 cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # Playwright e2e (app · handoff/pull · agents · connectors · applications · monitor · agent-collaboration · real-CLI). Split into `:fast` (UI-only) and `:llm` (real Claude/Codex) for dev iteration.
+cd web && bun run test:e2e        # 84 Playwright tests in a real browser
+cd web && bun run test:e2e:fast   # ... the 47 that need no model (~35s)
+cd web && bun run test:e2e:llm    # ... the 37 that drive real Claude / Codex turns
 ```
+
+The real-CLI tier is selected by marker rather than by filename, so a plain
+`--collect-only` never spawns a model.
 
 ### Pre-commit hooks (optional)
 
 Install [lefthook](https://github.com/evilmartians/lefthook) and run
-`./scripts/setup-hooks.sh` to enable per-commit checks: `tsc --noEmit` when web
-TS changes, `pytest tests/` when server Python changes. Both skip when no
-relevant files are staged, so doc-only commits stay fast.
+`./scripts/setup-hooks.sh`. Commits then run the same gates `./scripts/check.sh`
+does, scoped to what you staged: ruff + mypy + the hermetic pytest tier for
+Python, eslint + `tsc` + vitest for web, and the generated-contract and
+docs-index checks when they could have drifted. Each skips when no relevant file
+is staged, so a doc-only commit stays fast.
 
 ## Architecture
 

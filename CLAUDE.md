@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,196 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,198 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1,162 tests, ~34 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,164 tests, ~34 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -52,11 +52,11 @@ You MUST verify your changes before considering them done:
    import is what used to make a plain `--collect-only` spawn a real `claude`
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
-2. **Frontend unit tests**: `cd web && bun run test` (210 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (214 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (83 tests, no skips, ~5 min, Playwright
+4. **E2E tests**: `cd web && bun run test:e2e` (84 tests, no skips, ~5 min, Playwright
    auto-starts servers). Split into two buckets for dev iteration —
-   `bun run test:e2e:fast` (46 pure-UI tests, ~30 s — login / sessions /
+   `bun run test:e2e:fast` (47 pure-UI tests, ~35 s — login / sessions /
    dialogs / sidebar / virtualized chat / attachments / etc.) and
    `bun run test:e2e:llm` (37 real-LLM tests, ~3 min — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
@@ -72,14 +72,14 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1162 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1164 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
-| Frontend unit | vitest | `cd web && bun run test` | 210 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 83 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (46, ~40 s) skips the `@llm` half; `:llm` (37, ~4 min) is the rest. |
+| Frontend unit | vitest | `cd web && bun run test` | 214 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 84 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (47, ~35 s) skips the `@llm` half; `:llm` (37, ~4 min) is the rest. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
-hand-written inventory of 1,194 tests cannot stay true, and it cost ~16 KB of
+hand-written inventory of 1,198 tests cannot stay true, and it cost ~16 KB of
 every session's context to try.
 
 ## Project Structure
@@ -144,6 +144,10 @@ gained `POST /api/agents/{id}/unarchive` for the same tab).
   headers that shed context rather than function, and the safe-area insets a
   home-screen install needs. Three separate triggers kept apart: `max-width`
   for layout, `hover: none` for input, `env(safe-area-inset-*)` for hardware.
+  A touch test must set `isMobile`/`hasTouch`, not just a narrow viewport —
+  resizing triggers the `max-width` rules and leaves `(hover: none)` unmatched,
+  which is how the sidebar shipped with every row's delete button revealed at
+  once.
 ### Frontend and tests
 
 - `web/` — React frontend (Vite + TypeScript). The interface follows
