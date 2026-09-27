@@ -14,10 +14,17 @@
  * the wrong one) and the first row's label was clipped by the scroller, which is
  * what "the agent's messages have no time" actually was.
  *
- * The corner it occupies is kept clear by the shapes that could reach it — the
- * user bubble's rewind affordance and the assistant's prose both reserve room on
- * the right (`pr-12`). Reserving beats floating over: the one thing worse than
- * no timestamp is a timestamp sitting on top of the button you were aiming at.
+ * The corner it occupies is kept clear by every shape that could reach it — the
+ * user bubble's rewind affordance, the assistant's prose, and the tool and
+ * tool-result headers all reserve room on the right (`pr-12`). Reserving beats
+ * floating over: the one thing worse than no timestamp is a timestamp sitting on
+ * top of the button you were aiming at.
+ *
+ * And it is *inset* a few pixels rather than flush with the row's edge, because
+ * the tool shapes are bordered cards that begin at the row's top: flush, the
+ * chip's own background sat on their 1px stroke and broke the outline of the box
+ * it was labelling. Inset, it floats inside the card, clear of both the stroke
+ * and the rounded corner.
  *
  * `null` for messages written before the column existed (there was nothing to
  * backfill from), and for anything not yet persisted.
@@ -48,7 +55,7 @@ export function MessageTime({ iso }: { iso?: string | null }) {
   if (Number.isNaN(at.getTime())) return null;
   return (
     <time
-      className="message-time pointer-events-auto absolute right-1 top-0 z-10 rounded bg-white/85 px-1 font-mono text-[10px] leading-4 text-gray-600 opacity-0 transition-opacity group-hover/msg:opacity-100"
+      className="message-time pointer-events-auto absolute right-2 top-0.5 z-10 rounded bg-white/85 px-1 font-mono text-[10px] leading-4 text-gray-600 opacity-0 transition-opacity group-hover/msg:opacity-100"
       dateTime={iso}
       title={at.toLocaleString()}
     >

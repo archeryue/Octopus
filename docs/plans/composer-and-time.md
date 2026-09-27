@@ -58,11 +58,24 @@ two shapes that reach it (`pr-12` on the rewind row and on the assistant's
 prose): reserving beats floating over, because the one thing worse than no
 timestamp is a timestamp sitting on the button you were aiming at.
 
-The test measures geometry for both roles — the label's box inside its row, no
-glyphs underneath it (range rects, not the container's box, since padding is
-what moves text), and no intersection with the rewind affordance — plus an
-`@llm` case for a *live* reply, whose time rides on the WebSocket event rather
-than coming from a snapshot. Reinstating either fault fails it by name.
+A third fault followed from the fix and was also caught by eye, not by the
+suite: flush with the row's top edge, the chip's own background sat on the **1px
+stroke of the bordered shapes** — the tool card and its result begin at the row's
+top, so the label broke the outline of the very box it was labelling. It is
+inset two pixels now, and those headers reserve the same corner as everything
+else.
+
+The test measures geometry rather than presence: the label's box inside its own
+row, no glyphs underneath it (range rects, not the container's box, since
+padding is what moves text), no intersection with the rewind affordance, and —
+across *every* row, not only the text ones — no box whose top edge the chip is
+sitting on. Plus an `@llm` case for a *live* reply, whose time rides on the
+WebSocket event rather than coming from a snapshot. Each of the three faults
+fails it by name.
+
+The lesson worth keeping: all three were geometry, all three were visible in a
+browser in seconds, and an assertion that the label "appeared" could not see any
+of them. A visual affordance needs its boxes measured.
 
 On touch there is no hover, so `@media (hover: none)` shows the times dimmed
 instead of hiding them. A timestamp is information, not an action: the reason

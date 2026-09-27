@@ -2541,6 +2541,34 @@ test.describe("Message timestamps", () => {
     return { t, r, overText };
   }
 
+  /** Every box in the row that paints a border or a fill, and whether the chip
+   *  is sitting on its top edge. A filled chip on a 1px stroke breaks the
+   *  outline of the very box it is labelling — which is how it shipped. */
+  async function onAnyBorder(row: import("@playwright/test").Locator) {
+    return row.evaluate((el) => {
+      const time = el.querySelector("time.message-time") as HTMLElement | null;
+      if (!time) return [];
+      const t = time.getBoundingClientRect();
+      const offenders: string[] = [];
+      el.querySelectorAll("*").forEach((node) => {
+        if (node === time) return;
+        const cs = getComputedStyle(node as Element);
+        const stroke = parseFloat(cs.borderTopWidth) || 0;
+        const filled =
+          cs.backgroundColor !== "rgba(0, 0, 0, 0)" &&
+          !cs.backgroundColor.includes("/ 0)");
+        if (!stroke && !filled) return;
+        const b = (node as Element).getBoundingClientRect();
+        const intersects =
+          t.left < b.right && b.left < t.right && t.top < b.bottom && b.top < t.bottom;
+        if (intersects && t.top <= b.top + Math.max(1, stroke) && t.bottom > b.top) {
+          offenders.push((node as Element).className.toString().slice(0, 40));
+        }
+      });
+      return offenders;
+    });
+  }
+
   test("both roles reveal their time, inside their own row and over nothing", async ({
     page,
     request,
@@ -2548,6 +2576,14 @@ test.describe("Message timestamps", () => {
     await importSessionApi(request, "Timed Session", [
       { role: "user", type: "text", content: "when did this happen" },
       { role: "assistant", type: "text", content: "the agent's answer here" },
+      {
+        role: "assistant",
+        type: "tool_use",
+        tool_name: "Read",
+        tool_input: { file_path: "/tmp/x" },
+        tool_use_id: "t1",
+      },
+      { role: "user", type: "tool_result", tool_use_id: "t1", content: "file body" },
     ]);
     await login(page);
     await page
@@ -2577,6 +2613,19 @@ test.describe("Message timestamps", () => {
       await expect(row.locator("time.message-time")).toHaveText(
         /^\d{2}:\d{2}$|^\w{3} \d+ \d{2}:\d{2}$/
       );
+    }
+
+    // Bordered shapes — the tool card and its result — are the ones whose
+    // outline a flush chip broke. Checked across every row, not just the two
+    // text ones, because that is the class of fault rather than the instance.
+    const rows = page.locator(".msg-row");
+    for (let i = 0; i < (await rows.count()); i++) {
+      const row = rows.nth(i);
+      await row.hover();
+      expect(
+        await onAnyBorder(row),
+        `row ${i}: the time chip is sitting on a box's border`
+      ).toEqual([]);
     }
 
     // And it does not cover the affordance that shares that corner.

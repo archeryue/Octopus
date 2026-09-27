@@ -356,7 +356,9 @@ function ToolUseBlock({
       <div className="msg msg-tool overflow-hidden rounded-lg border border-gray-300 bg-gray-50">
         <button
           type="button"
-          className="tool-header flex w-full items-center gap-2 px-3 py-2 text-left font-mono text-[12px] transition-colors hover:bg-gray-100"
+          /* `pr-12`, like every other shape: the hover timestamp lives in
+             this corner, and a long tool argument would run under it. */
+          className="tool-header flex w-full items-center gap-2 px-3 py-2 pr-12 text-left font-mono text-[12px] transition-colors hover:bg-gray-100"
           onClick={() => setExpanded(!expanded)}
         >
           <span className="tool-icon text-muted-foreground shrink-0">
@@ -502,7 +504,8 @@ function ToolResultBlock({ message }: { message: Message }) {
     >
       <button
         type="button"
-        className="tool-header w-full flex items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent/50 transition-colors"
+        /* `pr-12` — the same reserved corner. */
+        className="tool-header w-full flex items-center gap-2 px-3 py-2 pr-12 text-left text-sm hover:bg-accent/50 transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
         <span className="tool-icon text-muted-foreground shrink-0">
