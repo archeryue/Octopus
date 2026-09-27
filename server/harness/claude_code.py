@@ -861,6 +861,10 @@ _CLAUDE_TRANSIENT_ERROR_PATTERNS = (
 
 
 CLAUDE_CODE = RuntimeProfile(
+    # The aliases `claude --model` documents. Aliases rather than pinned ids on
+    # purpose: they keep meaning the newest model of each tier, so this list
+    # does not go stale every release.
+    models=("opus", "sonnet", "haiku"),
     backend="claude-code",
     binary="claude",
     tools_prompt=_OCTOPUS_SYSTEM_PROMPT,

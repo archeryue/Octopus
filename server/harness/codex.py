@@ -828,6 +828,11 @@ _CODEX_TRANSIENT_ERROR_PATTERNS = (
 
 
 CODEX = RuntimeProfile(
+    # Left empty deliberately: nothing in this repo establishes which names
+    # `codex -m` accepts, and a guessed shortlist that silently fails is worse
+    # than no shortlist. `/model <name>` works, and the picker still offers the
+    # models this user's agents and sessions already run.
+    models=(),
     backend="codex",
     binary="codex",
     tools_prompt=_OCTOPUS_SYSTEM_PROMPT_CODEX,

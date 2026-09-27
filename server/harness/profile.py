@@ -223,6 +223,13 @@ class RuntimeProfile:
     # future backend with no strategy leaves it False and the "Fork from
     # here" affordance renders disabled. Surfaced via `SessionInfo.can_fork`.
     can_fork: bool = False
+    # Model names this harness's CLI is known to accept, offered by `/model`.
+    # A *shortlist*, not a whitelist: the route stores whatever string it is
+    # given, because both CLIs take names this list cannot know about and a
+    # model released next week must not need an Octopus release. Empty is
+    # fine — `/model <name>` still works, and the picker also offers whatever
+    # models the user's own agents and sessions already use.
+    models: tuple[str, ...] = ()
     # Collaborators (optional features):
     login: LoginDriver | None = None
     transcript_codec: TranscriptCodec | None = None

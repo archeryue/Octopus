@@ -58,6 +58,10 @@ export interface Message {
   // (session-rewind.md §6.1). Absent on freshly-streamed messages until
   // the next detail reload.
   seq?: number;
+  // When the row was written, ISO-8601. Revealed on hover (`MessageTime`).
+  // Absent for messages written before the column existed and for anything
+  // not persisted — both render no time rather than a made-up one.
+  created_at?: string;
 }
 
 export interface QuestionOption {
@@ -165,6 +169,11 @@ interface SessionStore {
   // backend selector in the session-create form (codex-backend.md §6).
   availableBackends: string[];
   setAvailableBackends: (b: string[]) => void;
+  // Model shortlist per backend, from the same `GET /api/backends`. Feeds
+  // `/model`'s picker; empty for a backend whose accepted names this build
+  // does not claim to know (see RuntimeProfile.models).
+  backendModels: Record<string, string[]>;
+  setBackendModels: (m: Record<string, string[]>) => void;
 
   sessions: SessionInfo[];
   setSessions: (s: SessionInfo[]) => void;
@@ -452,6 +461,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   availableBackends: ["claude-code"],
   setAvailableBackends: (availableBackends) => set({ availableBackends }),
+  backendModels: {},
+  setBackendModels: (backendModels) => set({ backendModels }),
 
   sessions: [],
   setSessions: (sessions) => set({ sessions }),

@@ -9,6 +9,7 @@ changed.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from .base import DatabaseBase
@@ -69,6 +70,7 @@ class SessionsMixin(DatabaseBase):
         created_at: str,
         parent_id: str,
         backend: str,
+        model: str | None = None,
         agent_id: str | None,
         credential_id: str | None,
         resume_id: str | None,
@@ -91,25 +93,25 @@ class SessionsMixin(DatabaseBase):
             await self.conn.execute(
                 "INSERT INTO sessions "
                 "(id, name, working_dir, created_at, claude_session_id, "
-                " credential_id, agent_id, origin, backend, "
+                " credential_id, agent_id, origin, backend, model, "
                 " forked_from_session_id, fork_after_seq, fork_needs_replay, "
                 " fork_status, fork_metadata) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, 0, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, ?, 0, "
                 " 'initializing', ?)",
                 (
                     fork_id, name, working_dir, created_at, resume_id,
-                    credential_id, agent_id, backend, parent_id, fork_after_seq,
-                    fork_metadata,
+                    credential_id, agent_id, backend, model, parent_id,
+                    fork_after_seq, fork_metadata,
                 ),
             )
             await self.conn.execute(
                 "INSERT INTO messages "
                 "(session_id, seq, role, type, content, tool_name, tool_input, "
                 " tool_use_id, is_error, session_id_ref, cost, attachments, "
-                " git_head, git_status_clean) "
+                " git_head, git_status_clean, created_at) "
                 "SELECT ?, seq, role, type, content, tool_name, tool_input, "
                 " tool_use_id, is_error, session_id_ref, cost, attachments, "
-                " git_head, git_status_clean "
+                " git_head, git_status_clean, created_at "
                 "FROM messages WHERE session_id = ? AND seq <= ?",
                 (fork_id, parent_id, fork_after_seq),
             )
@@ -122,12 +124,16 @@ class SessionsMixin(DatabaseBase):
         self, *, include_archived: bool = False
     ) -> list[dict[str, Any]]:
         await self._ensure_connected()
+        # Rows come back as plain tuples and are mapped by POSITION below, so a
+        # new column goes on the END of this list. Inserting one in the middle
+        # silently shifts every field after it — `fork_metadata` starts reading
+        # as an integer and sessions come back with the wrong parent.
         query = (
             "SELECT id, name, working_dir, created_at, claude_session_id, "
             "credential_id, archived, agent_id, origin, backend, "
             "parent_session_id, delegation_request, forked_from_session_id, "
             "fork_after_seq, fork_needs_replay, fork_metadata, "
-            "fork_revert_record, fork_status, app_id FROM sessions"
+            "fork_revert_record, fork_status, app_id, model FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -154,6 +160,7 @@ class SessionsMixin(DatabaseBase):
                 "fork_revert_record": row[16],
                 "fork_status": row[17],
                 "app_id": row[18],
+                "model": row[19],
             }
             for row in rows
         ]
@@ -179,6 +186,7 @@ class SessionsMixin(DatabaseBase):
         attachments: list[dict[str, Any]] | None = None,
         git_head: str | None = None,
         git_status_clean: bool | None = None,
+        created_at: str | None = None,
     ) -> None:
         await self._ensure_connected()
         content_str = json.dumps(content) if content is not None else None
@@ -195,8 +203,8 @@ class SessionsMixin(DatabaseBase):
             "INSERT INTO messages "
             "(session_id, seq, role, type, content, tool_name, tool_input, "
             "tool_use_id, is_error, session_id_ref, cost, attachments, "
-            "git_head, git_status_clean) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "git_head, git_status_clean, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 seq,
@@ -212,6 +220,7 @@ class SessionsMixin(DatabaseBase):
                 attachments_str,
                 git_head,
                 git_status_clean_int,
+                created_at or datetime.now(UTC).isoformat(),
             ),
         )
         self._dirty = True
@@ -245,7 +254,7 @@ class SessionsMixin(DatabaseBase):
         query = (
             "SELECT seq, role, type, content, tool_name, tool_input, tool_use_id, "
             "is_error, session_id_ref, cost, attachments, git_head, "
-            "git_status_clean "
+            "git_status_clean, created_at "
             "FROM messages WHERE session_id = ?"
         )
         params: list = [session_id]
@@ -282,6 +291,7 @@ class SessionsMixin(DatabaseBase):
                     "attachments": attachments,
                     "git_head": row[11],
                     "git_status_clean": git_status_clean,
+                    "created_at": row[13],
                 }
             )
         return results

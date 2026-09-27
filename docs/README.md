@@ -52,6 +52,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 | [Tech Plan: First-Class Harness Layer](plans/harness-layer.md) | shipped | One `Harness` plus a `RuntimeProfile` per backend — the single boundary for all model/runtime interaction. |
 | [Tech Plan: Introduce first-class Agents into Octopus](plans/agent-refactor.md) | shipped | First-class Agents: the durable definition that owns sessions, schedules and memory. |
 | [The schedule an agent sets for itself](plans/schedule-tool.md) | shipped | `mcp__schedule__*` over session-scoped routes: an agent sets, lists, re-times and pauses its own schedules. |
+| [Three small affordances: message time, composer history, `/model`](plans/composer-and-time.md) | shipped | hover a message for its time, ArrowUp for what you sent, `/model` to switch model for one session. |
 | [Turn safety (Layer 1): timeout + process-group reaping](plans/turn-safety.md) | shipped | The per-turn watchdog (idle + overall) and process-group reaping, so a wedged tool cannot hang a session forever. |
 
 <!-- END plans-index -->

@@ -69,6 +69,7 @@ def _to_session_info(
         agent_id=s.agent_id,
         origin=s.origin,
         backend=s.backend,
+        model=s.model,
         parent_session_id=s.parent_session_id,
         delegation_request=s.delegation_request,
         app_id=s.app_id,
@@ -115,7 +116,7 @@ async def update_session(
     session_manager: SessionMgr,
     session_id: str, req: SessionUpdate, _: str = Depends(verify_token)
 ):
-    """Repoint a live session — today its credential and its name.
+    """Repoint a live session — today its credential, its name and its model.
 
     The credential is the point: it used to be fixed at creation, so a lapsed
     or deleted sign-in stranded the conversation with no way back. The
@@ -140,6 +141,14 @@ async def update_session(
                 )
             await _check_credential_backend(session_manager, cred_id, session.backend)
         updates["credential_id"] = cred_id
+
+    # `/model`. Deliberately not validated against a list: both CLIs accept
+    # aliases, and new model names appear between Octopus releases — refusing an
+    # unknown string would make this route the thing that needs shipping. Empty
+    # means "back to the agent's model", same as null.
+    if "model" in fields:
+        raw = fields["model"]
+        updates["model"] = (str(raw).strip() or None) if raw is not None else None
 
     if "name" in fields and fields["name"] is not None:
         name = str(fields["name"]).strip()
@@ -222,6 +231,7 @@ async def import_session(
         agent_id=s.agent_id,
         origin=s.origin,
         backend=s.backend,
+        model=s.model,
         parent_session_id=s.parent_session_id,
         delegation_request=s.delegation_request,
         app_id=s.app_id,
@@ -263,6 +273,7 @@ async def get_session(session_manager: SessionMgr, session_id: str, _: str = Dep
             agent_id=s.agent_id,
             origin=s.origin,
             backend=s.backend,
+            model=s.model,
             parent_session_id=s.parent_session_id,
             delegation_request=s.delegation_request,
             app_id=s.app_id,

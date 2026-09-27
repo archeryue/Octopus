@@ -52,7 +52,7 @@ export function shouldApplyWsEvent(
  * everyone out (or fail to). */
 export function handleWsMessage(data: Record<string, unknown>) {
   const {
-    addMessage,
+    addMessage: addMessageRaw,
     updateSessionStatus,
     enqueuePending,
     dequeuePending,
@@ -68,6 +68,19 @@ export function handleWsMessage(data: Record<string, unknown>) {
   const type = data.type as string;
 
   const seq = typeof data.seq === "number" ? (data.seq as number) : null;
+  // The time the server stamped on the row this event is (`_tag_persisted`).
+  // Injected once here rather than spelled out in each `addMessage` call below:
+  // every event that represents a stored message carries it, and a shape that
+  // forgot to copy it would silently lose the hover timestamp until a reload.
+  const addMessage: typeof addMessageRaw = (sid, msg) =>
+    addMessageRaw(sid, {
+      ...msg,
+      created_at:
+        msg.created_at ??
+        (typeof data.created_at === "string"
+          ? (data.created_at as string)
+          : undefined),
+    });
   if (seq !== null && sessionId) {
     if (!shouldApplyWsEvent(seq, lastAppliedSeq[sessionId])) {
       return; // already in snapshot; ignore to avoid duplicate

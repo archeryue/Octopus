@@ -1,28 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { IconGitFork, IconX } from "@tabler/icons-react";
 import { useSessionStore, type SessionInfo } from "../stores/sessionStore";
+// Which user-role messages the user never typed (bg-task results, delegation
+// replies, scheduled fires). Shared with the composer's history, because two
+// copies of that list drift and the drift is invisible until a marker is added.
+import { isAutoInjectedPrompt } from "../lib/injectedTurns";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
 const API_URL = window.location.origin;
-
-// Prefixes that mark a user-role message as AUTO-INJECTED rather than
-// human-typed: bg-task-result deliveries and agent-to-agent reply/question/
-// error turns are persisted with role="user" but aren't prompts the user
-// would "redo". The fork picker hides them so only genuine human turns are
-// offered as rewind targets (mirrors the markers MessageBubble special-cases).
-const _AUTO_INJECTED_PREFIXES = [
-  "[bg-task-result]",
-  "[agent-reply:",
-  "[agent-question:",
-  "[agent-error:",
-];
-
-function isAutoInjectedPrompt(content: unknown): boolean {
-  if (typeof content !== "string") return false;
-  const t = content.trimStart();
-  return _AUTO_INJECTED_PREFIXES.some((p) => t.startsWith(p));
-}
 
 export interface ForkSideEffectSummary {
   file_edits: { path: string; turns: number }[];

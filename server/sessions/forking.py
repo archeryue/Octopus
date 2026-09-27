@@ -270,6 +270,7 @@ class ForkingMixin(SessionManagerBase):
                 created_at=now,
                 parent_id=parent_id,
                 backend=parent.backend,
+                model=parent.model,
                 agent_id=parent.agent_id,
                 credential_id=parent.credential_id,
                 resume_id=resume_id_hint,
@@ -282,6 +283,7 @@ class ForkingMixin(SessionManagerBase):
                 created_at=now,
                 claude_session_id=resume_id_hint,
                 credential_id=parent.credential_id,
+                model=parent.model,
                 agent_id=parent.agent_id,
                 origin="fork",
                 backend=parent.backend,
@@ -551,6 +553,7 @@ class ForkingMixin(SessionManagerBase):
                 await self.db.create_fork_session(
                     fork_id=fork_id, name=fork_name, working_dir=dest,
                     created_at=now, parent_id=parent_id, backend=parent.backend,
+                    model=parent.model,
                     agent_id=parent.agent_id, credential_id=parent.credential_id,
                     resume_id=resume_id_hint, fork_after_seq=last_seq,
                     fork_metadata=fork_meta,
@@ -562,6 +565,7 @@ class ForkingMixin(SessionManagerBase):
                 id=fork_id, name=fork_name, working_dir=dest, created_at=now,
                 claude_session_id=resume_id_hint, credential_id=parent.credential_id,
                 agent_id=parent.agent_id, origin="fork", backend=parent.backend,
+                model=parent.model,
                 forked_from_session_id=parent_id, fork_after_seq=last_seq,
                 fork_metadata=fork_meta, fork_status="initializing",
             )

@@ -689,3 +689,58 @@ async def test_patch_renames_a_session_and_rejects_an_empty_name(client):
     assert res.status_code == 400
     assert (await c.patch("/api/sessions/ghost", json={"name": "x"}, headers=AUTH)).status_code == 404
     session_manager.sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_patch_sets_a_per_session_model_and_clears_it(client):
+    """`/model` writes here. Null (or blank) means "back to the agent's".
+
+    Not validated against a list on purpose: both CLIs accept names this build
+    cannot know, so an allow-list would make this route the thing that needs
+    shipping whenever a model is released.
+    """
+    from server.agent_manager import AgentManager
+    from server.session_manager import session_manager
+
+    c, db = client
+    session_manager.sessions.clear()
+    await session_manager.initialize(db)
+    agent = await AgentManager(db).create_agent(name="Modeller", model="sonnet")
+    session = await session_manager.create_session(agent_id=agent["id"], name="s")
+
+    # Unset to begin with: the agent's model is what runs.
+    assert (
+        await c.get(f"/api/sessions/{session.id}", headers=AUTH)
+    ).json()["model"] is None
+
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"model": "  opus  "}, headers=AUTH
+    )
+    assert res.status_code == 200
+    assert res.json()["model"] == "opus"
+    assert session_manager.get_session(session.id).model == "opus"
+
+    # A name nothing knows about is still accepted — that is the point.
+    res = await c.patch(
+        f"/api/sessions/{session.id}", json={"model": "some-model-9"}, headers=AUTH
+    )
+    assert res.json()["model"] == "some-model-9"
+
+    for blank in (None, "   "):
+        res = await c.patch(
+            f"/api/sessions/{session.id}", json={"model": blank}, headers=AUTH
+        )
+        assert res.status_code == 200
+        assert res.json()["model"] is None, blank
+    session_manager.sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_backends_lists_a_model_shortlist_per_backend(client):
+    """The picker's options come from the harness profile, not the frontend."""
+    c, _db = client
+    body = (await c.get("/api/backends", headers=AUTH)).json()
+    assert "claude-code" in body["available"]
+    assert body["models"]["claude-code"] == ["opus", "sonnet", "haiku"]
+    # Every listed backend has an entry, even when its shortlist is empty.
+    assert set(body["models"]) == set(body["available"])

@@ -3,6 +3,7 @@ import {
   IconBrain,
   IconCalendarClock,
   IconCopy,
+  IconCpu,
   IconFile,
   IconGitFork,
   IconRefresh,
@@ -47,6 +48,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     hint: "<path>",
     description: "Open a file in the in-app viewer",
     Icon: IconFile,
+  },
+  {
+    name: "/model",
+    hint: "[name]",
+    description: "Switch the model for this session — bare opens the picker",
+    Icon: IconCpu,
   },
   {
     name: "/rewind",

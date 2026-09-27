@@ -18,6 +18,16 @@ import {
 import { ForkDialog } from "./ForkDialog";
 import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
+import { MessageTime } from "./MessageTime";
+import { ModelPickerDialog } from "./ModelPickerDialog";
+import { isAutoInjectedPrompt } from "../lib/injectedTurns";
+import {
+  IDLE as HISTORY_IDLE,
+  caretWantsHistory,
+  historyFromMessages,
+  recallNext,
+  recallPrev,
+} from "../lib/composerHistory";
 import { OctopusLogo } from "./OctopusLogo";
 import { CredentialPicker } from "./CredentialPicker";
 import { PageHeader } from "./PageHeader";
@@ -107,9 +117,12 @@ export function ChatView({
   // Fork dialog (session-rewind.md §6.1-6.2). `null` = closed; `{}` = the
   // /fork picker; `{ seq }` = the per-message "Fork from here" confirm step.
   const [forkDialog, setForkDialog] = useState<{ seq?: number } | null>(null);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   // Slash-command autocomplete: which item is highlighted, and whether the
   // user dismissed the menu with Esc (re-opens as soon as they type again).
   const [slashIndex, setSlashIndex] = useState(0);
+  // Composer history (shell-style ArrowUp/ArrowDown).
+  const [history, setHistory] = useState(HISTORY_IDLE);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Counter for nested dragenter/dragleave events — without this the
@@ -254,7 +267,10 @@ export function ChatView({
   const canSteer =
     !!activeSession?.can_steer && pendingAttachments.length === 0;
 
-  const renderMessage = useCallback(
+  // The body per message shape. Wrapped by `renderMessage` below, which is
+  // where the hover-revealed timestamp is attached — one place, so every shape
+  // gets it rather than each branch of MessageBubble growing its own.
+  const renderMessageBody = useCallback(
     (_index: number, msg: Message) => {
       if (msg.type === "tool_approval_request") {
         return (
@@ -323,6 +339,20 @@ export function ChatView({
       activeAgent?.avatar,
       agentLabel,
     ]
+  );
+
+  const renderMessage = useCallback(
+    (index: number, msg: Message) => {
+      const body = renderMessageBody(index, msg);
+      if (body === null) return body;
+      return (
+        <div className="msg-row group/msg relative">
+          {body}
+          <MessageTime iso={msg.created_at} />
+        </div>
+      );
+    },
+    [renderMessageBody]
   );
 
   // ---- attachments: upload, paste, drop, picker, chips ------------------
@@ -512,10 +542,19 @@ export function ChatView({
 
   // Slash-command autocomplete state, derived from the current input.
   const slashCommands = useMemo(() => filterSlashCommands(input), [input]);
+  // What ArrowUp walks back through. A user-role message the user never typed —
+  // a bg-task result, a delegation reply, a scheduled fire — is machine text
+  // wearing a user's hat, and recalling it into the box would be nonsense.
+  const sentHistory = useMemo(
+    () => historyFromMessages(messages, isAutoInjectedPrompt),
+    [messages]
+  );
   const showSlashMenu = slashCommands.length > 0 && !slashDismissed;
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value);
+    // Editing ends the walk: the next ArrowUp starts from the newest again.
+    setHistory(HISTORY_IDLE);
     // Any edit re-arms the menu and resets the highlight to the top match.
     setSlashIndex(0);
     setSlashDismissed(false);
@@ -618,6 +657,67 @@ export function ChatView({
         store.setPendingQuestions(fresh.id, []);
       } catch {
         // best-effort — failure leaves the user in the original session
+      }
+      return;
+    }
+
+    // /model — which model runs THIS session (per-session override; the
+    // agent's own model is untouched). Bare opens the picker; with a name it
+    // applies straight away, because typing the name is faster than a dialog
+    // once you know what you want. Any name is accepted: the CLIs take names
+    // this build cannot know (see RuntimeProfile.models).
+    const lowerModel = trimmed.toLowerCase();
+    if (lowerModel === "/model" || lowerModel.startsWith("/model ")) {
+      setInput("");
+      setHistory(HISTORY_IDLE);
+      const wanted = trimmed.slice("/model".length).trim();
+      if (!wanted) {
+        setModelPickerOpen(true);
+        return;
+      }
+      const store = useSessionStore.getState();
+      const notice = (content: string, isError = false) =>
+        store.addMessage(activeSessionId, {
+          role: "system",
+          type: "notice",
+          content,
+          is_error: isError,
+        });
+      try {
+        const res = await fetch(
+          `${window.location.origin}/api/sessions/${activeSessionId}`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${store.token}`,
+            },
+            // "default" / "agent" clears the override rather than storing a
+            // model literally called "default".
+            body: JSON.stringify({
+              model: ["default", "agent"].includes(wanted.toLowerCase())
+                ? null
+                : wanted,
+            }),
+          }
+        );
+        if (!res.ok) {
+          notice(`Could not change the model (HTTP ${res.status}).`, true);
+          return;
+        }
+        const updated = await res.json();
+        store.setSessions(
+          store.sessions.map((x) =>
+            x.id === updated.id ? { ...x, ...updated } : x
+          )
+        );
+        notice(
+          updated.model
+            ? `Model for this session: ${updated.model} — from the next turn.`
+            : "Model for this session: the agent's default — from the next turn."
+        );
+      } catch {
+        notice("Could not change the model — the server was unreachable.", true);
       }
       return;
     }
@@ -893,11 +993,24 @@ export function ChatView({
       readyAttachmentIds.length > 0 ? readyAttachmentIds : undefined
     );
     setInput("");
+    setHistory(HISTORY_IDLE);
     // Drop both ready uploads (they're now associated with the message
     // we just sent) and any failed uploads (the user can retry by
     // re-attaching). Leave in-flight uploads alone — addFiles already
     // prevents that case by blocking send while one is pending.
     setPendingAttachments([]);
+  };
+
+  /** Put a recalled message in the box with the caret at its end, which is
+   *  where a shell leaves it and where you want to keep typing. */
+  const applyRecall = (text: string) => {
+    setInput(text);
+    requestAnimationFrame(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      const end = ta.value.length;
+      ta.setSelectionRange(end, end);
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -930,6 +1043,35 @@ export function ChatView({
         return;
       }
     }
+    // Shell-style history. Only when the slash menu is closed (it owns the
+    // arrows above), without modifiers, and only while the caret is on the
+    // first/last line — so a recalled multi-line message is still navigable
+    // with the same keys.
+    if (
+      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      !e.shiftKey &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey
+    ) {
+      const ta = e.currentTarget as HTMLTextAreaElement;
+      const caret = ta.selectionStart ?? 0;
+      const collapsed = (ta.selectionEnd ?? caret) === caret;
+      const dir = e.key === "ArrowUp" ? "up" : "down";
+      if (collapsed && caretWantsHistory(ta.value, caret, dir)) {
+        const recall =
+          dir === "up"
+            ? recallPrev(sentHistory, history, ta.value)
+            : recallNext(sentHistory, history, ta.value);
+        if (recall) {
+          e.preventDefault();
+          setHistory(recall.state);
+          applyRecall(recall.text);
+          return;
+        }
+      }
+    }
+
     if (e.key === "Enter" && !e.shiftKey && !isTouchDevice()) {
       // Touch keyboards have no Shift+Enter worth reaching for, and a return
       // key that sends makes a second paragraph impossible to type. On a
@@ -1403,6 +1545,24 @@ export function ChatView({
       {header}
       {forkBanner}
       {delegationBanner}
+
+      {activeSession && (
+        <ModelPickerDialog
+          session={activeSession}
+          open={modelPickerOpen}
+          onOpenChange={setModelPickerOpen}
+          onApplied={(model) =>
+            activeSessionId &&
+            useSessionStore.getState().addMessage(activeSessionId, {
+              role: "system",
+              type: "notice",
+              content: model
+                ? `Model for this session: ${model} — from the next turn.`
+                : "Model for this session: the agent's default — from the next turn.",
+            })
+          }
+        />
+      )}
 
       {forkDialog && activeSession && (
         <ForkDialog

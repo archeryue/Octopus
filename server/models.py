@@ -43,6 +43,9 @@ class SessionUpdate(BaseModel):
     # is how you clear the binding.
     credential_id: str | None = Field(default=None)
     name: str | None = None
+    # What `/model` sets. Same shape: null falls back to the agent's model,
+    # whose own null means the backend's default.
+    model: str | None = Field(default=None)
 
 
 class ForkSessionRequest(BaseModel):
@@ -101,6 +104,10 @@ class SessionInfo(BaseModel):
     origin: str = "user"
     # Which AI backend drives this session.
     backend: BackendKind = BackendKind.claude_code
+    # Per-session model override (`/model`); null = the agent's model, whose own
+    # null means the backend's default. Sent so the composer can say which is in
+    # force without a second request.
+    model: str | None = None
     # Agent-to-agent: set on delegation sessions to point at the parent
     # session that spawned them; NULL elsewhere. The verbatim original
     # delegation prompt is kept alongside for UI display.
@@ -183,6 +190,11 @@ class MessageContent(BaseModel):
     # DB or persisted; clients use it to dedupe WebSocket events against
     # the snapshot returned by `GET /api/sessions/{id}` after a reconnect.
     seq: int | None = None
+    # When the row was written, ISO-8601 UTC. The UI reveals it on hover, which
+    # is what makes a long-running turn legible after the fact. None for
+    # messages written before the column existed — there was nothing to backfill
+    # it from, and a made-up time is worse than no time.
+    created_at: str | None = None
 
 
 class PendingQuestionInfo(BaseModel):

@@ -1488,6 +1488,7 @@ test.describe("slash-command autocomplete", () => {
       "/remember",
       "/research",
       "/showme",
+      "/model",
       "/rewind",
       "/fork",
       "/archive",
@@ -2499,3 +2500,121 @@ test.describe("File viewer (/showme) @llm", () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// Composer + transcript affordances: message time, history recall, /model
+// ---------------------------------------------------------------------------
+
+test.describe("Message timestamps", () => {
+  // A long turn reads as an ordered list with no clock in it, so "did that tool
+  // call take four minutes or forty" was unanswerable after the fact. The time
+  // is on every message and revealed on hover, which is why it is asserted as
+  // hidden-then-shown rather than merely present.
+  test("a message reveals when it happened on hover", async ({
+    page,
+    request,
+  }) => {
+    await importSessionApi(request, "Timed Session", [
+      { role: "user", type: "text", content: "when did this happen" },
+    ]);
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Timed Session" })
+      .click();
+
+    const row = page.locator(".msg-row", { hasText: "when did this happen" });
+    const time = row.locator("time.message-time");
+    await expect(time).toHaveCount(1);
+    // Present in the DOM but not on screen until the pointer is on the row.
+    await expect(time).toHaveCSS("opacity", "0");
+    await expect(time).toHaveAttribute("datetime", /\d{4}-\d{2}-\d{2}T/);
+    await row.hover();
+    await expect(time).toHaveCSS("opacity", "1");
+    // A clock, not an ISO string, and a full stamp in the tooltip.
+    await expect(time).toHaveText(/^\d{2}:\d{2}$|^\w{3} \d+ \d{2}:\d{2}$/);
+    await expect(time).toHaveAttribute("title", /.+/);
+  });
+});
+
+test.describe("Composer history", () => {
+  // ArrowUp walks back through what you sent, the way every shell does.
+  test("ArrowUp recalls previous messages and ArrowDown returns the draft", async ({
+    page,
+    request,
+  }) => {
+    await importSessionApi(request, "History Session", [
+      { role: "user", type: "text", content: "first thing I asked" },
+      { role: "assistant", type: "text", content: "an answer" },
+      { role: "user", type: "text", content: "second thing I asked" },
+      // Never typed by the user: injected turns must not be recallable.
+      { role: "user", type: "text", content: "[bg-task-result] output here" },
+    ]);
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "History Session" })
+      .click();
+
+    const box = page.locator(".chat-input-bar textarea");
+    await box.click();
+    await box.fill("a draft I was writing");
+
+    await box.press("ArrowUp");
+    await expect(box).toHaveValue("second thing I asked");
+    await box.press("ArrowUp");
+    await expect(box).toHaveValue("first thing I asked");
+    // At the oldest it stays put rather than falling through to the caret.
+    await box.press("ArrowUp");
+    await expect(box).toHaveValue("first thing I asked");
+
+    await box.press("ArrowDown");
+    await expect(box).toHaveValue("second thing I asked");
+    await box.press("ArrowDown");
+    await expect(box).toHaveValue("a draft I was writing");
+    await box.fill("");
+  });
+});
+
+test.describe("/model", () => {
+  // Per session, not per agent: a stronger model for one hard question is not a
+  // reason to re-point every session the agent owns.
+  test("sets the session's model, and the picker offers the way back", async ({
+    page,
+    request,
+  }) => {
+    await importSessionApi(request, "Model Session", [
+      { role: "user", type: "text", content: "hello" },
+    ]);
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Model Session" })
+      .click();
+
+    const box = page.locator(".chat-input-bar textarea");
+    await box.click();
+
+    // With an argument there is whitespace, so the slash menu is closed and one
+    // Enter sends.
+    await box.fill("/model opus");
+    await box.press("Enter");
+    await expect(
+      page.locator(".msg-notice, .msg", { hasText: "Model for this session: opus" })
+    ).toBeVisible();
+
+    // Bare `/model` opens the picker. Two Enters: the first is captured by the
+    // slash-autocomplete (it completes the name into the composer), the second
+    // sends — the same two-step every bare command has.
+    await box.fill("/model");
+    await box.press("Enter");
+    await box.press("Enter");
+    const dialog = page.locator(".model-picker-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator(".btn-model-option").first()).toContainText(
+      "Agent default"
+    );
+    await dialog.locator(".btn-model-option", { hasText: "Agent default" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(
+      page.locator(".msg-notice, .msg", { hasText: "the agent's default" })
+    ).toBeVisible();
+  });
+});

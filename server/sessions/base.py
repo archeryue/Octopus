@@ -208,6 +208,9 @@ class Session:
     origin: str = "user"
     # Which AI backend drives this session ('claude-code' | 'codex').
     backend: str = "claude-code"
+    # Per-session model (`/model`). None = inherit the agent's, whose None
+    # means the backend's own default. Same shape as `backend` above.
+    model: str | None = None
     # Agent-to-agent: parent session that spawned this delegation, or None
     # for every non-delegation session. Used by the delegation listener to
     # route replies/questions/errors back to the parent and by guards to
@@ -486,6 +489,7 @@ class SessionManagerBase:
                 agent_id=row.get("agent_id"),
                 origin=row.get("origin") or "user",
                 backend=row.get("backend") or "claude-code",
+                model=row.get("model") or None,
                 parent_session_id=row.get("parent_session_id"),
                 delegation_request=row.get("delegation_request"),
                 app_id=row.get("app_id"),

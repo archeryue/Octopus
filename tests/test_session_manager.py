@@ -2530,3 +2530,91 @@ async def test_a_spawn_that_raises_surfaces_its_own_error(manager):
     # And the teardown still ran: a spawn failure must not leak the handle.
     assert ExplodingBackend.stopped is True
     assert session._backend is None
+
+
+@pytest.mark.asyncio
+async def test_a_session_model_overrides_the_agents(manager):
+    """What `/model` is for: this conversation on a different model, without
+    repointing the agent every other session runs on.
+
+    Resolution order is session, then agent, then nothing at all — and
+    "nothing" has to stay possible, because that is how the CLI is told to use
+    its own default rather than a name Octopus invented.
+    """
+    import uuid as _uuid
+    from datetime import datetime
+
+    now = datetime.now(UTC).isoformat()
+    aid = _uuid.uuid4().hex[:12]
+    await manager.db.save_agent(
+        agent_id=aid,
+        name="Tiered",
+        created_at=now,
+        updated_at=now,
+        model="sonnet",
+    )
+    agent = await manager.db.get_agent(aid)
+    session = await manager.create_session(aid, "S")
+
+    argv, _ = manager._make_run(session, agent).build_argv("hi", session.working_dir, None)
+    assert argv[argv.index("--model") + 1] == "sonnet", "the agent's model"
+
+    session.model = "opus"
+    argv, _ = manager._make_run(session, agent).build_argv("hi", session.working_dir, None)
+    assert argv[argv.index("--model") + 1] == "opus", "the session's wins"
+
+    # Neither set: no --model at all, so the CLI uses its own default.
+    session.model = None
+    bare = await manager.db.get_agent(aid)
+    bare["model"] = None
+    argv, _ = manager._make_run(session, bare).build_argv("hi", session.working_dir, None)
+    assert "--model" not in argv
+
+
+@pytest.mark.asyncio
+async def test_a_persisted_message_records_when_it_was_written(manager):
+    """Hovering a message shows its time, which needs the row to carry one.
+
+    Asserted on both paths that matter: the stored row (so a reload has it) and
+    the `MessageContent` the caller goes on to broadcast (so the live event has
+    it too, without a refetch).
+    """
+    from server.models import MessageContent, MessageRole
+
+    session = await _new(manager, "Timed")
+    msg = MessageContent(role=MessageRole.user, type="text", content="hello")
+    assert msg.created_at is None
+
+    seq = await manager._persist_message(session, msg)
+    assert msg.created_at, "the caller's message is stamped, for the WS event"
+
+    rows = await manager.db.load_messages(session.id)
+    stored = next(r for r in rows if r["seq"] == seq)
+    assert stored["created_at"] == msg.created_at
+
+    # Parses, and is UTC-aware rather than a bare local string.
+    from datetime import datetime as _dt
+
+    parsed = _dt.fromisoformat(stored["created_at"])
+    assert parsed.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_the_ws_event_carries_the_row_it_was_persisted_as(manager):
+    """`_tag_persisted` is the one place that says "this event is that row" —
+    seq for dedupe, created_at for the time, both from the same write."""
+    from server.models import MessageContent, MessageRole
+
+    session = await _new(manager, "Tagged")
+    msg = MessageContent(role=MessageRole.assistant, type="text", content="hi")
+    seq = await manager._persist_message(session, msg)
+
+    event: dict = {"type": "message", "session_id": session.id}
+    manager._tag_persisted(event, seq, msg)
+    assert event["seq"] == seq
+    assert event["created_at"] == msg.created_at
+
+    # A message that was never persisted (no DB) must not invent either field.
+    untagged: dict = {"type": "message"}
+    manager._tag_persisted(untagged, None, MessageContent(role=MessageRole.user, type="text"))
+    assert "seq" not in untagged and "created_at" not in untagged

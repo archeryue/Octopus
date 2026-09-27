@@ -548,6 +548,13 @@ summary {
     opacity: 1;
   }
 
+  /* A timestamp is information, not an action. Hiding it where there is no
+     hover would make the feature desktop-only, and one dim mono label per
+     message is not the clutter a delete button under every thumb was. */
+  .message-time {
+    opacity: 0.5;
+  }
+
   .session-item:not(.active) .btn-delete,
   .application-item:not(.active) .btn-application-delete,
   .agent-item:not(.expanded) .btn-session-add {

@@ -13,6 +13,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from .. import fork_helpers
@@ -169,6 +170,23 @@ class _Decision:
 
 class TurnsMixin(SessionManagerBase):
 
+    @staticmethod
+    def _tag_persisted(
+        event: dict[str, Any], seq: int | None, msg: MessageContent
+    ) -> dict[str, Any]:
+        """Say which stored row a WS event is.
+
+        `seq` is what a reconnecting client dedupes against its snapshot;
+        `created_at` is what lets it show the message's time straight away
+        instead of only after a refetch. Both come from the same persist, so
+        they are attached in the same place.
+        """
+        if seq is not None:
+            event["seq"] = seq
+        if msg.created_at:
+            event["created_at"] = msg.created_at
+        return event
+
     async def _persist_message(
         self,
         session: Session,
@@ -190,6 +208,9 @@ class TurnsMixin(SessionManagerBase):
             return None
         seq = session._message_count
         session._message_count += 1
+        # Decided here rather than in the DB layer so the caller's own
+        # MessageContent carries it onto the WS event as well as into the row.
+        msg.created_at = msg.created_at or datetime.now(UTC).isoformat()
         await self.db.append_message(
             session_id=session.id,
             seq=seq,
@@ -205,6 +226,7 @@ class TurnsMixin(SessionManagerBase):
             attachments=[a.model_dump() for a in msg.attachments] if msg.attachments else None,
             git_head=git_head,
             git_status_clean=git_status_clean,
+            created_at=msg.created_at,
         )
         return seq
 
@@ -457,8 +479,7 @@ class TurnsMixin(SessionManagerBase):
             }
             if attachments_meta:
                 event["attachments"] = [a.model_dump() for a in attachments_meta]
-            if seq is not None:
-                event["seq"] = seq
+            self._tag_persisted(event, seq, user_msg)
             await self._broadcast(event)
             yield event
 
@@ -521,8 +542,7 @@ class TurnsMixin(SessionManagerBase):
                     "session_id": session_id,
                     "message": str(e),
                 }
-                if err_seq is not None:
-                    event["seq"] = err_seq
+                self._tag_persisted(event, err_seq, error_msg)
                 await self._broadcast(event)
                 yield event
             finally:
@@ -599,8 +619,7 @@ class TurnsMixin(SessionManagerBase):
             "session_id": session_id,
             "message": "(interrupted by user)",
         }
-        if marker_seq is not None:
-            event["seq"] = marker_seq
+        self._tag_persisted(event, marker_seq, marker)
         await self._broadcast(event)
         return True
 
@@ -915,9 +934,9 @@ class TurnsMixin(SessionManagerBase):
 
         # Translate into the WS message shape the front-end expects.
         ws_event = self._event_to_ws_message(session.id, event)
+        if ws_event is not None and msg_content is not None:
+            self._tag_persisted(ws_event, msg_seq, msg_content)
         if ws_event is not None:
-            if msg_seq is not None:
-                ws_event["seq"] = msg_seq
             frames.append(ws_event)
         return frames
 
@@ -1150,8 +1169,7 @@ class TurnsMixin(SessionManagerBase):
             "session_id": session.id,
             "message": "(auto-resumed after CLI exited mid-turn)",
         }
-        if marker_seq is not None:
-            marker_event["seq"] = marker_seq
+        self._tag_persisted(marker_event, marker_seq, marker)
         return _Decision.again("continue", marker_event)
 
     async def _after_attempt(
@@ -1343,9 +1361,9 @@ class TurnsMixin(SessionManagerBase):
             msg_seq = await self._persist_message(session, msg_content)
 
         ws_event = self._event_to_ws_message(session_id, event)
+        if ws_event is not None and msg_content is not None:
+            self._tag_persisted(ws_event, msg_seq, msg_content)
         if ws_event is not None:
-            if msg_seq is not None:
-                ws_event["seq"] = msg_seq
             await self._broadcast(ws_event)
 
     async def _try_steer(self, session: Session, queued: QueuedPrompt) -> bool:
@@ -1449,6 +1467,10 @@ class TurnsMixin(SessionManagerBase):
             mcp_servers = list(servers) if servers is not None else None
             tool_allow = _split_tool_list(agent.get("tool_allow"))
             tool_deny = _split_tool_list(agent.get("tool_deny"))
+        # `/model` — a per-session override, applied after the agent's so it
+        # wins. Both unset means the backend picks, which is the default.
+        if session.model:
+            model = session.model
 
         # Per-agent native memory (docs/plans/memory.md): derive the agent's
         # canonical memory dir and ensure it exists. None when there's no agent

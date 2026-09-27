@@ -216,6 +216,13 @@ class DatabaseBase:
          "ALTER TABLE applications ADD COLUMN archived INTEGER NOT NULL DEFAULT 0"),
         # The app's own icon, re-evaluated on each build; NULL until then.
         ("applications", "icon_src", "ALTER TABLE applications ADD COLUMN icon_src TEXT"),
+        # When a message was written. No backfill is possible — nothing else
+        # recorded per-message time — so rows written before this stay NULL and
+        # the UI shows no time for them rather than inventing one.
+        ("messages", "created_at", "ALTER TABLE messages ADD COLUMN created_at TEXT"),
+        # `/model`: a per-session model, the same shape `backend` already has.
+        # NULL means "use the agent's", whose NULL means "backend default".
+        ("sessions", "model", "ALTER TABLE sessions ADD COLUMN model TEXT"),
     )
 
     # Applied after `_migrate_agents` / the schedule migrations, because those

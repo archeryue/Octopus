@@ -557,3 +557,48 @@ async def test_codex_turn_two_not_wrapped(manager, monkeypatch):
         pass
     assert "<fork-history" not in fake2.started_prompt
     assert fake2.started_prompt == "turn two"
+
+
+@pytest.mark.asyncio
+async def test_a_fork_inherits_the_model_and_the_copied_times(manager):
+    """A fork is the same conversation, branched.
+
+    It already carried the parent's backend and credential; the per-session
+    model belongs in that list for the same reason — a rewind of a conversation
+    running on a stronger model should still be running on it. And the copied
+    messages keep the times they actually happened at: the INSERT-SELECT names
+    its columns, so a new one is silently dropped unless it is added, which
+    would have left forked history as the one place with no hover timestamps.
+    """
+    from server.models import MessageContent, MessageRole
+
+    agent = await manager.db.get_system_agent()
+    parent = await manager.create_session(agent["id"], "Modelled Parent", "/repo")
+    parent.model = "opus"
+    await manager.db.update_session_field(parent.id, model="opus")
+    await manager._persist_message(
+        parent, MessageContent(role=MessageRole.user, type="text", content="q1")
+    )
+    original = (await manager.db.load_messages(parent.id))[0]
+    assert original["created_at"], "precondition: the parent's row has a time"
+
+    fork_id = "forkmodel0001"
+    await manager.db.create_fork_session(
+        fork_id=fork_id,
+        name="Forked",
+        working_dir=parent.working_dir,
+        created_at=original["created_at"],
+        parent_id=parent.id,
+        backend=parent.backend,
+        model=parent.model,
+        agent_id=parent.agent_id,
+        credential_id=parent.credential_id,
+        resume_id=None,
+        fork_after_seq=0,
+    )
+
+    rows = {r["id"]: r for r in await manager.db.load_sessions()}
+    assert rows[fork_id]["model"] == "opus"
+    copied = await manager.db.load_messages(fork_id)
+    assert [m["content"] for m in copied] == ["q1"]
+    assert copied[0]["created_at"] == original["created_at"]

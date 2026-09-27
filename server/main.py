@@ -272,12 +272,20 @@ async def list_backends(_: str = Depends(verify_token)):
     A harness kind appears only when its CLI resolves on PATH. `claude-code`
     is always listed (the default) even if not yet installed, matching the
     historical contract."""
-    from .harness import available_backends
+    from .harness import available_backends, get_harness
 
     available = available_backends()
     if "claude-code" not in available:
         available = ["claude-code", *available]
-    return {"available": available}
+    # Per-backend model shortlists, for `/model`'s picker. A shortlist, not a
+    # whitelist — see `RuntimeProfile.models`.
+    models: dict[str, list[str]] = {}
+    for kind in available:
+        try:
+            models[kind] = list(get_harness(kind).profile.models)
+        except Exception:
+            models[kind] = []
+    return {"available": available, "models": models}
 
 
 @app.get("/health")

@@ -424,7 +424,7 @@ export interface paths {
         head?: never;
         /**
          * Update Session
-         * @description Repoint a live session — today its credential and its name.
+         * @description Repoint a live session — today its credential, its name and its model.
          *
          *     The credential is the point: it used to be fixed at creation, so a lapsed
          *     or deleted sign-in stranded the conversation with no way back. The
@@ -2463,6 +2463,8 @@ export interface components {
             attachments: components["schemas"]["AttachmentMetadata"][];
             /** Seq */
             seq?: number | null;
+            /** Created At */
+            created_at?: string | null;
         };
         /**
          * MessagePage
@@ -2642,6 +2644,8 @@ export interface components {
             origin: string;
             /** @default claude-code */
             backend: components["schemas"]["BackendKind"];
+            /** Model */
+            model?: string | null;
             /** Parent Session Id */
             parent_session_id?: string | null;
             /** Delegation Request */
@@ -2737,6 +2741,8 @@ export interface components {
             origin: string;
             /** @default claude-code */
             backend: components["schemas"]["BackendKind"];
+            /** Model */
+            model?: string | null;
             /** Parent Session Id */
             parent_session_id?: string | null;
             /** Delegation Request */
@@ -2790,6 +2796,8 @@ export interface components {
             credential_id?: string | null;
             /** Name */
             name?: string | null;
+            /** Model */
+            model?: string | null;
         };
         /** SetAgentConnectorsRequest */
         SetAgentConnectorsRequest: {

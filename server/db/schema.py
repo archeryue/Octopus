@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent_id TEXT REFERENCES agents(id) ON DELETE CASCADE,  -- owner; nullable in SQLite, required by API
     origin TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'schedule' | 'delegation' | 'fork' | 'application' | 'app'
     backend TEXT NOT NULL DEFAULT 'claude-code',  -- 'claude-code' | 'codex' (codex-backend.md §4.1)
+    model TEXT,                            -- per-session override (`/model`); NULL = use
+                                           -- the agent's, whose NULL means backend default
     -- Agent-to-agent: a delegation child session points at the parent
     -- session it was spawned from. SET NULL on parent delete (orphan beats
     -- mass-delete; sessions are precious). NULL on every non-delegation
@@ -116,6 +118,9 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id_ref TEXT,
     cost REAL,
     attachments TEXT,                       -- JSON list[AttachmentMetadata], null when none
+    created_at TEXT,                        -- when the row was written; NULL for rows
+                                            -- predating the column (nothing to backfill
+                                            -- from — no other table records per-message time)
     -- Per-turn git anchor captured when a user message row is written
     -- (session-rewind.md §4 + §5.6.3). Powers the safe-revert preflight.
     git_head TEXT,                          -- `git rev-parse HEAD`; NULL when not a git repo
