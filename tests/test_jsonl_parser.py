@@ -450,3 +450,64 @@ class TestParseJsonlFile:
         result = parse_jsonl_file(path)
         assert result.metadata.session_id == "target-id"
         assert len(result.messages) == 2
+
+
+class TestImportedTimes:
+    """An imported transcript keeps the times it actually ran at.
+
+    `octopus handoff` imports a conversation that happened hours or days ago.
+    Every JSONL line carries its own timestamp, so stamping the import time
+    instead would make the hover time say "all of this happened just now" —
+    the same invented-timestamp problem that rows older than the column avoid
+    by showing nothing at all.
+    """
+
+    def test_each_message_carries_its_own_lines_timestamp(self):
+        lines = [
+            _make_line("user", "user", "morning question",
+                       timestamp="2026-01-01T09:00:00Z"),
+            _make_line("assistant", "assistant", [{"type": "text", "text": "answer"}],
+                       timestamp="2026-01-01T09:00:07Z"),
+        ]
+        result = parse_jsonl_lines(lines)
+        assert [m.created_at for m in result.messages] == [
+            "2026-01-01T09:00:00Z",
+            "2026-01-01T09:00:07Z",
+        ]
+
+    def test_consolidation_keeps_the_time_of_the_block_it_started(self):
+        # Two consecutive assistant texts merge into one message; the merged
+        # block began when its first part did.
+        lines = [
+            _make_line("assistant", "assistant", [{"type": "text", "text": "part one"}],
+                       timestamp="2026-01-01T10:00:00Z"),
+            _make_line("assistant", "assistant", [{"type": "text", "text": "part two"}],
+                       timestamp="2026-01-01T10:00:30Z"),
+        ]
+        result = parse_jsonl_lines(lines)
+        assert len(result.messages) == 1
+        assert result.messages[0].created_at == "2026-01-01T10:00:00Z"
+
+    def test_a_tool_use_consolidated_with_its_result_keeps_its_time(self):
+        lines = [
+            _make_line(
+                "assistant", "assistant",
+                [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}],
+                timestamp="2026-01-01T11:00:00Z",
+            ),
+            _make_line(
+                "user", "user",
+                [{"type": "tool_result", "tool_use_id": "t1", "content": "data"}],
+                timestamp="2026-01-01T11:00:02Z",
+            ),
+        ]
+        result = parse_jsonl_lines(lines)
+        tool = next(m for m in result.messages if m.type == "tool_use")
+        assert tool.created_at == "2026-01-01T11:00:00Z"
+
+    def test_a_line_without_a_timestamp_leaves_it_unset(self):
+        # Then the persist path stamps "now", which is the best available answer.
+        data = json.loads(_make_line("user", "user", "no time"))
+        del data["timestamp"]
+        result = parse_jsonl_lines([json.dumps(data)])
+        assert result.messages[0].created_at is None

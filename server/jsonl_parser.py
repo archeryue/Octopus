@@ -197,6 +197,7 @@ def _consolidate_messages(messages: list[MessageContent]) -> list[MessageContent
                 tool_name=msg.tool_name,
                 tool_input=msg.tool_input,
                 tool_use_id=msg.tool_use_id,
+                created_at=msg.created_at,
             ))
             continue
 
@@ -213,6 +214,8 @@ def _consolidate_messages(messages: list[MessageContent]) -> list[MessageContent
                 role=prev.role,
                 type="text",
                 content=merged,
+                # The merged block started when its first part did.
+                created_at=prev.created_at,
             )
             continue
 
@@ -243,6 +246,14 @@ def parse_jsonl_lines(
             continue
         converted = _convert_line(data)
         if converted:
+            # Each JSONL line carries when it happened. Kept, so an imported
+            # transcript hovers to the times it actually ran at rather than to
+            # the moment it was imported — the same reason rows older than the
+            # column show no time instead of a plausible one.
+            when = data.get("timestamp")
+            if isinstance(when, str) and when:
+                for msg in converted:
+                    msg.created_at = when
             messages.extend(converted)
 
     messages = _consolidate_messages(messages)

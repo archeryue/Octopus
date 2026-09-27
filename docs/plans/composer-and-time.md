@@ -34,6 +34,15 @@ formatter.
   before the column stay NULL and render *no* time. A plausible-looking
   invented timestamp is worse than a blank.
 
+**An imported transcript keeps its own times.** Every Claude Code JSONL line
+carries a timestamp, and `octopus handoff` imports conversations that happened
+hours or days ago — stamping the import time would have made the whole history
+read as "just now", which is the same invented-timestamp problem the NULL rows
+avoid by showing nothing. The parser carries each line's time onto the messages
+it produces, including through the two places consolidation *rebuilds* a message
+(a merged text block keeps the time its first part started; a tool call keeps its
+own, not its result's).
+
 **In the UI**, one wrapper in `ChatView.renderMessage` rather than a change per
 branch of `MessageBubble` — so tool calls, results, errors and notices all get
 it, not just prose. Absolutely positioned in the gap above its row, because a
