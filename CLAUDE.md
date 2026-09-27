@@ -54,11 +54,11 @@ You MUST verify your changes before considering them done:
    resolves (see Conventions).
 2. **Frontend unit tests**: `cd web && bun run test` (232 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (87 tests, no skips, ~5 min, Playwright
+4. **E2E tests**: `cd web && bun run test:e2e` (88 tests, no skips, ~5 min, Playwright
    auto-starts servers). Split into two buckets for dev iteration —
    `bun run test:e2e:fast` (50 pure-UI tests, ~40 s — login / sessions /
    dialogs / sidebar / virtualized chat / attachments / etc.) and
-   `bun run test:e2e:llm` (37 real-LLM tests, ~3 min — chat, /schedule,
+   `bun run test:e2e:llm` (38 real-LLM tests, ~4 min — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
    notifier, codex sign-in, handoff/pull). Anything that drives a real
    `claude` / `codex` turn carries `@llm` in its describe title; the
@@ -75,7 +75,7 @@ You MUST verify your changes before considering them done:
 | Backend unit | pytest | `pytest -m "not real"` | 1174 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
 | Frontend unit | vitest | `cd web && bun run test` | 232 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 87 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (50, ~40 s) skips the `@llm` half; `:llm` (37, ~4 min) is the rest. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 88 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (50, ~40 s) skips the `@llm` half; `:llm` (38, ~4 min) is the rest. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A

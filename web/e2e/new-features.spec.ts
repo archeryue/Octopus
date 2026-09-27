@@ -2507,32 +2507,120 @@ test.describe("File viewer (/showme) @llm", () => {
 
 test.describe("Message timestamps", () => {
   // A long turn reads as an ordered list with no clock in it, so "did that tool
-  // call take four minutes or forty" was unanswerable after the fact. The time
-  // is on every message and revealed on hover, which is why it is asserted as
-  // hidden-then-shown rather than merely present.
-  test("a message reveals when it happened on hover", async ({
+  // call take four minutes or forty" was unanswerable after the fact.
+  //
+  // The first version of this test asserted only that a *user* message's label
+  // appeared, and shipped two faults it could not see: the label was positioned
+  // in the gap ABOVE its row, so it bled onto the message above (and the
+  // agent's looked missing), and on a user row it was drawn on top of the
+  // "Rewind to here" button. Both are geometry, so this measures geometry —
+  // where the box actually lands, for both roles.
+  /** The label's box, and what it must not be sitting on. */
+  async function boxes(row: import("@playwright/test").Locator) {
+    const time = row.locator("time.message-time");
+    await row.hover();
+    await expect(time).toHaveCSS("opacity", "1");
+    const t = (await time.boundingBox())!;
+    const r = (await row.boundingBox())!;
+    // Glyph extent, not the container's box: padding keeps text out of the
+    // corner while the box still reaches the row's edge.
+    const overText = await row
+      .locator(".msg-content")
+      .first()
+      .evaluate((el, b) => {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        return Array.from(range.getClientRects()).filter(
+          (x) =>
+            x.left < b.x + b.width &&
+            b.x < x.right &&
+            x.top < b.y + b.height &&
+            b.y < x.bottom
+        ).length;
+      }, t);
+    return { t, r, overText };
+  }
+
+  test("both roles reveal their time, inside their own row and over nothing", async ({
     page,
     request,
   }) => {
     await importSessionApi(request, "Timed Session", [
       { role: "user", type: "text", content: "when did this happen" },
+      { role: "assistant", type: "text", content: "the agent's answer here" },
     ]);
     await login(page);
     await page
       .locator(".session-item .session-name", { hasText: "Timed Session" })
       .click();
 
-    const row = page.locator(".msg-row", { hasText: "when did this happen" });
-    const time = row.locator("time.message-time");
+    const user = page.locator(".msg-row", { hasText: "when did this happen" });
+    const agent = page.locator(".msg-row", { hasText: "the agent's answer here" });
+
+    // Hidden until hovered, and a real ISO value behind the clock text.
+    const userTime = user.locator("time.message-time");
+    await expect(userTime).toHaveCount(1);
+    await expect(userTime).toHaveCSS("opacity", "0");
+    await expect(userTime).toHaveAttribute("datetime", /\d{4}-\d{2}-\d{2}T/);
+    await expect(userTime).toHaveAttribute("title", /.+/);
+
+    for (const [label, row] of [["user", user], ["agent", agent]] as const) {
+      const { t, r, overText } = await boxes(row);
+      // Inside its OWN row: floated above, it labelled the message above it.
+      expect(t.y, `${label}: starts before its row`).toBeGreaterThanOrEqual(r.y - 0.5);
+      expect(
+        t.y + t.height,
+        `${label}: extends past its row`
+      ).toBeLessThanOrEqual(r.y + r.height + 0.5);
+      expect(overText, `${label}: the label is sitting on the message text`).toBe(0);
+      // A clock, not an ISO string.
+      await expect(row.locator("time.message-time")).toHaveText(
+        /^\d{2}:\d{2}$|^\w{3} \d+ \d{2}:\d{2}$/
+      );
+    }
+
+    // And it does not cover the affordance that shares that corner.
+    const { t } = await boxes(user);
+    const fork = (await user.locator(".fork-from-here").boundingBox())!;
+    const hits =
+      t.x < fork.x + fork.width &&
+      fork.x < t.x + t.width &&
+      t.y < fork.y + fork.height &&
+      fork.y < t.y + t.height;
+    expect(hits, "the time is drawn over 'Rewind to here'").toBe(false);
+  });
+});
+
+test.describe("Message timestamps on a live turn @llm", () => {
+  test.describe.configure({ timeout: 180_000 });
+
+  // The imported case above cannot see this one: a live reply arrives over the
+  // WebSocket, so its time has to ride on the event rather than come from a
+  // snapshot. That is the message the user actually hovers mid-task.
+  test("an agent's reply carries its time without a reload", async ({
+    page,
+    request,
+  }) => {
+    await createSessionApi(request, "Live Timed");
+    await login(page);
+    await page
+      .locator(".session-item .session-name", { hasText: "Live Timed" })
+      .click();
+
+    const input = page.locator(".chat-input-bar textarea");
+    await input.fill("Reply with exactly: PONG. No tools.");
+    await page.locator("button.btn-send").click();
+    await expect(page.locator(".session-item.active .session-status")).toHaveText(
+      "idle",
+      { timeout: 150_000 }
+    );
+
+    const reply = page.locator(".msg-row", { has: page.locator(".msg-assistant") }).last();
+    const time = reply.locator("time.message-time");
     await expect(time).toHaveCount(1);
-    // Present in the DOM but not on screen until the pointer is on the row.
-    await expect(time).toHaveCSS("opacity", "0");
     await expect(time).toHaveAttribute("datetime", /\d{4}-\d{2}-\d{2}T/);
-    await row.hover();
+    await reply.hover();
     await expect(time).toHaveCSS("opacity", "1");
-    // A clock, not an ISO string, and a full stamp in the tooltip.
-    await expect(time).toHaveText(/^\d{2}:\d{2}$|^\w{3} \d+ \d{2}:\d{2}$/);
-    await expect(time).toHaveAttribute("title", /.+/);
   });
 });
 

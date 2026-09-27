@@ -156,7 +156,9 @@ export function MessageBubble({
           <div className="msg msg-user group flex justify-end">
             <div className="max-w-[64%] space-y-1">
               {onFork && typeof message.seq === "number" && (
-                <div className="flex justify-end">
+                /* `pr-12` reserves the corner the hover timestamp occupies —
+                   the two used to overlap, with the time drawn over the label. */
+                <div className="flex justify-end pr-12">
                   <button
                     type="button"
                     data-testid="fork-from-here"
@@ -206,7 +208,9 @@ export function MessageBubble({
           >
             {assistantAvatar || "🐙"}
           </span>
-          <div className="msg-content markdown min-w-0 flex-1 text-[14px] leading-[1.65] text-gray-900">
+          {/* `pr-12`: the hover timestamp sits in the row's top-right corner, so
+              the first line of prose stops before it instead of running under it. */}
+          <div className="msg-content markdown min-w-0 flex-1 pr-12 text-[14px] leading-[1.65] text-gray-900">
             {plain ? (
               <div className="msg-streaming-text whitespace-pre-wrap break-words">
                 {message.content || ""}

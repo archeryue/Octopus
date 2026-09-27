@@ -45,9 +45,24 @@ own, not its result's).
 
 **In the UI**, one wrapper in `ChatView.renderMessage` rather than a change per
 branch of `MessageBubble` — so tool calls, results, errors and notices all get
-it, not just prose. Absolutely positioned in the gap above its row, because a
-label that reflowed the transcript on hover would move the message away from the
-cursor that was pointing at it.
+it, not just prose. Absolutely positioned, because a label that reflowed the
+transcript on hover would move the message away from the cursor pointing at it.
+
+**Positioned inside its own row, and over nothing.** The first attempt put it in
+the gap *above* the row, which shipped two faults a browser finds in seconds and
+an assertion on one message did not: it bled onto the message above (so an
+agent's label appeared to belong to the user turn before it, and the first row's
+was clipped by the scroller — "the agent's messages have no time"), and on a user
+row it was drawn on top of "Rewind to here". The corner is now reserved by the
+two shapes that reach it (`pr-12` on the rewind row and on the assistant's
+prose): reserving beats floating over, because the one thing worse than no
+timestamp is a timestamp sitting on the button you were aiming at.
+
+The test measures geometry for both roles — the label's box inside its row, no
+glyphs underneath it (range rects, not the container's box, since padding is
+what moves text), and no intersection with the rewind affordance — plus an
+`@llm` case for a *live* reply, whose time rides on the WebSocket event rather
+than coming from a snapshot. Reinstating either fault fails it by name.
 
 On touch there is no hover, so `@media (hover: none)` shows the times dimmed
 instead of hiding them. A timestamp is information, not an action: the reason

@@ -7,9 +7,17 @@
  * without a column of timestamps down the page, which is why this is hover-only
  * rather than always on.
  *
- * Absolutely positioned in the gap above its row so revealing it never reflows
- * the transcript — a timestamp that pushed the message down on hover would make
- * the thing it labels move away from the cursor.
+ * Absolutely positioned so revealing it never reflows the transcript — a
+ * timestamp that pushed the message down on hover would make the thing it labels
+ * move away from the cursor. **Inside** its own row's box, not in the gap above
+ * it: floated above, it bled into the previous message (so it appeared to label
+ * the wrong one) and the first row's label was clipped by the scroller, which is
+ * what "the agent's messages have no time" actually was.
+ *
+ * The corner it occupies is kept clear by the shapes that could reach it — the
+ * user bubble's rewind affordance and the assistant's prose both reserve room on
+ * the right (`pr-12`). Reserving beats floating over: the one thing worse than
+ * no timestamp is a timestamp sitting on top of the button you were aiming at.
  *
  * `null` for messages written before the column existed (there was nothing to
  * backfill from), and for anything not yet persisted.
@@ -40,7 +48,7 @@ export function MessageTime({ iso }: { iso?: string | null }) {
   if (Number.isNaN(at.getTime())) return null;
   return (
     <time
-      className="message-time pointer-events-auto absolute right-1 -top-2 z-10 rounded bg-white/85 px-1 font-mono text-[10px] leading-4 text-gray-600 opacity-0 transition-opacity group-hover/msg:opacity-100"
+      className="message-time pointer-events-auto absolute right-1 top-0 z-10 rounded bg-white/85 px-1 font-mono text-[10px] leading-4 text-gray-600 opacity-0 transition-opacity group-hover/msg:opacity-100"
       dateTime={iso}
       title={at.toLocaleString()}
     >
