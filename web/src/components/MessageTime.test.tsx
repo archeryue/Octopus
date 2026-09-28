@@ -37,7 +37,11 @@ describe("formatMessageTime", () => {
 
 describe("MessageTime", () => {
   it("renders a <time> with the full stamp in its title", () => {
-    const iso = new Date("2026-09-26T09:05:00").toISOString();
+    // The component formats against the real clock, so the message has to be
+    // from the real today — a fixed date only passes on the day it names.
+    const today = new Date();
+    today.setHours(9, 5, 0, 0);
+    const iso = today.toISOString();
     const { container } = render(<MessageTime iso={iso} />);
     const el = container.querySelector("time");
     expect(el).toBeTruthy();

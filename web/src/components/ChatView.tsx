@@ -197,14 +197,25 @@ export function ChatView({
   const START_INDEX = 1_000_000;
   const [firstItemIndex, setFirstItemIndex] = useState(START_INDEX);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [startedAtBottom, setStartedAtBottom] = useState(false);
+  // Whether the conversation has been parked at its newest message yet. Until
+  // it has, "at the top" means nothing: the list mounts at scroll 0 and
+  // reports its top as reached before there is anything to scroll to.
+  const [parked, setParked] = useState(false);
+  // Whether the list is scrolled to its top, and whether the last automatic
+  // load there came back empty (a failed fetch). The second stops a failure
+  // from retrying in a tight loop; leaving the top clears it, so coming back
+  // tries again — and the header's button always works.
+  const [atTop, setAtTop] = useState(false);
+  const [olderStalled, setOlderStalled] = useState(false);
   const hasOlder = useSessionStore((s) =>
     activeSessionId ? Boolean(s.hasMoreMessages[activeSessionId]) : false
   );
   useEffect(() => {
     setFirstItemIndex(START_INDEX);
     setLoadingOlder(false);
-    setStartedAtBottom(false);
+    setParked(false);
+    setAtTop(false);
+    setOlderStalled(false);
   }, [activeSessionId]);
   const loadOlder = useCallback(() => {
     const sid = activeSessionId;
@@ -215,8 +226,23 @@ export function ChatView({
       // Exactly the number added, in the same tick the longer list lands in,
       // or the list jumps by however far the two disagree.
       if (added > 0) setFirstItemIndex((i) => i - added);
+      else setOlderStalled(true);
     });
   }, [activeSessionId]);
+
+  // Page back while the reader is at the top. A *state*, not Virtuoso's
+  // `startReached` event: that fires once, at the moment the top is reached,
+  // and it used to be ignored until Virtuoso had also reported the bottom —
+  // a report that can land after the reader has already scrolled up, so the
+  // one event passed with nothing listening and the older messages never
+  // came. Here the top is a state, armed by the moment parking finishes
+  // (which also clears whatever the mount-time scroll 0 left behind), so an
+  // "at the top" after that is always the reader's, and loads.
+  useEffect(() => {
+    if (atTop && parked && hasOlder && !loadingOlder && !olderStalled) {
+      loadOlder();
+    }
+  }, [atTop, parked, hasOlder, loadingOlder, olderStalled, loadOlder]);
 
   // Scroll to the bottom when switching into a session whose history has
   // already loaded. `initialTopMostItemIndex` is captured at mount time, so
@@ -230,15 +256,26 @@ export function ChatView({
     // measured the items that just arrived, which leaves the conversation open
     // at its oldest loaded message instead of its newest.
     let frames = 3;
+    let raf = 0;
     const park = () => {
       virtuosoRef.current?.scrollToIndex({
         index: "LAST",
         align: "end",
         behavior: "auto",
       });
-      if (--frames > 0) requestAnimationFrame(park);
+      if (--frames > 0) {
+        raf = requestAnimationFrame(park);
+        return;
+      }
+      // Parked. Any "at the top" reported so far came from the mount-time
+      // scroll 0, not the reader; drop it and arm paging in one render, so
+      // the paging effect never sees the stale value with paging armed.
+      setAtTop(false);
+      setParked(true);
     };
     park();
+    // A session switched mid-park must not arm the next one early.
+    return () => cancelAnimationFrame(raf);
   }, [activeSessionId, hasMessages]);
 
   // Prefilled chat input on fork open (session-rewind.md §6.1). When the
@@ -1599,17 +1636,18 @@ export function ChatView({
         itemContent={renderMessage}
         initialTopMostItemIndex={messages.length ? messages.length - 1 : 0}
         firstItemIndex={firstItemIndex}
-        // Only after the list has actually been at the bottom once. A chat
-        // mounts empty and fills in asynchronously, so `initialTopMostItemIndex`
-        // is captured before there is anything to scroll to and the effect above
-        // is what parks it at the newest message; until that has happened the
-        // list is briefly at scroll 0, where Virtuoso reports the start as
-        // reached. Unguarded, that loads a page of older messages on open —
-        // which then holds the view at the top, exactly where the user did not
-        // want to be.
-        startReached={hasOlder && startedAtBottom ? loadOlder : undefined}
-        atBottomStateChange={(atBottom) => {
-          if (atBottom) setStartedAtBottom(true);
+        // Paging back is armed only once the conversation has been parked at
+        // its newest message (`parked`). A chat mounts empty and fills in
+        // asynchronously, so `initialTopMostItemIndex` is captured before there
+        // is anything to scroll to and the effect above is what parks it;
+        // until that has happened the list is briefly at scroll 0, where
+        // Virtuoso reports the top as reached. Unguarded, that loads a page of
+        // older messages on open — which then holds the view at the top,
+        // exactly where the user did not want to be. The load itself is the
+        // `atTop` effect above.
+        atTopStateChange={(top) => {
+          setAtTop(top);
+          if (!top) setOlderStalled(false);
         }}
         followOutput="smooth"
         increaseViewportBy={{ top: 400, bottom: 400 }}
