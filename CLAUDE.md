@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,208 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,228 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1,174 tests, ~34 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,194 tests, ~34 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -52,12 +52,12 @@ You MUST verify your changes before considering them done:
    import is what used to make a plain `--collect-only` spawn a real `claude`
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
-2. **Frontend unit tests**: `cd web && bun run test` (232 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (267 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (88 tests, no skips, ~5 min, Playwright
+4. **E2E tests**: `cd web && bun run test:e2e` (93 tests, no skips, ~5 min, Playwright
    auto-starts servers). Split into two buckets for dev iteration —
-   `bun run test:e2e:fast` (50 pure-UI tests, ~40 s — login / sessions /
-   dialogs / sidebar / virtualized chat / attachments / etc.) and
+   `bun run test:e2e:fast` (55 pure-UI tests, ~40 s — login / sessions /
+   dialogs / sidebar / sidebar pins / virtualized chat / attachments / etc.) and
    `bun run test:e2e:llm` (38 real-LLM tests, ~4 min — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
    notifier, codex sign-in, handoff/pull). Anything that drives a real
@@ -72,14 +72,14 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1174 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1194 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
-| Frontend unit | vitest | `cd web && bun run test` | 232 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold, mobile drawer, viewport height. ~3 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 88 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, `/rewind`, `/research`, the monitor page. `:fast` (50, ~40 s) skips the `@llm` half; `:llm` (38, ~4 min) is the rest. |
+| Frontend unit | vitest | `cd web && bun run test` | 267 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height. ~3 s. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 93 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, sidebar pins (drag + keyboard reorder), `/rewind`, `/research`, the monitor page. `:fast` (55, ~40 s) skips the `@llm` half; `:llm` (38, ~4 min) is the rest. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
-hand-written inventory of 1,208 tests cannot stay true, and it cost ~16 KB of
+hand-written inventory of 1,228 tests cannot stay true, and it cost ~16 KB of
 every session's context to try.
 
 ## Project Structure
@@ -117,9 +117,9 @@ every session's context to try.
 
 - `server/applications.py` — Applications (`docs/plans/applications.md`): agent-built static web apps. Owns the app directory under `~/.octopus/applications`, the *build session* (a normal session with `origin='application'` whose working dir is the app dir), and a `building|ready|failed` status **derived** from whether the entrypoint exists when a build turn ends — the manager subscribes to the SessionManager broadcast bus (the DelegationManager pattern), so a change typed straight into the build session updates the badge too. `POST /{id}/build` runs another turn in that same session. Archiving
 (`POST /{id}/archive` / `/unarchive`) keeps the row **and** the files so the
-create page's Archived tab can restore an app exactly as it was; the name
-index is live-only, so an archived name frees up (same rule as agents, which
-gained `POST /api/agents/{id}/unarchive` for the same tab).
+Applications page's Archived section can restore an app exactly as it was;
+the name index is live-only, so an archived name frees up (same rule as
+agents, which gained `POST /api/agents/{id}/unarchive` for the same section).
 - `server/routers/applications.py` — `/api/applications` CRUD **plus** `/apps/{id}/{path}` — the app itself, streamed out of its directory with traversal + symlink guards, `Cache-Control: no-store`, and bearer / `?token=` / `octopus_app_token`-cookie auth (an iframe can't send an Authorization header)
 - `server/agent_manager.py` — Agent CRUD (durable assistant definitions that own sessions/schedules)
 - `server/agent_memory.py` — Per-agent native memory (`docs/plans/memory.md`): one canonical markdown dir per agent (`<agents_dir>/<id>/memory/`), shared by both harnesses. Claude points its auto-memory at it via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`; Codex via an injected `developer_instructions` blurb naming the dir (its native `features.memories` pipeline is unused — it doesn't run in headless `exec`). Memory is decoupled from both harnesses' config/auth dirs — `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are never touched, so auth and `--resume` transcripts are unaffected. Pure path helpers + idempotent provisioning.
@@ -151,6 +151,16 @@ gained `POST /api/agents/{id}/unarchive` for the same tab).
   `sessions.backend` has. The route stores any string on purpose;
   `RuntimeProfile.models` is a shortlist for the picker, empty for Codex
   because nothing here establishes which names `codex -m` takes.
+- `docs/plans/sidebar-pins.md` — The sidebar is shortcuts, the page is
+  everything: `pinned` + `pin_order` on agents and applications, the sidebar
+  lists only pinned rows (drag or keyboard to reorder, `@dnd-kit`), and the
+  Agents / Applications pages' **All** tab (the section's "+", then All)
+  lists every row — pinned, not pinned, archived — with pin, open/chat,
+  archive, restore. Nothing in the UI hard-deletes: removal is always an
+  archive (a sidebar session's button is `archive?replace=false`). An
+  unpinned row joins the sidebar only while it needs you
+  (`lib/sidebarPins.ts`). Unpinned is still live (delegation, schedules,
+  serving); archived is out of use. Agents now broadcast `agent_*` events.
 - `docs/plans/mobile.md` — Octopus on a phone: the drawer that puts itself
   away, 16px fields (iOS zoom), touch hit areas and hover-only affordances,
   headers that shed context rather than function, and the safe-area insets a

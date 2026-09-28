@@ -44,7 +44,12 @@ CREATE TABLE IF NOT EXISTS agents (
     is_system INTEGER NOT NULL DEFAULT 0,   -- 1 = the protected Default Agent (cannot be deleted)
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- The sidebar is a set of shortcuts (sidebar-pins.md): `pinned` puts the
+    -- agent there, `pin_order` is its place among the pinned. Every live
+    -- agent is still listed, callable and schedulable either way.
+    pinned INTEGER NOT NULL DEFAULT 1,
+    pin_order INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS agents_name_unique ON agents(name) WHERE archived = 0;
 
@@ -368,11 +373,14 @@ CREATE TABLE IF NOT EXISTS applications (
     status TEXT NOT NULL DEFAULT 'building',  -- building|ready|failed
     error TEXT,
     -- Archived applications leave the sidebar but keep their row AND their
-    -- files, so the create page's Archived tab can put them back.
+    -- files, so the Applications page's Archived section can put them back.
     archived INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    last_built_at TEXT
+    last_built_at TEXT,
+    -- Sidebar shortcut + its place among the pinned (sidebar-pins.md).
+    pinned INTEGER NOT NULL DEFAULT 1,
+    pin_order INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique

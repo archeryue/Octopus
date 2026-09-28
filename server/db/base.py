@@ -80,6 +80,8 @@ class DatabaseBase:
             "created_at": row[12],
             "updated_at": row[13],
             "last_built_at": row[14],
+            "pinned": bool(row[15]),
+            "pin_order": row[16],
         }
     @staticmethod
     def _row_to_bg_task(row: sqlite3.Row) -> dict[str, Any]:
@@ -164,7 +166,7 @@ class DatabaseBase:
     _AGENT_COLS = (
         "id, name, description, avatar, system_prompt, model, credential_id, "
         "mcp_servers, tool_allow, tool_deny, is_system, archived, "
-        "created_at, updated_at, backend, subagents"
+        "created_at, updated_at, backend, subagents, pinned, pin_order"
     )
     # Subquery counting live (non-archived) sessions for an agent — shared
     # by load_agents and get_agent so the UI can show "3 sessions".
@@ -183,8 +185,14 @@ class DatabaseBase:
     _APPLICATION_COLS = (
         "id, name, description, icon, icon_src, agent_id, session_id, "
         "app_dir, entrypoint, status, error, archived, created_at, "
-        "updated_at, last_built_at"
+        "updated_at, last_built_at, pinned, pin_order"
     )
+
+    # The position after every existing one, for a row being pinned now: it
+    # lands at the bottom of the sidebar. A subquery rather than a Python
+    # read-then-write so the value is computed inside the statement that
+    # uses it. `{table}` is always a literal from this module.
+    _NEXT_PIN_ORDER = "(SELECT COALESCE(MAX(pin_order), 0) + 1 FROM {table})"
 
     # Additive column migrations, as (table, column, DDL). Declared as data so
     # the list reads as an inventory and every entry goes through the same
@@ -223,6 +231,12 @@ class DatabaseBase:
         # `/model`: a per-session model, the same shape `backend` already has.
         # NULL means "use the agent's", whose NULL means "backend default".
         ("sessions", "model", "ALTER TABLE sessions ADD COLUMN model TEXT"),
+        # sidebar-pins.md — the sidebar shows pinned applications. DEFAULT 1
+        # pins every existing app, so the sidebar looks the same the day this
+        # lands; `pin_order` is backfilled in `_backfill_pin_order`.
+        ("applications", "pinned",
+         "ALTER TABLE applications ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1"),
+        ("applications", "pin_order", "ALTER TABLE applications ADD COLUMN pin_order INTEGER"),
     )
 
     # Applied after `_migrate_agents` / the schedule migrations, because those
@@ -262,6 +276,11 @@ class DatabaseBase:
         ("messages", "git_head", "ALTER TABLE messages ADD COLUMN git_head TEXT"),
         ("messages", "git_status_clean",
          "ALTER TABLE messages ADD COLUMN git_status_clean INTEGER"),
+        # sidebar-pins.md — as for applications: every existing agent starts
+        # pinned, so nothing leaves the sidebar until the user unpins it.
+        ("agents", "pinned",
+         "ALTER TABLE agents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1"),
+        ("agents", "pin_order", "ALTER TABLE agents ADD COLUMN pin_order INTEGER"),
     )
 
 
@@ -372,6 +391,8 @@ class DatabaseBase:
         for table, column, ddl in self._LATE_COLUMN_MIGRATIONS:
             await self._add_column(table, column, ddl)
 
+        await self._backfill_pin_order()
+
         await self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_forked_from "
             "ON sessions(forked_from_session_id)"
@@ -400,6 +421,77 @@ class DatabaseBase:
         # nothing here a user would miss.
         await self.conn.execute("DROP TABLE IF EXISTS bridge_mappings")
         await self._stamp("drop:bridge_mappings")
+
+    async def _set_pinned(self, table: str, row_id: str, pinned: bool) -> None:
+        """Pin a row to the sidebar (at the bottom) or unpin it.
+
+        Unpinning leaves `pin_order` alone — it only means something while
+        pinned, and pinning again always appends, because an item coming back
+        to the sidebar is news and belongs where the eye lands last.
+        """
+        await self._ensure_connected()
+        if pinned:
+            await self.conn.execute(
+                f"UPDATE {table} SET pinned = 1, "
+                f"pin_order = {self._NEXT_PIN_ORDER.format(table=table)} "
+                "WHERE id = ? AND pinned = 0",
+                (row_id,),
+            )
+        else:
+            await self.conn.execute(
+                f"UPDATE {table} SET pinned = 0 WHERE id = ?", (row_id,)
+            )
+        await self.conn.commit()
+
+    async def _reorder_pins(self, table: str, ordered_ids: list[str]) -> None:
+        """Lay the pinned rows out in `ordered_ids` order.
+
+        Any pinned, live row the list doesn't name — pinned from another tab
+        after this one last looked — keeps its relative order and follows
+        the named ones, so a reorder never drops someone else's pin.
+        """
+        await self._ensure_connected()
+        cursor = await self.conn.execute(
+            f"SELECT id FROM {table} WHERE pinned = 1 AND archived = 0 "
+            "ORDER BY pin_order, created_at, id"
+        )
+        named = set(ordered_ids)
+        rest = [r[0] for r in await cursor.fetchall() if r[0] not in named]
+        for position, row_id in enumerate([*ordered_ids, *rest], start=1):
+            await self.conn.execute(
+                f"UPDATE {table} SET pin_order = ? WHERE id = ?",
+                (position, row_id),
+            )
+        await self.conn.commit()
+
+    async def _backfill_pin_order(self) -> None:
+        """Give every agent and application without a sidebar position one.
+
+        Rows that predate `pin_order` read back NULL. They are numbered in the
+        order the sidebar already showed them (the Default Agent first, then
+        by creation), after any row that already has a position, so the
+        first boot on this schema changes nothing the user can see. Rows
+        written since always carry a position, so re-running touches nothing.
+        """
+        for table, order_by in (
+            ("agents", "is_system DESC, created_at, id"),
+            ("applications", "created_at, id"),
+        ):
+            await self.conn.execute(
+                f"""
+                UPDATE {table} SET pin_order = (
+                    SELECT base + rn FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (ORDER BY {order_by}) AS rn,
+                               (SELECT COALESCE(MAX(pin_order), 0)
+                                  FROM {table}) AS base
+                          FROM {table} WHERE pin_order IS NULL
+                    ) AS numbered WHERE numbered.id = {table}.id
+                )
+                WHERE pin_order IS NULL
+                """
+            )
+            await self._stamp(f"backfill:{table}_pin_order")
 
     async def _backfill_builtin_mcp_servers(self, names: tuple[str, ...]) -> None:
         cursor = await self.conn.execute("SELECT id, mcp_servers FROM agents")

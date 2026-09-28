@@ -122,7 +122,7 @@ export function ApplicationView({
     if (
       !window.confirm(
         `Archive "${app.name}"? It leaves the sidebar but keeps its files — ` +
-          `restore it any time from the Archived tab.`
+          `restore it any time from All applications.`
       )
     )
       return;

@@ -1,8 +1,14 @@
 import { useCallback, useEffect } from "react";
-import { IconPlus, IconTrash } from "@tabler/icons-react";
-import { deleteApplication, fetchApplications } from "../api/applications";
-import { useSessionStore } from "../stores/sessionStore";
+import { IconPin, IconPinnedOff, IconPlus } from "@tabler/icons-react";
+import {
+  fetchApplications,
+  reorderApplicationPins,
+  setApplicationPinned,
+} from "../api/applications";
+import { sidebarApplications, withPinOrder } from "../lib/sidebarPins";
+import { useSessionStore, type Application } from "../stores/sessionStore";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
+import { SortablePin, SortablePins, type DragHandle } from "./SortablePins";
 import { AppIcon } from "./AppIcon";
 
 /** The APPLICATIONS section — agent-built web apps, one row each.
@@ -11,6 +17,12 @@ import { AppIcon } from "./AppIcon";
  * name. Selecting one takes over the main pane with the app itself, so the
  * selected state matches the session rows above — tinted pill, accent border.
  * The list is seeded once here and kept live by the `application_*` WS events.
+ *
+ * Only *pinned* applications are listed, in the user's order (sidebar-pins.md);
+ * the Applications page's All tab (the "+", then All) has the rest. An
+ * unpinned app joins the list, dimmed, while it's open, building, or has
+ * failed a build nobody has looked at yet. A sidebar row is a shortcut, so
+ * what you remove from here is the shortcut; archiving is on that page.
  */
 export function SidebarApplications() {
   const token = useSessionStore((s) => s.token);
@@ -20,7 +32,9 @@ export function SidebarApplications() {
   const mainView = useSessionStore((s) => s.mainView);
   const openApplication = useSessionStore((s) => s.openApplication);
   const openApplicationCreate = useSessionStore((s) => s.openApplicationCreate);
-  const removeApplication = useSessionStore((s) => s.removeApplication);
+  const unseenFailedApplications = useSessionStore(
+    (s) => s.unseenFailedApplications
+  );
 
   const load = useCallback(async () => {
     try {
@@ -34,23 +48,87 @@ export function SidebarApplications() {
     if (token) load();
   }, [token, load]);
 
-  // Deleting is the permanent one — archiving (from the app's own header)
-  // keeps the files. Both live where you'd reach for them: archive while
-  // you're looking at the app, delete from the list you're pruning.
-  const remove = async (id: string, name: string) => {
-    if (
-      !window.confirm(
-        `Delete "${name}"? This removes the application and its files. ` +
-          `Archive it instead to keep them.`
-      )
-    )
-      return;
-    removeApplication(id);
+  // Optimistic, then the server's list (the reply is every live app); a
+  // failure reloads rather than leaving an order nobody saved.
+  const reorder = async (orderedIds: string[]) => {
+    setApplications(
+      withPinOrder(useSessionStore.getState().applications, orderedIds)
+    );
     try {
-      await deleteApplication(token, id);
+      setApplications(await reorderApplicationPins(token, orderedIds));
     } catch {
       load();
     }
+  };
+
+  const setPinned = async (app: Application, pinned: boolean) => {
+    try {
+      useSessionStore
+        .getState()
+        .upsertApplication(await setApplicationPinned(token, app.id, pinned));
+    } catch {
+      load();
+    }
+  };
+
+  const { pinned, present } = sidebarApplications(applications, {
+    mainView,
+    activeApplicationId,
+    unseenFailedApplications,
+  });
+
+  const renderApp = (app: Application, handle: DragHandle) => {
+    const isActive =
+      mainView === "application" && app.id === activeApplicationId;
+    const isPinned = app.pinned !== false;
+    return (
+      <div
+        {...handle}
+        className={`application-item group/app flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-[7px] transition-colors ${
+          isActive
+            ? "active bg-primary-50 border border-primary-100 shadow-[0_1px_2px_rgba(37,99,184,0.06)]"
+            : "border border-transparent hover:bg-gray-100"
+        }${isPinned ? "" : " unpinned"}`}
+        onClick={() => openApplication(app.id)}
+        title={app.description ? `${app.name} — ${app.description}` : app.name}
+      >
+        <AppIcon app={app} className="application-icon shrink-0" />
+        <span
+          className={`application-name truncate text-[13.5px] ${
+            isActive ? "font-semibold text-gray-950" : "font-medium text-gray-800"
+          }`}
+        >
+          {app.name}
+        </span>
+        {app.status !== "ready" && (
+          <span
+            className={`app-status-dot app-status-${app.status} ml-auto inline-block size-[7px] shrink-0 rounded-full ${
+              app.status === "building" ? "bg-primary animate-pulse" : "bg-warn"
+            }`}
+            aria-label={app.status}
+          />
+        )}
+        <button
+          className={`${
+            isPinned ? "btn-application-unpin" : "btn-application-pin"
+          } inline-flex size-5 shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 transition-opacity hover:bg-gray-200 hover:text-gray-900 group-hover/app:opacity-100 ${
+            app.status === "ready" ? "ml-auto" : ""
+          }`}
+          onClick={(e) => {
+            e.stopPropagation();
+            setPinned(app, !isPinned);
+          }}
+          title={isPinned ? "Unpin from sidebar" : "Pin to sidebar"}
+          aria-label={
+            isPinned
+              ? `Unpin ${app.name} from the sidebar`
+              : `Pin ${app.name} to the sidebar`
+          }
+        >
+          {isPinned ? <IconPinnedOff size={13} /> : <IconPin size={13} />}
+        </button>
+      </div>
+    );
   };
 
   return (
@@ -68,58 +146,20 @@ export function SidebarApplications() {
       />
 
       <div className="application-items flex flex-col gap-0.5">
-        {applications.map((app) => {
-          const isActive =
-            mainView === "application" && app.id === activeApplicationId;
-          return (
-            <div
-              key={app.id}
-              className={`application-item group/app flex cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-[7px] transition-colors ${
-                isActive
-                  ? "active bg-primary-50 border border-primary-100 shadow-[0_1px_2px_rgba(37,99,184,0.06)]"
-                  : "border border-transparent hover:bg-gray-100"
-              }`}
-              onClick={() => openApplication(app.id)}
-              title={
-                app.description ? `${app.name} — ${app.description}` : app.name
-              }
-            >
-              <AppIcon app={app} className="application-icon shrink-0" />
-              <span
-                className={`application-name truncate text-[13.5px] ${
-                  isActive
-                    ? "font-semibold text-gray-950"
-                    : "font-medium text-gray-800"
-                }`}
-              >
-                {app.name}
-              </span>
-              {app.status !== "ready" && (
-                <span
-                  className={`app-status-dot app-status-${app.status} ml-auto inline-block size-[7px] shrink-0 rounded-full ${
-                    app.status === "building"
-                      ? "bg-primary animate-pulse"
-                      : "bg-warn"
-                  }`}
-                  aria-label={app.status}
-                />
-              )}
-              <button
-                className={`btn-application-delete inline-flex size-5 shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 transition-opacity hover:bg-danger-bg hover:text-destructive group-hover/app:opacity-100 ${
-                  app.status === "ready" ? "ml-auto" : ""
-                }`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  remove(app.id, app.name);
-                }}
-                title="Delete application"
-                aria-label={`Delete ${app.name}`}
-              >
-                <IconTrash size={13} />
-              </button>
-            </div>
-          );
-        })}
+        <SortablePins
+          ids={pinned.map((a) => a.id)}
+          nameOf={(id) => applications.find((a) => a.id === id)?.name ?? id}
+          onReorder={reorder}
+        >
+          {pinned.map((app) => (
+            <SortablePin key={app.id} id={app.id}>
+              {(handle) => renderApp(app, handle)}
+            </SortablePin>
+          ))}
+        </SortablePins>
+        {present.map((app) => (
+          <div key={app.id}>{renderApp(app, {})}</div>
+        ))}
         {applications.length === 0 && (
           <button
             type="button"

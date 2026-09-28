@@ -35,8 +35,9 @@ class ApplicationsMixin(DatabaseBase):
         await self.conn.execute(
             "INSERT INTO applications "
             "(id, name, description, icon, agent_id, session_id, app_dir, "
-            " entrypoint, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " entrypoint, status, created_at, updated_at, pinned, pin_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, "
+            f" {self._NEXT_PIN_ORDER.format(table='applications')})",
             (
                 app_id,
                 name,
@@ -119,6 +120,14 @@ class ApplicationsMixin(DatabaseBase):
             list(updates.values()) + [app_id],
         )
         await self.conn.commit()
+
+    async def set_application_pinned(self, app_id: str, pinned: bool) -> None:
+        """Put the application in the sidebar (at the bottom) or take it out."""
+        await self._set_pinned("applications", app_id, pinned)
+
+    async def reorder_application_pins(self, ordered_ids: list[str]) -> None:
+        """The sidebar order of the pinned applications — see `_reorder_pins`."""
+        await self._reorder_pins("applications", ordered_ids)
 
     async def delete_application(self, app_id: str) -> bool:
         await self._ensure_connected()

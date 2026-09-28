@@ -1,6 +1,8 @@
 /**
  * Renderer tests for the Applications sidebar section (the console design's
- * workspace half): the seed fetch, selection, status dots and the empty state.
+ * workspace half): the seed fetch, selection, status dots, the empty state,
+ * and pins (sidebar-pins.md) — only pinned apps, in their order, plus an
+ * unpinned one while it needs you.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,8 +27,10 @@ function application(overrides: Partial<Application> = {}): Application {
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     last_built_at: "2026-01-01T00:00:00Z",
+    pinned: true,
+    pin_order: 1,
     ...overrides,
-  };
+  } as Application;
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -37,6 +41,7 @@ beforeEach(() => {
     applications: [],
     activeApplicationId: null,
     mainView: "chat",
+    unseenFailedApplications: [],
   });
   fetchMock = vi.fn(async () => new Response("[]", { status: 200 }));
   vi.stubGlobal("fetch", fetchMock);
@@ -118,36 +123,80 @@ describe("SidebarApplications", () => {
     expect(container.querySelector(".application-item.active")).toBeTruthy();
   });
 
-  it("delete confirms, drops the row, and DELETEs", async () => {
-    useSessionStore.setState({ applications: [application()] });
-    vi.stubGlobal("confirm", vi.fn(() => true));
-    render(<SidebarApplications />);
-
-    fireEvent.click(screen.getByLabelText("Delete Habit Tracker"));
-    expect(useSessionStore.getState().applications).toHaveLength(0);
-    await waitFor(() =>
-      expect(
-        fetchMock.mock.calls.some(
-          ([u, init]) =>
-            String(u).endsWith("/api/applications/a1") &&
-            (init as RequestInit | undefined)?.method === "DELETE"
-        )
-      ).toBe(true)
-    );
+  it("lists only pinned applications, in pin order", () => {
+    useSessionStore.setState({
+      applications: [
+        application({ id: "a1", name: "First Made", pin_order: 2 }),
+        application({ id: "a2", name: "Moved Up", pin_order: 1 }),
+        application({ id: "a3", name: "Not Pinned", pinned: false }),
+      ],
+    });
+    const { container } = render(<SidebarApplications />);
+    expect(
+      [...container.querySelectorAll(".application-name")].map((n) => n.textContent)
+    ).toEqual(["Moved Up", "First Made"]);
   });
 
-  it("delete does nothing when the confirm is declined", () => {
+  it("unpin POSTs and takes the row out of the sidebar", async () => {
     useSessionStore.setState({ applications: [application()] });
-    vi.stubGlobal("confirm", vi.fn(() => false));
+    fetchMock.mockImplementation(async (url: unknown) =>
+      String(url).endsWith("/a1/unpin")
+        ? new Response(JSON.stringify(application({ pinned: false })), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          })
+        : new Response("[]", { status: 200 })
+    );
     render(<SidebarApplications />);
-
-    fireEvent.click(screen.getByLabelText("Delete Habit Tracker"));
+    fireEvent.click(screen.getByLabelText("Unpin Habit Tracker from the sidebar"));
+    await waitFor(() => expect(screen.queryByText("Habit Tracker")).toBeNull());
+    // Still a live application — only the shortcut went.
     expect(useSessionStore.getState().applications).toHaveLength(1);
-    expect(
-      fetchMock.mock.calls.some(
-        ([, init]) => (init as RequestInit | undefined)?.method === "DELETE"
-      )
-    ).toBe(false);
+  });
+
+  it("the sidebar has no delete — that lives on the Applications page", () => {
+    useSessionStore.setState({ applications: [application()] });
+    render(<SidebarApplications />);
+    expect(screen.queryByLabelText("Delete Habit Tracker")).toBeNull();
+  });
+
+  it("an unpinned app shows while open, building, or failed unseen", () => {
+    useSessionStore.setState({
+      applications: [
+        application({ id: "a1", name: "Quiet", pinned: false }),
+        application({ id: "a2", name: "Open", pinned: false }),
+        application({ id: "a3", name: "Building", pinned: false, status: "building" }),
+        application({ id: "a4", name: "Broke", pinned: false, status: "failed" }),
+        application({ id: "a5", name: "Broke Seen", pinned: false, status: "failed" }),
+      ],
+      mainView: "application",
+      activeApplicationId: "a2",
+      unseenFailedApplications: ["a4"],
+    });
+    const { container } = render(<SidebarApplications />);
+    const shown = [...container.querySelectorAll(".application-item.unpinned")].map(
+      (n) => n.querySelector(".application-name")?.textContent
+    );
+    expect(shown).toEqual(["Open", "Building", "Broke"]);
+    // Each offers the way to make it stay.
+    expect(screen.getByLabelText("Pin Open to the sidebar")).toBeTruthy();
+  });
+
+  it("opening an app clears its unseen failure", () => {
+    useSessionStore.setState({
+      applications: [application({ pinned: false, status: "failed" })],
+      unseenFailedApplications: ["a1"],
+    });
+    render(<SidebarApplications />);
+    fireEvent.click(screen.getByText("Habit Tracker"));
+    expect(useSessionStore.getState().unseenFailedApplications).toEqual([]);
+  });
+
+  it("the + opens the Create tab", () => {
+    useSessionStore.setState({ pageTab: "all" });
+    render(<SidebarApplications />);
+    fireEvent.click(screen.getByLabelText("New application"));
+    expect(useSessionStore.getState().pageTab).toBe("form");
   });
 
   it("deleting the open application returns the pane to chat", () => {

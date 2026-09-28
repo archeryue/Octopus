@@ -417,9 +417,20 @@ class AgentRead(BaseModel):
     subagents: list[SubagentDefinition] = []
     is_system: bool = False
     archived: bool = False
+    # A sidebar shortcut (sidebar-pins.md) and its place among the pinned.
+    # Unpinned agents are just as live; the sidebar doesn't list them.
+    pinned: bool = True
+    pin_order: int | None = None
     created_at: str
     updated_at: str
     active_session_count: int = 0
+
+
+class PinOrderRequest(BaseModel):
+    """The sidebar order of the pinned agents or applications, top first.
+    Pinned rows it doesn't name keep their order after the named ones."""
+
+    ids: list[str]
 
 
 class SubagentDefinition(BaseModel):
@@ -735,12 +746,16 @@ class ApplicationRead(BaseModel):
     entrypoint: str = "index.html"
     status: ApplicationStatus = ApplicationStatus.building
     error: str | None = None
-    # Archived applications leave the sidebar but keep their row and files;
-    # the create page's Archived tab restores them.
+    # Archived applications keep their row and files but can't be opened;
+    # the Applications page lists them with a Restore.
     archived: bool = False
     created_at: str
     updated_at: str
     last_built_at: str | None = None
+    # A sidebar shortcut (sidebar-pins.md) and its place among the pinned.
+    # An unpinned application still serves; the sidebar doesn't list it.
+    pinned: bool = True
+    pin_order: int | None = None
 
 
 class ApplicationCreate(BaseModel):

@@ -8,6 +8,7 @@ import { refreshSchedules } from "../lib/refreshSchedules";
 import { applyTranscript } from "../lib/transcript";
 import {
   useSessionStore,
+  type Agent,
   type Application,
   type BgTask,
   type Message,
@@ -283,6 +284,17 @@ export function handleWsMessage(data: Record<string, unknown>) {
     case "application_updated": {
       const row = data.application as Application | undefined;
       if (!row) break;
+      const before = getState().applications.find((a) => a.id === row.id);
+      const { mainView, activeApplicationId } = getState();
+      // A build that failed where nobody could see it: an unpinned app keeps
+      // a place in the sidebar until it's opened (sidebar-pins.md §5).
+      if (
+        row.status === "failed" &&
+        before?.status !== "failed" &&
+        !(mainView === "application" && activeApplicationId === row.id)
+      ) {
+        getState().noteApplicationFailed(row.id);
+      }
       getState().upsertApplication(row);
       // The build session was created server-side, so the sidebar list
       // doesn't have it yet — pull it in so it's listed under its agent and
@@ -291,11 +303,30 @@ export function handleWsMessage(data: Record<string, unknown>) {
       break;
     }
 
+    // Archived rows leave every open client's list, exactly like deleted ones;
+    // the Applications page fetches the archive itself.
+    case "application_archived":
     case "application_deleted": {
       const id =
         (data.application_id as string) ||
         (data.application as Application | undefined)?.id;
       if (id) getState().removeApplication(id);
+      break;
+    }
+
+    // Agents (sidebar-pins.md §7) — the same global shape as applications:
+    // the row comes down whole and the store mirrors it.
+    case "agent_created":
+    case "agent_updated": {
+      const row = data.agent as Agent | undefined;
+      if (row) getState().upsertAgent(row);
+      break;
+    }
+
+    case "agent_archived":
+    case "agent_deleted": {
+      const id = data.agent_id as string | undefined;
+      if (id) getState().removeAgent(id);
       break;
     }
 

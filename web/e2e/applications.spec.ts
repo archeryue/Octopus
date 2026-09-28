@@ -32,8 +32,15 @@ const jsonHeaders = { ...headers, "Content-Type": "application/json" };
 
 test.afterAll(async ({ request }) => {
   try {
-    const res = await request.get(`${API}/applications`, { headers, timeout: 5_000 });
-    if (res.ok()) {
+    // Live and archived: the UI archives rather than deletes, so a finished
+    // run leaves its app in the archive.
+    const lists = await Promise.all(
+      [{}, { archived: "true" }].map((params) =>
+        request.get(`${API}/applications`, { headers, params, timeout: 5_000 })
+      )
+    );
+    for (const res of lists) {
+      if (!res.ok()) continue;
       for (const app of (await res.json()) as AppRow[]) {
         if (!OWNED_APPS.has(app.name)) continue;
         await request
@@ -103,9 +110,10 @@ test.describe("Applications UI", () => {
     // The agent picker is populated from the agent list.
     await expect(page.locator("#app-agent option")).not.toHaveCount(0);
 
-    // The Archived tab is where an archived app comes back from.
-    await page.locator(".btn-tab-archived").click();
-    await expect(page.locator(".archived-empty, .archived-grid")).toBeVisible();
+    // The All tab lists every application — archived ones included — and is
+    // where one comes back from (sidebar-pins.md §6).
+    await page.locator(".btn-tab-all").click();
+    await expect(page.locator(".library-empty, .item-library")).toBeVisible();
     await page.locator(".btn-tab-create").click();
 
     // Closing returns the pane to chat without creating anything.
@@ -259,26 +267,39 @@ test.describe("Applications @llm", () => {
     await expect(page.locator(".application-view")).toHaveCount(0);
     await expect(page.locator(".chat-header")).toContainText("Build: E2E Hello App");
 
-    // --- delete -----------------------------------------------------------
+    // --- pins (sidebar-pins.md) --------------------------------------------
+    // A new application is pinned. Unpinning it from the sidebar removes the
+    // shortcut, not the app: it keeps serving, and the All tab still lists
+    // it. (It would stay in the sidebar while it's the one open, so step off
+    // it first.)
+    await page.locator(".btn-application-add").click();
+    await page.locator(".btn-tab-all").click();
     await row.hover();
-    page.once("dialog", (d) => d.accept());
-    await row.locator(".btn-application-delete").click();
+    await row.locator(".btn-application-unpin").click();
     await expect(row).toHaveCount(0);
-
-    // The row leaves the sidebar optimistically (the click should feel
-    // instant), so the DELETE is still in flight — poll for the server to
-    // catch up rather than racing it.
-    await expect
-      .poll(
-        async () =>
-          (await request.get(`${API}/applications/${app.id}`, { headers })).status(),
-        { timeout: 10_000 }
-      )
-      .toBe(404);
-    // The files went with it; the conversation did not.
     expect(
       (await request.get(`${SERVER_URL}/apps/${app.id}/`, { headers })).status()
-    ).toBe(404);
+    ).toBe(200);
+    const loose = page.locator(".library-unpinned .library-row", {
+      hasText: "E2E Hello App",
+    });
+    await expect(loose).toBeVisible();
+    await loose.locator(".btn-library-pin").click();
+    await expect(row).toBeVisible();
+
+    // --- archive ----------------------------------------------------------
+    // The UI never deletes an application (sidebar-pins.md §6): archiving
+    // from the All tab moves it to the Archived section with its files kept,
+    // and Restore would bring it back exactly as it was.
+    const libraryRow = page.locator(`.library-row[data-id="${app.id}"]`);
+    page.once("dialog", (d) => d.accept());
+    await libraryRow.locator(".btn-library-archive").click();
+    await expect(page.locator(".library-archived", { hasText: "E2E Hello App" })).toBeVisible();
+    await expect(row).toHaveCount(0);
+    await expect(libraryRow.locator(".btn-library-delete")).toHaveCount(0);
+    const archivedRow = await request.get(`${API}/applications/${app.id}`, { headers });
+    expect((await archivedRow.json()).archived).toBe(true);
+    // The build conversation is untouched either way.
     const session = await request.get(`${API}/sessions/${app.session_id}`, {
       headers: jsonHeaders,
     });

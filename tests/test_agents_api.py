@@ -445,3 +445,177 @@ async def test_unarchive_refuses_when_the_name_was_taken(client):
 async def test_unarchive_unknown_agent_is_404(client):
     resp = await client.post("/api/agents/ghost/unarchive", headers=HEADERS)
     assert resp.status_code == 404
+
+
+# --- Sidebar pins (sidebar-pins.md) ---
+
+
+async def _live(client) -> list[dict]:
+    return (await client.get("/api/agents", headers=HEADERS)).json()
+
+
+def _pinned_ids(agents: list[dict]) -> list[str]:
+    """The sidebar as the client draws it: pinned, in pin order."""
+    return [a["id"] for a in sorted(
+        (a for a in agents if a["pinned"]), key=lambda a: a["pin_order"]
+    )]
+
+
+@pytest.mark.asyncio
+async def test_new_agents_are_pinned_at_the_bottom(client):
+    default = next(a for a in await _live(client) if a["is_system"])
+    first = await _create_agent(client, name="First")
+    second = await _create_agent(client, name="Second")
+    assert first["pinned"] and second["pinned"]
+    assert _pinned_ids(await _live(client)) == [default["id"], first["id"], second["id"]]
+
+
+@pytest.mark.asyncio
+async def test_unpinned_agent_stays_live_and_listed(client):
+    a = await _create_agent(client, name="Quiet")
+    resp = await client.post(f"/api/agents/{a['id']}/unpin", headers=HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["pinned"] is False
+
+    live = await _live(client)
+    # Still a live agent — the page lists it, sessions can be made under it —
+    # just not one of the sidebar's shortcuts.
+    assert any(x["id"] == a["id"] and not x["archived"] for x in live)
+    assert a["id"] not in _pinned_ids(live)
+    resp = await client.post(
+        f"/api/agents/{a['id']}/sessions", json={}, headers=HEADERS
+    )
+    assert resp.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_repinning_appends_to_the_bottom(client):
+    a = await _create_agent(client, name="A")
+    b = await _create_agent(client, name="B")
+    await client.post(f"/api/agents/{a['id']}/unpin", headers=HEADERS)
+    resp = await client.post(f"/api/agents/{a['id']}/pin", headers=HEADERS)
+    assert resp.status_code == 200
+    assert _pinned_ids(await _live(client))[-2:] == [b["id"], a["id"]]
+    # Pinning something already pinned leaves its place alone.
+    await client.post(f"/api/agents/{b['id']}/pin", headers=HEADERS)
+    assert _pinned_ids(await _live(client))[-2:] == [b["id"], a["id"]]
+
+
+@pytest.mark.asyncio
+async def test_default_agent_cannot_be_unpinned(client):
+    default = next(a for a in await _live(client) if a["is_system"])
+    resp = await client.post(f"/api/agents/{default['id']}/unpin", headers=HEADERS)
+    assert resp.status_code == 400
+    assert "always pinned" in resp.json()["detail"]
+    assert next(a for a in await _live(client) if a["is_system"])["pinned"] is True
+
+
+@pytest.mark.asyncio
+async def test_pin_refuses_archived_and_unknown_agents(client):
+    a = await _create_agent(client, name="Shelved")
+    await client.post(f"/api/agents/{a['id']}/archive", headers=HEADERS)
+    resp = await client.post(f"/api/agents/{a['id']}/pin", headers=HEADERS)
+    assert resp.status_code == 400
+    assert "Restore" in resp.json()["detail"]
+    assert (
+        await client.post("/api/agents/ghost/pin", headers=HEADERS)
+    ).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_restoring_an_agent_pins_it(client):
+    a = await _create_agent(client, name="Returning")
+    await client.post(f"/api/agents/{a['id']}/unpin", headers=HEADERS)
+    await client.post(f"/api/agents/{a['id']}/archive", headers=HEADERS)
+    resp = await client.post(f"/api/agents/{a['id']}/unarchive", headers=HEADERS)
+    assert resp.json()["pinned"] is True
+    assert _pinned_ids(await _live(client))[-1] == a["id"]
+
+
+@pytest.mark.asyncio
+async def test_reorder_pins(client):
+    default = next(a for a in await _live(client) if a["is_system"])
+    a = await _create_agent(client, name="A")
+    b = await _create_agent(client, name="B")
+    c = await _create_agent(client, name="C")
+
+    resp = await client.put(
+        "/api/agents/pin-order",
+        json={"ids": [c["id"], default["id"], a["id"], b["id"]]},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    # The response is the whole live list, already in the new order.
+    assert _pinned_ids(resp.json()) == [c["id"], default["id"], a["id"], b["id"]]
+    assert _pinned_ids(await _live(client)) == [c["id"], default["id"], a["id"], b["id"]]
+
+
+@pytest.mark.asyncio
+async def test_reorder_keeps_pins_the_list_did_not_name(client):
+    """A tab that last looked before another tab pinned something must not
+    drop that pin when it reorders: the unnamed ones follow, in order."""
+    default = next(a for a in await _live(client) if a["is_system"])
+    a = await _create_agent(client, name="A")
+    b = await _create_agent(client, name="B")
+    resp = await client.put(
+        "/api/agents/pin-order", json={"ids": [b["id"]]}, headers=HEADERS
+    )
+    assert resp.status_code == 200
+    assert _pinned_ids(resp.json()) == [b["id"], default["id"], a["id"]]
+
+
+@pytest.mark.asyncio
+async def test_reorder_rejects_unpinned_unknown_and_repeated_ids(client):
+    a = await _create_agent(client, name="A")
+    b = await _create_agent(client, name="B")
+    await client.post(f"/api/agents/{b['id']}/unpin", headers=HEADERS)
+
+    for ids in ([a["id"], b["id"]], [a["id"], "ghost"], [a["id"], a["id"]]):
+        resp = await client.put(
+            "/api/agents/pin-order", json={"ids": ids}, headers=HEADERS
+        )
+        assert resp.status_code == 400, ids
+
+
+@pytest.mark.asyncio
+async def test_agent_changes_are_broadcast(client, monkeypatch):
+    """Every open client mirrors the agent list from these events, so a pin
+    made in one tab shows in the others (sidebar-pins.md §7)."""
+    events: list[dict] = []
+
+    async def capture(msg):
+        events.append(msg)
+
+    monkeypatch.setattr(session_manager, "_broadcast", capture)
+
+    a = await _create_agent(client, name="Loud")
+    await client.post(f"/api/agents/{a['id']}/unpin", headers=HEADERS)
+    await client.patch(
+        f"/api/agents/{a['id']}", json={"description": "d"}, headers=HEADERS
+    )
+    await client.post(f"/api/agents/{a['id']}/pin", headers=HEADERS)
+    await client.post(f"/api/agents/{a['id']}/archive", headers=HEADERS)
+    await client.post(f"/api/agents/{a['id']}/unarchive", headers=HEADERS)
+
+    mine = [(e["type"], e["agent"]["pinned"]) for e in events
+            if "agent" in e and e["agent_id"] == a["id"]]
+    assert mine == [
+        ("agent_created", True),
+        ("agent_updated", False),
+        ("agent_updated", False),
+        ("agent_updated", True),
+        ("agent_archived", True),
+        ("agent_updated", True),
+    ]
+    # A failed request broadcasts nothing.
+    events.clear()
+    default = next(x for x in await _live(client) if x["is_system"])
+    await client.post(f"/api/agents/{default['id']}/unpin", headers=HEADERS)
+    assert [e for e in events if "agent" in e] == []
+
+    b = await _create_agent(client, name="Deletable")
+    events.clear()
+    assert (
+        await client.delete(f"/api/agents/{b['id']}", headers=HEADERS)
+    ).status_code == 204
+    assert [e["type"] for e in events if "agent" in e] == ["agent_deleted"]

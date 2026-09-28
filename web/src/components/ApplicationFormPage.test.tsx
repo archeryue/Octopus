@@ -1,7 +1,7 @@
 /**
- * The application create page — including the Archived tab, which is where an
- * archived app comes back from (there is no catalog; the "market" is your own
- * shelf).
+ * The Applications page — the Create form, and the All tab (sidebar-pins.md
+ * §6): every application by section, with open, pin, archive, restore and
+ * delete.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -28,19 +28,25 @@ function application(o: Partial<Application> = {}): Application {
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     last_built_at: null,
+    pinned: true,
+    pin_order: 1,
     ...o,
-  };
+  } as Application;
 }
 
 let fetchMock: ReturnType<typeof vi.fn>;
 
-function mount() {
+function mount(
+  pageTab: "all" | "form" = "form",
+  applications: Application[] = []
+) {
   useSessionStore.setState({
     token: "tok",
     agents: [agent],
     activeAgentId: "ag1",
-    applications: [],
+    applications,
     mainView: "application-create",
+    pageTab,
   });
   return render(<ApplicationFormPage onToggleSidebar={() => {}} />);
 }
@@ -99,50 +105,101 @@ describe("ApplicationFormPage", () => {
     });
   });
 
-  it("lists archived applications behind the Archived tab", async () => {
+  it("lists every application on the All tab, by section", async () => {
     fetchMock.mockImplementation(async (url: unknown) =>
       String(url).includes("archived=true")
-        ? new Response(JSON.stringify([application()]), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          })
-        : new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } })
+        ? json([application({ id: "a9", name: "Old Report" })])
+        : json([])
     );
-    mount();
-    await waitFor(() => expect(screen.getByText(/Archived 1/)).toBeTruthy());
-    fireEvent.click(screen.getByText(/Archived 1/));
-    expect(screen.getByText("Habit Tracker")).toBeTruthy();
+    const { container } = mount("all", [
+      application({ id: "a1", archived: false, pin_order: 2 }),
+      application({ id: "a2", name: "Reader", archived: false, pin_order: 1 }),
+      application({ id: "a3", name: "Scratch", archived: false, pinned: false }),
+    ]);
+    await waitFor(() => expect(screen.getByText("Old Report")).toBeTruthy());
+    const names = (section: string) =>
+      [...container.querySelectorAll(`.library-${section} .library-name`)].map(
+        (n) => n.textContent
+      );
+    // "In sidebar" follows the sidebar's order, not creation order.
+    expect(names("pinned")).toEqual(["Reader", "Habit Tracker"]);
+    expect(names("unpinned")).toEqual(["Scratch"]);
+    expect(names("archived")).toEqual(["Old Report"]);
+    expect(screen.getByText("All 4")).toBeTruthy();
   });
 
-  it("restore puts it back and opens it", async () => {
+  it("opens, pins and unpins from a row", async () => {
+    const scratch = application({ id: "a3", name: "Scratch", archived: false, pinned: false });
+    fetchMock.mockImplementation(async (url: unknown) =>
+      String(url).endsWith("/a3/pin") ? json({ ...scratch, pinned: true, pin_order: 2 }) : json([])
+    );
+    mount("all", [scratch]);
+    fireEvent.click(screen.getByLabelText("Pin Scratch to the sidebar"));
+    await waitFor(() =>
+      expect(useSessionStore.getState().applications[0].pinned).toBe(true)
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    expect(useSessionStore.getState().mainView).toBe("application");
+    expect(useSessionStore.getState().activeApplicationId).toBe("a3");
+  });
+
+  it("archives a row into the Archived section", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    const live = application({ archived: false });
+    fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) =>
+      String(url).endsWith("/a1/archive") && init?.method === "POST"
+        ? json({ ...live, archived: true })
+        : json([])
+    );
+    const { container } = mount("all", [live]);
+    fireEvent.click(screen.getByLabelText("Archive Habit Tracker"));
+    await waitFor(() =>
+      expect(
+        container.querySelector(".library-archived .library-name")?.textContent
+      ).toBe("Habit Tracker")
+    );
+    expect(useSessionStore.getState().applications).toEqual([]);
+  });
+
+  it("never offers Delete — archive is the only way out", async () => {
+    fetchMock.mockImplementation(async (url: unknown) =>
+      String(url).includes("archived=true")
+        ? json([application({ id: "a9", name: "Old Report" })])
+        : json([])
+    );
+    mount("all", [application({ archived: false })]);
+    await waitFor(() => expect(screen.getByText("Old Report")).toBeTruthy());
+    expect(screen.queryByLabelText(/^Delete /)).toBeNull();
+    expect(screen.getByLabelText("Archive Habit Tracker")).toBeTruthy();
+  });
+
+  it("restore puts it back pinned and stays on the page", async () => {
     fetchMock.mockImplementation(async (url: unknown, init?: RequestInit) => {
       if (String(url).includes("/unarchive") && init?.method === "POST")
-        return new Response(JSON.stringify(application({ archived: false })), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      if (String(url).includes("archived=true"))
-        return new Response(JSON.stringify([application()]), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+        return json(application({ archived: false }));
+      if (String(url).includes("archived=true")) return json([application()]);
+      return json([]);
     });
-    mount();
-    await waitFor(() => expect(screen.getByText(/Archived 1/)).toBeTruthy());
-    fireEvent.click(screen.getByText(/Archived 1/));
+    const { container } = mount("all");
+    await waitFor(() => expect(screen.getByText("Habit Tracker")).toBeTruthy());
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
 
     await waitFor(() =>
       expect(useSessionStore.getState().applications.map((a) => a.id)).toEqual(["a1"])
     );
-    expect(useSessionStore.getState().mainView).toBe("application");
+    expect(useSessionStore.getState().mainView).toBe("application-create");
+    await waitFor(() =>
+      expect(
+        container.querySelector(".library-pinned .library-name")?.textContent
+      ).toBe("Habit Tracker")
+    );
   });
 
-  it("says so plainly when nothing is archived", async () => {
-    mount();
-    fireEvent.click(screen.getByText("Archived"));
-    await waitFor(() => expect(screen.getByText(/Nothing archived/)).toBeTruthy());
+  it("says so plainly when there are none", async () => {
+    mount("all");
+    await waitFor(() => expect(screen.getByText(/No applications yet/)).toBeTruthy());
+    fireEvent.click(screen.getByText(/Describe one/));
+    expect(useSessionStore.getState().pageTab).toBe("form");
   });
 
   it("surfaces a create failure", async () => {
@@ -161,3 +218,10 @@ describe("ApplicationFormPage", () => {
     await waitFor(() => expect(screen.getByText(/already exists/)).toBeTruthy());
   });
 });
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}

@@ -36,9 +36,9 @@ export async function fetchApplications(
   );
 }
 
-/** Archive an application: it leaves the sidebar but keeps its row and its
- * files, so restoring from the create page's Archived tab puts it back
- * exactly as it was. */
+/** Archive an application: it leaves every list but the Applications page's
+ * Archived section, keeping its row and its files, so restoring it puts it
+ * back exactly as it was. */
 export async function archiveApplication(
   token: string,
   id: string
@@ -59,6 +59,37 @@ export async function unarchiveApplication(
     await fetch(`${API}/api/applications/${id}/unarchive`, {
       method: "POST",
       headers: authHeaders(token),
+    })
+  );
+}
+
+/** Pin an application to the sidebar (at the bottom), or take it out. An
+ * unpinned application keeps serving; only the sidebar stops listing it
+ * (sidebar-pins.md). */
+export async function setApplicationPinned(
+  token: string,
+  id: string,
+  pinned: boolean
+): Promise<ApplicationRead> {
+  return json(
+    await fetch(`${API}/api/applications/${id}/${pinned ? "pin" : "unpin"}`, {
+      method: "POST",
+      headers: authHeaders(token),
+    })
+  );
+}
+
+/** The sidebar order of the pinned applications, top first. Returns every
+ * live application in its new state. */
+export async function reorderApplicationPins(
+  token: string,
+  ids: string[]
+): Promise<ApplicationRead[]> {
+  return json(
+    await fetch(`${API}/api/applications/pin-order`, {
+      method: "PUT",
+      headers: authHeaders(token),
+      body: JSON.stringify({ ids }),
     })
   );
 }
@@ -112,14 +143,6 @@ export async function buildApplication(
       body: JSON.stringify({ prompt }),
     })
   );
-}
-
-export async function deleteApplication(token: string, id: string): Promise<void> {
-  const res = await fetch(`${API}/api/applications/${id}`, {
-    method: "DELETE",
-    headers: authHeaders(token),
-  });
-  if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
 }
 
 /** Publish the token to the `/apps` path so the iframe (and everything the

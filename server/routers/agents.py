@@ -11,6 +11,7 @@ from ..models import (
     AgentUpdate,
     CreateScheduleRequest,
     CreateSessionRequest,
+    PinOrderRequest,
     ScheduleFromTextRequest,
     ScheduleInfo,
     SessionInfo,
@@ -32,6 +33,18 @@ def _get_manager() -> AgentManager:
     return _manager
 
 
+async def _publish(session_manager, kind: str, agent: dict) -> None:
+    """Tell every open client about an agent change (sidebar-pins.md §7).
+
+    The same global-event shape applications use: no `session_id`, the row
+    comes down whole, and the store mirrors it — `agent_created` /
+    `agent_updated` upsert, `agent_archived` / `agent_deleted` remove.
+    """
+    await session_manager._broadcast(
+        {"type": kind, "agent_id": agent["id"], "agent": AgentRead(**agent).model_dump()}
+    )
+
+
 def _agent_http_error(e: AgentError) -> HTTPException:
     msg = str(e)
     code = status.HTTP_404_NOT_FOUND if "not found" in msg.lower() else status.HTTP_400_BAD_REQUEST
@@ -47,12 +60,34 @@ async def list_agents(
 
 
 @router.post("", response_model=AgentRead, status_code=status.HTTP_201_CREATED)
-async def create_agent(req: AgentCreate, _: str = Depends(verify_token)):
+async def create_agent(
+    session_manager: SessionMgr, req: AgentCreate, _: str = Depends(verify_token)
+):
     try:
         agent = await _get_manager().create_agent(**req.model_dump())
     except AgentError as e:
         raise _agent_http_error(e)
+    await _publish(session_manager, "agent_created", agent)
     return AgentRead(**agent)
+
+
+@router.put("/pin-order", response_model=list[AgentRead])
+async def reorder_agent_pins(
+    session_manager: SessionMgr, req: PinOrderRequest, _: str = Depends(verify_token)
+):
+    """The sidebar order of the pinned agents (sidebar-pins.md). Returns
+    every live agent, so the caller replaces its list in one step."""
+    mgr = _get_manager()
+    before = {a["id"]: a["pin_order"] for a in await mgr.list_agents()}
+    try:
+        agents = await mgr.reorder_pins(req.ids)
+    except AgentError as e:
+        raise _agent_http_error(e)
+    # Only the rows whose position moved need to travel to other clients.
+    for a in agents:
+        if a["pin_order"] != before.get(a["id"]):
+            await _publish(session_manager, "agent_updated", a)
+    return [AgentRead(**a) for a in agents]
 
 
 @router.get("/{agent_id}", response_model=AgentRead)
@@ -65,7 +100,10 @@ async def get_agent(agent_id: str, _: str = Depends(verify_token)):
 
 @router.patch("/{agent_id}", response_model=AgentRead)
 async def update_agent(
-    agent_id: str, req: AgentUpdate, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    agent_id: str,
+    req: AgentUpdate,
+    _: str = Depends(verify_token),
 ):
     # exclude_unset so omitting a field leaves it untouched while explicitly
     # passing null clears a nullable field (model/credential_id/avatar).
@@ -74,6 +112,7 @@ async def update_agent(
         agent = await _get_manager().update_agent(agent_id, **fields)
     except AgentError as e:
         raise _agent_http_error(e)
+    await _publish(session_manager, "agent_updated", agent)
     return AgentRead(**agent)
 
 
@@ -89,27 +128,62 @@ async def archive_agent(session_manager: SessionMgr, agent_id: str, _: str = Dep
     agent = await _get_manager().get_agent(agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
+    await _publish(session_manager, "agent_archived", agent)
     return AgentRead(**agent)
 
 
 @router.post("/{agent_id}/unarchive", response_model=AgentRead)
-async def unarchive_agent(agent_id: str, _: str = Depends(verify_token)):
-    """Restore an archived agent (the create page's Archived tab). Its
-    sessions stay archived — those come back from the archived-sessions
-    page individually."""
+async def unarchive_agent(
+    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+):
+    """Restore an archived agent (the Agents page's Archived section). It
+    comes back pinned; its sessions stay archived — those come back from the
+    archived-sessions page individually."""
     try:
         agent = await _get_manager().unarchive_agent(agent_id)
     except AgentError as e:
         raise _agent_http_error(e)
+    await _publish(session_manager, "agent_updated", agent)
     return AgentRead(**agent)
 
 
+async def _set_pinned(session_manager, agent_id: str, pinned: bool) -> AgentRead:
+    try:
+        agent = await _get_manager().set_pinned(agent_id, pinned)
+    except AgentError as e:
+        raise _agent_http_error(e)
+    await _publish(session_manager, "agent_updated", agent)
+    return AgentRead(**agent)
+
+
+@router.post("/{agent_id}/pin", response_model=AgentRead)
+async def pin_agent(
+    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+):
+    """Put the agent in the sidebar, at the bottom of the pinned ones."""
+    return await _set_pinned(session_manager, agent_id, True)
+
+
+@router.post("/{agent_id}/unpin", response_model=AgentRead)
+async def unpin_agent(
+    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+):
+    """Take the agent out of the sidebar. It stays live — listed on the
+    Agents page, callable, its schedules running."""
+    return await _set_pinned(session_manager, agent_id, False)
+
+
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_agent(agent_id: str, _: str = Depends(verify_token)):
+async def delete_agent(
+    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+):
+    agent = await _get_manager().get_agent(agent_id)
     try:
         await _get_manager().delete_agent(agent_id)
     except AgentError as e:
         raise _agent_http_error(e)
+    assert agent is not None  # delete_agent raised "not found" otherwise
+    await _publish(session_manager, "agent_deleted", agent)
 
 
 @router.get("/{agent_id}/sessions", response_model=list[SessionInfo])

@@ -118,3 +118,98 @@ describe("schedules_changed", () => {
     vi.unstubAllGlobals();
   });
 });
+
+/** Agent and application rows over the socket (sidebar-pins.md §5, §7).
+ *
+ * A pin made in one tab has to show in every other; an unpinned app whose
+ * build fails where nobody can see it has to earn a place in the sidebar.
+ */
+describe("agent and application events", () => {
+  const agentRow = (o: Record<string, unknown> = {}) => ({
+    id: "ag2",
+    name: "Vera",
+    pinned: true,
+    pin_order: 2,
+    ...o,
+  });
+  const appRow = (o: Record<string, unknown> = {}) => ({
+    id: "a1",
+    name: "Tracker",
+    status: "building",
+    pinned: false,
+    ...o,
+  });
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { status: 404 }))
+    );
+    useSessionStore.setState({
+      agents: [],
+      applications: [],
+      unseenFailedApplications: [],
+      mainView: "chat",
+      activeApplicationId: null,
+    });
+  });
+
+  it("agent_created / agent_updated upsert the row", () => {
+    handleWsMessage({ type: "agent_created", agent_id: "ag2", agent: agentRow() });
+    handleWsMessage({
+      type: "agent_updated",
+      agent_id: "ag2",
+      agent: agentRow({ pinned: false }),
+    });
+    const agents = useSessionStore.getState().agents;
+    expect(agents).toHaveLength(1);
+    expect(agents[0].pinned).toBe(false);
+  });
+
+  it("agent_archived / agent_deleted remove it", () => {
+    handleWsMessage({ type: "agent_created", agent_id: "ag2", agent: agentRow() });
+    handleWsMessage({ type: "agent_archived", agent_id: "ag2", agent: agentRow() });
+    expect(useSessionStore.getState().agents).toEqual([]);
+    handleWsMessage({ type: "agent_created", agent_id: "ag2", agent: agentRow() });
+    handleWsMessage({ type: "agent_deleted", agent_id: "ag2", agent: agentRow() });
+    expect(useSessionStore.getState().agents).toEqual([]);
+  });
+
+  it("application_archived removes the row", () => {
+    handleWsMessage({ type: "application_created", application: appRow() });
+    handleWsMessage({
+      type: "application_archived",
+      application_id: "a1",
+      application: appRow({ archived: true }),
+    });
+    expect(useSessionStore.getState().applications).toEqual([]);
+  });
+
+  it("a build failing out of sight is remembered until opened", () => {
+    handleWsMessage({ type: "application_created", application: appRow() });
+    handleWsMessage({
+      type: "application_updated",
+      application: appRow({ status: "failed" }),
+    });
+    expect(useSessionStore.getState().unseenFailedApplications).toEqual(["a1"]);
+    // Still failed on the next event: noted once, not twice.
+    handleWsMessage({
+      type: "application_updated",
+      application: appRow({ status: "failed", name: "Renamed" }),
+    });
+    expect(useSessionStore.getState().unseenFailedApplications).toEqual(["a1"]);
+
+    useSessionStore.getState().openApplication("a1");
+    expect(useSessionStore.getState().unseenFailedApplications).toEqual([]);
+  });
+
+  it("a failure you're watching isn't 'unseen'", () => {
+    handleWsMessage({ type: "application_created", application: appRow() });
+    useSessionStore.setState({ mainView: "application", activeApplicationId: "a1" });
+    handleWsMessage({
+      type: "application_updated",
+      application: appRow({ status: "failed" }),
+    });
+    expect(useSessionStore.getState().unseenFailedApplications).toEqual([]);
+  });
+});

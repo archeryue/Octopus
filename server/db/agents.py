@@ -87,11 +87,13 @@ class AgentsMixin(DatabaseBase):
             "created_at": row[12],
             "updated_at": row[13],
             "backend": row[14] or "claude-code",
-            "subagents": _load_json_list(row[15] if len(row) > 15 else None),
+            "subagents": _load_json_list(row[15]),
+            "pinned": bool(row[16]),
+            "pin_order": row[17],
         }
         # Optional active-session count appended by load_agents / get_agent.
-        if len(row) > 16:
-            agent["active_session_count"] = row[16]
+        if len(row) > 18:
+            agent["active_session_count"] = row[18]
         return agent
 
     async def save_agent(
@@ -121,8 +123,10 @@ class AgentsMixin(DatabaseBase):
             "INSERT INTO agents "
             "(id, name, description, avatar, system_prompt, model, "
             " credential_id, backend, mcp_servers, tool_allow, tool_deny, "
-            " is_system, archived, created_at, updated_at, subagents) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+            " is_system, archived, created_at, updated_at, subagents, "
+            " pinned, pin_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 1, "
+            f" {self._NEXT_PIN_ORDER.format(table='agents')})",
             (
                 agent_id, name, description, avatar, system_prompt, model,
                 credential_id, backend or "claude-code", servers_json,
@@ -241,6 +245,14 @@ class AgentsMixin(DatabaseBase):
             (datetime.now(UTC).isoformat(), agent_id),
         )
         await self.conn.commit()
+
+    async def set_agent_pinned(self, agent_id: str, pinned: bool) -> None:
+        """Put the agent in the sidebar (at the bottom) or take it out."""
+        await self._set_pinned("agents", agent_id, pinned)
+
+    async def reorder_agent_pins(self, ordered_ids: list[str]) -> None:
+        """The sidebar order of the pinned agents — see `_reorder_pins`."""
+        await self._reorder_pins("agents", ordered_ids)
 
     async def delete_agent(self, agent_id: str) -> bool:
         """Hard-delete an agent. FK ON DELETE CASCADE removes its sessions,

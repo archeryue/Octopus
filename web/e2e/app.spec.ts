@@ -105,7 +105,10 @@ test.describe("Session Management", () => {
     );
   });
 
-  test("deletes a session", async ({ page }) => {
+  test("archives a session — nothing in the sidebar hard-deletes", async ({
+    page,
+    request,
+  }) => {
     // Create a session first
     await addOctoSession(page);
     await page
@@ -123,10 +126,19 @@ test.describe("Session Management", () => {
     // it, but be explicit so we don't depend on side effects of creation).
     await target.click();
     await target.hover();
-    await target.locator(".btn-delete").click();
+    await target.locator(".btn-session-archive").click();
 
-    // The "To Delete" entry should vanish from the list
+    // The "To Delete" entry leaves the list, and nothing takes its place…
     await expect(target).toHaveCount(0);
+    // …but it was put away, not destroyed: the history is still there.
+    const all = await request.get("http://localhost:8765/api/sessions", {
+      headers: { Authorization: "Bearer changeme" },
+      params: { include_archived: "true" },
+    });
+    const row = ((await all.json()) as { name: string; archived: boolean }[]).find(
+      (s) => s.name === "To Delete"
+    );
+    expect(row?.archived).toBe(true);
   });
 });
 
@@ -289,8 +301,8 @@ test.describe("Touch affordances", () => {
     const chosen = page.locator(".session-item", { hasText: "Touch Chosen" });
     const other = page.locator(".session-item", { hasText: "Touch Other" });
     await expect(chosen).toHaveClass(/active/);
-    await expect(chosen.locator(".btn-delete")).toHaveCSS("opacity", "1");
-    await expect(other.locator(".btn-delete")).toHaveCSS("opacity", "0");
+    await expect(chosen.locator(".btn-session-archive")).toHaveCSS("opacity", "1");
+    await expect(other.locator(".btn-session-archive")).toHaveCSS("opacity", "0");
   });
 });
 

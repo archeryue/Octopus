@@ -1,25 +1,37 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconArchive, IconSparkles } from "@tabler/icons-react";
 import {
+  IconAppWindow,
+  IconArchive,
+  IconSparkles,
+} from "@tabler/icons-react";
+import {
+  archiveApplication,
   createApplication,
   fetchApplications,
+  setApplicationPinned,
   unarchiveApplication,
 } from "../api/applications";
-import { useSessionStore, type Application } from "../stores/sessionStore";
+import { pinnedInOrder } from "../lib/sidebarPins";
+import {
+  useSessionStore,
+  type Application,
+  type PageTab,
+} from "../stores/sessionStore";
+import { ItemLibrary, type LibraryItem } from "./ItemLibrary";
 import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { AppIcon } from "./AppIcon";
 
-type Tab = "archived" | "create";
-
-/** The New Application page — a full-page form in the main area.
+/** The Applications page — "Applications › All" / "Applications › New
+ * Application", a full page in the main area.
  *
- * Two tabs, matching the agent form: **Archived** lists applications you put
- * away, one card each, ready to restore (this is the design's "market" slot,
- * filled with your own shelved apps rather than a catalog); **Create**
- * describes a new one for an agent to build.
+ * Two tabs, matching the Agents page: **All** lists every application
+ * (sidebar-pins.md §6) — pinned to the sidebar, not pinned, and archived,
+ * where the old Archived tab went — with open, pin, archive and restore;
+ * **Create** describes a new one for an agent to build. Nothing here deletes:
+ * archiving keeps the files, and it is the only way out of the list.
  */
 export function ApplicationFormPage({
   onToggleSidebar,
@@ -31,9 +43,12 @@ export function ApplicationFormPage({
   const activeAgentId = useSessionStore((s) => s.activeAgentId);
   const upsertApplication = useSessionStore((s) => s.upsertApplication);
   const openApplication = useSessionStore((s) => s.openApplication);
+  const removeApplication = useSessionStore((s) => s.removeApplication);
   const showChat = useSessionStore((s) => s.showChat);
+  const applications = useSessionStore((s) => s.applications);
+  const tab = useSessionStore((s) => s.pageTab);
+  const setTab = useSessionStore((s) => s.setPageTab);
 
-  const [tab, setTab] = useState<Tab>("create");
   const [archived, setArchived] = useState<Application[]>([]);
   const [name, setName] = useState("");
   const [icon, setIcon] = useState("");
@@ -94,33 +109,61 @@ export function ApplicationFormPage({
     }
   };
 
+  // Restoring stays on the All tab: the app reappears under "In sidebar"
+  // (the server pins what it restores), which is the confirmation.
   const restore = async (app: Application) => {
+    setError(null);
     try {
-      const restored = await unarchiveApplication(token, app.id);
-      upsertApplication(restored);
+      upsertApplication(await unarchiveApplication(token, app.id));
       setArchived((cur) => cur.filter((a) => a.id !== app.id));
-      openApplication(restored.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to restore");
+    }
+  };
+
+  const archive = async (app: Application) => {
+    if (!window.confirm(`Archive "${app.name}"? Its files are kept.`)) return;
+    setError(null);
+    try {
+      const row = await archiveApplication(token, app.id);
+      removeApplication(app.id);
+      setArchived((cur) => [...cur, row]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to archive");
+    }
+  };
+
+  const togglePin = async (app: Application, pinned: boolean) => {
+    setError(null);
+    try {
+      upsertApplication(await setApplicationPinned(token, app.id, pinned));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update the sidebar");
     }
   };
 
   return (
     <div className="application-create flex min-h-0 flex-1 flex-col">
       <PageHeader
-        crumbs={["Applications", "New Application"]}
+        crumbs={["Applications", tab === "all" ? "All" : "New Application"]}
         onToggleSidebar={onToggleSidebar}
         actions={
           <>
-            <TabSwitch tab={tab} setTab={setTab} archivedCount={archived.length} />
-            <button
-              type="button"
-              className="btn-application-create-close text-[13.5px] text-gray-800 transition-colors hover:text-gray-950"
-              onClick={showChat}
-            >
-              Cancel
-            </button>
-            {tab === "create" && (
+            <TabSwitch
+              tab={tab}
+              setTab={setTab}
+              allCount={applications.length + archived.length}
+            />
+            {tab === "form" && (
+              <button
+                type="button"
+                className="btn-application-create-close text-[13.5px] text-gray-800 transition-colors hover:text-gray-950"
+                onClick={showChat}
+              >
+                Cancel
+              </button>
+            )}
+            {tab === "form" && (
               <Button
                 className="btn-application-create"
                 size="sm"
@@ -143,8 +186,16 @@ export function ApplicationFormPage({
             </div>
           )}
 
-          {tab === "archived" ? (
-            <ArchivedGrid items={archived} onRestore={restore} />
+          {tab === "all" ? (
+            <ApplicationLibrary
+              live={applications}
+              archived={archived}
+              onOpen={(a) => openApplication(a.id)}
+              onTogglePin={togglePin}
+              onArchive={archive}
+              onRestore={restore}
+              onCreate={() => setTab("form")}
+            />
           ) : (
             <div className="space-y-6">
               <div className="flex items-start gap-4">
@@ -272,33 +323,33 @@ export function ApplicationFormPage({
 function TabSwitch({
   tab,
   setTab,
-  archivedCount,
+  allCount,
 }: {
-  tab: Tab;
-  setTab: (t: Tab) => void;
-  archivedCount: number;
+  tab: PageTab;
+  setTab: (t: PageTab) => void;
+  allCount: number;
 }) {
   return (
     <div className="form-tabs flex items-center rounded-lg border border-gray-400 bg-gray-50 p-0.5">
       <button
         type="button"
-        className={`btn-tab-archived rounded-md px-3 py-1 text-[13px] transition-colors ${
-          tab === "archived"
+        className={`btn-tab-all rounded-md px-3 py-1 text-[13px] transition-colors ${
+          tab === "all"
             ? "bg-card font-semibold text-gray-950 shadow-sm"
             : "text-gray-800"
         }`}
-        onClick={() => setTab("archived")}
+        onClick={() => setTab("all")}
       >
-        Archived{archivedCount > 0 ? ` ${archivedCount}` : ""}
+        All{allCount > 0 ? ` ${allCount}` : ""}
       </button>
       <button
         type="button"
         className={`btn-tab-create rounded-md px-3 py-1 text-[13px] transition-colors ${
-          tab === "create"
+          tab === "form"
             ? "bg-card font-semibold text-gray-950 shadow-sm"
             : "text-gray-800"
         }`}
-        onClick={() => setTab("create")}
+        onClick={() => setTab("form")}
       >
         Create
       </button>
@@ -306,53 +357,94 @@ function TabSwitch({
   );
 }
 
-function ArchivedGrid({
-  items,
+/** The All tab: every application, as `ItemLibrary` rows. */
+function ApplicationLibrary({
+  live,
+  archived,
+  onOpen,
+  onTogglePin,
+  onArchive,
   onRestore,
+  onCreate,
 }: {
-  items: Application[];
+  live: Application[];
+  archived: Application[];
+  onOpen: (app: Application) => void;
+  onTogglePin: (app: Application, pinned: boolean) => void;
+  onArchive: (app: Application) => void;
   onRestore: (app: Application) => void;
+  onCreate: () => void;
 }) {
-  if (items.length === 0) {
-    return (
-      <div className="archived-empty card px-6 py-12 text-center">
-        <IconArchive size={22} className="mx-auto mb-3 text-gray-600" />
-        <p className="text-sm text-gray-900">Nothing archived.</p>
-        <p className="mt-1.5 text-[13px] text-gray-700">
-          Archiving an application keeps its files, so restoring puts it back
-          exactly as it was.
-        </p>
-      </div>
-    );
-  }
+  const ordered = [
+    ...pinnedInOrder(live),
+    ...live.filter((a) => a.pinned === false),
+    ...archived,
+  ];
+  const byId = new Map(ordered.map((a) => [a.id, a]));
+  const items: LibraryItem[] = ordered.map((a) => ({
+    id: a.id,
+    name: a.name,
+    description: a.description,
+    icon: <AppIcon app={a} />,
+    meta: a.status,
+    pinned: a.pinned !== false,
+    archived: !!a.archived,
+  }));
+
   return (
-    <div className="archived-grid grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-      {items.map((app) => (
-        <div key={app.id} className="archived-item card flex flex-col px-5 py-4">
-          <div className="flex items-center gap-2.5">
-            <AppIcon app={app} size="lg" />
-            <span className="truncate text-[15px] font-semibold text-gray-950">
-              {app.name}
-            </span>
-          </div>
-          <p className="mt-3 line-clamp-4 flex-1 text-[13px] leading-relaxed text-gray-800">
-            {app.description}
-          </p>
-          <div className="mt-4 flex items-center gap-2">
-            <span className="font-mono text-[10.5px] text-gray-700">
-              {app.status}
-            </span>
+    <ItemLibrary
+      noun="applications"
+      items={items}
+      onTogglePin={(item, pinned) => onTogglePin(byId.get(item.id)!, pinned)}
+      actions={(item) => {
+        const app = byId.get(item.id)!;
+        if (item.archived) {
+          return (
             <Button
               size="sm"
               variant="outline"
-              className="btn-restore ml-auto"
+              className="btn-restore"
               onClick={() => onRestore(app)}
             >
               Restore
             </Button>
-          </div>
-        </div>
-      ))}
-    </div>
+          );
+        }
+        return (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="btn-library-open"
+              onClick={() => onOpen(app)}
+            >
+              Open
+            </Button>
+            <button
+              type="button"
+              className="btn-library-archive inline-flex size-8 items-center justify-center rounded-lg text-gray-600 transition-colors hover:bg-warn-bg hover:text-warn-foreground"
+              onClick={() => onArchive(app)}
+              title="Archive"
+              aria-label={`Archive ${app.name}`}
+            >
+              <IconArchive size={16} />
+            </button>
+          </>
+        );
+      }}
+      empty={
+        <>
+          <IconAppWindow size={22} className="mx-auto mb-3 text-gray-600" />
+          <p className="text-sm text-gray-900">No applications yet.</p>
+          <button
+            type="button"
+            className="mt-1.5 text-[13px] text-primary hover:underline"
+            onClick={onCreate}
+          >
+            Describe one for an agent to build
+          </button>
+        </>
+      }
+    />
   );
 }

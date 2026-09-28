@@ -49,6 +49,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 | [Rotating the access token without breaking anything](plans/token-rotation.md) | shipped | Rotating `OCTOPUS_AUTH_TOKEN`: re-key every stored secret, rewrite the env files, and keep open tabs working. |
 | [Scheduled runs: what a fire is, and what stops it stacking](plans/scheduled-runs.md) | shipped | What a scheduled fire is: the overlap guard, the `[scheduled:…]` marker, and the link from "last run" to the run. |
 | [Session Tree-Rewind — Tech Plan (`/rewind`)](plans/session-rewind.md) | shipped | Branch a conversation at any prior user message, with an optional git revert of the working tree. |
+| [Sidebar pins: the sidebar is shortcuts, the page is everything](plans/sidebar-pins.md) | shipped | The sidebar lists pinned agents and applications; the Agents and Applications pages list all of them. |
 | [Tech Plan: First-Class Harness Layer](plans/harness-layer.md) | shipped | One `Harness` plus a `RuntimeProfile` per backend — the single boundary for all model/runtime interaction. |
 | [Tech Plan: Introduce first-class Agents into Octopus](plans/agent-refactor.md) | shipped | First-class Agents: the durable definition that owns sessions, schedules and memory. |
 | [The schedule an agent sets for itself](plans/schedule-tool.md) | shipped | `mcp__schedule__*` over session-scoped routes: an agent sets, lists, re-times and pauses its own schedules. |

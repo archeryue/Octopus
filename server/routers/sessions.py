@@ -1,6 +1,7 @@
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 
 from ..auth import verify_token
 from ..deps import SessionMgr
@@ -441,18 +442,29 @@ async def reset_session(session_manager: SessionMgr, session_id: str, _: str = D
     response_model=SessionInfo,
     status_code=status.HTTP_201_CREATED,
 )
-async def archive_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
+async def archive_session(
+    session_manager: SessionMgr,
+    session_id: str,
+    replace: bool = Query(True),
+    _: str = Depends(verify_token),
+):
     """Archive the current session and return a fresh one.
 
     Same name / working_dir / credential_id as the archived session,
     but a brand-new id and no message history. Schedules
     mappings repoint from old to new so user-facing automation
     continues uninterrupted.
+
+    `?replace=false` archives without a successor — the sidebar's archive
+    button, which puts a conversation away rather than restarting it — and
+    answers 204. Either way the history stays and `/unarchive` brings it back.
     """
     try:
-        new = await session_manager.archive_session(session_id)
+        new = await session_manager.archive_session(session_id, replace=replace)
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
+    if new is None:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
     return _to_session_info(new)
 
 

@@ -281,3 +281,37 @@ async def test_a_successful_response_keeps_its_own_cache_headers(client):
     resp = await client.get("/health")
     assert resp.status_code == 200
     assert resp.headers.get("cache-control") != "no-store"
+
+
+@pytest.mark.asyncio
+async def test_archive_session_without_replacement(client):
+    """`?replace=false` — the sidebar's archive button (sidebar-pins.md §6):
+    the session is put away, nothing takes its place, and its history can
+    still be read and restored. A soft delete, not a restart."""
+    create_resp = await client.post(
+        "/api/sessions",
+        headers=HEADERS,
+        json={"name": "Put Away", "working_dir": "/tmp/put-away"},
+    )
+    old_id = create_resp.json()["id"]
+    before = {s["id"] for s in (await client.get("/api/sessions", headers=HEADERS)).json()}
+
+    arc = await client.post(
+        f"/api/sessions/{old_id}/archive",
+        params={"replace": "false"},
+        headers=HEADERS,
+    )
+    assert arc.status_code == 204
+    after = {s["id"] for s in (await client.get("/api/sessions", headers=HEADERS)).json()}
+    # Gone from the list, and no successor appeared.
+    assert after == before - {old_id}
+
+    archived = await client.get(f"/api/sessions/{old_id}", headers=HEADERS)
+    assert archived.status_code == 200
+    assert archived.json()["archived"] is True
+
+    un = await client.post(f"/api/sessions/{old_id}/unarchive", headers=HEADERS)
+    assert un.status_code == 200
+    assert old_id in [
+        s["id"] for s in (await client.get("/api/sessions", headers=HEADERS)).json()
+    ]

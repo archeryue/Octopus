@@ -22,6 +22,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/pin-order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Reorder Agent Pins
+         * @description The sidebar order of the pinned agents (sidebar-pins.md). Returns
+         *     every live agent, so the caller replaces its list in one step.
+         */
+        put: operations["reorder_agent_pins_api_agents_pin_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}": {
         parameters: {
             query?: never;
@@ -69,11 +90,52 @@ export interface paths {
         put?: never;
         /**
          * Unarchive Agent
-         * @description Restore an archived agent (the create page's Archived tab). Its
-         *     sessions stay archived — those come back from the archived-sessions
-         *     page individually.
+         * @description Restore an archived agent (the Agents page's Archived section). It
+         *     comes back pinned; its sessions stay archived — those come back from the
+         *     archived-sessions page individually.
          */
         post: operations["unarchive_agent_api_agents__agent_id__unarchive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pin Agent
+         * @description Put the agent in the sidebar, at the bottom of the pinned ones.
+         */
+        post: operations["pin_agent_api_agents__agent_id__pin_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/unpin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unpin Agent
+         * @description Take the agent out of the sidebar. It stays live — listed on the
+         *     Agents page, callable, its schedules running.
+         */
+        post: operations["unpin_agent_api_agents__agent_id__unpin_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -187,12 +249,33 @@ export interface paths {
         /**
          * List Applications
          * @description Live applications by default; `?archived=true` returns only the
-         *     archived ones (what the create page's Archived tab lists).
+         *     archived ones (the Applications page's Archived section).
          */
         get: operations["list_applications_api_applications_get"];
         put?: never;
         /** Create Application */
         post: operations["create_application_api_applications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/pin-order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Reorder Application Pins
+         * @description The sidebar order of the pinned applications (sidebar-pins.md).
+         *     Returns every live application, so the caller replaces its list.
+         */
+        put: operations["reorder_application_pins_api_applications_pin_order_put"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -266,6 +349,46 @@ export interface paths {
         put?: never;
         /** Unarchive Application */
         post: operations["unarchive_application_api_applications__app_id__unarchive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pin Application
+         * @description Put the application in the sidebar, at the bottom of the pinned ones.
+         */
+        post: operations["pin_application_api_applications__app_id__pin_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/applications/{app_id}/unpin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unpin Application
+         * @description Take the application out of the sidebar. It keeps serving.
+         */
+        post: operations["unpin_application_api_applications__app_id__unpin_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -576,6 +699,10 @@ export interface paths {
          *     but a brand-new id and no message history. Schedules
          *     mappings repoint from old to new so user-facing automation
          *     continues uninterrupted.
+         *
+         *     `?replace=false` archives without a successor — the sidebar's archive
+         *     button, which puts a conversation away rather than restarting it — and
+         *     answers 204. Either way the history stays and `/unarchive` brings it back.
          */
         post: operations["archive_session_api_sessions__session_id__archive_post"];
         delete?: never;
@@ -1718,6 +1845,13 @@ export interface components {
              * @default false
              */
             archived: boolean;
+            /**
+             * Pinned
+             * @default true
+             */
+            pinned: boolean;
+            /** Pin Order */
+            pin_order?: number | null;
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -2006,6 +2140,13 @@ export interface components {
             updated_at: string;
             /** Last Built At */
             last_built_at?: string | null;
+            /**
+             * Pinned
+             * @default true
+             */
+            pinned: boolean;
+            /** Pin Order */
+            pin_order?: number | null;
         };
         /**
          * ApplicationStatus
@@ -2564,6 +2705,15 @@ export interface components {
             }[];
         };
         /**
+         * PinOrderRequest
+         * @description The sidebar order of the pinned agents or applications, top first.
+         *     Pinned rows it doesn't name keep their order after the named ones.
+         */
+        PinOrderRequest: {
+            /** Ids */
+            ids: string[];
+        };
+        /**
          * ScheduleFromTextRequest
          * @description Natural-language schedule: `text` is parsed (rigid fast-path, else AI)
          *     into a recurrence + prompt. `timezone` is the user's IANA tz (browser-
@@ -3095,6 +3245,39 @@ export interface operations {
             };
         };
     };
+    reorder_agent_pins_api_agents_pin_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PinOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_agent_api_agents__agent_id__get: {
         parameters: {
             query?: never;
@@ -3222,6 +3405,68 @@ export interface operations {
         };
     };
     unarchive_agent_api_agents__agent_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pin_agent_api_agents__agent_id__pin_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unpin_agent_api_agents__agent_id__unpin_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -3547,6 +3792,39 @@ export interface operations {
             };
         };
     };
+    reorder_application_pins_api_applications_pin_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PinOrderRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_application_api_applications__app_id__get: {
         parameters: {
             query?: never;
@@ -3711,6 +3989,68 @@ export interface operations {
         };
     };
     unarchive_application_api_applications__app_id__unarchive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pin_application_api_applications__app_id__pin_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApplicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unpin_application_api_applications__app_id__unpin_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -4326,7 +4666,9 @@ export interface operations {
     };
     archive_session_api_sessions__session_id__archive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                replace?: boolean;
+            };
             header?: never;
             path: {
                 session_id: string;

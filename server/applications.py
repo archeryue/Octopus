@@ -562,6 +562,10 @@ class ApplicationManager:
         await db.update_application(
             app_id, archived=1 if archived else 0, updated_at=_now()
         )
+        if not archived:
+            # Restoring is choosing to use it again: it comes back to the
+            # sidebar (where it was, if it was pinned when it left).
+            await db.set_application_pinned(app_id, True)
         updated = await db.get_application(app_id)
         await self._broadcast_application(
             "application_archived" if archived else "application_updated",
@@ -569,6 +573,47 @@ class ApplicationManager:
         )
         assert updated is not None  # written immediately above
         return updated
+
+    # ------------------------------------------------------------------ pins
+
+    async def set_pinned(self, app_id: str, pinned: bool) -> dict[str, Any]:
+        """Pin an application to the sidebar or unpin it (sidebar-pins.md).
+
+        Only where it is *shown* changes — an unpinned app still serves, its
+        backend still runs, and the Applications page still lists it.
+        """
+        db = self._require_db()
+        row = await self.get_application(app_id)
+        if row["archived"]:
+            raise ApplicationError("Restore the application before pinning it")
+        await db.set_application_pinned(app_id, pinned)
+        updated = await db.get_application(app_id)
+        await self._broadcast_application("application_updated", updated)
+        assert updated is not None  # written immediately above
+        return updated
+
+    async def reorder_pins(self, ordered_ids: list[str]) -> list[dict[str, Any]]:
+        """Set the sidebar order of the pinned applications; returns every
+        live application. Every id must name a pinned, live one, once."""
+        db = self._require_db()
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ApplicationError("An application appears twice in the order")
+        before = {a["id"]: a for a in await db.load_applications()}
+        stray = [
+            i for i in ordered_ids if i not in before or not before[i]["pinned"]
+        ]
+        if stray:
+            raise ApplicationError(
+                f"Not a pinned application: {', '.join(stray)}"
+            )
+        await db.reorder_application_pins(ordered_ids)
+        after = await db.load_applications()
+        # Other clients mirror rows from these events; only the rows whose
+        # position actually moved need to travel.
+        for row in after:
+            if row["pin_order"] != before[row["id"]]["pin_order"]:
+                await self._broadcast_application("application_updated", row)
+        return after
 
     # ----------------------------------------------------------------- delete
 

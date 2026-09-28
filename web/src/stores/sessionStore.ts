@@ -127,6 +127,8 @@ export type MainView =
   | "harness"
   | "monitor";
 
+export type PageTab = "all" | "form";
+
 interface SessionStore {
   token: string;
   setToken: (t: string) => void;
@@ -158,9 +160,19 @@ interface SessionStore {
   activeApplicationId: string | null;
   // Which agent the agent form is editing; null = the new-agent draft.
   editingAgentId: string | null;
+  // Which tab the Agents / Applications page is on (sidebar-pins.md §6):
+  // "all" lists every agent or application, "form" creates or edits one.
+  // Store state rather than the page's own, so whoever opens the page (the
+  // sidebar's "+", the account menu's agent settings) decides the tab.
+  pageTab: PageTab;
+  setPageTab: (tab: PageTab) => void;
   openApplication: (id: string) => void;
   openApplicationCreate: () => void;
   openAgentForm: (agentId?: string | null) => void;
+  // Unpinned applications whose build failed while nobody was looking at
+  // them; the sidebar shows them until they're opened (sidebar-pins.md §5).
+  unseenFailedApplications: string[];
+  noteApplicationFailed: (id: string) => void;
   openManage: (view: "schedules" | "connectors" | "harness" | "monitor") => void;
   showChat: () => void;
 
@@ -429,6 +441,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   removeApplication: (id) =>
     set((s) => ({
       applications: s.applications.filter((a) => a.id !== id),
+      unseenFailedApplications: s.unseenFailedApplications.filter(
+        (a) => a !== id
+      ),
       // Deleting the app you're looking at drops you back to chat rather
       // than leaving a frame pointed at a 404.
       ...(s.activeApplicationId === id
@@ -439,21 +454,40 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   mainView: "chat",
   activeApplicationId: null,
   editingAgentId: null,
+  pageTab: "form",
+  setPageTab: (pageTab) => set({ pageTab }),
   openApplication: (id) =>
-    set({ activeApplicationId: id, mainView: "application", sidebarOpen: false }),
+    set((s) => ({
+      activeApplicationId: id,
+      mainView: "application",
+      sidebarOpen: false,
+      // Opening it is what "seen" means.
+      unseenFailedApplications: s.unseenFailedApplications.filter(
+        (a) => a !== id
+      ),
+    })),
   openApplicationCreate: () =>
     set({
       activeApplicationId: null,
       mainView: "application-create",
+      pageTab: "form",
       sidebarOpen: false,
     }),
   openAgentForm: (agentId = null) =>
     set({
       mainView: "agent-form",
       editingAgentId: agentId,
+      pageTab: "form",
       activeApplicationId: null,
       sidebarOpen: false,
     }),
+  unseenFailedApplications: [],
+  noteApplicationFailed: (id) =>
+    set((s) =>
+      s.unseenFailedApplications.includes(id)
+        ? s
+        : { unseenFailedApplications: [...s.unseenFailedApplications, id] }
+    ),
   openManage: (view) =>
     set({ mainView: view, activeApplicationId: null, sidebarOpen: false }),
   showChat: () =>

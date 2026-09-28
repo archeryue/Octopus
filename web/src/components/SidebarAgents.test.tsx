@@ -223,3 +223,122 @@ describe("SidebarAgents fold state", () => {
     expect(screen.queryByText("ideas")).toBeNull();
   });
 });
+
+describe("SidebarAgents pins (sidebar-pins.md)", () => {
+  function mountWith(agents: Agent[], sessions: SessionInfo[], extra = {}) {
+    fetchMock.mockImplementation(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/agents")) return jsonRes(agents);
+      if (u.includes("/api/sessions")) return jsonRes(sessions);
+      if (u.includes("/api/backends")) return jsonRes({ available: ["claude-code"] });
+      return jsonRes([]);
+    });
+    useSessionStore.setState({
+      token: "tok",
+      agents,
+      sessions,
+      activeAgentId: null,
+      activeSessionId: null,
+      credentials: [],
+      availableBackends: ["claude-code"],
+      mainView: "chat",
+      sidebarCollapsed: false,
+      pendingQuestions: {},
+      ...extra,
+    });
+    return render(<SidebarAgents />);
+  }
+
+  const names = (container: HTMLElement) =>
+    [...container.querySelectorAll(".agent-name")].map((n) => n.textContent);
+
+  it("lists only pinned agents, in pin order", async () => {
+    const { container } = mountWith(
+      [
+        agent({ pinned: true, pin_order: 2 }),
+        agent({ id: "ag2", name: "Researcher", is_system: false, pinned: true, pin_order: 1 }),
+        agent({ id: "ag3", name: "Quiet", is_system: false, pinned: false, pin_order: 3 }),
+      ],
+      []
+    );
+    await waitFor(() => expect(names(container)).toEqual(["Researcher", "Octo"]));
+  });
+
+  it("an unpinned agent shows, dimmed, while it's running, asking, or open", async () => {
+    const agents = [
+      agent({ pinned: true, pin_order: 1 }),
+      agent({ id: "ag2", name: "Runner", is_system: false, pinned: false }),
+      agent({ id: "ag3", name: "Asker", is_system: false, pinned: false }),
+      agent({ id: "ag4", name: "Opened", is_system: false, pinned: false }),
+      agent({ id: "ag5", name: "Quiet", is_system: false, pinned: false }),
+      agent({ id: "ag6", name: "AppBusy", is_system: false, pinned: false }),
+    ];
+    const sessions = [
+      session({ id: "r", agent_id: "ag2", status: "running" }),
+      session({ id: "q", agent_id: "ag3" }),
+      session({ id: "o", agent_id: "ag4" }),
+      session({ id: "z", agent_id: "ag5" }),
+      // An application's conversation running doesn't count.
+      session({ id: "ap", agent_id: "ag6", status: "running", origin: "app" }),
+    ];
+    const { container } = mountWith(agents, sessions, {
+      activeSessionId: "o",
+      pendingQuestions: { q: [{ question_id: "x", questions: [] }] },
+    });
+    await waitFor(() =>
+      expect(names(container)).toEqual(["Octo", "Runner", "Asker", "Opened"])
+    );
+    expect(container.querySelectorAll(".agent-item.unpinned")).toHaveLength(3);
+    // The agent that is only here because its session is open is unfolded,
+    // so the open session is visible under it.
+    await waitFor(() => expect(screen.getByText("ideas")).toBeTruthy());
+  });
+
+  it("unpin POSTs; the Default Agent offers no unpin", async () => {
+    const agents = [
+      agent({ pinned: true, pin_order: 1 }),
+      agent({ id: "ag2", name: "Researcher", is_system: false, pinned: true, pin_order: 2 }),
+    ];
+    const { container } = mountWith(agents, []);
+    fetchMock.mockImplementation(async (url: RequestInfo | URL) =>
+      String(url).endsWith("/ag2/unpin")
+        ? jsonRes({ ...agents[1], pinned: false })
+        : jsonRes([])
+    );
+    await waitFor(() => expect(names(container)).toEqual(["Octo", "Researcher"]));
+    expect(screen.queryByLabelText("Unpin Octo from the sidebar")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Unpin Researcher from the sidebar"));
+    await waitFor(() => expect(names(container)).toEqual(["Octo"]));
+    // Still a live agent — only the shortcut went.
+    expect(useSessionStore.getState().agents.map((a) => a.id)).toEqual(["ag1", "ag2"]);
+  });
+
+  it("the session button archives — nothing in the sidebar hard-deletes", async () => {
+    const agents = [agent({ pinned: true, pin_order: 1 })];
+    const sessions = [session({ id: "s1", name: "ideas" })];
+    const { container } = mountWith(agents, sessions, {
+      activeSessionId: "s1",
+      archivedSessions: [],
+    });
+    fetchMock.mockImplementation(async () => new Response(null, { status: 204 }));
+    // A pinned agent starts folded; unfold it to reach the session row.
+    fireEvent.click(screen.getByText("Octo"));
+    fireEvent.click(await screen.findByLabelText("Archive ideas"));
+
+    await waitFor(() => expect(useSessionStore.getState().sessions).toEqual([]));
+    const calls = fetchMock.mock.calls.map(([u, i]) => [
+      String(u),
+      (i as RequestInit | undefined)?.method,
+    ]);
+    expect(calls).toContainEqual([
+      expect.stringContaining("/api/sessions/s1/archive?replace=false"),
+      "POST",
+    ]);
+    expect(calls.some(([, m]) => m === "DELETE")).toBe(false);
+    // It's kept among the archived, so it can still be opened and restored.
+    expect(useSessionStore.getState().archivedSessions.map((x) => x.id)).toEqual(["s1"]);
+    expect(useSessionStore.getState().activeSessionId).toBeNull();
+    expect(container.querySelector(".btn-delete")).toBeNull();
+  });
+});

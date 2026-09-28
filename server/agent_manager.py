@@ -125,10 +125,47 @@ class AgentManager:
                 f"before restoring this one"
             )
         await self.db.unarchive_agent(agent_id)
+        # Restoring is choosing to use it again: it comes back to the sidebar
+        # (where it was, if it was pinned when it left).
+        await self.db.set_agent_pinned(agent_id, True)
         agent_memory.ensure_agent_dirs(agent_id)
         restored = await self.db.get_agent(agent_id)
         assert restored is not None
         return restored
+
+    async def set_pinned(self, agent_id: str, pinned: bool) -> dict[str, Any]:
+        """Pin an agent to the sidebar or unpin it (sidebar-pins.md).
+
+        Only where it is *shown* changes: an unpinned agent is still listed
+        on the Agents page, still reachable by delegation, and its schedules
+        still fire. The Default Agent stays pinned — it is where a fresh
+        session goes when nothing else is chosen, so it can't go missing.
+        """
+        agent = await self.db.get_agent(agent_id)
+        if agent is None:
+            raise AgentError("Agent not found")
+        if agent["archived"]:
+            raise AgentError("Restore the agent before pinning it")
+        if agent["is_system"] and not pinned:
+            raise AgentError("The Default Agent is always pinned")
+        await self.db.set_agent_pinned(agent_id, pinned)
+        updated = await self.db.get_agent(agent_id)
+        assert updated is not None
+        return updated
+
+    async def reorder_pins(self, ordered_ids: list[str]) -> list[dict[str, Any]]:
+        """Set the sidebar order of the pinned agents; returns every live
+        agent. Every id must name a pinned, live agent, once."""
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise AgentError("An agent appears twice in the order")
+        pinned = {
+            a["id"] for a in await self.db.load_agents() if a["pinned"]
+        }
+        stray = [i for i in ordered_ids if i not in pinned]
+        if stray:
+            raise AgentError(f"Not a pinned agent: {', '.join(stray)}")
+        await self.db.reorder_agent_pins(ordered_ids)
+        return await self.db.load_agents()
 
     async def delete_agent(self, agent_id: str) -> None:
         agent = await self.db.get_agent(agent_id)

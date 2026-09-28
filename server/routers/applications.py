@@ -45,6 +45,7 @@ from ..models import (
     ApplicationCreate,
     ApplicationRead,
     ApplicationUpdate,
+    PinOrderRequest,
 )
 
 router = APIRouter(prefix="/api/applications", tags=["applications"])
@@ -99,7 +100,7 @@ async def list_applications(
     archived: bool = False, _: str = Depends(verify_token)
 ):
     """Live applications by default; `?archived=true` returns only the
-    archived ones (what the create page's Archived tab lists)."""
+    archived ones (the Applications page's Archived section)."""
     rows = await _get_manager().list_applications(only_archived=archived)
     return [_read(a) for a in rows]
 
@@ -111,6 +112,19 @@ async def create_application(req: ApplicationCreate, _: str = Depends(verify_tok
     except ApplicationError as e:
         raise _http_error(e)
     return _read(app_row)
+
+
+@router.put("/pin-order", response_model=list[ApplicationRead])
+async def reorder_application_pins(
+    req: PinOrderRequest, _: str = Depends(verify_token)
+):
+    """The sidebar order of the pinned applications (sidebar-pins.md).
+    Returns every live application, so the caller replaces its list."""
+    try:
+        rows = await _get_manager().reorder_pins(req.ids)
+    except ApplicationError as e:
+        raise _http_error(e)
+    return [_read(a) for a in rows]
 
 
 @router.get("/{app_id}", response_model=ApplicationRead)
@@ -151,7 +165,7 @@ async def build_application(
 @router.post("/{app_id}/archive", response_model=ApplicationRead)
 async def archive_application(app_id: str, _: str = Depends(verify_token)):
     try:
-        return ApplicationRead(**await _get_manager().set_archived(app_id, True))
+        return _read(await _get_manager().set_archived(app_id, True))
     except ApplicationError as e:
         raise _http_error(e)
 
@@ -159,7 +173,25 @@ async def archive_application(app_id: str, _: str = Depends(verify_token)):
 @router.post("/{app_id}/unarchive", response_model=ApplicationRead)
 async def unarchive_application(app_id: str, _: str = Depends(verify_token)):
     try:
-        return ApplicationRead(**await _get_manager().set_archived(app_id, False))
+        return _read(await _get_manager().set_archived(app_id, False))
+    except ApplicationError as e:
+        raise _http_error(e)
+
+
+@router.post("/{app_id}/pin", response_model=ApplicationRead)
+async def pin_application(app_id: str, _: str = Depends(verify_token)):
+    """Put the application in the sidebar, at the bottom of the pinned ones."""
+    try:
+        return _read(await _get_manager().set_pinned(app_id, True))
+    except ApplicationError as e:
+        raise _http_error(e)
+
+
+@router.post("/{app_id}/unpin", response_model=ApplicationRead)
+async def unpin_application(app_id: str, _: str = Depends(verify_token)):
+    """Take the application out of the sidebar. It keeps serving."""
+    try:
+        return _read(await _get_manager().set_pinned(app_id, False))
     except ApplicationError as e:
         raise _http_error(e)
 

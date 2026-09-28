@@ -32,6 +32,8 @@ function application(overrides: Partial<Application> = {}): Application {
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     last_built_at: "2026-01-01T00:00:00Z",
+    pinned: true,
+    pin_order: 1,
     ...overrides,
   };
 }

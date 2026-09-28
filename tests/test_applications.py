@@ -1333,3 +1333,124 @@ def test_apple_touch_icon_is_discovered_for_the_sidebar_too(tmp_path):
     (d / "apple-touch-icon.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (d / "favicon.ico").write_bytes(b"\x00")
     assert discover_icon_src(str(d), "index.html") == "apple-touch-icon.png"
+
+
+# ---------------------------------------------------------------------------
+# Sidebar pins (sidebar-pins.md)
+# ---------------------------------------------------------------------------
+
+
+def _pinned_ids(apps: list[dict]) -> list[str]:
+    return [a["id"] for a in sorted(
+        (a for a in apps if a["pinned"]), key=lambda a: a["pin_order"]
+    )]
+
+
+@pytest.mark.asyncio
+async def test_new_applications_are_pinned_at_the_bottom(am, db, sent):
+    first = await _create_app(am, db, name="First")
+    second = await _create_app(am, db, name="Second")
+    assert first["pinned"] and second["pinned"]
+    assert _pinned_ids(await db.load_applications()) == [first["id"], second["id"]]
+
+
+@pytest.mark.asyncio
+async def test_unpin_and_repin_broadcast_and_append(am, db, mgr, sent, monkeypatch):
+    a = await _create_app(am, db, name="A")
+    b = await _create_app(am, db, name="B")
+    events: list[dict] = []
+
+    async def capture(msg):
+        events.append(msg)
+
+    monkeypatch.setattr(mgr, "_broadcast", capture)
+
+    unpinned = await am.set_pinned(a["id"], False)
+    assert unpinned["pinned"] is False
+    # Still live — listed, servable — just not a shortcut.
+    assert [x["id"] for x in await db.load_applications()] == [a["id"], b["id"]]
+    assert events[-1]["type"] == "application_updated"
+    assert events[-1]["application"]["pinned"] is False
+
+    await am.set_pinned(a["id"], True)
+    assert _pinned_ids(await db.load_applications()) == [b["id"], a["id"]]
+
+
+@pytest.mark.asyncio
+async def test_pinning_an_archived_application_is_refused(am, db, sent):
+    a = await _create_app(am, db, name="Shelved")
+    await am.set_archived(a["id"], True)
+    with pytest.raises(ApplicationError, match="Restore"):
+        await am.set_pinned(a["id"], True)
+
+
+@pytest.mark.asyncio
+async def test_restoring_an_application_pins_it(am, db, sent):
+    a = await _create_app(am, db, name="Returning")
+    await am.set_pinned(a["id"], False)
+    await am.set_archived(a["id"], True)
+    restored = await am.set_archived(a["id"], False)
+    assert restored["pinned"] is True
+
+
+@pytest.mark.asyncio
+async def test_reorder_broadcasts_only_the_rows_that_moved(
+    am, db, mgr, sent, monkeypatch
+):
+    a = await _create_app(am, db, name="A")
+    b = await _create_app(am, db, name="B")
+    c = await _create_app(am, db, name="C")
+    events: list[dict] = []
+
+    async def capture(msg):
+        events.append(msg)
+
+    monkeypatch.setattr(mgr, "_broadcast", capture)
+
+    # [A, B, C] -> [A, C, B]: A keeps position 1, so only B and C travel.
+    rows = await am.reorder_pins([a["id"], c["id"], b["id"]])
+    assert _pinned_ids(rows) == [a["id"], c["id"], b["id"]]
+    assert sorted(e["application_id"] for e in events) == sorted([b["id"], c["id"]])
+
+
+@pytest.mark.asyncio
+async def test_reorder_rejects_unpinned_unknown_and_repeated(am, db, sent):
+    a = await _create_app(am, db, name="A")
+    b = await _create_app(am, db, name="B")
+    await am.set_pinned(b["id"], False)
+    for ids in ([a["id"], b["id"]], [a["id"], "ghost"], [a["id"], a["id"]]):
+        with pytest.raises(ApplicationError):
+            await am.reorder_pins(ids)
+
+
+@pytest.mark.asyncio
+async def test_api_pin_unpin_and_order(client):
+    one = await _api_create(client, name="One")
+    two = await _api_create(client, name="Two")
+
+    resp = await client.post(
+        f"/api/applications/{one['id']}/unpin", headers=HEADERS
+    )
+    assert resp.status_code == 200
+    assert resp.json()["pinned"] is False
+    # The response carries live backend state like every other read.
+    assert resp.json()["backend"]["state"] == "absent"
+
+    resp = await client.post(f"/api/applications/{one['id']}/pin", headers=HEADERS)
+    assert resp.json()["pinned"] is True
+
+    resp = await client.put(
+        "/api/applications/pin-order",
+        json={"ids": [one["id"], two["id"]]},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    assert _pinned_ids(resp.json()) == [one["id"], two["id"]]
+
+    resp = await client.put(
+        "/api/applications/pin-order", json={"ids": ["ghost"]}, headers=HEADERS
+    )
+    assert resp.status_code == 400
+    assert (
+        await client.post("/api/applications/ghost/pin", headers=HEADERS)
+    ).status_code == 404

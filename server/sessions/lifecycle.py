@@ -141,9 +141,16 @@ class LifecycleMixin(SessionManagerBase):
                 await self.db.flush()
         return session
 
-    async def archive_session(self, session_id: str) -> Session:
+    async def archive_session(
+        self, session_id: str, *, replace: bool = True
+    ) -> Session | None:
         """Hide the current session and return a fresh one with the same
         user-visible settings (name / working_dir / credential_id).
+
+        `replace=False` is the sidebar's archive button (sidebar-pins.md §6):
+        the session is put away and nothing takes its place, so this returns
+        None. A schedule that was set up from it then fires into throwaway
+        sessions — there is no successor thread for it to follow.
 
         The old session row stays in the DB (with `archived = 1`) so the
         message history isn't lost — it just disappears from the default
@@ -178,6 +185,17 @@ class LifecycleMixin(SessionManagerBase):
         if self.db:
             await self.db.update_session_field(session_id, archived=True)
         self.sessions.pop(session_id, None)
+
+        if not replace:
+            await self._broadcast(
+                {
+                    "type": "session_archived",
+                    "old_session_id": old.id,
+                    "new_session_id": None,
+                    "name": old.name,
+                }
+            )
+            return None
 
         # New session inherits agent / name / working_dir / credential_id /
         # origin but starts with no claude_session_id (fresh conversation).

@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { IconCheck, IconPlus, IconSubtask, IconX } from "@tabler/icons-react";
+import {
+  IconArchive,
+  IconCheck,
+  IconPin,
+  IconPinnedOff,
+  IconPlus,
+  IconSubtask,
+  IconX,
+} from "@tabler/icons-react";
+import { reorderAgentPins, setAgentPinned } from "../api/agents";
 import { fetchInstallations } from "../api/connectors";
 import { selectSession } from "../lib/selectSession";
+import { sidebarAgents, withPinOrder } from "../lib/sidebarPins";
 import { useSessionStore, type Agent, type SessionInfo } from "../stores/sessionStore";
 import { SidebarSectionHeader } from "./SidebarSectionHeader";
+import { SortablePin, SortablePins, type DragHandle } from "./SortablePins";
 
 const API = window.location.origin;
 
@@ -15,6 +26,12 @@ const API = window.location.origin;
  * are what you actually click all day, so they get the selected treatment: a
  * tinted pill with an accent border and the session's status set in mono on
  * the right.
+ *
+ * Only *pinned* agents are listed, in the order the user dragged them into
+ * (sidebar-pins.md): the sidebar is shortcuts, the Agents page — the "+",
+ * then its All tab — is everything. An unpinned agent joins the
+ * list, dimmed, only while it needs you (its session is open, or running, or
+ * asking something).
  *
  * This is also the sidebar's single data orchestrator (as it was before the
  * redesign): agents, sessions, available backends and connector installations
@@ -36,6 +53,7 @@ export function SidebarAgents() {
     (s) => s.setConnectorInstallations
   );
   const showDelegations = useSessionStore((s) => s.showDelegations);
+  const pendingQuestions = useSessionStore((s) => s.pendingQuestions);
 
   // Which agents are unfolded. Multiple may be open; folding keeps the
   // sidebar from filling with sessions when there are many agents.
@@ -102,6 +120,24 @@ export function SidebarAgents() {
     setActiveAgentId(def.id);
   }, [agents, activeAgentId, setActiveAgentId]);
 
+  // The one unfold the app does on its own: an *unpinned* agent that just
+  // became the owner of the open session (Chat on the Agents page). It is
+  // only in the sidebar because of that session, so showing it folded would
+  // hide the very row that put it there. Pinned agents keep the rule above.
+  const activeSessionAgentId = sessions.find(
+    (s) => s.id === activeSessionId
+  )?.agent_id;
+  const activeSessionAgentUnpinned =
+    agents.find((a) => a.id === activeSessionAgentId)?.pinned === false;
+  useEffect(() => {
+    if (!activeSessionAgentId || !activeSessionAgentUnpinned) return;
+    setExpanded((prev) =>
+      prev.has(activeSessionAgentId)
+        ? prev
+        : new Set(prev).add(activeSessionAgentId)
+    );
+  }, [activeSessionId, activeSessionAgentId, activeSessionAgentUnpinned]);
+
   const toggleExpand = (id: string) =>
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -162,19 +198,334 @@ export function SidebarAgents() {
     }
   };
 
-  const deleteSession = async (id: string) => {
+  // A drop reorders the store at once and lets the server confirm; its reply
+  // is the whole live list, so it replaces ours. A failure puts back the
+  // server's truth rather than leaving a local order nobody saved.
+  const reorder = async (orderedIds: string[]) => {
+    const store = useSessionStore.getState();
+    store.setAgents(withPinOrder(store.agents, orderedIds));
     try {
-      await fetch(`${API}/api/sessions/${id}`, { method: "DELETE", headers });
+      setAgents((await reorderAgentPins(token, orderedIds)) as Agent[]);
+    } catch {
+      fetchAgents();
+    }
+  };
+
+  const setPinned = async (agent: Agent, pinned: boolean) => {
+    try {
+      useSessionStore
+        .getState()
+        .upsertAgent((await setAgentPinned(token, agent.id, pinned)) as Agent);
+    } catch {
+      fetchAgents();
+    }
+  };
+
+  // Archive, not delete: the conversation leaves the rail with nothing in
+  // its place, and its history stays — the archived-sessions page restores it
+  // (sidebar-pins.md §6). Nothing in the sidebar destroys anything.
+  const archiveSession = async (id: string) => {
+    try {
+      await fetch(`${API}/api/sessions/${id}/archive?replace=false`, {
+        method: "POST",
+        headers,
+      });
     } catch {
       // ignore — the list refresh below is what the user sees
     }
-    const remaining = useSessionStore
-      .getState()
-      .sessions.filter((s) => s.id !== id);
-    setSessions(remaining);
+    const store = useSessionStore.getState();
+    const archived = store.sessions.find((s) => s.id === id);
+    setSessions(store.sessions.filter((s) => s.id !== id));
+    if (archived) {
+      store.setArchivedSessions([
+        { ...archived, archived: true },
+        ...store.archivedSessions.filter((s) => s.id !== id),
+      ]);
+    }
     if (useSessionStore.getState().activeSessionId === id) {
       useSessionStore.getState().setActiveSessionId(null);
     }
+  };
+
+  const { pinned, present } = sidebarAgents(agents, {
+    sessions,
+    activeSessionId,
+    pendingQuestions,
+  });
+
+  // One agent with its session rail. `handle` is the drag handle for a
+  // pinned row, and nothing for an unpinned one — those aren't in the order.
+  const renderAgent = (a: Agent, handle: DragHandle) => {
+    const isExpanded = expanded.has(a.id);
+    // Conversations an application is holding with this agent are its
+    // business, not the rail's (app-agent-access.md §7): they're
+    // reachable from the app's own header, and an app that chats ten
+    // times an hour would otherwise bury the user's sessions — and
+    // make the agent look permanently busy for work nobody started.
+    const agentSessions = sessions.filter(
+      (s) => s.agent_id === a.id && s.origin !== "app"
+    );
+    const visible = showDelegations
+      ? agentSessions
+      : agentSessions.filter((s) => s.origin !== "delegation");
+    const hiddenDelegations = agentSessions.length - visible.length;
+    const runningCount = agentSessions.filter(
+      (s) => s.status === "running"
+    ).length;
+
+    return (
+      <div className="agent-group">
+        <div
+          {...handle}
+          className={`agent-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-100 transition-colors${
+            isExpanded ? " expanded" : ""
+          }${a.pinned === false ? " unpinned" : ""}`}
+          onClick={() => openAgent(a.id)}
+          onDoubleClick={() => openAgentForm(a.id)}
+          /* The name leads even when there's a description: folded to
+             the icon rail, the tooltip is the only thing naming the
+             row. */
+          title={a.description ? `${a.name} — ${a.description}` : a.name}
+        >
+          <span
+            className={`agent-fold shrink-0 text-[10px] leading-none text-gray-600 transition-transform ${
+              isExpanded ? "rotate-90" : ""
+            }`}
+            aria-hidden
+          >
+            ▸
+          </span>
+          <span className="agent-avatar tile tile-plain shrink-0">
+            {a.avatar || "🐙"}
+          </span>
+          <span className="agent-name truncate text-sm font-semibold text-gray-900">
+            {a.name}
+          </span>
+          {a.pinned === false ? (
+            <button
+              className="btn-agent-pin ml-auto inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 group-hover:opacity-100 hover:bg-gray-200 hover:text-gray-900 transition"
+              onClick={(e) => {
+                e.stopPropagation();
+                setPinned(a, true);
+              }}
+              title="Pin to sidebar"
+              aria-label={`Pin ${a.name} to the sidebar`}
+            >
+              <IconPin size={13} />
+            </button>
+          ) : (
+            !a.is_system && (
+              <button
+                className="btn-agent-unpin ml-auto inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 group-hover:opacity-100 hover:bg-gray-200 hover:text-gray-900 transition"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPinned(a, false);
+                }}
+                title="Unpin from sidebar"
+                aria-label={`Unpin ${a.name} from the sidebar`}
+              >
+                <IconPinnedOff size={13} />
+              </button>
+            )
+          )}
+          {runningCount > 0 ? (
+            <span
+              className={`agent-running badge-running shrink-0${
+                a.is_system && a.pinned !== false ? " ml-auto" : ""
+              }`}
+            >
+              <span className="dot" />
+              <span className="agent-running-count">
+                {runningCount} running
+              </span>
+            </span>
+          ) : (
+            <button
+              className={`btn-session-add inline-flex${
+                a.is_system && a.pinned !== false ? " ml-auto" : ""
+              }  h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 group-hover:opacity-100 hover:bg-gray-200 hover:text-gray-900 transition`}
+              onClick={(e) => {
+                e.stopPropagation();
+                openCreateRow(a.id);
+              }}
+              title="New session"
+              aria-label={`New session for ${a.name}`}
+            >
+              <IconPlus size={14} />
+            </button>
+          )}
+        </div>
+
+        {isExpanded && (
+          <div className="session-rail ml-[15px] mt-0.5 mb-1 flex flex-col gap-0.5 border-l-[1.5px] border-gray-400/70 pl-3">
+            {formAgentId === a.id && (
+              <div className="session-create rounded-lg border border-primary-100 bg-primary-50/60 p-2">
+                <div className="flex items-center gap-1.5">
+                  <input
+                    className="min-w-0 flex-1 rounded-md border border-gray-400 bg-card px-2 py-1 text-[13px] text-gray-900 outline-none placeholder:text-gray-600 focus:border-primary"
+                    placeholder="Session name"
+                    value={newName}
+                    autoFocus
+                    onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") createSession(a.id);
+                      if (e.key === "Escape") closeCreateRow();
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn-create inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-primary text-white transition-colors hover:bg-primary-700"
+                    onClick={() => createSession(a.id)}
+                    title="Create session"
+                    aria-label="Create session"
+                  >
+                    <IconCheck size={13} />
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-create-cancel inline-flex size-6 shrink-0 items-center justify-center rounded-md text-gray-700 transition-colors hover:bg-gray-200"
+                    onClick={closeCreateRow}
+                    title="Cancel"
+                    aria-label="Cancel new session"
+                  >
+                    <IconX size={13} />
+                  </button>
+                </div>
+
+                {/* Overrides stay one click away: a session normally
+                  * inherits the agent's engine, credential and the
+                  * server's default working dir, and the design's
+                  * sidebar shows none of that — but the capability
+                  * can't just vanish with the old form. */}
+                <button
+                  type="button"
+                  className="btn-session-advanced mt-1.5 font-mono text-[10.5px] text-gray-700 hover:text-primary"
+                  onClick={() => setShowAdvanced((v) => !v)}
+                >
+                  {showAdvanced ? "− less" : "+ working dir · engine"}
+                </button>
+
+                {showAdvanced && (
+                  <div className="mt-1.5 flex flex-col gap-1.5">
+                    <input
+                      className="session-working-dir rounded-md border border-gray-400 bg-card px-2 py-1 font-mono text-[11.5px] text-gray-900 outline-none placeholder:text-gray-600 focus:border-primary"
+                      placeholder="working dir (default: server's)"
+                      value={workingDir}
+                      onChange={(e) => setWorkingDir(e.target.value)}
+                    />
+                    <select
+                        className="session-backend-select rounded-md border border-gray-400 bg-card px-2 py-1 text-[11.5px] text-gray-900 outline-none focus:border-primary"
+                        value={formBackend}
+                        onChange={(e) => {
+                          setFormBackend(e.target.value);
+                          setFormCredentialId("");
+                        }}
+                        aria-label="Engine"
+                      >
+                        {availableBackends.map((b) => (
+                          <option key={b} value={b}>
+                            {b === "claude-code" ? "Claude Code" : "Codex"}
+                          </option>
+                        ))}
+                      </select>
+                    {credentials.some((c) => c.backend === formBackend) && (
+                      <select
+                        className="session-credential-select rounded-md border border-gray-400 bg-card px-2 py-1 text-[11.5px] text-gray-900 outline-none focus:border-primary"
+                        value={formCredentialId}
+                        onChange={(e) => setFormCredentialId(e.target.value)}
+                        aria-label="Credential"
+                      >
+                        <option value="">Agent's credential</option>
+                        {credentials
+                          .filter((c) => c.backend === formBackend)
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.label}
+                            </option>
+                          ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+            {visible.map((s) => {
+              const isActive =
+                mainView === "chat" && s.id === activeSessionId;
+              return (
+                <div
+                  key={s.id}
+                  className={`session-item group/session flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 cursor-pointer transition-colors ${
+                    isActive
+                      ? "active bg-primary-50 border border-primary-100 shadow-[0_1px_2px_rgba(37,99,184,0.06)]"
+                      : "border border-transparent hover:bg-gray-100"
+                  }`}
+                  onClick={() => selectSession(s.id, a.id)}
+                >
+                  <span
+                    className={`status-dot status-${s.status} inline-block size-[7px] shrink-0 rounded-full ${
+                      s.status === "running"
+                        ? "bg-success animate-pulse"
+                        : s.status === "waiting_approval"
+                        ? "bg-warn"
+                        : "bg-gray-500"
+                    }`}
+                  />
+                  <span
+                    className={`session-name truncate text-[13.5px] ${
+                      isActive
+                        ? "font-semibold text-gray-950"
+                        : "text-gray-800"
+                    }`}
+                  >
+                    {s.name}
+                  </span>
+                  {s.origin === "delegation" && (
+                    <span
+                      className="delegation-marker inline-flex shrink-0 text-gray-600"
+                      title="Delegation session"
+                      aria-label="Delegation session"
+                    >
+                      <IconSubtask size={12} />
+                    </span>
+                  )}
+                  {isActive && (
+                    <span className="session-status ml-auto shrink-0 font-mono text-[10px] text-primary-300">
+                      {s.status}
+                    </span>
+                  )}
+                  <button
+                    className={`btn-session-archive inline-flex size-5 shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 transition-opacity hover:bg-warn-bg hover:text-warn-foreground group-hover/session:opacity-100 ${
+                      isActive ? "" : "ml-auto"
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      archiveSession(s.id);
+                    }}
+                    title="Archive session"
+                    aria-label={`Archive ${s.name}`}
+                  >
+                    <IconArchive size={12} />
+                  </button>
+                </div>
+              );
+            })}
+            {visible.length === 0 && (
+              <button
+                type="button"
+                className="session-empty px-2.5 py-1.5 text-left text-[12.5px] text-gray-700 hover:text-gray-900"
+                onClick={() => openCreateRow(a.id)}
+              >
+                No sessions — start one
+              </button>
+            )}
+            {hiddenDelegations > 0 && (
+              <DelegationToggle count={hiddenDelegations} />
+            )}
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
@@ -192,244 +543,20 @@ export function SidebarAgents() {
       />
 
       <div className="agent-list-items flex flex-col">
-        {agents.map((a) => {
-          const isExpanded = expanded.has(a.id);
-          // Conversations an application is holding with this agent are its
-          // business, not the rail's (app-agent-access.md §7): they're
-          // reachable from the app's own header, and an app that chats ten
-          // times an hour would otherwise bury the user's sessions — and
-          // make the agent look permanently busy for work nobody started.
-          const agentSessions = sessions.filter(
-            (s) => s.agent_id === a.id && s.origin !== "app"
-          );
-          const visible = showDelegations
-            ? agentSessions
-            : agentSessions.filter((s) => s.origin !== "delegation");
-          const hiddenDelegations = agentSessions.length - visible.length;
-          const runningCount = agentSessions.filter(
-            (s) => s.status === "running"
-          ).length;
-
-          return (
-            <div key={a.id} className="agent-group">
-              <div
-                className={`agent-item group flex items-center gap-2 rounded-lg px-2 py-1.5 cursor-pointer hover:bg-gray-100 transition-colors${
-                  isExpanded ? " expanded" : ""
-                }`}
-                onClick={() => openAgent(a.id)}
-                onDoubleClick={() => openAgentForm(a.id)}
-                /* The name leads even when there's a description: folded to
-                   the icon rail, the tooltip is the only thing naming the
-                   row. */
-                title={a.description ? `${a.name} — ${a.description}` : a.name}
-              >
-                <span
-                  className={`agent-fold shrink-0 text-[10px] leading-none text-gray-600 transition-transform ${
-                    isExpanded ? "rotate-90" : ""
-                  }`}
-                  aria-hidden
-                >
-                  ▸
-                </span>
-                <span className="agent-avatar tile tile-plain shrink-0">
-                  {a.avatar || "🐙"}
-                </span>
-                <span className="agent-name truncate text-sm font-semibold text-gray-900">
-                  {a.name}
-                </span>
-                {runningCount > 0 ? (
-                  <span className="agent-running badge-running ml-auto shrink-0">
-                    <span className="dot" />
-                    <span className="agent-running-count">
-                      {runningCount} running
-                    </span>
-                  </span>
-                ) : (
-                  <button
-                    className="btn-session-add ml-auto inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 group-hover:opacity-100 hover:bg-gray-200 hover:text-gray-900 transition"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      openCreateRow(a.id);
-                    }}
-                    title="New session"
-                    aria-label={`New session for ${a.name}`}
-                  >
-                    <IconPlus size={14} />
-                  </button>
-                )}
-              </div>
-
-              {isExpanded && (
-                <div className="session-rail ml-[15px] mt-0.5 mb-1 flex flex-col gap-0.5 border-l-[1.5px] border-gray-400/70 pl-3">
-                  {formAgentId === a.id && (
-                    <div className="session-create rounded-lg border border-primary-100 bg-primary-50/60 p-2">
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          className="min-w-0 flex-1 rounded-md border border-gray-400 bg-card px-2 py-1 text-[13px] text-gray-900 outline-none placeholder:text-gray-600 focus:border-primary"
-                          placeholder="Session name"
-                          value={newName}
-                          autoFocus
-                          onChange={(e) => setNewName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") createSession(a.id);
-                            if (e.key === "Escape") closeCreateRow();
-                          }}
-                        />
-                        <button
-                          type="button"
-                          className="btn-create inline-flex size-6 shrink-0 items-center justify-center rounded-md bg-primary text-white transition-colors hover:bg-primary-700"
-                          onClick={() => createSession(a.id)}
-                          title="Create session"
-                          aria-label="Create session"
-                        >
-                          <IconCheck size={13} />
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-create-cancel inline-flex size-6 shrink-0 items-center justify-center rounded-md text-gray-700 transition-colors hover:bg-gray-200"
-                          onClick={closeCreateRow}
-                          title="Cancel"
-                          aria-label="Cancel new session"
-                        >
-                          <IconX size={13} />
-                        </button>
-                      </div>
-
-                      {/* Overrides stay one click away: a session normally
-                        * inherits the agent's engine, credential and the
-                        * server's default working dir, and the design's
-                        * sidebar shows none of that — but the capability
-                        * can't just vanish with the old form. */}
-                      <button
-                        type="button"
-                        className="btn-session-advanced mt-1.5 font-mono text-[10.5px] text-gray-700 hover:text-primary"
-                        onClick={() => setShowAdvanced((v) => !v)}
-                      >
-                        {showAdvanced ? "− less" : "+ working dir · engine"}
-                      </button>
-
-                      {showAdvanced && (
-                        <div className="mt-1.5 flex flex-col gap-1.5">
-                          <input
-                            className="session-working-dir rounded-md border border-gray-400 bg-card px-2 py-1 font-mono text-[11.5px] text-gray-900 outline-none placeholder:text-gray-600 focus:border-primary"
-                            placeholder="working dir (default: server's)"
-                            value={workingDir}
-                            onChange={(e) => setWorkingDir(e.target.value)}
-                          />
-                          <select
-                              className="session-backend-select rounded-md border border-gray-400 bg-card px-2 py-1 text-[11.5px] text-gray-900 outline-none focus:border-primary"
-                              value={formBackend}
-                              onChange={(e) => {
-                                setFormBackend(e.target.value);
-                                setFormCredentialId("");
-                              }}
-                              aria-label="Engine"
-                            >
-                              {availableBackends.map((b) => (
-                                <option key={b} value={b}>
-                                  {b === "claude-code" ? "Claude Code" : "Codex"}
-                                </option>
-                              ))}
-                            </select>
-                          {credentials.some((c) => c.backend === formBackend) && (
-                            <select
-                              className="session-credential-select rounded-md border border-gray-400 bg-card px-2 py-1 text-[11.5px] text-gray-900 outline-none focus:border-primary"
-                              value={formCredentialId}
-                              onChange={(e) => setFormCredentialId(e.target.value)}
-                              aria-label="Credential"
-                            >
-                              <option value="">Agent's credential</option>
-                              {credentials
-                                .filter((c) => c.backend === formBackend)
-                                .map((c) => (
-                                  <option key={c.id} value={c.id}>
-                                    {c.label}
-                                  </option>
-                                ))}
-                            </select>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {visible.map((s) => {
-                    const isActive =
-                      mainView === "chat" && s.id === activeSessionId;
-                    return (
-                      <div
-                        key={s.id}
-                        className={`session-item group/session flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 cursor-pointer transition-colors ${
-                          isActive
-                            ? "active bg-primary-50 border border-primary-100 shadow-[0_1px_2px_rgba(37,99,184,0.06)]"
-                            : "border border-transparent hover:bg-gray-100"
-                        }`}
-                        onClick={() => selectSession(s.id, a.id)}
-                      >
-                        <span
-                          className={`status-dot status-${s.status} inline-block size-[7px] shrink-0 rounded-full ${
-                            s.status === "running"
-                              ? "bg-success animate-pulse"
-                              : s.status === "waiting_approval"
-                              ? "bg-warn"
-                              : "bg-gray-500"
-                          }`}
-                        />
-                        <span
-                          className={`session-name truncate text-[13.5px] ${
-                            isActive
-                              ? "font-semibold text-gray-950"
-                              : "text-gray-800"
-                          }`}
-                        >
-                          {s.name}
-                        </span>
-                        {s.origin === "delegation" && (
-                          <span
-                            className="delegation-marker inline-flex shrink-0 text-gray-600"
-                            title="Delegation session"
-                            aria-label="Delegation session"
-                          >
-                            <IconSubtask size={12} />
-                          </span>
-                        )}
-                        {isActive && (
-                          <span className="session-status ml-auto shrink-0 font-mono text-[10px] text-primary-300">
-                            {s.status}
-                          </span>
-                        )}
-                        <button
-                          className={`btn-delete inline-flex size-5 shrink-0 items-center justify-center rounded-md text-gray-600 opacity-0 transition-opacity hover:bg-danger-bg hover:text-destructive group-hover/session:opacity-100 ${
-                            isActive ? "" : "ml-auto"
-                          }`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteSession(s.id);
-                          }}
-                          title="Delete session"
-                          aria-label={`Delete ${s.name}`}
-                        >
-                          <IconX size={12} />
-                        </button>
-                      </div>
-                    );
-                  })}
-                  {visible.length === 0 && (
-                    <button
-                      type="button"
-                      className="session-empty px-2.5 py-1.5 text-left text-[12.5px] text-gray-700 hover:text-gray-900"
-                      onClick={() => openCreateRow(a.id)}
-                    >
-                      No sessions — start one
-                    </button>
-                  )}
-                  {hiddenDelegations > 0 && (
-                    <DelegationToggle count={hiddenDelegations} />
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        <SortablePins
+          ids={pinned.map((a) => a.id)}
+          nameOf={(id) => agents.find((a) => a.id === id)?.name ?? id}
+          onReorder={reorder}
+        >
+          {pinned.map((a) => (
+            <SortablePin key={a.id} id={a.id}>
+              {(handle) => renderAgent(a, handle)}
+            </SortablePin>
+          ))}
+        </SortablePins>
+        {present.map((a) => (
+          <div key={a.id}>{renderAgent(a, {})}</div>
+        ))}
       </div>
     </div>
   );

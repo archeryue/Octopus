@@ -166,9 +166,12 @@ body {
   .sidebar.collapsed .agent-name,
   .sidebar.collapsed .agent-running-count,
   .sidebar.collapsed .btn-session-add,
+  .sidebar.collapsed .btn-agent-pin,
+  .sidebar.collapsed .btn-agent-unpin,
   .sidebar.collapsed .application-name,
   .sidebar.collapsed .application-empty,
-  .sidebar.collapsed .btn-application-delete,
+  .sidebar.collapsed .btn-application-pin,
+  .sidebar.collapsed .btn-application-unpin,
   .sidebar.collapsed .manage-label,
   .sidebar.collapsed .manage-summary,
   .sidebar.collapsed .account-text {
@@ -543,7 +546,11 @@ summary {
      list: reveal, then take it back for a row nobody has picked.
      (Unlayered, so this beats Tailwind's `opacity-0` utility.) */
   .btn-delete,
-  .btn-application-delete,
+  .btn-session-archive,
+  .btn-application-pin,
+  .btn-application-unpin,
+  .btn-agent-pin,
+  .btn-agent-unpin,
   .btn-session-add {
     opacity: 1;
   }
@@ -555,8 +562,11 @@ summary {
     opacity: 0.5;
   }
 
-  .session-item:not(.active) .btn-delete,
-  .application-item:not(.active) .btn-application-delete,
+  .session-item:not(.active) .btn-session-archive,
+  .application-item:not(.active) .btn-application-pin,
+  .application-item:not(.active) .btn-application-unpin,
+  .agent-item:not(.expanded) .btn-agent-pin,
+  .agent-item:not(.expanded) .btn-agent-unpin,
   .agent-item:not(.expanded) .btn-session-add {
     opacity: 0;
   }
@@ -565,7 +575,11 @@ summary {
      purpose; the *target* grows past the button's box with a pseudo-element,
      which is invisible and costs no layout. */
   .btn-delete,
-  .btn-application-delete,
+  .btn-session-archive,
+  .btn-application-pin,
+  .btn-application-unpin,
+  .btn-agent-pin,
+  .btn-agent-unpin,
   .btn-session-add,
   .sidebar-section-header button,
   .delegation-marker,
@@ -574,7 +588,11 @@ summary {
   }
 
   .btn-delete::after,
-  .btn-application-delete::after,
+  .btn-session-archive::after,
+  .btn-application-pin::after,
+  .btn-application-unpin::after,
+  .btn-agent-pin::after,
+  .btn-agent-unpin::after,
   .btn-session-add::after,
   .sidebar-section-header button::after {
     content: "";
@@ -728,4 +746,30 @@ summary {
   .page-body {
     padding: 16px 14px 32px;
   }
+}
+
+/* Sidebar pins (sidebar-pins.md). An unpinned row only shows while it needs
+   you, so it reads as a visitor: the same row, set back a step. Muted rather
+   than transparent, so a running badge on it is still as loud as anywhere. */
+.agent-item.unpinned .agent-avatar,
+.agent-item.unpinned .agent-name,
+.application-item.unpinned .application-icon,
+.application-item.unpinned .application-name {
+  opacity: 0.6;
+}
+
+/* The row being carried lifts off the list; the rest make room under it. */
+.sidebar .dragging > .agent-group > .agent-item,
+.sidebar .dragging > .application-item {
+  background-color: hsl(var(--card));
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  cursor: grabbing;
+}
+
+/* A sortable row is focusable (it's how the keyboard reorders), so its
+   focus has to be visible — but only for the keyboard. */
+.agent-item:focus-visible,
+.application-item:focus-visible {
+  outline: 2px solid hsl(var(--primary-200));
+  outline-offset: -2px;
 }
