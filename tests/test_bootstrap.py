@@ -182,3 +182,34 @@ async def test_the_route_is_the_only_way_in_and_closes_behind_itself(legacy):
             headers={"Authorization": "Bearer the-old-token"},
         )
         assert again.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_the_live_sessions_are_adopted_too(legacy):
+    """The rows are only half of it.
+
+    `adopt_orphan_rows` updates the database; the `Session` objects already in
+    memory keep `user_id = None`. A server that is not restarted therefore goes
+    on filtering the new owner's own sessions out of their own list, and fans
+    their frames out to everyone — `_audience` reads the same field. Found in
+    the e2e run: after claiming the install, the session made a moment earlier
+    vanished from the sidebar.
+    """
+    db, _agent = legacy
+    # The manager as a running server has it: loaded before the account existed.
+    await session_manager.initialize(db)
+    assert session_manager.sessions["s-old"].user_id is None
+
+    summary = await bootstrap_first_account(
+        db,
+        username="archer",
+        password="password1",
+        session_manager=session_manager,
+    )
+
+    assert summary["live_sessions_adopted"] == 1
+    assert session_manager.sessions["s-old"].user_id == summary["user_id"]
+    # And the owner can now see it without the server being restarted.
+    assert [s.id for s in session_manager.list_sessions(summary["user_id"])] == [
+        "s-old"
+    ]

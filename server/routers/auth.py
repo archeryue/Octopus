@@ -94,7 +94,10 @@ async def auth_state() -> AuthStateResponse:
 
 @router.post("/bootstrap", response_model=BootstrapResponse)
 async def bootstrap(
-    req: BootstrapRequest, users: UserMgr, _: str = Depends(verify_token)
+    req: BootstrapRequest,
+    users: UserMgr,
+    session_manager: SessionMgr,
+    _: str = Depends(verify_token),
 ) -> BootstrapResponse:
     """Create this install's first account, and hand it what is already here.
 
@@ -107,7 +110,10 @@ async def bootstrap(
         raise HTTPException(503, "database not available")
     try:
         summary = await bootstrap_first_account(
-            _db, username=req.username, password=req.password
+            _db,
+            username=req.username,
+            password=req.password,
+            session_manager=session_manager,
         )
     except BootstrapError as e:
         raise HTTPException(e.status_code, e.message) from e

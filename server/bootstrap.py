@@ -132,12 +132,21 @@ def _move_agent_memory(user_id: str) -> int:
 
 
 async def bootstrap_first_account(
-    db: Any, *, username: str, password: str, adopt: bool = True
+    db: Any,
+    *,
+    username: str,
+    password: str,
+    adopt: bool = True,
+    session_manager: Any = None,
 ) -> dict[str, Any]:
     """Create the install's first account and hand it everything.
 
     Returns a summary of what moved, so the operator sees the upgrade rather
     than trusting it.
+
+    `session_manager` is the live one, when there is one. Rows are only half
+    the install: the sessions already loaded into memory carry the owner too,
+    and a server that is not restarted would go on serving them as unowned.
     """
     users = UserManager(db)
     if await db.count_users() > 0:
@@ -168,6 +177,10 @@ async def bootstrap_first_account(
         summary["extra_roots"] = roots
         summary["agent_memory_moved"] = _move_agent_memory(user["id"])
         paths_for(user["id"]).ensure()
+        if session_manager is not None:
+            summary["live_sessions_adopted"] = session_manager.adopt_orphan_sessions(
+                user["id"]
+            )
 
     logger.info("bootstrapped the first account: %s", summary)
     return summary

@@ -573,6 +573,24 @@ class SessionManagerBase:
             return rows
         return [s for s in rows if s.user_id == user_id]
 
+    def adopt_orphan_sessions(self, user_id: str) -> int:
+        """Give every live session with no owner to `user_id`.
+
+        The database half of the upgrade (`db.adopt_orphan_rows`) does not
+        reach the `Session` objects already in memory, and this manager is a
+        long-lived process: until it was restarted, the account that had just
+        claimed the install saw none of its own sessions (they no longer match
+        the filter) and their frames still went out to everyone (`_audience`
+        reads the same field). Called by `bootstrap_first_account`, so the two
+        halves happen together.
+        """
+        adopted = 0
+        for session in self.sessions.values():
+            if session.user_id is None:
+                session.user_id = user_id
+                adopted += 1
+        return adopted
+
     def get_session(
         self, session_id: str, user_id: str | None = None
     ) -> Session | None:

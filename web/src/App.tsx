@@ -45,17 +45,28 @@ function AuthenticatedApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [archivedOpen, setArchivedOpen] = useState(false);
 
-  const signOut = () => {
+  const signOut = async () => {
     // Hand the bearer back before forgetting it — a token the server still
-    // honours is one whoever finds it can use (multi-tenancy.md §3). Best
-    // effort: the install's own token has nothing to revoke, and an
-    // unreachable server must not trap anybody on a signed-in screen.
+    // honours is one whoever finds it can use (multi-tenancy.md §3).
+    //
+    // Awaited, not fired and forgotten: `location.reload()` tears the document
+    // down, and an in-flight request goes with it. Sign-out would then revoke
+    // the token or not depending on which won, which is not a property a
+    // credential may have. `keepalive` covers the case where the browser
+    // unloads us anyway. Failure is survivable — the install's own token has
+    // nothing to revoke, and an unreachable server must not trap anybody on a
+    // signed-in screen — so we sign out locally either way.
     const bearer = useSessionStore.getState().token;
     if (bearer) {
-      void fetch(`${window.location.origin}/api/auth/logout`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${bearer}` },
-      }).catch(() => {});
+      try {
+        await fetch(`${window.location.origin}/api/auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${bearer}` },
+          keepalive: true,
+        });
+      } catch {
+        // Signed out here regardless; see above.
+      }
     }
     setToken("");
     window.location.reload();

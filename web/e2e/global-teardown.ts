@@ -4,6 +4,8 @@ import {
   E2E_AGENTS_DIR,
   E2E_APPLICATIONS_DIR,
   E2E_METRICS_DB,
+  E2E_ACCOUNTS_STATE_DIR,
+  E2E_STATE_DIR,
 } from "../playwright.config";
 
 // Remove the isolated per-agent state tree the e2e backend wrote (memory/ +
@@ -19,4 +21,10 @@ export default function globalTeardown(): void {
   for (const suffix of ["", "-wal", "-shm"]) {
     rmSync(`${E2E_METRICS_DB}${suffix}`, { force: true });
   }
+  // The master key, the per-account directories and the research output the
+  // run produced — none of which belong in a developer's real ~/.octopus.
+  rmSync(E2E_STATE_DIR, { recursive: true, force: true });
+  // Everything the accounts backend wrote: its own agents, applications,
+  // workspace, master key and per-account directories.
+  rmSync(E2E_ACCOUNTS_STATE_DIR, { recursive: true, force: true });
 }

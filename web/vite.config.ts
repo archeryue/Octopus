@@ -8,6 +8,14 @@ const apiTarget = `http://localhost:${process.env.OCTOPUS_API_PORT || '8000'}`
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // Two dev servers run at once during e2e (playwright.config.ts: one proxying
+  // to the shared backend, one to the accounts backend). They share this
+  // project, so they share `node_modules/.vite` — and each one's dependency
+  // pre-bundling invalidates the other's, so both keep re-optimizing and
+  // reloading every page they serve. A full `:fast` run took 9.8 minutes that
+  // way instead of 45 seconds. A cache dir per server costs nothing and ends
+  // it.
+  cacheDir: process.env.VITE_CACHE_DIR || undefined,
   server: {
     proxy: {
       '/api': apiTarget,

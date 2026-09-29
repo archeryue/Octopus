@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,228 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,307 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1,194 tests, ~34 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,273 tests, ~45 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -52,13 +52,19 @@ You MUST verify your changes before considering them done:
    import is what used to make a plain `--collect-only` spawn a real `claude`
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
-2. **Frontend unit tests**: `cd web && bun run test` (267 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (280 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
-4. **E2E tests**: `cd web && bun run test:e2e` (93 tests, no skips, ~5 min, Playwright
-   auto-starts servers). Split into two buckets for dev iteration —
-   `bun run test:e2e:fast` (55 pure-UI tests, ~40 s — login / sessions /
+4. **E2E tests**: `cd web && bun run test:e2e` (105 tests, no skips, ~4.5 min,
+   Playwright auto-starts servers). It *is* the two buckets, run as two
+   invocations — not one run that covers both. The accounts spec needs a second
+   backend and dev server of its own (`playwright.config.ts`: claiming an
+   install retires the token every other spec signs in with), and with those two
+   idle servers up the real-CLI half failed a different Chat test on each of two
+   runs. So the buckets are also the unit of iteration —
+   `bun run test:e2e:fast` (67 pure-UI tests, ~45 s — login / accounts /
+   sessions /
    dialogs / sidebar / sidebar pins / virtualized chat / attachments / etc.) and
-   `bun run test:e2e:llm` (38 real-LLM tests, ~4 min — chat, /schedule,
+   `bun run test:e2e:llm` (38 real-LLM tests, ~3.7 min — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
    notifier, codex sign-in, handoff/pull). Anything that drives a real
    `claude` / `codex` turn carries `@llm` in its describe title; the
@@ -72,14 +78,14 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1194 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, the in-process MCP namespaces, monitoring. No CLI, no network. ~34 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1273 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, accounts + keys + workspace confinement + tenant isolation, the in-process MCP namespaces, monitoring. No CLI, no network. ~45 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
-| Frontend unit | vitest | `cd web && bun run test` | 267 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height. ~3 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 93 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, sidebar pins (drag + keyboard reorder), `/rewind`, `/research`, the monitor page. `:fast` (55, ~40 s) skips the `@llm` half; `:llm` (38, ~4 min) is the rest. |
+| Frontend unit | vitest | `cd web && bun run test` | 280 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height, the sign-in screen's two eras, the account page. ~4 s. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 105 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, sidebar pins (drag + keyboard reorder), `/rewind`, `/research`, the monitor page, and accounts end to end (claim the install, invite, register, isolation, sign-out, password change) against a backend of their own. `:fast` (67, ~45 s) skips the `@llm` half; `:llm` (38, ~3.7 min) is the rest, and `test:e2e` is the two in sequence. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
-hand-written inventory of 1,228 tests cannot stay true, and it cost ~16 KB of
+hand-written inventory of 1,307 tests cannot stay true, and it cost ~16 KB of
 every session's context to try.
 
 ## Project Structure
@@ -123,6 +129,41 @@ agents, which gained `POST /api/agents/{id}/unarchive` for the same section).
 - `server/routers/applications.py` — `/api/applications` CRUD **plus** `/apps/{id}/{path}` — the app itself, streamed out of its directory with traversal + symlink guards, `Cache-Control: no-store`, and bearer / `?token=` / `octopus_app_token`-cookie auth (an iframe can't send an Authorization header)
 - `server/agent_manager.py` — Agent CRUD (durable assistant definitions that own sessions/schedules)
 - `server/agent_memory.py` — Per-agent native memory (`docs/plans/memory.md`): one canonical markdown dir per agent (`<agents_dir>/<id>/memory/`), shared by both harnesses. Claude points its auto-memory at it via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE`; Codex via an injected `developer_instructions` blurb naming the dir (its native `features.memories` pipeline is unused — it doesn't run in headless `exec`). Memory is decoupled from both harnesses' config/auth dirs — `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are never touched, so auth and `--resume` transcripts are unaffected. Pure path helpers + idempotent provisioning.
+### Accounts
+
+- `docs/plans/multi-tenancy.md` — one site, many people: the label becomes a
+  username, the token becomes a password, and every account gets its own rows,
+  keys and directories. The install itself is an era: before the first account
+  `OCTOPUS_AUTH_TOKEN` is the way in and `user_id` is NULL on every row; after
+  it, the token opens nothing and every row has an owner. `POST
+  /api/auth/bootstrap` is the one-way door between the two — it re-encrypts
+  every stored secret under the new account's key, adopts the orphan rows *and
+  the live `Session` objects*, and keeps the working directories the existing
+  sessions already use as that account's `extra_roots`.
+- `server/users.py` — accounts: scrypt password hashing (stdlib, so no new
+  dependency), `UserManager` (create / authenticate / set-password / disable /
+  issue-token / resolve-token / invites / register). A password is spent once
+  for a bearer that can be revoked without changing it; the row keeps only
+  digests.
+- `server/crypto.py` — `master_key()` (env wins, else a 0600 file created with
+  `O_EXCL`) plus per-account DEK wrap/unwrap. Generating the key rather than
+  demanding one is deliberate: a key an operator has to invent is a key that
+  ends up guessable or lost, and losing it loses every stored secret.
+- `server/workspace.py` — `paths_for(user_id)`: every `settings.*_dir` as a
+  function of an account, with the pre-accounts answer being the legacy layout.
+  `confine()` resolves symlinks *before* comparing, because a check against the
+  literal path is decoration.
+- `server/bootstrap.py` — the upgrade above, in one operation, reporting what it
+  moved rather than asking to be trusted.
+- `server/db/users.py` — `users` / `invites` / `auth_tokens`, `adopt_orphan_rows`
+  (idempotent by `user_id IS NULL`, not by a ledger stamp), and `claim_invite`
+  whose use-count check is inside the UPDATE so two registrations cannot both
+  win the last use.
+- `web/src/components/SignIn.tsx` / `AccountPage.tsx` — the sign-in screen asks
+  whichever question the install can answer (`GET /api/auth/state`), and the
+  account page is where an install becomes an account, a password changes, and
+  an admin manages invites and people.
+
 ### Agents, memory and delegation
 
 - `server/delegations.py` — Agent-to-agent delegation manager (`docs/plans/agent-collaboration.md`). Subscribes to the SessionManager broadcast bus; on a tracked child session's `assistant_text` / `result` / `error` / `question_request` events, captures + finalises and injects an `[agent-reply:<name> delegation=<id>]` (or `agent-question`, or `agent-error`) follow-up turn into the parent session via the same `start_message` path bg-task delivery uses. Cycle and depth-3 guards walk `parent_session_id`. `answer_pending_question(delegation_id, choice)` drains the child's oldest pending question on the parent's behalf — same Event-signal machinery the human UI uses (first to drain wins). The delegation id IS the child session id; no parallel id space, no new persistence table.
@@ -219,5 +260,4 @@ cd web && npx playwright test --reporter=list  # verbose output
 - Use `useSessionStore.getState()` (not hook selectors) inside callbacks/effects that mutate store to avoid re-render loops
 ### Environment traps
 
-- The SDK message parser is patched locally (`.venv/lib/.../message_parser.py`) to handle unknown message types — if you reinstall deps, the patch must be reapplied
 - The JS toolchain (`bun`, `node`, `npm`, `npx`) and `codex` live under `~/.nvm/versions/node/*/bin`, **not** on the default PATH. Prepend that bin dir for any frontend/codex command (`export PATH="$HOME/.nvm/versions/node/<ver>/bin:$PATH"`). It's also required for the 4 `test_backend_codex_real.py` tests to resolve `codex` (otherwise they error rather than skip)
