@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..bg_tasks import BgTaskError, BgTaskRecord, bg_task_manager
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr
 from ..sessions import SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["bg-tasks"])
@@ -46,11 +46,13 @@ def _record_to_json(rec: BgTaskRecord) -> dict[str, Any]:
     }
 
 
-def _require_session(session_manager: SessionManager, session_id: str) -> str:
+def _require_session(
+    session_manager: SessionManager, session_id: str, user_id: str | None = None
+) -> str:
     """Live sessions only — bg tasks attach to in-memory sessions so
     the cross-turn delivery has a target. Archived sessions are
-    read-only history."""
-    session = session_manager.get_session(session_id)
+    read-only history. Scoped: another account's session is a 404."""
+    session = session_manager.get_session(session_id, user_id)
     if session is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
@@ -66,6 +68,7 @@ async def start_bg_task(
     session_manager: SessionMgr,
     session_id: str,
     req: StartBgTaskRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Start a new background task. Called by the bg MCP server.
@@ -76,7 +79,7 @@ async def start_bg_task(
     """
     if not req.command.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "command must be non-empty")
-    working_dir = _require_session(session_manager, session_id)
+    working_dir = _require_session(session_manager, session_id, user_id)
     try:
         rec = await bg_task_manager.start_task(
             session_id=session_id,
@@ -91,41 +94,58 @@ async def start_bg_task(
 
 @router.get("/{session_id}/bg-tasks")
 async def list_bg_tasks(
+    session_manager: SessionMgr,
     session_id: str,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> list[dict[str, Any]]:
     """All bg tasks for a session, most-recent first. Used by the
     sidebar / chip popover. Includes finished tasks so users can scroll
     back through history."""
-    # We don't require a live session here — chat history can outlive
-    # the in-memory session (archived). The DB row is enough.
+    # We don't require a *live* session here — chat history can outlive the
+    # in-memory session (archived) — but we do require it to be this account's,
+    # which `session_belongs_to` answers for both.
+    if not await session_manager.session_belongs_to(session_id, user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     rows = await bg_task_manager.list_tasks(session_id)
     return [_record_to_json(r) for r in rows]
 
 
 @router.get("/{session_id}/bg-tasks/{task_id}")
 async def get_bg_task(
+    session_manager: SessionMgr,
     session_id: str,
     task_id: str,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     rec = await bg_task_manager.get_task(task_id)
-    if rec is None or rec.session_id != session_id:
+    if (
+        rec is None
+        or rec.session_id != session_id
+        or not await session_manager.session_belongs_to(session_id, user_id)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Background task not found")
     return _record_to_json(rec)
 
 
 @router.post("/{session_id}/bg-tasks/{task_id}/cancel")
 async def cancel_bg_task(
+    session_manager: SessionMgr,
     session_id: str,
     task_id: str,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Best-effort cancel. Returns {cancelled: bool}; cancelled=False
     means the task wasn't currently running (already finished, or
     server restarted and lost the in-memory handle)."""
     rec = await bg_task_manager.get_task(task_id)
-    if rec is None or rec.session_id != session_id:
+    if (
+        rec is None
+        or rec.session_id != session_id
+        or not await session_manager.session_belongs_to(session_id, user_id)
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Background task not found")
     cancelled = await bg_task_manager.cancel_task(task_id)
     return {"cancelled": cancelled, "task_id": task_id}

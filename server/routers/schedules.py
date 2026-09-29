@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr
 from ..models import (
     AgentScheduleRequest,
     CreateScheduleRequest,
@@ -200,20 +200,25 @@ def schedule_updates(existing: dict, req: UpdateScheduleRequest) -> dict:
 
 
 @router.get("", response_model=list[ScheduleInfo])
-async def list_schedules(_: str = Depends(verify_token)):
-    rows = await _get_db().load_schedules()
+async def list_schedules(user_id: ScopeUser = None, _: str = Depends(verify_token)):
+    rows = await _get_db().load_schedules(user_id)
     return [to_schedule_info(row) for row in rows]
 
 
 @router.post("", response_model=ScheduleInfo, status_code=status.HTTP_201_CREATED)
-async def create_schedule(session_manager: SessionMgr, req: CreateScheduleRequest, _: str = Depends(verify_token)):
+async def create_schedule(
+    session_manager: SessionMgr,
+    req: CreateScheduleRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
     """Create a schedule. Prefer `agent_id`; `session_id` is accepted for one
     release and resolved to the session's owning agent (agent-refactor.md
     §5.4)."""
 
     agent_id = req.agent_id
     if agent_id is None and req.session_id:
-        session = session_manager.get_session(req.session_id)
+        session = session_manager.get_session(req.session_id, user_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
         agent_id = session.agent_id
@@ -221,7 +226,7 @@ async def create_schedule(session_manager: SessionMgr, req: CreateScheduleReques
         raise HTTPException(
             status_code=400, detail="agent_id (or legacy session_id) is required"
         )
-    if await session_manager.db.get_agent(agent_id) is None:
+    if await session_manager.db.get_agent(agent_id, user_id) is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
     row = await create_schedule_for_agent(
@@ -236,10 +241,13 @@ async def create_schedule(session_manager: SessionMgr, req: CreateScheduleReques
 
 @router.patch("/{schedule_id}", response_model=ScheduleInfo)
 async def update_schedule(
-    schedule_id: str, req: UpdateScheduleRequest, _: str = Depends(verify_token)
+    schedule_id: str,
+    req: UpdateScheduleRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     db = _get_db()
-    rows = await db.load_schedules()
+    rows = await db.load_schedules(user_id)
     existing = next((r for r in rows if r["id"] == schedule_id), None)
     if not existing:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -259,7 +267,14 @@ async def update_schedule(
 
 
 @router.delete("/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_schedule(schedule_id: str, _: str = Depends(verify_token)):
+async def delete_schedule(
+    schedule_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
+    # Resolved within this account's schedules first: a DELETE that went
+    # straight to the id would delete anybody's, and answer 204 either way.
+    rows = await _get_db().load_schedules(user_id)
+    if not any(r["id"] == schedule_id for r in rows):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Schedule not found")
     await _get_runner().remove(schedule_id)
     await _get_db().delete_schedule(schedule_id)
     await _broadcast_change()
@@ -270,7 +285,9 @@ async def delete_schedule(schedule_id: str, _: str = Depends(verify_token)):
 # --------------------------------------------------------------------------- #
 
 
-def _session_agent_id(session_manager: SessionManager, session_id: str) -> str:
+def _session_agent_id(
+    session_manager: SessionManager, session_id: str, user_id: str | None = None
+) -> str:
     """The agent that owns this session — the only agent these routes act for.
 
     Scoping is derived, never passed: the caller is an MCP shim running inside
@@ -279,7 +296,7 @@ def _session_agent_id(session_manager: SessionManager, session_id: str) -> str:
     agent's schedules through this surface.
     """
 
-    session = session_manager.get_session(session_id)
+    session = session_manager.get_session(session_id, user_id)
     if session is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
@@ -293,6 +310,8 @@ def _session_agent_id(session_manager: SessionManager, session_id: str) -> str:
 
 
 async def _owned_row(schedule_id: str, agent_id: str) -> dict:
+    # The agent id already came from a session this account owns, so the agent
+    # filter is the tighter of the two checks and the only one needed here.
     rows = await _get_db().load_schedules()
     row = next(
         (r for r in rows if r["id"] == schedule_id and r["agent_id"] == agent_id),
@@ -307,9 +326,12 @@ async def _owned_row(schedule_id: str, agent_id: str) -> dict:
 
 @session_router.get("/{session_id}/schedules", response_model=list[ScheduleInfo])
 async def list_session_schedules(
-    session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
-    agent_id = _session_agent_id(session_manager, session_id)
+    agent_id = _session_agent_id(session_manager, session_id, user_id)
     rows = await _get_db().load_schedules()
     return [to_schedule_info(r) for r in rows if r["agent_id"] == agent_id]
 
@@ -323,12 +345,13 @@ async def create_session_schedule(
     session_manager: SessionMgr,
     session_id: str,
     req: AgentScheduleRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     """Create a schedule for this session's agent, with the recurrence stated
     outright (no AI parse). `in_session` decides where the fires land: this
     conversation, or a throwaway session per fire."""
-    agent_id = _session_agent_id(session_manager, session_id)
+    agent_id = _session_agent_id(session_manager, session_id, user_id)
     try:
         parsed = build_explicit_schedule(
             prompt=req.prompt,
@@ -363,9 +386,10 @@ async def update_session_schedule(
     session_id: str,
     schedule_id: str,
     req: UpdateScheduleRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
-    agent_id = _session_agent_id(session_manager, session_id)
+    agent_id = _session_agent_id(session_manager, session_id, user_id)
     existing = await _owned_row(schedule_id, agent_id)
     try:
         updates = schedule_updates(existing, req)
@@ -389,9 +413,10 @@ async def delete_session_schedule(
     session_manager: SessionMgr,
     session_id: str,
     schedule_id: str,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
-    agent_id = _session_agent_id(session_manager, session_id)
+    agent_id = _session_agent_id(session_manager, session_id, user_id)
     await _owned_row(schedule_id, agent_id)
     await _get_runner().remove(schedule_id)
     await _get_db().delete_schedule(schedule_id)

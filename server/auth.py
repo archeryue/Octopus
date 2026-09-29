@@ -26,10 +26,19 @@ _bearer = HTTPBearer()
 
 async def _allowed(presented: str) -> bool:
     from . import deps
+    from .mcp_identity import verify as verify_mcp_scope
 
     if presented and deps._user_manager is not None:
         if await deps._user_manager.resolve_token(presented) is not None:
             return True
+    # A tool call from inside a turn (multi-tenancy.md §7). The in-process MCP
+    # namespaces reach their own REST routes over loopback, and what they carry
+    # is the scope bearer the CLI was given — signed with the master key and
+    # naming the session and its owner. It used to be `OCTOPUS_AUTH_TOKEN`,
+    # which stops opening anything the moment an account exists: every tool an
+    # agent has would have failed on the first account's first turn.
+    if presented and verify_mcp_scope(presented) is not None:
+        return True
     # Pre-accounts only, and never once an account exists.
     if await deps.accounts_exist():
         return False

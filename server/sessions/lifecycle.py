@@ -350,16 +350,19 @@ class LifecycleMixin(SessionManagerBase):
             )
         return evicted
 
-    async def list_archived_sessions(self) -> list[dict[str, Any]]:
+    async def list_archived_sessions(
+        self, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Return SessionInfo-shaped dicts for every archived DB row.
 
         Pulled lazily from the DB (archived sessions aren't kept in the
-        in-memory `self.sessions` map). Caller turns them into Pydantic
+        in-memory `self.sessions` map), so the owner filter is the database's
+        job here rather than `list_sessions`'. Caller turns them into Pydantic
         models for the response.
         """
         if self.db is None:
             return []
-        rows = await self.db.load_sessions(include_archived=True)
+        rows = await self.db.load_sessions(include_archived=True, user_id=user_id)
         out: list[dict[str, Any]] = []
         for row in rows:
             if not row["archived"]:
@@ -393,14 +396,15 @@ class LifecycleMixin(SessionManagerBase):
         return out
 
     async def load_archived_session_detail(
-        self, session_id: str
+        self, session_id: str, user_id: str | None = None
     ) -> SessionDetail | None:
         """Read full message history for an archived session straight
-        from the DB. Returns None if the id isn't an archived row.
+        from the DB. Returns None if the id isn't an archived row — or isn't
+        one of `user_id`'s, which a caller must not be able to tell apart.
         """
         if self.db is None:
             return None
-        rows = await self.db.load_sessions(include_archived=True)
+        rows = await self.db.load_sessions(include_archived=True, user_id=user_id)
         match = next(
             (r for r in rows if r["id"] == session_id and r["archived"]), None
         )
@@ -445,14 +449,18 @@ class LifecycleMixin(SessionManagerBase):
             next_message_seq=total,
         )
 
-    async def unarchive_session(self, session_id: str) -> Session:
+    async def unarchive_session(
+        self, session_id: str, user_id: str | None = None
+    ) -> Session:
         """Flip archived=0 in the DB and reload the row into memory.
 
-        Refuses unknown / non-archived ids with ValueError.
+        Refuses unknown / non-archived ids with ValueError — and an id that
+        belongs to another account is one of those, indistinguishably, which is
+        what keeps a 404 from confirming it exists.
         """
         if self.db is None:
             raise ValueError("DB not initialized")
-        rows = await self.db.load_sessions(include_archived=True)
+        rows = await self.db.load_sessions(include_archived=True, user_id=user_id)
         match = next(
             (r for r in rows if r["id"] == session_id and r["archived"]), None
         )

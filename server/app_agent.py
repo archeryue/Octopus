@@ -122,10 +122,14 @@ class AppAgentManager:
 
     # ------------------------------------------------------------- read-side
 
-    async def list_agents(self) -> list[dict[str, Any]]:
-        """Who an app may address. Name is the address (as with delegations),
-        so the list carries exactly what a picker needs and nothing that would
-        leak configuration — no credentials, no MCP wiring, no working dirs."""
+    async def list_agents(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """Who an app may address — its *owner's* agents (multi-tenancy.md §7).
+
+        Name is the address (as with delegations), so the list carries exactly
+        what a picker needs and nothing that would leak configuration — no
+        credentials, no MCP wiring, no working dirs. Scoped, because an app is
+        one account's program and the agents it may talk to are that account's.
+        """
         db = self._require_db()
         return [
             {
@@ -134,7 +138,7 @@ class AppAgentManager:
                 "avatar": a.get("avatar") or "",
                 "is_default": bool(a.get("is_system")),
             }
-            for a in await db.load_agents()
+            for a in await db.load_agents(user_id=user_id)
             if not a.get("archived")
         ]
 
@@ -393,7 +397,7 @@ class AppAgentManager:
         addressing delegations use. No name → the app's own agent, so the
         common case needs no configuration at all."""
         db = self._require_db()
-        agents = await db.load_agents()
+        agents = await db.load_agents(user_id=app_row.get("user_id"))
         live = [a for a in agents if not a.get("archived")]
         wanted = (name or "").strip().lower()
         if not wanted:

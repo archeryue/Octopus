@@ -56,13 +56,31 @@ class SchedulesMixin(DatabaseBase):
         )
         await self.conn.commit()
 
-    async def load_schedules(self) -> list[dict[str, Any]]:
+    async def load_schedules(
+        self, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Every schedule, or only the ones an account owns.
+
+        `schedules` carries no `user_id` of its own: a schedule belongs to an
+        agent, and the agent has the owner (multi-tenancy.md §5). Joining is
+        therefore the definition, not an optimisation — a copy of the column
+        here would be a second answer to the same question, free to disagree
+        with the first.
+
+        `user_id=None` is "no scoping asked for", which is what the scheduler
+        wants: it fires everybody's jobs from one process.
+        """
         await self._ensure_connected()
-        cursor = await self.conn.execute(
-            "SELECT id, agent_id, name, prompt, interval_seconds, cron, timezone, "
-            "recurrence_label, enabled, created_at, last_run_at, origin_session_id, "
-            "run_at, last_run_session_id FROM schedules"
+        sql = (
+            "SELECT s.id, s.agent_id, s.name, s.prompt, s.interval_seconds, s.cron, "
+            "s.timezone, s.recurrence_label, s.enabled, s.created_at, s.last_run_at, "
+            "s.origin_session_id, s.run_at, s.last_run_session_id FROM schedules s"
         )
+        params: list[Any] = []
+        if user_id is not None:
+            sql += " JOIN agents a ON a.id = s.agent_id WHERE a.user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql, params)
         rows = await cursor.fetchall()
         return [
             {

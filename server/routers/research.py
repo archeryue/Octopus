@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..auth import verify_token
+from ..deps import ScopeUser, SessionMgr
 from ..research import ResearchError, research_manager
+from ..sessions import SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["research"])
 
@@ -24,12 +26,30 @@ class StartResearchRequest(BaseModel):
     question: str = Field(min_length=1)
 
 
+async def _own_session(
+    session_manager: SessionManager, session_id: str, user_id: str | None
+) -> None:
+    """404 unless this account owns the session (multi-tenancy.md §5).
+
+    A research job is the session's, so this is the only ownership question
+    these routes have; `session_belongs_to` covers the archived case, because a
+    job outlives the conversation that started it.
+    """
+    if not await session_manager.session_belongs_to(session_id, user_id):
+        raise HTTPException(404, "Session not found")
+
+
 @router.post("/{session_id}/research", status_code=201)
 async def start_research(
-    session_id: str, req: StartResearchRequest, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    req: StartResearchRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Launch a deep-research job. Returns immediately with the job row; the
     final report is injected into the session as a turn when it finishes."""
+    await _own_session(session_manager, session_id, user_id)
     try:
         return await research_manager.start(session_id, req.question)
     except ResearchError as e:
@@ -38,8 +58,12 @@ async def start_research(
 
 @router.get("/{session_id}/research")
 async def list_research(
-    session_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ) -> list[dict[str, Any]]:
+    await _own_session(session_manager, session_id, user_id)
     if research_manager.db is None:
         return []
     return await research_manager.db.list_research_jobs_for_session(session_id)
@@ -47,8 +71,13 @@ async def list_research(
 
 @router.get("/{session_id}/research/{research_id}")
 async def get_research(
-    session_id: str, research_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    research_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ) -> dict[str, Any]:
+    await _own_session(session_manager, session_id, user_id)
     if research_manager.db is None:
         raise HTTPException(503, "research not available")
     row = await research_manager.db.get_research_job(research_id)
@@ -59,10 +88,15 @@ async def get_research(
 
 @router.post("/{session_id}/research/{research_id}/cancel")
 async def cancel_research(
-    session_id: str, research_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr,
+    session_id: str,
+    research_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     # Verify session ownership BEFORE mutating — a request scoped to the wrong
     # session must not cancel a real job (Vera review).
+    await _own_session(session_manager, session_id, user_id)
     if research_manager.db is None:
         raise HTTPException(503, "research not available")
     existing = await research_manager.db.get_research_job(research_id)

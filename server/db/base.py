@@ -358,6 +358,27 @@ class DatabaseBase:
             (version, datetime.now(UTC).isoformat()),
         )
 
+    async def _make_index_per_user(self, name: str, definition: str) -> None:
+        """Rebuild a unique index so it is unique per account, not per box.
+
+        Guarded on the index's own SQL rather than on a ledger stamp, because
+        the question "is this index already per-user" has an answer in the
+        database and a stamp is only a claim about one. Idempotent either way;
+        the stamp is still written, so the ledger records the migration ran.
+        """
+        cur = await self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+            (name,),
+        )
+        row = await cur.fetchone()
+        if row and row[0] and "user_id" not in row[0]:
+            await self.conn.execute(f"DROP INDEX {name}")  # noqa: S608
+            await self.conn.execute(
+                f"CREATE UNIQUE INDEX IF NOT EXISTS {name} {definition}"  # noqa: S608
+            )
+            logger.info("migration applied: %s -> per user", name)
+        await self._stamp(f"index:{name}_per_user")
+
     async def _add_column(self, table: str, column: str, ddl: str) -> None:
         """Apply one additive column migration, guarded by introspection.
 
@@ -433,28 +454,37 @@ class DatabaseBase:
         for table, column, ddl in self._LATE_COLUMN_MIGRATIONS:
             await self._add_column(table, column, ddl)
 
-        # After the columns, necessarily: this index names `user_id`, which the
-        # loop above is what adds to a database that predates accounts. Placed
-        # earlier it fails with "no such column" on exactly the installs the
-        # migration exists for — which is how the pre-pins fixture found it.
+        # After the columns, necessarily: these indexes name `user_id`, which
+        # the loop above is what adds to a database that predates accounts.
+        # Placed earlier they fail with "no such column" on exactly the
+        # installs the migration exists for — which is how the pre-pins fixture
+        # found it.
         #
-        # Unique per *account* (multi-tenancy.md §5): a name reserved across the
-        # whole box would mean the second person who wants an app called "Notes"
-        # cannot have one, and would be told that somebody else already does.
-        # Guarded on the index's own SQL, so it runs exactly once.
-        cur = await self.conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' "
-            "AND name = 'applications_name_unique'"
+        # Unique per *account* (multi-tenancy.md §5). A name or an external
+        # account reserved across the whole box would mean the second person who
+        # wants an app called "Notes", an agent called "Octo", or their own
+        # GitHub connected cannot have one — and would be told, in a message
+        # about a conflict, that somebody else already does.
+        # `COALESCE(user_id, '')` and not the bare column: in a UNIQUE index
+        # SQLite holds that NULL is not equal to NULL, so indexing the column
+        # itself would drop the constraint entirely for the era where every row
+        # has `user_id IS NULL` — the pre-accounts install, where these
+        # constraints have always held. Found by the connector dedupe test, and
+        # true of all three.
+        await self._make_index_per_user(
+            "applications_name_unique",
+            "ON applications(COALESCE(user_id, ''), name COLLATE NOCASE)"
+            " WHERE archived = 0",
         )
-        row = await cur.fetchone()
-        if row and row[0] and "user_id" not in row[0]:
-            await self.conn.execute("DROP INDEX applications_name_unique")
-            await self.conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique"
-                " ON applications(user_id, name COLLATE NOCASE) WHERE archived = 0"
-            )
-            logger.info("migration applied: applications_name_unique -> per user")
-        await self._stamp("index:applications_name_unique_per_user")
+        await self._make_index_per_user(
+            "agents_name_unique",
+            "ON agents(COALESCE(user_id, ''), name) WHERE archived = 0",
+        )
+        await self._make_index_per_user(
+            "connector_installations_account_unique",
+            "ON connector_installations(COALESCE(user_id, ''), kind,"
+            " external_account_id) WHERE external_account_id IS NOT NULL",
+        )
 
         await self._backfill_pin_order()
 

@@ -124,8 +124,15 @@ class SessionsMixin(DatabaseBase):
             raise
 
     async def load_sessions(
-        self, *, include_archived: bool = False
+        self, *, include_archived: bool = False, user_id: str | None = None
     ) -> list[dict[str, Any]]:
+        """Every session row, or only one account's (multi-tenancy.md §5).
+
+        `user_id=None` is "no scoping asked for" — the boot-time load, which
+        builds the whole in-memory map, and the recovery sweeps. An *archived*
+        row is only ever read from here, so this is where its owner is checked
+        too; the live ones are filtered in memory by `list_sessions`.
+        """
         await self._ensure_connected()
         # Rows come back as plain tuples and are mapped by POSITION below, so a
         # new column goes on the END of this list. Inserting one in the middle
@@ -139,9 +146,14 @@ class SessionsMixin(DatabaseBase):
             "fork_revert_record, fork_status, app_id, model, user_id "
             "FROM sessions"
         )
-        if not include_archived:
-            query += " WHERE archived = 0"
-        cursor = await self.conn.execute(query)
+        clauses = [] if include_archived else ["archived = 0"]
+        params: list[Any] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        cursor = await self.conn.execute(query, params)
         rows = await cursor.fetchall()
         return [
             {

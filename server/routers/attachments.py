@@ -21,8 +21,6 @@ from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
-    Query,
-    Request,
     UploadFile,
     status,
 )
@@ -36,8 +34,7 @@ from ..attachments import (
     save_upload,
 )
 from ..auth import verify_token
-from ..config import settings
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr, ViewerUser
 from ..models import AttachmentMetadata
 from ..sessions import SessionManager
 
@@ -46,10 +43,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["attachments"])
 
 
-def _require_session(session_manager: SessionManager, session_id: str) -> None:
-    """404 if the session isn't in memory. We don't allow uploads to
-    archived sessions — they're read-only history."""
-    if session_manager.get_session(session_id) is None:
+def _require_session(
+    session_manager: SessionManager, session_id: str, user_id: str | None = None
+) -> None:
+    """404 if the session isn't in memory — or isn't this account's. We don't
+    allow uploads to archived sessions: they're read-only history."""
+    if session_manager.get_session(session_id, user_id) is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
         )
@@ -64,9 +63,10 @@ async def upload_attachment(
     session_manager: SessionMgr,
     session_id: str,
     file: UploadFile,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> AttachmentMetadata:
-    _require_session(session_manager, session_id)
+    _require_session(session_manager, session_id, user_id)
 
     # Read fully into memory: the cap is small (25 MB) and the storage
     # module needs the bytes for size + write. Streaming to disk first
@@ -96,32 +96,19 @@ async def upload_attachment(
     )
 
 
-def _verify_download_token(
-    request: Request, token: str | None = Query(default=None)
-) -> str:
-    """Allow EITHER a bearer header OR `?token=…` query.
-
-    The query path exists so `<img src="…/attachments/…?token=…">` works in
-    the browser — image tags can't carry custom Authorization headers.
-    Same auth value either way: there's no second, weaker token to leak.
-    """
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        candidate = auth_header.split(" ", 1)[1].strip()
-        if candidate == settings.auth_token:
-            return candidate
-    if token and token == settings.auth_token:
-        return token
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
-
-
 @router.get("/{session_id}/attachments/{attachment_id}")
 async def download_attachment(
     session_manager: SessionMgr,
     session_id: str,
     attachment_id: str,
-    _: str = Depends(_verify_download_token),
+    user_id: ViewerUser = None,
 ) -> FileResponse:
+    """`ViewerUser` rather than `verify_token`, because an `<img src>` cannot
+    carry an Authorization header — it admits the request from the header, the
+    query or the cookie, and says whose sessions it may read."""
+    if not await session_manager.session_belongs_to(session_id, user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Attachment not found")
+
     # Don't require the session to still exist in memory — once a message
     # references an attachment, the chat history should be able to render
     # the chip / thumbnail even if the session was just archived. Hard

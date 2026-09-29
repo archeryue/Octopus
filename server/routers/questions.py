@@ -40,7 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..auth import verify_token
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr
 
 router = APIRouter(prefix="/api/sessions", tags=["questions"])
 
@@ -71,6 +71,7 @@ async def create_question(
     session_manager: SessionMgr,
     session_id: str,
     req: CreateQuestionRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Called by the MCP server. Creates a pending question, broadcasts
@@ -78,7 +79,7 @@ async def create_question(
     question_id the MCP server should long-poll on."""
     if not req.questions:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "questions must be non-empty")
-    if session_manager.get_session(session_id) is None:
+    if session_manager.get_session(session_id, user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     qid = await session_manager.create_pending_question(session_id, req.questions)
     if qid is None:
@@ -94,12 +95,13 @@ async def wait_for_answer(
     session_id: str,
     question_id: str,
     timeout: float = 60.0,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """MCP-server-facing long-poll. Returns when the user (or the
     session-level auto-answer timeout) submits. 408 on per-call
     timeout — the MCP server should loop and retry."""
-    if session_manager.get_session(session_id) is None:
+    if session_manager.get_session(session_id, user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     # Cap timeout so a misbehaving MCP server can't park a connection
     # forever. 5 min is plenty given the auto-answer default is 30 min.
@@ -119,13 +121,14 @@ async def submit_answer(
     session_id: str,
     question_id: str,
     req: SubmitAnswerRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Frontend-facing. The user pressed submit; route into the
     session_manager which formats the answer, persists the chat
     entry, broadcasts the question_answer WS event, and sets the
     Event that wakes the MCP server's long-poll."""
-    if session_manager.get_session(session_id) is None:
+    if session_manager.get_session(session_id, user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     ok = await session_manager.answer_question(
         session_id,

@@ -26,6 +26,7 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from .mcp_identity import verify as verify_mcp_scope
 from .sessions import SessionManager
 from .sessions import session_manager as _singleton
 from .users import UserManager
@@ -163,14 +164,21 @@ async def scope_user_id(
     and from then on a route filters whether or not its author thought about
     it. That is the point: ownership is the default, not a thing to remember.
     """
+    presented = _presented(request, creds, token)
     if _user_manager is None:
         # No account layer bound at all. Asking for a scope must not be how a
         # request discovers that: `get_user_manager` answers 503 because a
         # *login* without accounts is broken, while a *read* without accounts
         # is the pre-accounts install working exactly as it always did.
         return None
-    user = await _user_manager.resolve_token(_presented(request, creds, token))
-    return user["id"] if user else None
+    user = await _user_manager.resolve_token(presented)
+    if user is not None:
+        return user["id"]
+    # A tool call from inside a turn acts as its session's owner (§7). The
+    # bearer is the MCP scope the CLI was given; `auth._allowed` has already
+    # accepted it, and this is the same claim read for the same request.
+    scope = verify_mcp_scope(presented)
+    return scope.user_id if scope else None
 
 
 ScopeUser = Annotated[str | None, Depends(scope_user_id)]
@@ -192,7 +200,47 @@ async def scope_user_id_for(token: str) -> tuple[bool, str | None]:
     if _user_manager is None:
         return True, None
     user = await _user_manager.resolve_token(token)
-    return True, (user["id"] if user else None)
+    if user is not None:
+        return True, user["id"]
+    scope = verify_mcp_scope(token)
+    return True, (scope.user_id if scope else None)
+
+
+async def data_key_for(user_id: str | None) -> str:
+    """The encryption key for this account's stored secrets (§4).
+
+    Here as well as on `UserManager` because the callers are background paths
+    and routers that hold a `user_id` and no manager — and because an install
+    with no account layer bound at all still has to answer the question.
+    """
+    if _user_manager is None:
+        from .config import settings
+
+        return settings.auth_token
+    return await _user_manager.data_key_for(user_id)
+
+
+async def viewer_user_id(
+    request: Request,
+    creds: _BearerCreds,
+    token: _QueryToken = None,
+) -> str | None:
+    """Allowed *and* scoped, for the routes a browser reaches without a header.
+
+    `verify_token` reads the `Authorization` header only, so a route an `<img
+    src>` or an iframe has to fetch — the file viewer, an attachment — carried
+    its own hand-rolled check against `OCTOPUS_AUTH_TOKEN`, and would have
+    stopped opening anything the moment an account existed. This is the one
+    dependency that both admits the request and says whose rows it may see,
+    from any of the three places a bearer travels.
+    """
+    allowed, user_id = await scope_user_id_for(_presented(request, creds, token))
+    if not allowed:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    return user_id
+
+
+ViewerUser = Annotated[str | None, Depends(viewer_user_id)]
 
 
 async def require_admin(user: CurrentUser) -> dict[str, Any]:

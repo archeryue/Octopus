@@ -9,6 +9,7 @@ import pytest
 
 from server.database import Database
 from server.notifiers import NotifierEvent, NotifierManager
+from server.notifiers.base import NotifierBase
 from server.notifiers.webhook import WebhookNotifier
 
 # ---------------------------------------------------------------------------
@@ -196,6 +197,10 @@ async def test_session_manager_fires_idle_notification(monkeypatch):
     class _Sess:
         id = "s-1"
         name = "My session"
+        # The owner is part of the event's address now (multi-tenancy.md §7):
+        # a webhook is somebody's endpoint off this box, and firing every
+        # event at every target would tell everyone when anyone is working.
+        user_id = "u-1"
 
     await sm._fire_session_idle_notification(_Sess())  # type: ignore[arg-type]
 
@@ -204,3 +209,38 @@ async def test_session_manager_fires_idle_notification(monkeypatch):
     assert fired_event.type == "session_idle"
     assert fired_event.session_id == "s-1"
     assert fired_event.session_name == "My session"
+    assert fake_mgr.fire.call_args.args[1] == "u-1"
+
+
+@pytest.mark.asyncio
+async def test_an_event_reaches_only_its_own_accounts_targets():
+    """One account's session going idle must not poke another's webhook.
+
+    `fire` sent every event to every registered target, which on a single-user
+    install is right and on a site is a notification channel between strangers
+    (multi-tenancy.md §7).
+    """
+    from server.notifiers.manager import NotifierManager
+
+    sent: list[str] = []
+
+    class _Target(NotifierBase):
+        type = "webhook"
+
+        def __init__(self, id: str) -> None:
+            super().__init__(id=id, label=id, config={})
+
+        async def send(self, event: NotifierEvent) -> None:
+            sent.append(self.id)
+
+    mgr = NotifierManager()
+    mgr._notifiers = {"a": _Target("a"), "b": _Target("b"), "old": _Target("old")}
+    mgr._owner = {"a": "u-1", "b": "u-2", "old": None}
+
+    await mgr.fire(NotifierEvent(type="session_idle", title="t", message="m"), "u-1")
+    assert sent == ["a"], sent
+
+    # Pre-accounts: no owner anywhere, and the one operator gets everything.
+    sent.clear()
+    await mgr.fire(NotifierEvent(type="session_idle", title="t", message="m"))
+    assert sorted(sent) == ["a", "b", "old"]

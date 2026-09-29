@@ -24,6 +24,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
+from .. import deps
 from ..app_agent import AppAgentError, app_agent_manager
 from ..app_backends import ABSENT, RUNNING, backend_supervisor
 from ..applications import (
@@ -33,7 +34,7 @@ from ..applications import (
     resolve_within,
 )
 from ..auth import verify_token
-from ..config import settings
+from ..deps import ScopeUser, SessionMgr
 from ..models import (
     AppAgentInfo,
     AppAgentReply,
@@ -97,16 +98,29 @@ def _http_error(e: ApplicationError) -> HTTPException:
 
 @router.get("", response_model=list[ApplicationRead])
 async def list_applications(
-    archived: bool = False, _: str = Depends(verify_token)
+    archived: bool = False,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     """Live applications by default; `?archived=true` returns only the
     archived ones (the Applications page's Archived section)."""
-    rows = await _get_manager().list_applications(only_archived=archived)
+    rows = await _get_manager().list_applications(
+        only_archived=archived, user_id=user_id
+    )
     return [_read(a) for a in rows]
 
 
 @router.post("", response_model=ApplicationRead, status_code=status.HTTP_201_CREATED)
-async def create_application(req: ApplicationCreate, _: str = Depends(verify_token)):
+async def create_application(
+    req: ApplicationCreate,
+    session_manager: SessionMgr,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
+    # The owner comes from the agent, so the agent has to be the caller's — the
+    # same rule a session follows, and for the same reason.
+    if await session_manager.db.get_agent(req.agent_id, user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     try:
         app_row = await _get_manager().create_application(**req.model_dump())
     except ApplicationError as e:
@@ -116,34 +130,39 @@ async def create_application(req: ApplicationCreate, _: str = Depends(verify_tok
 
 @router.put("/pin-order", response_model=list[ApplicationRead])
 async def reorder_application_pins(
-    req: PinOrderRequest, _: str = Depends(verify_token)
+    req: PinOrderRequest, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """The sidebar order of the pinned applications (sidebar-pins.md).
     Returns every live application, so the caller replaces its list."""
     try:
-        rows = await _get_manager().reorder_pins(req.ids)
+        rows = await _get_manager().reorder_pins(req.ids, user_id)
     except ApplicationError as e:
         raise _http_error(e)
     return [_read(a) for a in rows]
 
 
 @router.get("/{app_id}", response_model=ApplicationRead)
-async def get_application(app_id: str, _: str = Depends(verify_token)):
+async def get_application(
+    app_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     try:
-        return _read(await _get_manager().get_application(app_id))
+        return _read(await _get_manager().get_application(app_id, user_id))
     except ApplicationError as e:
         raise _http_error(e)
 
 
 @router.patch("/{app_id}", response_model=ApplicationRead)
 async def update_application(
-    app_id: str, req: ApplicationUpdate, _: str = Depends(verify_token)
+    app_id: str,
+    req: ApplicationUpdate,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     # exclude_unset so omitting a field leaves it untouched while explicitly
     # passing null clears a nullable one (icon).
     try:
         row = await _get_manager().update_application(
-            app_id, **req.model_dump(exclude_unset=True)
+            app_id, user_id, **req.model_dump(exclude_unset=True)
         )
     except ApplicationError as e:
         raise _http_error(e)
@@ -152,56 +171,72 @@ async def update_application(
 
 @router.post("/{app_id}/build", response_model=ApplicationRead)
 async def build_application(
-    app_id: str, req: ApplicationBuildRequest, _: str = Depends(verify_token)
+    app_id: str,
+    req: ApplicationBuildRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     """Run another build turn in the application's build session."""
     try:
-        row = await _get_manager().request_build(app_id, req.prompt)
+        row = await _get_manager().request_build(app_id, req.prompt, user_id)
     except ApplicationError as e:
         raise _http_error(e)
     return _read(row)
 
 
 @router.post("/{app_id}/archive", response_model=ApplicationRead)
-async def archive_application(app_id: str, _: str = Depends(verify_token)):
+async def archive_application(
+    app_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     try:
-        return _read(await _get_manager().set_archived(app_id, True))
+        return _read(await _get_manager().set_archived(app_id, True, user_id))
     except ApplicationError as e:
         raise _http_error(e)
 
 
 @router.post("/{app_id}/unarchive", response_model=ApplicationRead)
-async def unarchive_application(app_id: str, _: str = Depends(verify_token)):
+async def unarchive_application(
+    app_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     try:
-        return _read(await _get_manager().set_archived(app_id, False))
+        return _read(await _get_manager().set_archived(app_id, False, user_id))
     except ApplicationError as e:
         raise _http_error(e)
 
 
 @router.post("/{app_id}/pin", response_model=ApplicationRead)
-async def pin_application(app_id: str, _: str = Depends(verify_token)):
+async def pin_application(
+    app_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     """Put the application in the sidebar, at the bottom of the pinned ones."""
     try:
-        return _read(await _get_manager().set_pinned(app_id, True))
+        return _read(await _get_manager().set_pinned(app_id, True, user_id))
     except ApplicationError as e:
         raise _http_error(e)
 
 
 @router.post("/{app_id}/unpin", response_model=ApplicationRead)
-async def unpin_application(app_id: str, _: str = Depends(verify_token)):
+async def unpin_application(
+    app_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     """Take the application out of the sidebar. It keeps serving."""
     try:
-        return _read(await _get_manager().set_pinned(app_id, False))
+        return _read(await _get_manager().set_pinned(app_id, False, user_id))
     except ApplicationError as e:
         raise _http_error(e)
 
 
 @router.delete("/{app_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_application(
-    app_id: str, keep_files: bool = False, _: str = Depends(verify_token)
+    app_id: str,
+    keep_files: bool = False,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     try:
-        await _get_manager().delete_application(app_id, keep_files=keep_files)
+        await _get_manager().delete_application(
+            app_id, keep_files=keep_files, user_id=user_id
+        )
     except ApplicationError as e:
         raise _http_error(e)
 
@@ -209,40 +244,65 @@ async def delete_application(
 # ------------------------------------------------------------ static serving
 
 
-def _authorized(request: Request, app_id: str) -> bool:
-    """Bearer header, `?token=`, or the app cookie — see the module docstring
-    for why the last two exist.
+# Sentinel: this credential opens exactly this application and nothing else, so
+# the row is fetched by id with no owner filter. Distinct from `None`, which
+# here would mean "the pre-accounts install, where nobody owns anything".
+_APP_ITSELF = "app-scope-token"
 
-    Plus the application's own **scoped token** (`X-Octopus-App-Token`, or as
-    the bearer): the credential a backend script is given so it can reach the
-    agent API without ever holding the master token (app-agent-access.md §4).
-    It's checked against `app_id`, so app A's token opens nothing of app B's.
+
+def _presented_token(request: Request) -> str:
+    """The bearer this request carries, from any of the three places one can
+    travel on `/apps/*`: the header, `?token=` (an iframe can't set headers)
+    and the cookie.
+
+    The cookie is percent-decoded, because the client writes it with
+    `encodeURIComponent` — it has to, or a token containing `;` or `,` would
+    truncate the header. Starlette's cookie parser strips quoting but does not
+    decode escapes, so a token with any character JS encodes (`@` in a real
+    one) arrived here as `%40` and failed to match. Every token without such a
+    character is unaffected either way, which is why that survived until
+    somebody rotated to a token that had one.
     """
-    expected = settings.auth_token
     auth = request.headers.get("authorization") or ""
     presented = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    if presented and presented == expected:
-        return True
-    if request.query_params.get("token") == expected:
-        return True
-    # Percent-decoded, because the client writes the cookie with
-    # `encodeURIComponent` — it has to, or a token containing `;` or `,` would
-    # truncate the header. Starlette's cookie parser strips quoting but does not
-    # decode escapes, so a token with any character JS encodes (`@` in a real
-    # one) arrived here as `%40` and failed to match. Every token without such a
-    # character is unaffected either way, which is why this survived: it only
-    # appears the first time someone rotates to a token that has one.
-    if unquote(request.cookies.get(APP_TOKEN_COOKIE) or "") == expected:
-        return True
-    scoped = request.headers.get("x-octopus-app-token") or presented
-    return is_app_scope_token(app_id, scoped)
+    return (
+        presented
+        or request.query_params.get("token")
+        or unquote(request.cookies.get(APP_TOKEN_COOKIE) or "")
+    )
+
+
+async def _viewer(request: Request, app_id: str) -> str | None:
+    """Whose application this request may reach, or 401.
+
+    Three credentials open `/apps/*`, and the answer is which account's rows to
+    look in:
+
+    * the application's own **scoped token** (`X-Octopus-App-Token`, or as the
+      bearer) — the credential a backend script is given so it can reach the
+      agent API without ever holding a user's (app-agent-access.md §4). It is
+      checked against `app_id`, so app A's token opens nothing of app B's, and
+      it needs no owner filter because it already names one application;
+    * an account's session bearer — scoped to that account, so one person's
+      application id is not a URL another person can open;
+    * the install's own token, while this install still has no accounts, which
+      is `None`: nobody owns anything yet (multi-tenancy.md §9).
+    """
+    scoped = request.headers.get("x-octopus-app-token") or _presented_token(request)
+    if is_app_scope_token(app_id, scoped):
+        return _APP_ITSELF
+    allowed, user_id = await deps.scope_user_id_for(_presented_token(request))
+    if not allowed:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    return user_id
 
 
 async def _serve(request: Request, app_id: str, path: str) -> FileResponse:
-    if not _authorized(request, app_id):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    viewer = await _viewer(request, app_id)
     try:
-        row = await _get_manager().get_application(app_id)
+        row = await _get_manager().get_application(
+            app_id, None if viewer == _APP_ITSELF else viewer
+        )
     except ApplicationError as e:
         raise _http_error(e)
 
@@ -313,10 +373,11 @@ async def proxy_application_api(request: Request, app_id: str, path: str):
     whether a file happens to share its path, so renaming a file silently
     changes routing.
     """
-    if not _authorized(request, app_id):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    viewer = await _viewer(request, app_id)
     try:
-        row = await _get_manager().get_application(app_id)
+        row = await _get_manager().get_application(
+            app_id, None if viewer == _APP_ITSELF else viewer
+        )
     except ApplicationError as e:
         raise _http_error(e)
 
@@ -391,10 +452,11 @@ async def proxy_application_api(request: Request, app_id: str, path: str):
 
 
 async def _app_for_agent_api(request: Request, app_id: str) -> dict:
-    if not _authorized(request, app_id):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    viewer = await _viewer(request, app_id)
     try:
-        return await _get_manager().get_application(app_id)
+        return await _get_manager().get_application(
+            app_id, None if viewer == _APP_ITSELF else viewer
+        )
     except ApplicationError as e:
         raise _http_error(e)
 
@@ -408,9 +470,9 @@ def _agent_error(e: AppAgentError) -> HTTPException:
 )
 async def list_app_agents(request: Request, app_id: str):
     """Who this app can address. Name is the address."""
-    await _app_for_agent_api(request, app_id)
+    row = await _app_for_agent_api(request, app_id)
     try:
-        return await app_agent_manager.list_agents()
+        return await app_agent_manager.list_agents(row.get("user_id"))
     except AppAgentError as e:
         raise _agent_error(e)
 

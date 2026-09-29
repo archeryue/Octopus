@@ -27,6 +27,11 @@ class NotifierManager:
     def __init__(self) -> None:
         self._db: Database | None = None
         self._notifiers: dict[str, NotifierBase] = {}
+        # Which account each target belongs to (multi-tenancy.md §7). A
+        # notifier is somebody's webhook, and `fire` used to send every event to
+        # all of them — so one person's session going idle would have poked
+        # everybody else's endpoint.
+        self._owner: dict[str, str | None] = {}
 
     def set_db(self, db: Database) -> None:
         self._db = db
@@ -37,15 +42,21 @@ class NotifierManager:
             return
         rows = await self._db.load_notifiers()
         self._notifiers = {}
+        self._owner = {}
         for row in rows:
             if not row.get("enabled"):
                 continue
             notifier = self._make(row)
             if notifier is not None:
                 self._notifiers[notifier.id] = notifier
+                self._owner[notifier.id] = row.get("user_id")
 
-    def list(self) -> list[NotifierBase]:
-        return list(self._notifiers.values())
+    def list(self, user_id: str | None = None) -> list[NotifierBase]:
+        return [
+            n
+            for n in self._notifiers.values()
+            if user_id is None or self._owner.get(n.id) == user_id
+        ]
 
     def _make(self, row: dict[str, Any]) -> NotifierBase | None:
         """Build a concrete NotifierBase from a DB row, by type."""
@@ -57,15 +68,20 @@ class NotifierManager:
         logger.warning("Unknown notifier type %s (id=%s); skipping", t, row["id"])
         return None
 
-    async def fire(self, event: NotifierEvent) -> None:
-        """Dispatch `event` to every registered notifier in parallel.
+    async def fire(self, event: NotifierEvent, user_id: str | None = None) -> None:
+        """Dispatch `event` to the account's registered notifiers, in parallel.
+
+        `user_id=None` is the pre-accounts install, where every target is the
+        one operator's. With accounts it is required in practice: an event
+        carries somebody's session name and the fact that they are working, and
+        a webhook is an address off this box.
 
         Notifier exceptions are caught + logged so a single bad target
         doesn't poison the rest.
         """
-        if not self._notifiers:
+        targets = self.list(user_id)
+        if not targets:
             return
-        targets = list(self._notifiers.values())
         logger.debug(
             "Firing %s to %d notifier(s)", event.type, len(targets)
         )

@@ -193,7 +193,7 @@ class DelegationManager:
                 status_code=404,
             )
 
-        target = await self._resolve_target_agent(agent_name)
+        target = await self._resolve_target_agent(agent_name, parent.user_id)
         if target is None:
             raise DelegationError(
                 f"No agent named {agent_name!r}", status_code=404
@@ -210,7 +210,9 @@ class DelegationManager:
         # message and in the injection prefix). A missing parent agent
         # falls back to a generic placeholder rather than 500ing.
         parent_agent = (
-            await self.db.get_agent(parent.agent_id) if parent.agent_id else None
+            await self.db.get_agent(parent.agent_id, parent.user_id)
+            if parent.agent_id
+            else None
         )
         parent_name = (parent_agent or {}).get("name") or "another agent"
 
@@ -521,9 +523,14 @@ class DelegationManager:
     # ----------------------------------------------------------- internals
 
     async def _resolve_target_agent(
-        self, name: str
+        self, name: str, user_id: str | None = None
     ) -> dict[str, Any] | None:
-        """Case-insensitive name lookup over non-archived agents.
+        """Case-insensitive name lookup over this account's non-archived agents.
+
+        Scoped to the delegating session's owner (multi-tenancy.md §7). An
+        unscoped lookup made a *name* enough to start a turn inside somebody
+        else's account — running in their workspace, on their credential, and
+        reporting back into this one.
 
         Multiple matches → DelegationError(409). One match → the row.
         Zero matches → None (caller turns this into a 404)."""
@@ -531,7 +538,7 @@ class DelegationManager:
         wanted = (name or "").strip().lower()
         if not wanted:
             return None
-        agents = await self.db.load_agents()
+        agents = await self.db.load_agents(user_id=user_id)
         matches = [a for a in agents if (a.get("name") or "").lower() == wanted]
         if not matches:
             return None

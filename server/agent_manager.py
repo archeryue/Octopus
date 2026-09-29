@@ -41,9 +41,11 @@ class AgentManager:
         able to tell apart."""
         return await self.db.get_agent(agent_id, user_id=user_id)
 
-    async def get_default_agent(self) -> dict[str, Any] | None:
-        """The protected Default Agent (is_system=1), created by migration."""
-        return await self.db.get_system_agent()
+    async def get_default_agent(
+        self, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """This account's protected Default Agent (is_system=1)."""
+        return await self.db.get_system_agent(user_id)
 
     async def create_agent(
         self,

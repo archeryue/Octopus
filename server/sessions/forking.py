@@ -167,6 +167,7 @@ class ForkingMixin(SessionManagerBase):
         *,
         revert_files: bool = False,
         label: str | None = None,
+        user_id: str | None = None,
     ) -> Session:
         """Fork `parent_id` by rewinding to *before* the user message at
         `seq=rewind_to_msg_seq` and re-spawning as a new branch
@@ -177,7 +178,10 @@ class ForkingMixin(SessionManagerBase):
         No `if backend ==` anywhere — the harness owns the strategy."""
         from ..delegations import delegation_manager
 
-        parent = self.sessions.get(parent_id)
+        # Scoped, and through the same error as a missing parent: "belongs to
+        # somebody else" must be indistinguishable from "does not exist", or the
+        # difference between the two is an id oracle (multi-tenancy.md §5).
+        parent = self.get_session(parent_id, user_id)
         if parent is None:
             raise ForkError(
                 f"Session {parent_id} not found",
@@ -452,7 +456,11 @@ class ForkingMixin(SessionManagerBase):
         shutil.copytree(src, dest, symlinks=True)
 
     async def duplicate_session(
-        self, parent_id: str, *, label: str | None = None
+        self,
+        parent_id: str,
+        *,
+        label: str | None = None,
+        user_id: str | None = None,
     ) -> Session:
         """`/fork`: duplicate `parent_id` at HEAD onto an INDEPENDENT full copy
         of its working directory (session-fork.md). The new session carries
@@ -461,7 +469,7 @@ class ForkingMixin(SessionManagerBase):
         (/rewind), which rewinds to a message and archives the parent."""
         from ..delegations import delegation_manager
 
-        parent = self.sessions.get(parent_id)
+        parent = self.get_session(parent_id, user_id)
         if parent is None:
             raise ForkError(
                 f"Session {parent_id} not found",
@@ -672,12 +680,15 @@ class ForkingMixin(SessionManagerBase):
                     await self._schedule_runner.reschedule(row)
 
     async def fork_preview(
-        self, parent_id: str, rewind_to_msg_seq: int
+        self,
+        parent_id: str,
+        rewind_to_msg_seq: int,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Run the side-effect classifier + revert preflight for the popover
         WITHOUT committing anything (session-rewind.md §5.6.2). Powers
         `GET /api/sessions/{id}/fork-preview`."""
-        parent = self.sessions.get(parent_id)
+        parent = self.get_session(parent_id, user_id)
         if parent is None:
             raise ForkError(
                 f"Session {parent_id} not found",

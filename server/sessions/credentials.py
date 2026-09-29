@@ -14,7 +14,6 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
-from ..config import settings
 from ..crypto import decrypt, encrypt
 from ..harness import HarnessCredential
 from ..models import CredentialStatus
@@ -105,8 +104,15 @@ class CredentialsMixin(SessionManagerBase):
                 row.get("last_refresh_error_code"),
             )
             return None
+        # Keyed to the credential's *owner* (§4). The row knows who it belongs
+        # to, so the key comes from the row rather than from whoever happens to
+        # be asking — which is what makes a background path (the scheduler
+        # firing somebody's job) decrypt the same secret a request does.
+        from .. import deps
+
+        secret_key = await deps.data_key_for(row.get("user_id"))
         try:
-            plaintext = decrypt(row["secret_encrypted"], settings.auth_token)
+            plaintext = decrypt(row["secret_encrypted"], secret_key)
         except ValueError:
             logger.warning(
                 "Could not decrypt credential %s (wrong auth token?); running without auth override",
@@ -122,6 +128,7 @@ class CredentialsMixin(SessionManagerBase):
                 credential_id=cred_id,
                 backend=row["backend"],
                 bundle_json=plaintext,
+                secret_key=secret_key,
             )
             if access_token is None:
                 return None
@@ -146,6 +153,7 @@ class CredentialsMixin(SessionManagerBase):
         credential_id: str,
         backend: str,
         bundle_json: str,
+        secret_key: str,
     ) -> str | None:
         """Return a usable access_token for an OAuth-bundle credential.
 
@@ -226,8 +234,7 @@ class CredentialsMixin(SessionManagerBase):
             "token_type": new_ts.token_type,
         }
         secret_encrypted = encrypt(
-            json.dumps(new_bundle, separators=(",", ":")),
-            settings.auth_token,
+            json.dumps(new_bundle, separators=(",", ":")), secret_key
         )
         token_expires_at = datetime.fromtimestamp(
             new_ts.expires_at_epoch, tz=UTC

@@ -227,6 +227,24 @@ class UserManager:
             )
         return unwrap_dek(wrapped)
 
+    async def data_key_for(self, user_id: str | None) -> str:
+        """The key `user_id`'s secrets are encrypted with, by id.
+
+        `None` answers `OCTOPUS_AUTH_TOKEN`, which is the pre-accounts install:
+        its secrets were encrypted with it and stay that way until the upgrade
+        re-keys them (multi-tenancy.md §9.3). So one call answers "what key do
+        I use here" in both eras, and nothing outside this module has to know
+        there are two.
+        """
+        from .config import settings
+
+        if user_id is None:
+            return settings.auth_token
+        user = await self.db.get_user(user_id)
+        if user is None:
+            raise UserError("no such account", status_code=404)
+        return self.data_key(user)
+
     async def authenticate(self, username: str, password: str) -> dict[str, Any]:
         """The user, or `UserError(401)` — never which half was wrong.
 

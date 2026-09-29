@@ -25,21 +25,41 @@ class NotifiersMixin(DatabaseBase):
         config: dict[str, Any],
         created_at: str,
         enabled: bool = True,
+        user_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
         await self.conn.execute(
-            "INSERT INTO notifiers (id, type, label, config, enabled, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (notifier_id, type, label, json.dumps(config), int(enabled), created_at),
+            "INSERT INTO notifiers "
+            "(id, type, label, config, enabled, created_at, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                notifier_id,
+                type,
+                label,
+                json.dumps(config),
+                int(enabled),
+                created_at,
+                user_id,
+            ),
         )
         await self.conn.commit()
 
-    async def load_notifiers(self) -> list[dict[str, Any]]:
+    async def load_notifiers(
+        self, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Every notifier, or one account's. The owner is on the row because
+        the manager needs it: an event must only reach its own account's
+        targets (multi-tenancy.md §7)."""
         await self._ensure_connected()
-        cursor = await self.conn.execute(
-            "SELECT id, type, label, config, enabled, created_at "
-            "FROM notifiers ORDER BY created_at"
+        sql = (
+            "SELECT id, type, label, config, enabled, created_at, user_id "
+            "FROM notifiers"
         )
+        params: list[Any] = []
+        if user_id is not None:
+            sql += " WHERE user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql + " ORDER BY created_at", params)
         rows = await cursor.fetchall()
         return [
             {
@@ -49,6 +69,7 @@ class NotifiersMixin(DatabaseBase):
                 "config": json.loads(row[3]) if row[3] else {},
                 "enabled": bool(row[4]),
                 "created_at": row[5],
+                "user_id": row[6],
             }
             for row in rows
         ]

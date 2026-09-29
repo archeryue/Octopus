@@ -260,11 +260,19 @@ async def test_session_create_defaults_to_default_agent(client):
 
 
 @pytest.mark.asyncio
-async def test_session_create_unknown_agent_400(client):
+async def test_session_create_unknown_agent_404(client):
+    """404, not the 400 this used to answer.
+
+    A session takes its owner from its agent, so the route now resolves the
+    agent *within the caller's account* — and an agent belonging to somebody
+    else has to be indistinguishable from one that does not exist
+    (multi-tenancy.md §5). Two different statuses for the two cases is an id
+    oracle, so both are 404, which is also what `/api/agents/{id}` answers.
+    """
     resp = await client.post(
         "/api/sessions", json={"name": "x", "agent_id": "ghost"}, headers=HEADERS
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio

@@ -38,14 +38,23 @@ class CredentialsMixin(DatabaseBase):
         auth_type: str,
         secret_encrypted: str,
         created_at: str,
+        user_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
         await self.conn.execute(
             "INSERT INTO backend_credentials "
             "(id, backend, label, auth_type, secret_encrypted, created_at, "
-            " status, needs_reconnect) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'active', 0)",
-            (credential_id, backend, label, auth_type, secret_encrypted, created_at),
+            " status, needs_reconnect, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?)",
+            (
+                credential_id,
+                backend,
+                label,
+                auth_type,
+                secret_encrypted,
+                created_at,
+                user_id,
+            ),
         )
         await self.conn.execute(
             "INSERT OR REPLACE INTO credential_secrets "
@@ -54,26 +63,45 @@ class CredentialsMixin(DatabaseBase):
         )
         await self.conn.commit()
 
-    async def load_credentials(self) -> list[dict[str, Any]]:
+    async def load_credentials(
+        self, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Every sign-in, or only one account's (multi-tenancy.md §5).
+
+        `user_id=None` is "no scoping asked for" — the scheduler resolving a
+        credential for somebody's fire, and the pre-accounts install.
+        """
         await self._ensure_connected()
         cols = ", ".join(self._CREDENTIAL_COLS)
-        cursor = await self.conn.execute(
+        sql = (
             f"SELECT {cols} FROM backend_credentials c "
-            "LEFT JOIN credential_secrets s ON s.credential_id = c.id "
-            "ORDER BY c.created_at"
+            "LEFT JOIN credential_secrets s ON s.credential_id = c.id"
         )
+        params: list[Any] = []
+        if user_id is not None:
+            sql += " WHERE c.user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql + " ORDER BY c.created_at", params)
         rows = await cursor.fetchall()
         return [self._row_to_credential(row) for row in rows]
 
-    async def get_credential(self, credential_id: str) -> dict[str, Any] | None:
+    async def get_credential(
+        self, credential_id: str, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """One sign-in — `None` for "belongs to someone else" as much as for
+        "does not exist", which a caller must not be able to tell apart."""
         await self._ensure_connected()
         cols = ", ".join(self._CREDENTIAL_COLS)
-        cursor = await self.conn.execute(
+        sql = (
             f"SELECT {cols} FROM backend_credentials c "
             "LEFT JOIN credential_secrets s ON s.credential_id = c.id "
-            "WHERE c.id = ?",
-            (credential_id,),
+            "WHERE c.id = ?"
         )
+        params: list[Any] = [credential_id]
+        if user_id is not None:
+            sql += " AND c.user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql, params)
         row = await cursor.fetchone()
         if row is None:
             return None

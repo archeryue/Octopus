@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from ..auth import verify_token
 from ..delegations import DelegationError, delegation_manager
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr
 from ..sessions import SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["delegations"])
@@ -63,11 +63,15 @@ class FollowUpDelegationRequest(BaseModel):
     request: str
 
 
-def _require_session(session_manager: SessionManager, session_id: str) -> None:
+def _require_session(
+    session_manager: SessionManager, session_id: str, user_id: str | None = None
+) -> None:
     """Live sessions only — delegations attach to in-memory sessions so
     the broadcast listener has a target. Archived sessions are
-    read-only history."""
-    session = session_manager.get_session(session_id)
+    read-only history. Scoped: another account's session is a 404, so a
+    delegation cannot be started from, or listed out of, somebody else's
+    conversation."""
+    session = session_manager.get_session(session_id, user_id)
     if session is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
@@ -82,6 +86,7 @@ async def start_delegation(
     session_manager: SessionMgr,
     session_id: str,
     req: StartDelegationRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Spawn a child session under the named agent and start its first
@@ -94,7 +99,7 @@ async def start_delegation(
       doesn't resolve
     - 409 on cycle, depth, self-delegation, or ambiguous name
     """
-    _require_session(session_manager, session_id)
+    _require_session(session_manager, session_id, user_id)
     try:
         rec = await delegation_manager.start_delegation(
             parent_session_id=session_id,
@@ -109,24 +114,31 @@ async def start_delegation(
 
 @router.get("/{session_id}/delegations")
 async def list_delegations(
+    session_manager: SessionMgr,
     session_id: str,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> list[dict[str, Any]]:
     """Recent delegations spawned by this session, newest first. The
     list includes finished ones so the model can see what it's
     asked recently. Currently capped at 25 inside the manager."""
-    # No `_require_session` here: a parent session may have been
-    # archived while a delegation is still in our in-memory registry;
-    # we still want list to work for inspection in that case.
+    # Not `_require_session`: a parent session may have been archived while a
+    # delegation is still in our in-memory registry, and we still want list to
+    # work for inspection. Ownership is checked either way —
+    # `session_belongs_to` answers for the archived case too.
+    if not await session_manager.session_belongs_to(session_id, user_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     rows = delegation_manager.list_delegations(session_id)
     return [r.to_public_dict() for r in rows]
 
 
 @router.post("/{session_id}/delegations/{delegation_id}/cancel")
 async def cancel_delegation(
+    session_manager: SessionMgr,
     session_id: str,
     delegation_id: str,
     req: CancelDelegationRequest | None = None,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Best-effort cancel. Idempotent — cancelling a finished
@@ -134,7 +146,11 @@ async def cancel_delegation(
     anything. The parent gets an `[agent-error:…]` injection on the
     transition from running → cancelled."""
     rec = delegation_manager.get_delegation(delegation_id)
-    if rec is None or rec.parent_session_id != session_id:
+    if (
+        rec is None
+        or rec.parent_session_id != session_id
+        or not await session_manager.session_belongs_to(session_id, user_id)
+    ):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "Delegation not found"
         )
@@ -153,6 +169,7 @@ async def follow_up_delegation(
     session_id: str,
     delegation_id: str,
     req: FollowUpDelegationRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Continue a prior delegation with a new request in the SAME
@@ -177,7 +194,7 @@ async def follow_up_delegation(
     # round-resets the record, starts the child, and then silently
     # drops the terminal turn because there's no live parent to
     # inject into. Matches the start_delegation route's behaviour.
-    _require_session(session_manager, session_id)
+    _require_session(session_manager, session_id, user_id)
     try:
         rec = await delegation_manager.follow_up_delegation(
             parent_session_id=session_id,
@@ -191,9 +208,11 @@ async def follow_up_delegation(
 
 @router.post("/{session_id}/delegations/{delegation_id}/answer")
 async def answer_delegation_question(
+    session_manager: SessionMgr,
     session_id: str,
     delegation_id: str,
     req: AnswerDelegationQuestionRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ) -> dict[str, Any]:
     """Parent-side answer to a question the child agent raised via
@@ -207,7 +226,11 @@ async def answer_delegation_question(
     - 409 if there's no pending question, or the human UI raced us
     """
     rec = delegation_manager.get_delegation(delegation_id)
-    if rec is None or rec.parent_session_id != session_id:
+    if (
+        rec is None
+        or rec.parent_session_id != session_id
+        or not await session_manager.session_belongs_to(session_id, user_id)
+    ):
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "Delegation not found"
         )

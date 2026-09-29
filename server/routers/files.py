@@ -17,11 +17,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, JSONResponse
 
-from ..config import settings
-from ..deps import SessionMgr
+from ..deps import SessionMgr, ViewerUser
 from ..file_viewer import (
     FileNotFound,
     FileTooLarge,
@@ -40,27 +39,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["files"])
 
 
-def _verify_token(
-    request: Request, token: str | None = Query(default=None)
-) -> str:
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        candidate = auth_header.split(" ", 1)[1].strip()
-        if candidate == settings.auth_token:
-            return candidate
-    if token and token == settings.auth_token:
-        return token
-    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
-
-
 async def _working_dir_for(
-    session_manager: SessionManager, session_id: str
+    session_manager: SessionManager, session_id: str, user_id: str | None
 ) -> str:
-    """Pull working_dir from the live session or, if archived, from the DB."""
-    live = session_manager.get_session(session_id)
+    """Pull working_dir from the live session or, if archived, from the DB.
+
+    Both halves scoped: these routes hand out the *contents of files*, so a
+    session id belonging to another account has to be a 404 rather than a path
+    to read from (multi-tenancy.md §5).
+    """
+    live = session_manager.get_session(session_id, user_id)
     if live is not None:
         return live.working_dir
-    archived = await session_manager.load_archived_session_detail(session_id)
+    archived = await session_manager.load_archived_session_detail(
+        session_id, user_id
+    )
     if archived is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return archived.working_dir
@@ -84,16 +77,16 @@ async def resolve_showme(
     session_manager: SessionMgr,
     session_id: str,
     req: ShowMeResolveRequest,
-    _: str = Depends(_verify_token),
+    user_id: ViewerUser = None,
 ) -> ShowMeResolveResponse:
     """Resolve a human file reference into a concrete viewer path."""
-    session = session_manager.get_session(session_id)
+    session = session_manager.get_session(session_id, user_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     if session.agent_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
 
-    agent = await session_manager.db.get_agent(session.agent_id)
+    agent = await session_manager.db.get_agent(session.agent_id, user_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
 
@@ -134,7 +127,7 @@ async def file_meta(
     session_manager: SessionMgr,
     session_id: str,
     path: str = Query(...),
-    _: str = Depends(_verify_token),
+    user_id: ViewerUser = None,
 ) -> JSONResponse:
     """Metadata-only sibling of /files.
 
@@ -143,7 +136,7 @@ async def file_meta(
     file, we show the error inline rather than streaming kilobytes
     that will never render). Same security path as /files.
     """
-    working_dir = await _working_dir_for(session_manager, session_id)
+    working_dir = await _working_dir_for(session_manager, session_id, user_id)
     resolved = _resolve_or_raise(working_dir, path)
     return JSONResponse(
         {
@@ -160,9 +153,9 @@ async def get_file(
     session_manager: SessionMgr,
     session_id: str,
     path: str = Query(...),
-    _: str = Depends(_verify_token),
+    user_id: ViewerUser = None,
 ) -> FileResponse:
-    working_dir = await _working_dir_for(session_manager, session_id)
+    working_dir = await _working_dir_for(session_manager, session_id, user_id)
     resolved = _resolve_or_raise(working_dir, path)
     # FileResponse handles streaming + ETag + Range. We override
     # media_type so e.g. .md is delivered as text/markdown rather

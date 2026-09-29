@@ -342,14 +342,29 @@ class ApplicationManager:
     # ------------------------------------------------------------------ reads
 
     async def list_applications(
-        self, *, include_archived: bool = False, only_archived: bool = False
+        self,
+        *,
+        include_archived: bool = False,
+        only_archived: bool = False,
+        user_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return await self._require_db().load_applications(
-            include_archived=include_archived, only_archived=only_archived
+            include_archived=include_archived,
+            only_archived=only_archived,
+            user_id=user_id,
         )
 
-    async def get_application(self, app_id: str) -> dict[str, Any]:
-        row = await self._require_db().get_application(app_id)
+    async def get_application(
+        self, app_id: str, user_id: str | None = None
+    ) -> dict[str, Any]:
+        """One application, or a 404 — which is also the answer for one that
+        belongs to another account (multi-tenancy.md §5).
+
+        Every write below opens with this call, so passing the caller's account
+        here is what scopes them all; a method that forgot would be a method
+        that does not read its own row.
+        """
+        row = await self._require_db().get_application(app_id, user_id)
         if row is None:
             raise ApplicationError("Application not found", status_code=404)
         return row
@@ -456,7 +471,9 @@ class ApplicationManager:
 
     # ------------------------------------------------------------------ build
 
-    async def request_build(self, app_id: str, prompt: str) -> dict[str, Any]:
+    async def request_build(
+        self, app_id: str, prompt: str, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Run another build turn — "make the header sticky", "add a dark
         mode". Reuses the build session so the agent keeps its context; if that
         session is gone (deleted), a fresh one is opened under the same agent
@@ -464,7 +481,7 @@ class ApplicationManager:
         db = self._require_db()
         if self.session_mgr is None:
             raise ApplicationError("ApplicationManager not bound", status_code=500)
-        row = await self.get_application(app_id)
+        row = await self.get_application(app_id, user_id)
 
         prompt = (prompt or "").strip()
         if not prompt:
@@ -476,7 +493,7 @@ class ApplicationManager:
         )
         if session is None:
             agent_id = row["agent_id"]
-            agent = await db.get_agent(agent_id) if agent_id else None
+            agent = await db.get_agent(agent_id, row["user_id"]) if agent_id else None
             if agent is None:
                 raise ApplicationError(
                     "This application's agent is gone — pick a new one before "
@@ -516,18 +533,22 @@ class ApplicationManager:
 
     # ----------------------------------------------------------------- update
 
-    async def update_application(self, app_id: str, **fields: Any) -> dict[str, Any]:
+    async def update_application(
+        self, app_id: str, user_id: str | None = None, **fields: Any
+    ) -> dict[str, Any]:
         """Rename / re-icon / repoint the entrypoint. The directory never
         moves — `app_dir` is the identity of the files on disk."""
         db = self._require_db()
-        row = await self.get_application(app_id)
+        row = await self.get_application(app_id, user_id)
         updates: dict[str, Any] = {}
 
         if "name" in fields and fields["name"] is not None:
             new_name = str(fields["name"]).strip()
             if not new_name:
                 raise ApplicationError("Application name cannot be empty")
-            clash = await db.get_application_by_name(new_name)
+            clash = await db.get_application_by_name(
+                new_name, user_id=row["user_id"]
+            )
             if clash is not None and clash["id"] != app_id:
                 raise ApplicationError(
                     f"An application named {new_name!r} already exists",
@@ -560,7 +581,9 @@ class ApplicationManager:
 
     # ---------------------------------------------------------------- archive
 
-    async def set_archived(self, app_id: str, archived: bool) -> dict[str, Any]:
+    async def set_archived(
+        self, app_id: str, archived: bool, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Archive an application (it leaves the sidebar) or restore it.
 
         Archiving keeps the row AND the files, so restoring is instant and the
@@ -569,12 +592,14 @@ class ApplicationManager:
         taken since, matching create's uniqueness rule.
         """
         db = self._require_db()
-        row = await self.get_application(app_id)
+        row = await self.get_application(app_id, user_id)
         if bool(row["archived"]) == archived:
             assert row is not None  # just written above
             return row
         if not archived:
-            clash = await db.get_application_by_name(row["name"])
+            clash = await db.get_application_by_name(
+                row["name"], user_id=row["user_id"]
+            )
             if clash is not None and clash["id"] != app_id:
                 raise ApplicationError(
                     f"An application named {row['name']!r} already exists — "
@@ -598,14 +623,16 @@ class ApplicationManager:
 
     # ------------------------------------------------------------------ pins
 
-    async def set_pinned(self, app_id: str, pinned: bool) -> dict[str, Any]:
+    async def set_pinned(
+        self, app_id: str, pinned: bool, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Pin an application to the sidebar or unpin it (sidebar-pins.md).
 
         Only where it is *shown* changes — an unpinned app still serves, its
         backend still runs, and the Applications page still lists it.
         """
         db = self._require_db()
-        row = await self.get_application(app_id)
+        row = await self.get_application(app_id, user_id)
         if row["archived"]:
             raise ApplicationError("Restore the application before pinning it")
         await db.set_application_pinned(app_id, pinned)
@@ -614,13 +641,19 @@ class ApplicationManager:
         assert updated is not None  # written immediately above
         return updated
 
-    async def reorder_pins(self, ordered_ids: list[str]) -> list[dict[str, Any]]:
+    async def reorder_pins(
+        self, ordered_ids: list[str], user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Set the sidebar order of the pinned applications; returns every
-        live application. Every id must name a pinned, live one, once."""
+        live application. Every id must name a pinned, live one, once — and
+        one of this account's, so an id from another account is "not a pinned
+        application" rather than a row this reorders."""
         db = self._require_db()
         if len(set(ordered_ids)) != len(ordered_ids):
             raise ApplicationError("An application appears twice in the order")
-        before = {a["id"]: a for a in await db.load_applications()}
+        before = {
+            a["id"]: a for a in await db.load_applications(user_id=user_id)
+        }
         stray = [
             i for i in ordered_ids if i not in before or not before[i]["pinned"]
         ]
@@ -629,7 +662,7 @@ class ApplicationManager:
                 f"Not a pinned application: {', '.join(stray)}"
             )
         await db.reorder_application_pins(ordered_ids)
-        after = await db.load_applications()
+        after = await db.load_applications(user_id=user_id)
         # Other clients mirror rows from these events; only the rows whose
         # position actually moved need to travel.
         for row in after:
@@ -640,7 +673,7 @@ class ApplicationManager:
     # ----------------------------------------------------------------- delete
 
     async def delete_application(
-        self, app_id: str, *, keep_files: bool = False
+        self, app_id: str, *, keep_files: bool = False, user_id: str | None = None
     ) -> None:
         """Drop the row and (by default) the directory. The build session is
         never deleted — sessions are history.
@@ -652,7 +685,7 @@ class ApplicationManager:
         restored app finds its history where it left it.
         """
         db = self._require_db()
-        row = await self.get_application(app_id)
+        row = await self.get_application(app_id, user_id)
 
         from .app_agent import app_agent_manager
 

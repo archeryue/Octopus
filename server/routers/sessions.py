@@ -90,8 +90,23 @@ async def list_sessions(
     live = [_to_session_info(s) for s in session_manager.list_sessions(user_id)]
     if not include_archived:
         return live
-    archived = await session_manager.list_archived_sessions()
+    archived = await session_manager.list_archived_sessions(user_id)
     return live + archived
+
+
+def _own_session(
+    session_manager: SessionManager, session_id: str, user_id: str | None
+) -> None:
+    """404 unless this account owns `session_id` (multi-tenancy.md §5).
+
+    For the routes that act on a session without reading it back — fork,
+    duplicate, reset, archive, delete. They pass the id straight to a manager
+    method that has no idea who is asking, so the check has to happen here, in
+    one named place, rather than as an `if` each of them might be written
+    without.
+    """
+    if session_manager.get_session(session_id, user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
 
 
 async def _check_credential_backend(
@@ -172,17 +187,23 @@ async def update_session(
 @router.post("", response_model=SessionInfo, status_code=status.HTTP_201_CREATED)
 async def create_session(
     session_manager: SessionMgr,
-    req: CreateSessionRequest, _: str = Depends(verify_token)
+    req: CreateSessionRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     # A session is owned by an agent. agent_id is required, but for exactly
     # one release we fall back to the Default Agent when the client omits it
     # (agent-refactor.md §5.4).
     agent_id = req.agent_id
     if agent_id is None:
-        sys_agent = await session_manager.db.get_system_agent()
+        sys_agent = await session_manager.db.get_system_agent(user_id)
         agent_id = sys_agent["id"] if sys_agent else None
-    # Inherit the owning agent's default backend when none is pinned.
-    agent = await session_manager.db.get_agent(agent_id) if agent_id else None
+    # Inherit the owning agent's default backend when none is pinned. Scoped,
+    # because a session takes its owner from its agent: an agent id belonging to
+    # somebody else would otherwise create a session in their account.
+    agent = await session_manager.db.get_agent(agent_id, user_id) if agent_id else None
+    if agent_id is not None and agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     backend = (
         req.backend.value
         if req.backend is not None
@@ -205,12 +226,16 @@ async def create_session(
 @router.post("/import", response_model=SessionDetail, status_code=status.HTTP_201_CREATED)
 async def import_session(
     session_manager: SessionMgr,
-    req: ImportSessionRequest, _: str = Depends(verify_token)
+    req: ImportSessionRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     agent_id = req.agent_id
     if agent_id is None:
-        sys_agent = await session_manager.db.get_system_agent()
+        sys_agent = await session_manager.db.get_system_agent(user_id)
         agent_id = sys_agent["id"] if sys_agent else None
+    elif await session_manager.db.get_agent(agent_id, user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     s = await session_manager.import_session(
         name=req.name,
         working_dir=req.working_dir,
@@ -360,7 +385,13 @@ async def older_messages(
 
 
 @router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
+async def delete_session(
+    session_manager: SessionMgr,
+    session_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
+    _own_session(session_manager, session_id, user_id)
     deleted = await session_manager.delete_session(session_id)
     if not deleted:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
@@ -371,12 +402,15 @@ async def fork_preview(
     session_manager: SessionMgr,
     session_id: str,
     rewind_to_msg_seq: int = Query(...),
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     """Side-effect classification + revert preflight for the fork-confirm
     popover (session-rewind.md §5.6.2). Commits nothing."""
     try:
-        return await session_manager.fork_preview(session_id, rewind_to_msg_seq)
+        return await session_manager.fork_preview(
+            session_id, rewind_to_msg_seq, user_id
+        )
     except ForkError as e:
         raise HTTPException(
             e.status_code, detail={"reason": e.reason, "message": str(e)}
@@ -392,6 +426,7 @@ async def fork_session(
     session_manager: SessionMgr,
     session_id: str,
     req: ForkSessionRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     """Fork a session at a chosen user message (session-rewind.md §5.1).
@@ -402,6 +437,7 @@ async def fork_session(
             req.rewind_to_msg_seq,
             revert_files=req.revert_files,
             label=req.label,
+            user_id=user_id,
         )
     except ForkError as e:
         raise HTTPException(
@@ -427,13 +463,16 @@ async def duplicate_session(
     session_manager: SessionMgr,
     session_id: str,
     req: DuplicateSessionRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     """`/fork`: duplicate a session onto an independent full copy of its working
     directory (session-fork.md). The parent is left untouched. 409
     responses carry a structured `{reason}` / `{reason, backend}` body."""
     try:
-        fork = await session_manager.duplicate_session(session_id, label=req.label)
+        fork = await session_manager.duplicate_session(
+            session_id, label=req.label, user_id=user_id
+        )
     except ForkError as e:
         raise HTTPException(
             e.status_code, detail={"reason": e.reason, "message": str(e)}
@@ -450,7 +489,13 @@ async def duplicate_session(
 
 
 @router.post("/{session_id}/reset")
-async def reset_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
+async def reset_session(
+    session_manager: SessionMgr,
+    session_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
+    _own_session(session_manager, session_id, user_id)
     try:
         await session_manager.reset_session(session_id)
     except ValueError:
@@ -467,6 +512,7 @@ async def archive_session(
     session_manager: SessionMgr,
     session_id: str,
     replace: bool = Query(True),
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     """Archive the current session and return a fresh one.
@@ -480,6 +526,7 @@ async def archive_session(
     button, which puts a conversation away rather than restarting it — and
     answers 204. Either way the history stays and `/unarchive` brings it back.
     """
+    _own_session(session_manager, session_id, user_id)
     try:
         new = await session_manager.archive_session(session_id, replace=replace)
     except ValueError:
@@ -490,14 +537,19 @@ async def archive_session(
 
 
 @router.post("/{session_id}/unarchive", response_model=SessionInfo)
-async def unarchive_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
+async def unarchive_session(
+    session_manager: SessionMgr,
+    session_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
     """Bring an archived session back as a live session.
 
     Flips the DB row's `archived=0` and reloads it into the in-memory
     session map so writes (sendMessage, schedules, etc.) work again.
     """
     try:
-        s = await session_manager.unarchive_session(session_id)
+        s = await session_manager.unarchive_session(session_id, user_id)
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     return _to_session_info(s)

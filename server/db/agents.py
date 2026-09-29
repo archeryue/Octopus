@@ -149,7 +149,10 @@ class AgentsMixin(DatabaseBase):
         """Agents, optionally only one account's (multi-tenancy.md §5).
 
         `user_id=None` means "no scoping asked for" — the boot-time backfills
-        and the delegation manager want every row. A *request* passes one.
+        want every row. A *request* passes one, and so does the delegation
+        manager, which resolves a target agent by name within the delegating
+        session's own account (§7): a name is not a way to reach into another
+        account and run a turn there.
         """
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
@@ -202,14 +205,29 @@ class AgentsMixin(DatabaseBase):
         row = await cursor.fetchone()
         return self._row_to_agent(row) if row else None
 
-    async def get_system_agent(self) -> dict[str, Any] | None:
-        """The protected Default Agent (is_system=1), created by migration."""
+    async def get_system_agent(
+        self, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """This account's protected Default Agent (is_system=1).
+
+        There is one per account, not one per box (multi-tenancy.md §5): it is
+        where a fresh conversation goes when nobody named an agent, so an
+        account without one has nowhere to start — and an *unscoped* answer
+        would put that conversation in the first account that ever existed.
+        The pre-accounts install has exactly one, created by the migration, and
+        `user_id=None` still finds it.
+        """
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
-        cursor = await self.conn.execute(
+        sql = (
             f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
-            "WHERE a.is_system = 1 LIMIT 1"
+            "WHERE a.is_system = 1"
         )
+        params: list[Any] = []
+        if user_id is not None:
+            sql += " AND a.user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql + " LIMIT 1", params)
         row = await cursor.fetchone()
         return self._row_to_agent(row) if row else None
 

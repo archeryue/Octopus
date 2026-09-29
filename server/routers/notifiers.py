@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ..auth import verify_token
+from ..deps import ScopeUser
 from ..models import (
     CreateNotifierRequest,
     NotifierInfo,
@@ -48,8 +49,8 @@ def _row_to_info(row: dict) -> NotifierInfo:
 
 
 @router.get("", response_model=list[NotifierInfo])
-async def list_notifiers(_: str = Depends(verify_token)):
-    rows = await _require_db().load_notifiers()
+async def list_notifiers(user_id: ScopeUser = None, _: str = Depends(verify_token)):
+    rows = await _require_db().load_notifiers(user_id)
     return [_row_to_info(r) for r in rows]
 
 
@@ -57,7 +58,9 @@ async def list_notifiers(_: str = Depends(verify_token)):
     "", response_model=NotifierInfo, status_code=status.HTTP_201_CREATED
 )
 async def create_notifier(
-    req: CreateNotifierRequest, _: str = Depends(verify_token)
+    req: CreateNotifierRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     db = _require_db()
     nid = uuid.uuid4().hex[:12]
@@ -68,6 +71,7 @@ async def create_notifier(
         label=req.label,
         config=req.config,
         created_at=created_at,
+        user_id=user_id,
     )
     # Reload manager so the new target is live without restart
     await notifier_manager.load()
@@ -85,10 +89,11 @@ async def create_notifier(
 async def update_notifier(
     notifier_id: str,
     req: UpdateNotifierRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     db = _require_db()
-    rows = await db.load_notifiers()
+    rows = await db.load_notifiers(user_id)
     existing = next((r for r in rows if r["id"] == notifier_id), None)
     if existing is None:
         raise HTTPException(status_code=404, detail="notifier not found")
@@ -102,15 +107,22 @@ async def update_notifier(
     if updates:
         await db.update_notifier(notifier_id, **updates)
         await notifier_manager.load()
-    rows = await db.load_notifiers()
+    rows = await db.load_notifiers(user_id)
     updated = next((r for r in rows if r["id"] == notifier_id), None)
     assert updated is not None
     return _row_to_info(updated)
 
 
 @router.delete("/{notifier_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_notifier(notifier_id: str, _: str = Depends(verify_token)):
+async def delete_notifier(
+    notifier_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     db = _require_db()
+    # Resolved inside this account's rows first: a DELETE straight to the id
+    # would remove anybody's, and answer 204 either way.
+    rows = await db.load_notifiers(user_id)
+    if not any(r["id"] == notifier_id for r in rows):
+        raise HTTPException(status_code=404, detail="notifier not found")
     deleted = await db.delete_notifier(notifier_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="notifier not found")

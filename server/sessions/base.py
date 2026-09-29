@@ -573,6 +573,26 @@ class SessionManagerBase:
             return rows
         return [s for s in rows if s.user_id == user_id]
 
+    async def session_belongs_to(
+        self, session_id: str, user_id: str | None
+    ) -> bool:
+        """Does this account own the session — live or archived?
+
+        For the routes that deliberately serve an archived session: an
+        attachment's thumbnail has to keep rendering after the conversation is
+        put away, so they cannot resolve ownership through the in-memory map
+        alone. `user_id=None` is the pre-accounts install, where nobody owns
+        anything and everybody who got past `verify_token` is the operator.
+        """
+        if user_id is None:
+            return True
+        if self.get_session(session_id, user_id) is not None:
+            return True
+        if self.db is None:
+            return False
+        rows = await self.db.load_sessions(include_archived=True, user_id=user_id)
+        return any(row["id"] == session_id for row in rows)
+
     def adopt_orphan_sessions(self, user_id: str) -> int:
         """Give every live session with no owner to `user_id`.
 
@@ -663,7 +683,8 @@ class SessionManagerBase:
                     ),
                     session_id=session.id,
                     session_name=session.name,
-                )
+                ),
+                session.user_id,
             )
         except Exception:
             logger.exception(
