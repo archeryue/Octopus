@@ -23,7 +23,19 @@ credentials and the database itself. `user-1.0` is for people who already trust
 each other; the trust boundary arrives with per-tenant containers in the cloud
 version.
 
-This is stated first because every other decision below is only defensible
+**It is not a team product**, and that is a product decision rather than a
+roadmap item. Octopus is a personal agent: multi-tenancy here means several
+*private* installs behind one site, never a shared workspace. There are no
+teams, no shared agents, no collaboration surface, and nothing below is shaped
+to leave room for one.
+
+That absence is load-bearing, not a gap. The questions that make sharing hard —
+who owns a session two people touched, whose credential runs it, whose quota it
+spends, who may read its transcript — simply never arise, which is why §5 can
+own everything by a single `user_id` and §8 can count quota per person without
+qualification.
+
+This is all stated first because every other decision below is only defensible
 given it.
 
 ---
@@ -158,6 +170,14 @@ nullable (orphan sessions exist), and the WebSocket fan-out has to route by
 owner on every frame — one denormalised column beats a join on the hottest path
 in the product.
 
+**Every edge in the graph stays inside one user.** An agent delegates only to
+its owner's agents (`mcp__ask_agent__ask` resolves the target name within the
+caller's set, so another user's "Vera" is simply not found); a delegation
+child's parent is the same user's session; a fork's parent likewise. The cycle
+and depth-3 guards already walk `parent_session_id`, so the ownership check
+rides the walk they already do. This is not a restriction awaiting relaxation —
+per §1 there is no sharing to relax it into.
+
 ### 5.1 Scoping is structural, not per-route
 
 There are ~101 routes and 119 `verify_token` call sites. Adding
@@ -287,9 +307,6 @@ the only irreversible one.
 * **SSO / OAuth sign-in, email verification, self-service password reset.**
   An invite code and an admin who can set a password cover a small trusted
   group; none of the rest is worth building twice.
-* **Teams, shared agents, cross-user delegation.** `mcp__ask_agent__ask` stays
-  within one user's agents. Sharing is a product question (who owns the
-  session? whose credential runs it? whose quota?) that deserves its own plan.
 * **Billing and usage accounting** beyond the per-user quotas in §8.
 * **Per-user databases.** Reconsidered when tenants move to their own
   containers, where the export script from §5 is the migration anyway.
