@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { IconMenu2 } from "@tabler/icons-react";
 import { AccountPage } from "./components/AccountPage";
 import { AgentFormPage } from "./components/AgentFormPage";
@@ -20,6 +20,7 @@ import { SidebarEdgeToggle } from "./components/SidebarEdgeToggle";
 import { SidebarManage } from "./components/SidebarManage";
 import { SignIn } from "./components/SignIn";
 import { useViewportHeight } from "./hooks/useViewportHeight";
+import { loadIdentity } from "./lib/loadIdentity";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useSessionStore } from "./stores/sessionStore";
 
@@ -36,6 +37,11 @@ function App() {
 function AuthenticatedApp() {
   const { sendMessage, interrupt, approveTool, denyTool, answerQuestion } =
     useWebSocket();
+  // Re-asked when the bearer changes, which includes claiming the install.
+  const token = useSessionStore((s) => s.token);
+  useEffect(() => {
+    void loadIdentity();
+  }, [token]);
   const sidebarOpen = useSessionStore((s) => s.sidebarOpen);
   const setSidebarOpen = useSessionStore((s) => s.setSidebarOpen);
   const connected = useSessionStore((s) => s.connected);

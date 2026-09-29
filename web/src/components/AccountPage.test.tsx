@@ -180,7 +180,9 @@ describe("AccountPage", () => {
       ],
     });
     render(<AccountPage />);
-    await waitFor(() => expect(screen.getByText("archer")).toBeTruthy());
+    // Waited on the *other* person: "archer" is also the identity card's
+    // heading, so it is on screen before the list arrives.
+    await waitFor(() => expect(screen.getByText("vera")).toBeTruthy());
     const toggles = screen.getAllByLabelText("Disable account");
     expect(toggles).toHaveLength(1);
     fireEvent.click(toggles[0]);

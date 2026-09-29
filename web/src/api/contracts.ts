@@ -4083,6 +4083,7 @@ export interface operations {
         parameters: {
             query?: {
                 window?: string;
+                token?: string | null;
             };
             header?: never;
             path?: never;
@@ -4114,6 +4115,7 @@ export interface operations {
         parameters: {
             query?: {
                 window?: string;
+                token?: string | null;
             };
             header?: never;
             path: {

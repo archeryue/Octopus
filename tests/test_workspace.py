@@ -119,3 +119,30 @@ class TestConfinement:
         with pytest.raises(WorkspaceError) as e:
             confine("/etc", user_id="u1")
         assert str(paths_for("u1").workspace) in e.value.message
+
+
+@pytest.mark.asyncio
+async def test_a_refused_working_dir_is_a_400_not_a_500():
+    """`confine()` is raised several frames below any route and nothing caught
+    it, so naming a directory outside your workspace answered 500 with a
+    traceback in the log. One exception handler, because every path that
+    resolves a working directory goes through the same check."""
+    from httpx import ASGITransport, AsyncClient
+
+    from server.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/api/sessions", json={"name": "x", "working_dir": "/etc"}
+        )
+    # 401 before anything else here (no bearer), which is the point: the handler
+    # exists for the authenticated case, exercised in test_tenant_isolation.
+    assert res.status_code == 401
+
+    from server.workspace import WorkspaceError
+
+    handler = app.exception_handlers[WorkspaceError]
+    reply = await handler(None, WorkspaceError("/etc is outside your workspace"))
+    assert reply.status_code == 400
+    assert b"outside your workspace" in reply.body

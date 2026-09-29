@@ -130,9 +130,22 @@ export type MainView =
 
 export type PageTab = "all" | "form";
 
+export interface Identity {
+  label: string;
+  user_id: string | null;
+  is_admin: boolean;
+}
+
 interface SessionStore {
   token: string;
   setToken: (t: string) => void;
+
+  /** Who this browser is signed in as (multi-tenancy.md §3), or null before
+   * the answer arrives. Held here rather than fetched per component because
+   * two of them need it — the account row shows the username, and the
+   * sidebar hides the operator-only Monitor page from everybody else. */
+  identity: Identity | null;
+  setIdentity: (i: Identity | null) => void;
 
   // Agents own sessions and schedules (agent-refactor.md). The sidebar
   // is two-pane: pick an agent, then see its sessions. `activeAgentId`
@@ -404,6 +417,9 @@ export interface Delegation {
 }
 
 export const useSessionStore = create<SessionStore>((set, get) => ({
+  identity: null,
+  setIdentity: (identity) => set({ identity }),
+
   token: localStorage.getItem("octopus_token") || "",
   setToken: (t) => {
     localStorage.setItem("octopus_token", t);

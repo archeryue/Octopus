@@ -413,3 +413,127 @@ async def test_two_accounts_can_both_have_an_application_called_notes(two_accoun
             name="notes", description="again", agent_id=ctx["archer"]["agent"]["id"]
         )
     assert "already exists" in str(e.value)
+
+
+@pytest.mark.asyncio
+async def test_vera_cannot_reach_archers_work_through_any_surface(two_accounts):
+    """One case per router, because the scoping is per route.
+
+    The structural half — "does every route take a scope at all" — is
+    `test_route_scoping.py`. This is the behavioural half: the scope is
+    actually *used*, and the answer is 404 rather than somebody else's data.
+    """
+    ctx = two_accounts
+    c = ctx["client"]
+    vera = _as(ctx["vera"]["token"])
+    sid = ctx["archer"]["session"].id
+    aid = ctx["archer"]["agent"]["id"]
+
+    reads = [
+        f"/api/sessions/{sid}",
+        f"/api/sessions/{sid}/messages?before_seq=99",
+        f"/api/sessions/{sid}/files?path=README.md",
+        f"/api/sessions/{sid}/files/meta?path=README.md",
+        f"/api/sessions/{sid}/bg-tasks",
+        f"/api/sessions/{sid}/delegations",
+        f"/api/sessions/{sid}/research",
+        f"/api/sessions/{sid}/schedules",
+        f"/api/agents/{aid}",
+        f"/api/agents/{aid}/sessions",
+        f"/api/agents/{aid}/schedules",
+        f"/api/agents/{aid}/connectors",
+    ]
+    for path in reads:
+        res = await c.get(path, headers=vera)
+        assert res.status_code == 404, f"{path} answered {res.status_code}"
+
+    writes = [
+        ("post", f"/api/sessions/{sid}/reset", None),
+        ("post", f"/api/sessions/{sid}/archive", None),
+        ("post", f"/api/sessions/{sid}/unarchive", None),
+        ("delete", f"/api/sessions/{sid}", None),
+        ("post", f"/api/sessions/{sid}/duplicate", {}),
+        ("post", f"/api/sessions/{sid}/fork", {"rewind_to_msg_seq": 0}),
+        ("post", f"/api/sessions/{sid}/bg-tasks", {"command": "echo hi"}),
+        ("post", f"/api/sessions/{sid}/questions", {"questions": [{"question": "?"}]}),
+        ("post", f"/api/sessions/{sid}/research", {"question": "what"}),
+        (
+            "post",
+            f"/api/sessions/{sid}/schedules",
+            {"prompt": "do it", "name": "n", "interval_seconds": 3600},
+        ),
+        (
+            "post",
+            f"/api/sessions/{sid}/delegations",
+            {"agent_name": "Archer's agent", "request": "do it"},
+        ),
+        ("post", f"/api/agents/{aid}/archive", None),
+        (
+            "post",
+            f"/api/agents/{aid}/sessions",
+            {"name": "mine now", "working_dir": "/tmp"},
+        ),
+        ("put", f"/api/agents/{aid}/connectors", {"installation_ids": []}),
+    ]
+    for method, path, body in writes:
+        call = getattr(c, method)
+        res = await (call(path, json=body, headers=vera) if body is not None
+                     else call(path, headers=vera))
+        assert res.status_code == 404, (
+            f"{method.upper()} {path} answered {res.status_code}: {res.text}"
+        )
+
+    # Multipart, so the body validates and the ownership check is what answers.
+    uploaded = await c.post(
+        f"/api/sessions/{sid}/attachments",
+        files={"file": ("note.txt", b"hello", "text/plain")},
+        headers=vera,
+    )
+    assert uploaded.status_code == 404, uploaded.text
+
+
+@pytest.mark.asyncio
+async def test_a_session_cannot_be_created_under_someone_elses_agent(two_accounts):
+    """The derivation runs the other way too: a session takes its owner from
+    its agent, so an agent id is the one input that could plant a row in
+    another account."""
+    ctx = two_accounts
+    res = await ctx["client"].post(
+        "/api/sessions",
+        json={
+            "name": "trojan",
+            "agent_id": ctx["archer"]["agent"]["id"],
+            "working_dir": "/tmp",
+        },
+        headers=_as(ctx["vera"]["token"]),
+    )
+    assert res.status_code == 404, res.text
+
+
+@pytest.mark.asyncio
+async def test_an_agent_cannot_delegate_into_another_account(two_accounts):
+    """A name was enough to start a turn in somebody else's workspace, on their
+    credential, reporting back into yours."""
+    from server.delegations import delegation_manager
+
+    ctx = two_accounts
+    delegation_manager.bind(session_mgr=session_manager, db=ctx["db"])
+    target = await delegation_manager._resolve_target_agent(
+        "Archer's agent", ctx["vera"]["user"]["id"]
+    )
+    assert target is None
+    # And it still resolves for the account that owns it.
+    own = await delegation_manager._resolve_target_agent(
+        "Archer's agent", ctx["archer"]["user"]["id"]
+    )
+    assert own is not None and own["id"] == ctx["archer"]["agent"]["id"]
+
+
+@pytest.mark.asyncio
+async def test_the_monitor_belongs_to_the_operator(two_accounts):
+    """Box-level metrics — resident memory, sidecars, HTTP latency across the
+    whole install — are the operator's, and neither account here is an admin."""
+    ctx = two_accounts
+    for token in (ctx["vera"]["token"], ctx["archer"]["token"]):
+        res = await ctx["client"].get("/api/monitor/overview", headers=_as(token))
+        assert res.status_code == 403, res.status_code

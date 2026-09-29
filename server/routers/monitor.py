@@ -3,6 +3,13 @@
 Read-only. Opens the metrics file per request rather than holding a connection:
 these are human-paced queries against a file the writer already owns, and a
 second long-lived handle on it buys nothing.
+
+**The operator's**, not an account's (multi-tenancy.md §8). Everything here is
+box-level: resident memory, sidecar counts, HTTP latency, and turn and error
+rates across the whole install. None of it is scoped to a user because the
+events carry no owner — and rather than invent a half-scoped view, the page is
+what it has always been, an operations view, restricted to whoever operates the
+box. A per-account usage view is a separate feature (§11).
 """
 
 from __future__ import annotations
@@ -10,10 +17,10 @@ from __future__ import annotations
 import os
 
 import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status
 
-from ..auth import verify_token
 from ..config import settings
+from ..deps import OperatorUser
 from ..monitor import query
 
 router = APIRouter(prefix="/api/monitor", tags=["monitor"])
@@ -29,7 +36,7 @@ async def _connect() -> aiosqlite.Connection:
 
 
 @router.get("/overview")
-async def overview(window: str = Query("24h"), _: str = Depends(verify_token)):
+async def overview(window: str = Query("24h"), _operator: OperatorUser = None):
     conn = await _connect()
     try:
         return await query.overview(conn, window)
@@ -39,7 +46,7 @@ async def overview(window: str = Query("24h"), _: str = Depends(verify_token)):
 
 @router.get("/{report}")
 async def report(
-    report: str, window: str = Query("7d"), _: str = Depends(verify_token)
+    report: str, window: str = Query("7d"), _operator: OperatorUser = None
 ):
     fn = query.REPORTS.get(report)
     if fn is None:

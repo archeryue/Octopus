@@ -11,8 +11,9 @@ from pathlib import Path
 os.environ.pop("CLAUDECODE", None)
 
 import uvicorn
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import deps
@@ -57,6 +58,7 @@ from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 from .tunnel import CloudflareTunnel
 from .users import UserManager
+from .workspace import WorkspaceError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -197,6 +199,21 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Octopus", version="0.1.0", lifespan=lifespan)
+
+@app.exception_handler(WorkspaceError)
+async def _workspace_error(_request: Request, exc: WorkspaceError) -> JSONResponse:
+    """A path outside what this account may reach is a bad request, not a crash.
+
+    `confine()` is raised from inside the session manager, several frames below
+    any route, and nothing caught it: naming a working directory outside your
+    workspace answered 500 with a traceback in the log (multi-tenancy.md §6).
+    One handler rather than a `try` per route, because every path that resolves
+    a working directory goes through the same check.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_400_BAD_REQUEST, content={"detail": exc.message}
+    )
+
 
 # Mounted before the routers so the /mcp/* prefix is claimed explicitly, and at
 # import time because `lifespan` needs the same server instances (module import

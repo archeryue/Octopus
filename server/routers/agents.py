@@ -216,12 +216,18 @@ async def create_agent_session(
     the body's `agent_id` (if any) is ignored."""
     from .sessions import _check_credential_backend, _to_session_info
 
-    # Inherit the agent's default backend when the request doesn't pin one.
+    # Scoped, and *enforced*: the lookup was already scoped, but a `None` fell
+    # through to `create_session` below, which takes the session's owner from
+    # the agent — so another account's agent id planted a session in their
+    # account. Found by the isolation suite.
     agent = await _get_manager().get_agent(agent_id, user_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+    # Inherit the agent's default backend when the request doesn't pin one.
     backend = (
         req.backend.value
         if req.backend is not None
-        else (agent.get("backend") if agent else None) or "claude-code"
+        else agent.get("backend") or "claude-code"
     )
     await _check_credential_backend(session_manager, req.credential_id, backend)
     try:

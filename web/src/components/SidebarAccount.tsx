@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   IconArchive,
   IconCopy,
@@ -22,7 +21,8 @@ import {
  * mono — rather than a settings gear, and it stays the single home for
  * app-level actions: there are no gear icons anywhere else in the sidebar.
  *
- * The handle is a **label** (via `/api/auth/identity`), never the token. It
+ * The handle is a **label** (from `/api/auth/identity`, via the store), never
+ * the token. It
  * used to be the token, on the reasoning that in single-user mode the token is
  * the identity — but the account row is on screen permanently, so that put the
  * credential in every screenshot, screen share and over-the-shoulder glance.
@@ -46,28 +46,10 @@ export function SidebarAccount({
   const openManage = useSessionStore((s) => s.openManage);
 
   const token = useSessionStore((s) => s.token);
-  const [label, setLabel] = useState("");
-
-  // Only this row needs it, so it asks for it here rather than through the
-  // store. Re-asked when the token changes, which includes a rotation.
-  useEffect(() => {
-    if (!token) return;
-    let alive = true;
-    fetch(`${window.location.origin}/api/auth/identity`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (alive && data && typeof data.label === "string") setLabel(data.label);
-      })
-      .catch(() => {
-        // An unreachable server is already visible everywhere else; the handle
-        // just stays generic rather than throwing inside the sidebar.
-      });
-    return () => {
-      alive = false;
-    };
-  }, [token]);
+  // Fetched once by `App` and held in the store: the sidebar's Manage group
+  // needs the same answer, and two components asking the same route twice is
+  // two answers that can disagree.
+  const label = useSessionStore((s) => s.identity?.label) ?? "";
 
   const handle = token ? label || "signed in" : "not signed in";
   const initial = ((token && label[0]) || "O").toUpperCase();

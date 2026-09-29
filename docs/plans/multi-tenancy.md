@@ -209,6 +209,14 @@ database (or a container), only `Ctx` changes.
 The `settings.*_dir` constants become functions of a user, through
 `workspace.paths_for(user_id)`.
 
+Two things are deliberately **not** per-account: a connector *kind* and its
+OAuth client. Those are this install's registration with a provider — which is
+why they already have an env fallback — and both are keyed by the kind alone.
+An admin configures them once and every account connects its own account
+through them; the per-account half is `connector_installations`, whose tokens
+are keyed to their owner's DEK. Their secret moves to the **master key** rather
+than to whoever claimed the install first, because it belongs to the box.
+
 `research/` is on that list because it was not a setting at all: a deep-research
 job's scratch cwd and its report went to a hardcoded `~/.octopus/research`.
 That pooled every account's research output in one directory no confinement
@@ -221,6 +229,11 @@ own.
 `Path(raw).expanduser().resolve()` with no boundary at all — any absolute path
 on the box. It must resolve (symlinks included, or the check is theatre) inside
 the owner's workspace, or the request is refused.
+
+A path outside what an account may reach is a **400**, through one exception
+handler on the app: `confine()` raises several frames below any route, and
+nothing caught it — naming a directory outside your workspace answered 500 with
+a traceback in the log.
 
 **`users.extra_roots`** is an admin-set list of additional permitted prefixes.
 It exists for exactly one reason: the first user develops Octopus itself at a
@@ -244,7 +257,21 @@ Three places assume one user and would cross tenants silently:
    credential — otherwise changing a password would break every tool call in a
    turn that is currently running.
 3. **Application tokens** derive from the master key and carry the owner;
-   `/apps/{id}` checks ownership. An unguessable id is not authorisation.
+   `/apps/{id}` checks ownership. An unguessable id is not authorisation — which
+   is also why an in-flight OAuth login and a pending device login now record
+   who started them: only that account may finish or cancel one.
+
+Two more places turned out to assume one user, both found by walking the route
+table rather than by reasoning about it:
+
+4. **An in-turn tool call had no way in.** The MCP namespaces reach their own
+   REST routes over loopback carrying `OCTOPUS_AUTH_TOKEN`, which opens nothing
+   the moment an account exists: every tool an agent has would have failed on
+   the first account's first turn. They present the signed MCP scope instead,
+   which already names the session and its owner, and `auth._allowed` accepts
+   it — so a tool call acts as its session's account.
+5. **A notifier fired at everybody.** One person's session going idle POSTed to
+   every webhook registered on the box. `fire` takes the session's owner.
 
 The in-process MCP design (`polish-2026-09.md` §4 B1) needs no rework: one
 shared mount plus identity in the call's verified scope is already the
@@ -260,8 +287,15 @@ multi-tenant shape. Only the scope's contents grow.
   (`inline-steering.md` §7 records the OOM this caused with one user). Per-user
   concurrent-turn caps and a global cap ship with this version, and
   `stop_all_held_processes` becomes per-user.
-* The monitor splits: box-level gauges (PSS, sidecar count) are admin-only;
-  per-user usage (turns, errors, tokens) is visible to the owner.
+* **The monitor belongs to whoever operates the box.** Everything it reports is
+  box-level — resident memory, sidecar counts, HTTP latency, and turn and error
+  rates across the whole install — and the events carry no owner, so there is no
+  per-account view to show. Rather than invent a half-scoped one, the page is
+  what it has always been (an operations view) behind a new `OperatorUser`
+  dependency: an admin once accounts exist, and the token-holder before then,
+  because an install with no accounts still has an operator. The sidebar hides
+  the row from everybody else — a row that answers 403 is worse than a row that
+  is not there. A *user-facing* usage view is a separate feature, in §11.
 
 ---
 
@@ -317,6 +351,10 @@ the only irreversible one.
   An invite code and an admin who can set a password cover a small trusted
   group; none of the rest is worth building twice.
 * **Billing and usage accounting** beyond the per-user quotas in §8.
+* **A per-account usage view.** The monitor is the operator's (§8); showing
+  somebody their own turns, errors and spend means an owner on every metrics
+  event and a page that reads differently for an admin. That is a feature, not
+  the unfinished half of this one.
 * **Per-user databases.** Reconsidered when tenants move to their own
   containers, where the export script from §5 is the migration anyway.
 * **Audit logging.** Cheap to add later and valueless without a trust boundary

@@ -5,11 +5,14 @@
  * the token *is* the identity. But that row is pinned under the sidebar at all
  * times, so the credential was in every screenshot, every screen share and
  * every glance over a shoulder. These tests pin the two halves of the fix: the
- * handle comes from `/api/auth/identity`, and the token is never on screen.
+ * handle is the identity's label, and the token is never on screen.
+ *
+ * The *fetch* lives in `lib/loadIdentity` now, tested there — two components
+ * need the answer, so one of them asking for it was one answer too many.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 
 import { SidebarAccount } from "./SidebarAccount";
 import { useSessionStore } from "../stores/sessionStore";
@@ -28,48 +31,34 @@ function mount() {
 
 beforeEach(() => {
   useSessionStore.getState().setToken(TOKEN);
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => ({ ok: true, json: async () => ({ label: "archeryue" }) }))
-  );
+  useSessionStore.getState().setIdentity(null);
 });
 
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-});
+afterEach(cleanup);
 
 describe("SidebarAccount", () => {
-  it("shows the label from the identity route", async () => {
+  it("shows the label from the identity", () => {
+    useSessionStore
+      .getState()
+      .setIdentity({ label: "archeryue", user_id: "u1", is_admin: false });
     mount();
-    await waitFor(() => expect(screen.getByText("archeryue")).toBeTruthy());
+    expect(screen.getByText("archeryue")).toBeTruthy();
     // The initial tile follows the label, not the token's first character.
     expect(screen.getByText("A")).toBeTruthy();
   });
 
-  it("never renders the token, before or after the label arrives", async () => {
+  it("never renders the token, before or after the label arrives", () => {
     const { container } = mount();
     expect(container.textContent).not.toContain(TOKEN);
-    await waitFor(() => expect(screen.getByText("archeryue")).toBeTruthy());
+    useSessionStore
+      .getState()
+      .setIdentity({ label: "archeryue", user_id: "u1", is_admin: false });
     expect(container.textContent).not.toContain(TOKEN);
   });
 
-  it("stays generic when the identity route can't be reached", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => null })));
+  it("stays generic when the identity isn't known", () => {
     const { container } = mount();
-    await waitFor(() => expect(screen.getByText("signed in")).toBeTruthy());
+    expect(screen.getByText("signed in")).toBeTruthy();
     expect(container.textContent).not.toContain(TOKEN);
-  });
-
-  it("asks again when the token changes, which is what a rotation does", async () => {
-    mount();
-    await waitFor(() => expect(screen.getByText("archeryue")).toBeTruthy());
-    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length;
-    useSessionStore.getState().setToken("a-rotated-token");
-    await waitFor(() =>
-      expect(
-        (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.length
-      ).toBeGreaterThan(calls)
-    );
   });
 });
