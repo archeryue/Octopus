@@ -1,0 +1,19 @@
+[Unit]
+Description=Octopus Server (user-1.0 branch, bak.endlex.ai)
+After=network.target
+
+[Service]
+Type=simple
+User=start-up
+WorkingDirectory=/home/start-up/octopus-user-1.0
+# Its own environment file, so the worktree's .env stays what development and
+# the test suite use. Real environment wins over .env, which is the point.
+EnvironmentFile=/home/start-up/.octopus-dev/serve.env
+# systemd's default PATH excludes ~/.local/bin (claude) and the nvm bin (codex).
+Environment=PATH=/home/start-up/.local/bin:/home/start-up/.nvm/versions/node/v22.16.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/home/start-up/octopus-user-1.0/.venv/bin/octopus serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
