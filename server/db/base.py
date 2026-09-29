@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -304,10 +305,6 @@ class DatabaseBase:
          "ALTER TABLE backend_credentials ADD COLUMN user_id TEXT"),
         ("connector_installations", "user_id",
          "ALTER TABLE connector_installations ADD COLUMN user_id TEXT"),
-        ("custom_connectors", "user_id",
-         "ALTER TABLE custom_connectors ADD COLUMN user_id TEXT"),
-        ("connector_oauth_clients", "user_id",
-         "ALTER TABLE connector_oauth_clients ADD COLUMN user_id TEXT"),
         ("notifiers", "user_id", "ALTER TABLE notifiers ADD COLUMN user_id TEXT"),
     )
 
@@ -319,10 +316,14 @@ class DatabaseBase:
         "applications",
         "backend_credentials",
         "connector_installations",
-        "custom_connectors",
-        "connector_oauth_clients",
         "notifiers",
     )
+
+    # Deliberately NOT owned: `connector_oauth_clients` and `custom_connectors`
+    # are install-level configuration — an OAuth app registration and a
+    # connector kind, both of which an admin sets up once for everybody, and
+    # both keyed by `kind` alone. The per-account half is
+    # `connector_installations` (multi-tenancy.md §5).
 
 
     def __init__(self, db_path: str) -> None:
@@ -332,6 +333,9 @@ class DatabaseBase:
         self._closed: bool = False
         self._pending_appends: int = 0
         self._last_flush: float = time.monotonic()
+        # Work that has to unwind before the connection goes away; see
+        # `add_close_hook`.
+        self._close_hooks: list[Callable[[], Awaitable[None]]] = []
 
     async def initialize(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path)
@@ -471,6 +475,19 @@ class DatabaseBase:
         # has `user_id IS NULL` — the pre-accounts install, where these
         # constraints have always held. Found by the connector dedupe test, and
         # true of all three.
+        # Two tables briefly carried `user_id` before it was settled that a
+        # connector kind and its OAuth client are install-level (see
+        # OWNED_TABLES). A column nothing reads is a column that will one day be
+        # read by mistake, so it goes. Guarded on its presence, and after the
+        # ADD loop above so the two cannot fight over the same database.
+        for table in ("custom_connectors", "connector_oauth_clients"):
+            if await self._has_column(table, "user_id"):
+                await self.conn.execute(
+                    f"ALTER TABLE {table} DROP COLUMN user_id"  # noqa: S608
+                )
+                logger.info("migration applied: %s.user_id dropped", table)
+        await self._stamp("drop:connector_config_user_id")
+
         await self._make_index_per_user(
             "applications_name_unique",
             "ON applications(COALESCE(user_id, ''), name COLLATE NOCASE)"
@@ -819,14 +836,52 @@ class DatabaseBase:
             raise asyncio.CancelledError("Database is closed")
         assert self._conn is not None, "Database not initialized"
 
+    def add_close_hook(self, hook: Callable[[], Awaitable[None]]) -> None:
+        """Register work to unwind *before* this connection goes away.
+
+        The database is the resource; whoever holds long-running work against
+        it has to be given the chance to finish that work while the connection
+        still answers. A turn in flight is the case this exists for: cancelled
+        after the connection is gone, its own `finally` — which flushes and
+        broadcasts — has nothing to await and nothing to cancel it, so the event
+        loop stops making progress instead of failing. Cancelled *before*, it
+        unwinds normally.
+
+        Hooks run in reverse registration order, like a stack of context
+        managers, and a hook that raises is logged rather than allowed to leave
+        the connection open.
+        """
+        self._close_hooks.append(hook)
+
     async def close(self) -> None:
+        """Unwind the hooks, commit, then close. The flag goes up *before* the
+        connection is torn down, deliberately.
+
+        `await self.conn.close()` yields, and in that window a task that was
+        waiting elsewhere can reach `_ensure_connected`, find `_closed` still
+        False, and submit work to an aiosqlite worker thread that is stopping.
+        That future is never resolved by anyone: the task cannot be cancelled
+        out of it either, so the *loop* cannot finish tearing down, and what you
+        see is a test run — or a shutdown — that stops making progress instead
+        of failing. Setting the flag first turns that window into the
+        `CancelledError` the callers already handle.
+
+        The commit below goes through `self.conn` rather than
+        `_ensure_connected`, so closing can still flush what it has to.
+        """
+        hooks, self._close_hooks = list(self._close_hooks), []
+        for hook in reversed(hooks):
+            try:
+                await hook()
+            except Exception:
+                logger.exception("close hook failed")
+        self._closed = True
         if self._conn:
             if self._dirty:
                 await self.conn.commit()
                 self._dirty = False
             await self.conn.close()
             self._conn = None
-        self._closed = True
 
     async def flush(self) -> None:
         """Commit pending writes."""

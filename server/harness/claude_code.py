@@ -773,14 +773,18 @@ class _OAuthLoginDriver:
     method = LoginMethod.oauth_redirect
 
     async def start(
-        self, label: str | None = None, *, reauth_credential_id: str | None = None
+        self,
+        label: str | None = None,
+        *,
+        reauth_credential_id: str | None = None,
+        user_id: str | None = None,
     ):
         # Claude re-auth targets the existing credential on the `complete`
         # route (it carries `credential_id`), so the redirect start itself is
         # identical for fresh and re-auth logins — nothing to thread here.
         from ..oauth_login import oauth_login_manager
 
-        return await oauth_login_manager.start()
+        return await oauth_login_manager.start(user_id=user_id)
 
     async def submit_code(self, login_id: str, code: str):
         from ..oauth_login import oauth_login_manager
@@ -788,7 +792,18 @@ class _OAuthLoginDriver:
         return await oauth_login_manager.submit_code(login_id, code)
 
     def get(self, login_id: str):
-        raise NotImplementedError("oauth_redirect login does not poll; use submit_code")
+        """The login record, or None.
+
+        It used to raise, on the grounds that a redirect login is completed by
+        `submit_code` rather than polled. But the record is also how a route
+        asks *whose* login this is — only the account that started a sign-in may
+        finish or cancel it (multi-tenancy.md §5) — so looking one up is a
+        reasonable thing to want. Polling it for a result still gets you
+        nowhere: the state only moves when a code is submitted.
+        """
+        from ..oauth_login import oauth_login_manager
+
+        return oauth_login_manager.get(login_id)
 
     async def cancel(self, login_id: str) -> None:
         from ..oauth_login import oauth_login_manager

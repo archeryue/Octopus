@@ -105,6 +105,10 @@ class PendingLogin:
     state: str = ""  # raw CSRF state (the random half of the composite)
     verifier: str | None = None
     requested_label: str | None = None
+    # Who asked (multi-tenancy.md §5). The provider's redirect carries no bearer
+    # of ours, so the account is remembered here, by the authenticated `start`
+    # call, and read back when the callback persists the installation.
+    user_id: str | None = None
     status: ConnectorLoginState = ConnectorLoginState.pending
     installation_id: str | None = None
     message: str | None = None
@@ -140,6 +144,7 @@ class ConnectorLoginManager:
         client_id: str,
         redirect_uri: str,
         requested_label: str | None = None,
+        user_id: str | None = None,
     ) -> PendingLogin:
         self._gc()
         login_id = _b64url(secrets.token_bytes(9))  # 12 url-safe chars
@@ -160,6 +165,7 @@ class ConnectorLoginManager:
             state=raw_state,
             verifier=verifier,
             requested_label=requested_label,
+            user_id=user_id,
             created_at=self._now(),
         )
         self._pending[login_id] = pl

@@ -58,6 +58,8 @@ class CodexLoginSession:
     state: CodexLoginState = CodexLoginState.pending
     message: str | None = None
     persisted: bool = False  # set once the route saves the credential row
+    # Who started this login — see `LoginSession.user_id` in oauth_login.py.
+    user_id: str | None = None
     _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)
     _watchdog: asyncio.Task | None = field(default=None, repr=False)
@@ -105,7 +107,11 @@ class CodexLoginManager:
         self._sessions: dict[str, CodexLoginSession] = {}
 
     async def start(
-        self, label: str, *, reauth_credential_id: str | None = None
+        self,
+        label: str,
+        *,
+        reauth_credential_id: str | None = None,
+        user_id: str | None = None,
     ) -> CodexLoginSession:
         argv = build_codex_login_argv()
         if argv is None:
@@ -150,6 +156,7 @@ class CodexLoginManager:
             label=label,
             _proc=proc,
             _created_at=loop.time(),
+            user_id=user_id,
         )
         session._task = asyncio.create_task(self._drive(session))
         # Scrape happens asynchronously — `start` returns immediately so the

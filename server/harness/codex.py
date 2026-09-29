@@ -738,12 +738,18 @@ class _DeviceLoginDriver:
     method = LoginMethod.device_code
 
     async def start(
-        self, label: str | None = None, *, reauth_credential_id: str | None = None
+        self,
+        label: str | None = None,
+        *,
+        reauth_credential_id: str | None = None,
+        user_id: str | None = None,
     ):
         from ..codex_login import codex_login_manager
 
         return await codex_login_manager.start(
-            (label or "").strip(), reauth_credential_id=reauth_credential_id
+            (label or "").strip(),
+            reauth_credential_id=reauth_credential_id,
+            user_id=user_id,
         )
 
     async def submit_code(self, login_id: str, code: str):

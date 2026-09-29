@@ -250,3 +250,35 @@ async def require_admin(user: CurrentUser) -> dict[str, Any]:
 
 
 AdminUser = Annotated[dict, Depends(require_admin)]
+
+async def operator_user(
+    request: Request,
+    creds: _BearerCreds,
+    token: _QueryToken = None,
+) -> dict[str, Any] | None:
+    """An admin — or the single operator of an install that has no accounts yet.
+
+    For **install-level** configuration: a connector kind, an OAuth client
+    registration. `AdminUser` is wrong there, because before the first account
+    exists there is nobody to be an admin and asking for one answers 503 on an
+    install where the operator is standing right there with the token
+    (multi-tenancy.md §5). `verify_token` has already admitted them; this only
+    decides whether they may change something everybody shares.
+
+    Returns `None` in that era, and the admin's row after it.
+    """
+    if not await accounts_exist():
+        return None
+    if _user_manager is None:  # pragma: no cover - startup wiring bug
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "accounts are not available"
+        )
+    user = await _user_manager.resolve_token(_presented(request, creds, token))
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    if not user.get("is_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only")
+    return user
+
+
+OperatorUser = Annotated[dict | None, Depends(operator_user)]

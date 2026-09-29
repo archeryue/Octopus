@@ -240,6 +240,36 @@ class TurnsMixin(SessionManagerBase):
         )
         return seq
 
+    async def drain_turns(self, timeout: float = 5.0) -> int:
+        """Stop every turn in flight, and wait for it to finish unwinding.
+
+        Registered as a close hook on the database (`Database.add_close_hook`),
+        so it runs on any shutdown — the server's, and every test's — before the
+        connection goes away. A turn cancelled *after* that has a `finally` that
+        flushes and broadcasts with nothing left to await, and nothing to cancel
+        it out of the attempt: the loop then stops making progress rather than
+        failing, which is what an intermittently hanging test run looked like.
+
+        Bounded, because a wedged turn must not hold up a shutdown either.
+        """
+        tasks = [
+            s._active_task
+            for s in self.sessions.values()
+            if s._active_task is not None and not s._active_task.done()
+        ]
+        if not tasks:
+            return 0
+        for task in tasks:
+            task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        if pending:
+            logger.warning(
+                "%d turn(s) did not stop within %.0fs; abandoning them",
+                len(pending),
+                timeout,
+            )
+        return len(done)
+
     def running_turns_for(self, user_id: str | None) -> int:
         """How many of this account's sessions are mid-turn."""
         return sum(

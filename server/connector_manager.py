@@ -21,7 +21,7 @@ from .config import settings
 from .connectors.base import ConnectorInstallation
 from .connectors.custom import CustomConnector, resolve_connector
 from .connectors.registry import all_connectors, get_connector
-from .crypto import decrypt, encrypt
+from .crypto import decrypt, encrypt, master_key
 from .database import Database
 from .monitor import Event as _MonEvent
 from .monitor import record as _mon_record
@@ -140,11 +140,17 @@ class ConnectorManager:
 
     async def resolve_client_creds(self, kind: str) -> tuple[str, str] | None:
         """Effective (client_id, client_secret) for a kind: the in-app DB row
-        wins, else the env fallback, else None (→ catalog shows unavailable)."""
+        wins, else the env fallback, else None (→ catalog shows unavailable).
+
+        Keyed with the **master key**, not a user's DEK and no longer the
+        install token: an OAuth client is this box's registration with the
+        provider, which is why it has an env fallback at all
+        (multi-tenancy.md §4).
+        """
         row = await self.db.get_connector_oauth_client(kind)
         if row and row["client_id"] and row["client_secret_encrypted"]:
             return row["client_id"], decrypt(
-                row["client_secret_encrypted"], settings.auth_token
+                row["client_secret_encrypted"], master_key()
             )
         return _env_client_creds(kind)
 
@@ -155,7 +161,7 @@ class ConnectorManager:
             raise ConnectorError(f"unknown connector kind: {kind}")
         now = datetime.now(UTC).isoformat()
         await self.db.set_connector_oauth_client(
-            kind, client_id, encrypt(client_secret, settings.auth_token), now
+            kind, client_id, encrypt(client_secret, master_key()), now
         )
 
     async def clear_client_creds(self, kind: str) -> bool:
@@ -208,11 +214,18 @@ class ConnectorManager:
             )
         return out
 
-    async def list_installations(self) -> list[dict[str, Any]]:
-        return await self.db.load_connector_installations()
+    async def list_installations(
+        self, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """This account's connected accounts. An installation *is* somebody's
+        access to a third-party account, so this is the per-account half of a
+        connector (multi-tenancy.md §5)."""
+        return await self.db.load_connector_installations(user_id=user_id)
 
-    async def get_installation(self, installation_id: str) -> dict[str, Any] | None:
-        return await self.db.get_connector_installation(installation_id)
+    async def get_installation(
+        self, installation_id: str, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        return await self.db.get_connector_installation(installation_id, user_id)
 
     async def complete_install(
         self,
@@ -220,9 +233,17 @@ class ConnectorManager:
         kind: str,
         token_set: OAuthTokenSet,
         requested_label: str | None = None,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """Persist a freshly-authorized installation, upserting on the
-        provider account so re-auth of the same account overwrites."""
+        provider account so re-auth of the same account overwrites.
+
+        `user_id` comes from the pending login the *authenticated* `oauth/start`
+        created, because the provider's redirect carries no bearer of ours
+        (multi-tenancy.md §5). The upsert is scoped to it too: two accounts
+        connecting the same GitHub account get one installation each, since the
+        tokens are separately theirs.
+        """
         connector = await resolve_connector(self.db, kind)
         if connector is None:
             raise ConnectorError(f"unknown connector kind: {kind}")
@@ -230,11 +251,16 @@ class ConnectorManager:
             token_set
         )
         label = requested_label or identity_label
-        blob = encrypt(_serialize_token_set(token_set), settings.auth_token)
+        from . import deps
+
+        secret_key = await deps.data_key_for(user_id)
+        blob = encrypt(_serialize_token_set(token_set), secret_key)
         token_expires_at = _expires_iso(token_set.expires_at_epoch)
 
         existing = (
-            await self.db.get_connector_installation_by_account(kind, external_id)
+            await self.db.get_connector_installation_by_account(
+                kind, external_id, user_id
+            )
             if external_id
             else None
         )
@@ -261,29 +287,39 @@ class ConnectorManager:
                 external_account_id=external_id or None,
                 scopes=list(token_set.scopes),
                 token_expires_at=token_expires_at,
+                user_id=user_id,
             )
         inst = await self.db.get_connector_installation(iid)
         assert inst is not None
         return inst
 
     async def update_installation(
-        self, installation_id: str, **fields: Any
+        self, installation_id: str, user_id: str | None = None, **fields: Any
     ) -> dict[str, Any]:
-        if await self.db.get_connector_installation(installation_id) is None:
+        if await self.db.get_connector_installation(installation_id, user_id) is None:
             raise ConnectorError("connector installation not found")
         await self.db.update_connector_installation(installation_id, **fields)
         updated = await self.db.get_connector_installation(installation_id)
         assert updated is not None
         return updated
 
-    async def delete_installation(self, installation_id: str) -> None:
+    async def delete_installation(
+        self, installation_id: str, user_id: str | None = None
+    ) -> None:
+        # Resolved within the account first: a DELETE straight to the id would
+        # remove anybody's, and report the same success either way.
+        if await self.db.get_connector_installation(installation_id, user_id) is None:
+            raise ConnectorError("connector installation not found")
         if not await self.db.delete_connector_installation(installation_id):
             raise ConnectorError("connector installation not found")
 
     async def mark_needs_reconnect(
-        self, installation_id: str, error_code: str = "invalid_grant"
+        self,
+        installation_id: str,
+        error_code: str = "invalid_grant",
+        user_id: str | None = None,
     ) -> None:
-        if await self.db.get_connector_installation(installation_id) is None:
+        if await self.db.get_connector_installation(installation_id, user_id) is None:
             raise ConnectorError("connector installation not found")
         await self.db.update_connector_installation(
             installation_id, needs_reconnect=True, last_refresh_error_code=error_code
@@ -306,18 +342,28 @@ class ConnectorManager:
             self._locks[installation_id] = lock
         return lock
 
-    async def get_access_token(self, installation_id: str) -> dict[str, Any]:
+    async def get_access_token(
+        self, installation_id: str, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Return {access_token, expires_at_epoch}, refreshing server-side if
-        near expiry. On refresh failure marks needs_reconnect and raises."""
-        inst = await self.db.get_connector_installation(installation_id)
+        near expiry. On refresh failure marks needs_reconnect and raises.
+
+        The secret is keyed to the installation's *owner*, read off the row —
+        so the boot-time refresh sweep, which passes no scope, decrypts the same
+        blob a request does (multi-tenancy.md §4).
+        """
+        inst = await self.db.get_connector_installation(installation_id, user_id)
         if inst is None:
             raise ConnectorError("connector installation not found")
 
+        from . import deps
+
+        secret_key = await deps.data_key_for(inst.get("user_id"))
         async with self._lock(installation_id):
             blob = await self.db.get_connector_secret(installation_id)
             if blob is None:
                 raise ConnectorError("connector secret missing")
-            ts = _deserialize_token_set(decrypt(blob, settings.auth_token))
+            ts = _deserialize_token_set(decrypt(blob, secret_key))
 
             near_expiry = (
                 ts.expires_at_epoch
@@ -352,9 +398,7 @@ class ConnectorManager:
                 ts = new_ts
                 await self.db.update_connector_installation(
                     installation_id,
-                    secret_encrypted=encrypt(
-                        _serialize_token_set(ts), settings.auth_token
-                    ),
+                    secret_encrypted=encrypt(_serialize_token_set(ts), secret_key),
                     token_expires_at=_expires_iso(ts.expires_at_epoch),
                     needs_reconnect=False,
                     last_refresh_error_code=None,
@@ -371,19 +415,26 @@ class ConnectorManager:
         return await self.db.get_agent_connector_ids(agent_id)
 
     async def set_agent_connector(
-        self, agent_id: str, installation_id: str, enabled: bool
+        self,
+        agent_id: str,
+        installation_id: str,
+        enabled: bool,
+        user_id: str | None = None,
     ) -> None:
-        if await self.db.get_connector_installation(installation_id) is None:
+        if await self.db.get_connector_installation(installation_id, user_id) is None:
             raise ConnectorError("connector installation not found")
         await self.db.set_agent_connector(agent_id, installation_id, enabled)
 
     async def replace_agent_connectors(
-        self, agent_id: str, installation_ids: list[str]
+        self,
+        agent_id: str,
+        installation_ids: list[str],
+        user_id: str | None = None,
     ) -> list[str]:
         current = set(await self.db.get_agent_connector_ids(agent_id))
         target = set(installation_ids)
         for iid in target - current:
-            if await self.db.get_connector_installation(iid) is None:
+            if await self.db.get_connector_installation(iid, user_id) is None:
                 raise ConnectorError(f"connector installation not found: {iid}")
             await self.db.set_agent_connector(agent_id, iid, True)
         for iid in current - target:

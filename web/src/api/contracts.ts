@@ -765,7 +765,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Download Attachment */
+        /**
+         * Download Attachment
+         * @description `ViewerUser` rather than `verify_token`, because an `<img src>` cannot
+         *     carry an Authorization header — it admits the request from the header, the
+         *     query or the cookie, and says whose sessions it may read.
+         */
         get: operations["download_attachment_api_sessions__session_id__attachments__attachment_id__get"];
         put?: never;
         post?: never;
@@ -1308,7 +1313,8 @@ export interface paths {
         put?: never;
         /**
          * Oauth Cancel
-         * @description Abort an in-flight login (kills the subprocess). Idempotent.
+         * @description Abort an in-flight login (kills the subprocess). Idempotent, and only
+         *     for a login this account started.
          */
         post: operations["oauth_cancel_api_credentials_oauth_cancel_post"];
         delete?: never;
@@ -1642,7 +1648,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Catalog */
+        /**
+         * List Catalog
+         * @description What this install can connect to — the kinds and whether each one has an
+         *     OAuth client registered. Install-level and the same for everybody, which is
+         *     why it carries no account scope: you cannot decide whether to connect GitHub
+         *     without being told this box has a GitHub app.
+         */
         get: operations["list_catalog_api_connectors_catalog_get"];
         put?: never;
         post?: never;
@@ -1661,7 +1673,12 @@ export interface paths {
         };
         /** Get Oauth Client */
         get: operations["get_oauth_client_api_connectors__kind__oauth_client_get"];
-        /** Set Oauth Client */
+        /**
+         * Set Oauth Client
+         * @description The operator's, not an account's: an OAuth client is this install's
+         *     registration with the provider, shared by everybody (multi-tenancy.md §5).
+         *     An admin once accounts exist; the token-holder before then.
+         */
         put: operations["set_oauth_client_api_connectors__kind__oauth_client_put"];
         post?: never;
         /** Delete Oauth Client */
@@ -1680,7 +1697,11 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create Custom Connector */
+        /**
+         * Create Custom Connector
+         * @description The operator's, for the same reason as the OAuth client: a connector
+         *     *kind* is install-level configuration, keyed by the kind alone.
+         */
         post: operations["create_custom_connector_api_connectors_custom_post"];
         delete?: never;
         options?: never;
@@ -4126,6 +4147,7 @@ export interface operations {
         parameters: {
             query?: {
                 archived?: boolean;
+                token?: string | null;
             };
             header?: never;
             path?: never;
@@ -4155,7 +4177,9 @@ export interface operations {
     };
     create_application_api_applications_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4188,7 +4212,9 @@ export interface operations {
     };
     reorder_application_pins_api_applications_pin_order_put: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4221,7 +4247,9 @@ export interface operations {
     };
     get_application_api_applications__app_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4254,6 +4282,7 @@ export interface operations {
         parameters: {
             query?: {
                 keep_files?: boolean;
+                token?: string | null;
             };
             header?: never;
             path: {
@@ -4283,7 +4312,9 @@ export interface operations {
     };
     update_application_api_applications__app_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4318,7 +4349,9 @@ export interface operations {
     };
     build_application_api_applications__app_id__build_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4353,7 +4386,9 @@ export interface operations {
     };
     archive_application_api_applications__app_id__archive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4384,7 +4419,9 @@ export interface operations {
     };
     unarchive_application_api_applications__app_id__unarchive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4415,7 +4452,9 @@ export interface operations {
     };
     pin_application_api_applications__app_id__pin_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4446,7 +4485,9 @@ export interface operations {
     };
     unpin_application_api_applications__app_id__unpin_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 app_id: string;
@@ -4731,7 +4772,9 @@ export interface operations {
     };
     create_session_api_sessions_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4797,7 +4840,9 @@ export interface operations {
     };
     delete_session_api_sessions__session_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -4863,7 +4908,9 @@ export interface operations {
     };
     import_session_api_sessions_import_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -4934,6 +4981,7 @@ export interface operations {
         parameters: {
             query: {
                 rewind_to_msg_seq: number;
+                token?: string | null;
             };
             header?: never;
             path: {
@@ -4965,7 +5013,9 @@ export interface operations {
     };
     fork_session_api_sessions__session_id__fork_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5000,7 +5050,9 @@ export interface operations {
     };
     duplicate_session_api_sessions__session_id__duplicate_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5035,7 +5087,9 @@ export interface operations {
     };
     reset_session_api_sessions__session_id__reset_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5068,6 +5122,7 @@ export interface operations {
         parameters: {
             query?: {
                 replace?: boolean;
+                token?: string | null;
             };
             header?: never;
             path: {
@@ -5099,7 +5154,9 @@ export interface operations {
     };
     unarchive_session_api_sessions__session_id__unarchive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5130,7 +5187,9 @@ export interface operations {
     };
     upload_attachment_api_sessions__session_id__attachments_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5304,7 +5363,9 @@ export interface operations {
     };
     list_bg_tasks_api_sessions__session_id__bg_tasks_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5337,7 +5398,9 @@ export interface operations {
     };
     start_bg_task_api_sessions__session_id__bg_tasks_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5374,7 +5437,9 @@ export interface operations {
     };
     get_bg_task_api_sessions__session_id__bg_tasks__task_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5408,7 +5473,9 @@ export interface operations {
     };
     cancel_bg_task_api_sessions__session_id__bg_tasks__task_id__cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5442,7 +5509,9 @@ export interface operations {
     };
     list_delegations_api_sessions__session_id__delegations_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5475,7 +5544,9 @@ export interface operations {
     };
     start_delegation_api_sessions__session_id__delegations_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5512,7 +5583,9 @@ export interface operations {
     };
     cancel_delegation_api_sessions__session_id__delegations__delegation_id__cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5550,7 +5623,9 @@ export interface operations {
     };
     follow_up_delegation_api_sessions__session_id__delegations__delegation_id__follow_up_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5588,7 +5663,9 @@ export interface operations {
     };
     answer_delegation_question_api_sessions__session_id__delegations__delegation_id__answer_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5626,7 +5703,9 @@ export interface operations {
     };
     list_research_api_sessions__session_id__research_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5659,7 +5738,9 @@ export interface operations {
     };
     start_research_api_sessions__session_id__research_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5696,7 +5777,9 @@ export interface operations {
     };
     get_research_api_sessions__session_id__research__research_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5730,7 +5813,9 @@ export interface operations {
     };
     cancel_research_api_sessions__session_id__research__research_id__cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5764,7 +5849,9 @@ export interface operations {
     };
     create_question_api_sessions__session_id__questions_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5803,6 +5890,7 @@ export interface operations {
         parameters: {
             query?: {
                 timeout?: number;
+                token?: string | null;
             };
             header?: never;
             path: {
@@ -5837,7 +5925,9 @@ export interface operations {
     };
     submit_answer_api_sessions__session_id__questions__question_id__answer_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -5875,7 +5965,9 @@ export interface operations {
     };
     list_schedules_api_schedules_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5891,11 +5983,22 @@ export interface operations {
                     "application/json": components["schemas"]["ScheduleInfo"][];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     create_schedule_api_schedules_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -5928,7 +6031,9 @@ export interface operations {
     };
     delete_schedule_api_schedules__schedule_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 schedule_id: string;
@@ -5957,7 +6062,9 @@ export interface operations {
     };
     update_schedule_api_schedules__schedule_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 schedule_id: string;
@@ -5992,7 +6099,9 @@ export interface operations {
     };
     list_session_schedules_api_sessions__session_id__schedules_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -6023,7 +6132,9 @@ export interface operations {
     };
     create_session_schedule_api_sessions__session_id__schedules_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -6058,7 +6169,9 @@ export interface operations {
     };
     delete_session_schedule_api_sessions__session_id__schedules__schedule_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -6088,7 +6201,9 @@ export interface operations {
     };
     update_session_schedule_api_sessions__session_id__schedules__schedule_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -6124,7 +6239,9 @@ export interface operations {
     };
     list_credentials_api_credentials_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6140,11 +6257,22 @@ export interface operations {
                     "application/json": components["schemas"]["CredentialInfo"][];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     create_credential_api_credentials_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6177,7 +6305,9 @@ export interface operations {
     };
     delete_credential_api_credentials__credential_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 credential_id: string;
@@ -6206,7 +6336,9 @@ export interface operations {
     };
     update_credential_api_credentials__credential_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 credential_id: string;
@@ -6241,7 +6373,9 @@ export interface operations {
     };
     oauth_start_api_credentials_oauth_start_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6274,7 +6408,9 @@ export interface operations {
     };
     oauth_complete_api_credentials_oauth_complete_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6307,7 +6443,9 @@ export interface operations {
     };
     oauth_cancel_api_credentials_oauth_cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6338,7 +6476,9 @@ export interface operations {
     };
     codex_login_start_api_credentials_codex_start_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6371,7 +6511,9 @@ export interface operations {
     };
     codex_login_status_api_credentials_codex__login_id__status_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 login_id: string;
@@ -6402,7 +6544,9 @@ export interface operations {
     };
     codex_login_cancel_api_credentials_codex_cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6894,7 +7038,9 @@ export interface operations {
     };
     set_oauth_client_api_connectors__kind__oauth_client_put: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 kind: string;
@@ -6929,7 +7075,9 @@ export interface operations {
     };
     delete_oauth_client_api_connectors__kind__oauth_client_delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 kind: string;
@@ -6958,7 +7106,9 @@ export interface operations {
     };
     create_custom_connector_api_connectors_custom_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -6991,7 +7141,9 @@ export interface operations {
     };
     delete_custom_connector_api_connectors_custom__kind__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 kind: string;
@@ -7020,7 +7172,9 @@ export interface operations {
     };
     list_installations_api_connectors_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7036,11 +7190,22 @@ export interface operations {
                     "application/json": components["schemas"]["ConnectorInstallationInfo"][];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     oauth_start_api_connectors_oauth_start_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7106,7 +7271,9 @@ export interface operations {
     };
     oauth_status_api_connectors_oauth_status__login_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 login_id: string;
@@ -7137,7 +7304,9 @@ export interface operations {
     };
     oauth_cancel_api_connectors_oauth_cancel_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7168,7 +7337,9 @@ export interface operations {
     };
     delete_installation_api_connectors__installation_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 installation_id: string;
@@ -7197,7 +7368,9 @@ export interface operations {
     };
     update_installation_api_connectors__installation_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 installation_id: string;
@@ -7232,7 +7405,9 @@ export interface operations {
     };
     get_token_api_connectors__installation_id__token_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 installation_id: string;
@@ -7265,6 +7440,7 @@ export interface operations {
         parameters: {
             query?: {
                 error_code?: string;
+                token?: string | null;
             };
             header?: never;
             path: {
@@ -7294,7 +7470,9 @@ export interface operations {
     };
     list_agent_connectors_api_agents__agent_id__connectors_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -7325,7 +7503,9 @@ export interface operations {
     };
     set_agent_connectors_api_agents__agent_id__connectors_put: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -7360,7 +7540,9 @@ export interface operations {
     };
     toggle_agent_connector_api_agents__agent_id__connectors__installation_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -7394,7 +7576,9 @@ export interface operations {
     };
     list_notifiers_api_notifiers_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7410,11 +7594,22 @@ export interface operations {
                     "application/json": components["schemas"]["NotifierInfo"][];
                 };
             };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
         };
     };
     create_notifier_api_notifiers_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -7447,7 +7642,9 @@ export interface operations {
     };
     delete_notifier_api_notifiers__notifier_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 notifier_id: string;
@@ -7476,7 +7673,9 @@ export interface operations {
     };
     update_notifier_api_notifiers__notifier_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 notifier_id: string;

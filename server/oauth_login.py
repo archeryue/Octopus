@@ -61,6 +61,11 @@ class LoginSession:
     # as the credential's secret in that case.
     oauth_tokens: OAuthTokenSet | None = None
     message: str | None = None
+    # Who started this login (multi-tenancy.md §5). The id is unguessable, which
+    # is why nothing has gone wrong, not a reason it is authorised: without this
+    # another account could poll somebody's sign-in and have the credential
+    # persisted into their own.
+    user_id: str | None = None
     _verifier: str = field(default="", repr=False)
     _state: str = field(default="", repr=False)
     _created_at: float = field(default=0.0, repr=False)
@@ -74,7 +79,12 @@ class OAuthLoginManager:
 
     # ---------------------------------------------------------------- public
 
-    async def start(self, provider_name: str = DEFAULT_PROVIDER) -> LoginSession:
+    async def start(
+        self,
+        provider_name: str = DEFAULT_PROVIDER,
+        *,
+        user_id: str | None = None,
+    ) -> LoginSession:
         """Begin an OAuth login for the named provider.
 
         Returns the LoginSession with `state == awaiting_code` and `url`
@@ -96,6 +106,7 @@ class OAuthLoginManager:
             _verifier=verifier,
             _state=state,
             _created_at=loop.time(),
+            user_id=user_id,
         )
         self._sessions[login_id] = session
         self._gc()

@@ -182,12 +182,34 @@ class _StubLoginSession:
         return None
 
 
+def _login_exists(monkeypatch, login_id: str = "login-xyz") -> None:
+    """Let the route find the login record for `login_id`.
+
+    `oauth/complete` and `oauth/cancel` check that the login belongs to the
+    caller before acting on it — only the account that started a sign-in may
+    finish it (multi-tenancy.md §5). A test that patches `submit_code` in
+    isolation leaves the manager with no record at all, so that check would
+    answer 404 for reasons the test is not about.
+    """
+    from server import oauth_login
+
+    monkeypatch.setattr(
+        oauth_login.OAuthLoginManager,
+        "get",
+        lambda self, lid: (
+            _StubLoginSession(oauth_login.LoginState.awaiting_code)
+            if lid == login_id
+            else None
+        ),
+    )
+
+
 @pytest.mark.asyncio
 async def test_oauth_start_returns_login_id_and_url(client, monkeypatch):
     from server import oauth_login
     from server.oauth_login import LoginState
 
-    async def fake_start(self):
+    async def fake_start(self, *, user_id=None):
         return _StubLoginSession(LoginState.awaiting_code, url="https://claude.ai/oauth/authorize?fake")
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "start", fake_start)
@@ -212,7 +234,7 @@ async def test_oauth_start_502_on_orchestrator_runtime_error(client, monkeypatch
     user-input issue."""
     from server import oauth_login
 
-    async def fake_start(self):
+    async def fake_start(self, *, user_id=None):
         raise RuntimeError("upstream unreachable")
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "start", fake_start)
@@ -256,6 +278,7 @@ async def test_oauth_complete_persists_credential(client, monkeypatch):
         )
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+    _login_exists(monkeypatch)
 
     c, db = client
     res = await c.post(
@@ -299,6 +322,7 @@ async def test_oauth_complete_persists_oauth_token_bundle(client, monkeypatch):
         return _StubLoginSession(LoginState.success, oauth_tokens=ts)
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+    _login_exists(monkeypatch)
 
     c, db = client
     res = await c.post(
@@ -334,6 +358,7 @@ async def test_oauth_complete_returns_500_on_no_token(client, monkeypatch):
         return _StubLoginSession(LoginState.error, message="token exchange failed")
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+    _login_exists(monkeypatch)
 
     c, _ = client
     res = await c.post(
@@ -352,6 +377,7 @@ async def test_oauth_complete_404_unknown_id(client, monkeypatch):
         raise KeyError(login_id)
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+    _login_exists(monkeypatch)
 
     c, _ = client
     res = await c.post(
@@ -372,6 +398,7 @@ async def test_oauth_cancel_is_idempotent(client, monkeypatch):
         called.append(login_id)
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "cancel", fake_cancel)
+    _login_exists(monkeypatch)
 
     c, _ = client
     res = await c.post(
@@ -448,6 +475,7 @@ async def test_oauth_complete_reauth_updates_in_place(client, monkeypatch):
         )
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+    _login_exists(monkeypatch, "x")
 
     res = await c.post(
         "/api/credentials/oauth/complete",
@@ -477,6 +505,7 @@ async def test_oauth_complete_reauth_404_unknown_credential(client, monkeypatch)
         return _StubLoginSession(LoginState.success, token="sk-ant-fresh-1234567890")
 
     monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+    _login_exists(monkeypatch)
 
     c, _ = client
     res = await c.post(

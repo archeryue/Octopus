@@ -31,17 +31,20 @@ class ConnectorsMixin(DatabaseBase):
         scopes: list[str] | None = None,
         enable_by_default: bool = False,
         token_expires_at: str | None = None,
+        user_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
         await self.conn.execute(
             "INSERT INTO connector_installations "
             "(id, kind, label, auth_type, external_account_id, scopes, "
-            " enable_by_default, needs_reconnect, token_expires_at, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+            " enable_by_default, needs_reconnect, token_expires_at, created_at, "
+            " user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
             (
                 installation_id, kind, label, auth_type, external_account_id,
                 json.dumps(scopes) if scopes is not None else None,
                 int(bool(enable_by_default)), token_expires_at, created_at,
+                user_id,
             ),
         )
         await self.conn.execute(
@@ -51,38 +54,59 @@ class ConnectorsMixin(DatabaseBase):
         )
         await self.conn.commit()
 
-    async def load_connector_installations(self) -> list[dict[str, Any]]:
+    async def load_connector_installations(
+        self, user_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Every installation, or one account's (multi-tenancy.md §5).
+
+        `user_id=None` is "no scoping asked for" — the token-refresh sweep at
+        boot, which walks everybody's.
+        """
         await self._ensure_connected()
-        cursor = await self.conn.execute(
-            f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
-            "ORDER BY created_at"
-        )
+        sql = f"SELECT {self._CONNECTOR_COLS} FROM connector_installations"
+        params: list[Any] = []
+        if user_id is not None:
+            sql += " WHERE user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql + " ORDER BY created_at", params)
         rows = await cursor.fetchall()
         return [self._row_to_connector(row) for row in rows]
 
     async def get_connector_installation(
-        self, installation_id: str
+        self, installation_id: str, user_id: str | None = None
     ) -> dict[str, Any] | None:
+        """One installation — `None` for "belongs to someone else" as much as
+        for "does not exist"."""
         await self._ensure_connected()
-        cursor = await self.conn.execute(
+        sql = (
             f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
-            "WHERE id = ?",
-            (installation_id,),
+            "WHERE id = ?"
         )
+        params: list[Any] = [installation_id]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql, params)
         row = await cursor.fetchone()
         return self._row_to_connector(row) if row else None
 
     async def get_connector_installation_by_account(
-        self, kind: str, external_account_id: str
+        self, kind: str, external_account_id: str, user_id: str | None = None
     ) -> dict[str, Any] | None:
         """Look up by (kind, external account) — the dedup key the install
-        flow upserts on."""
+        flow upserts on. Per account, matching the unique index: two people
+        connecting the same GitHub account each get their own installation,
+        because the tokens are theirs separately (multi-tenancy.md §5)."""
         await self._ensure_connected()
-        cursor = await self.conn.execute(
+        sql = (
             f"SELECT {self._CONNECTOR_COLS} FROM connector_installations "
-            "WHERE kind = ? AND external_account_id = ?",
-            (kind, external_account_id),
+            "WHERE kind = ? AND external_account_id = ?"
         )
+        params: list[Any] = [kind, external_account_id]
+        if user_id is not None:
+            sql += " AND user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql, params)
         row = await cursor.fetchone()
         return self._row_to_connector(row) if row else None
 

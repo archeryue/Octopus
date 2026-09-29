@@ -234,9 +234,14 @@ class OAuthCancelRequest(BaseModel):
     response_model=OAuthStartResponse,
     status_code=status.HTTP_201_CREATED,
 )
-async def oauth_start(req: OAuthStartRequest, _: str = Depends(verify_token)):
-    # No row is written here — `oauth_complete` is where the credential lands,
-    # and where the owner is recorded.
+async def oauth_start(
+    req: OAuthStartRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
+    # No row is written here — `oauth_complete` is where the credential lands.
+    # The owner is remembered on the login session, so only the account that
+    # started a sign-in can finish it.
     login = get_harness(req.backend.value).login
     if login is None or login.method != LoginMethod.oauth_redirect:
         raise HTTPException(
@@ -244,7 +249,7 @@ async def oauth_start(req: OAuthStartRequest, _: str = Depends(verify_token)):
             detail=f"OAuth redirect login isn't available for {req.backend.value}",
         )
     try:
-        session = await login.start()
+        session = await login.start(user_id=user_id)
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
@@ -292,6 +297,12 @@ async def oauth_complete(
         token_expires_at populated so the resolver knows when to refresh.
     """
     db = _require_db()
+    started = _login_driver(BackendKind.claude_code.value).get(req.login_id)
+    if started is None or getattr(started, "user_id", None) != user_id:
+        # Only the account that started the sign-in may finish it. An
+        # unguessable login id is why this has never gone wrong, not a reason it
+        # is authorised (multi-tenancy.md §5).
+        raise HTTPException(status_code=404, detail="unknown login_id")
     try:
         session = await _login_driver(BackendKind.claude_code.value).submit_code(
             req.login_id, req.code
@@ -377,9 +388,17 @@ async def oauth_complete(
 
 
 @router.post("/oauth/cancel", status_code=status.HTTP_204_NO_CONTENT)
-async def oauth_cancel(req: OAuthCancelRequest, _: str = Depends(verify_token)):
-    """Abort an in-flight login (kills the subprocess). Idempotent."""
-    await _login_driver(BackendKind.claude_code.value).cancel(req.login_id)
+async def oauth_cancel(
+    req: OAuthCancelRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
+    """Abort an in-flight login (kills the subprocess). Idempotent, and only
+    for a login this account started."""
+    driver = _login_driver(BackendKind.claude_code.value)
+    started = driver.get(req.login_id)
+    if started is not None and getattr(started, "user_id", None) == user_id:
+        await driver.cancel(req.login_id)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +459,9 @@ async def codex_login_start(
             )
     try:
         session = await _login_driver(BackendKind.codex.value).start(
-            req.label, reauth_credential_id=req.reauth_credential_id
+            req.label,
+            reauth_credential_id=req.reauth_credential_id,
+            user_id=user_id,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=502, detail=str(e))
@@ -456,7 +477,7 @@ async def codex_login_status(
     from ..codex_login import CodexLoginState
 
     session = _login_driver(BackendKind.codex.value).get(login_id)
-    if session is None:
+    if session is None or getattr(session, "user_id", None) != user_id:
         raise HTTPException(status_code=404, detail="unknown login_id")
 
     credential: CredentialInfo | None = None
@@ -514,6 +535,11 @@ async def codex_login_status(
 
 @router.post("/codex/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def codex_login_cancel(
-    req: CodexLoginCancelRequest, _: str = Depends(verify_token)
+    req: CodexLoginCancelRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
-    await _login_driver(BackendKind.codex.value).cancel(req.login_id)
+    driver = _login_driver(BackendKind.codex.value)
+    session = driver.get(req.login_id)
+    if session is not None and getattr(session, "user_id", None) == user_id:
+        await driver.cancel(req.login_id)

@@ -272,9 +272,12 @@ CREATE INDEX IF NOT EXISTS idx_agent_connectors_agent
 -- is not secret; the secret is encrypted like connector tokens. When there's
 -- no row, resolution falls back to env (OCTOPUS_<KIND>_OAUTH_CLIENT_ID/_SECRET).
 CREATE TABLE IF NOT EXISTS connector_oauth_clients (
-    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
-    -- true of every row before accounts, of none after.
-    user_id TEXT,
+    -- No owner column: an OAuth *client* is this install's app
+    -- registration with the provider, not a user's secret — the env
+    -- fallback below says the same thing. An admin configures it once
+    -- and every account connects its own account through it
+    -- (multi-tenancy.md §5). The per-account half is
+    -- `connector_installations`, which does carry an owner.
     kind TEXT PRIMARY KEY,                 -- 'github' | 'gmail' | …
     client_id TEXT NOT NULL,
     client_secret_encrypted TEXT NOT NULL,
@@ -287,9 +290,10 @@ CREATE TABLE IF NOT EXISTS connector_oauth_clients (
 -- connector_oauth_clients (same as built-ins); this row holds the definition
 -- the generic OAuth provider + generic MCP server read.
 CREATE TABLE IF NOT EXISTS custom_connectors (
-    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
-    -- true of every row before accounts, of none after.
-    user_id TEXT,
+    -- No owner column: a connector *kind* is install-level, for the same
+    -- reason its OAuth client is — and `kind` is the primary key, so a
+    -- per-account definition would need a different one. An admin adds
+    -- the kind; each account connects through it.
     kind TEXT PRIMARY KEY,                 -- user-chosen slug, e.g. 'linear'
     display_name TEXT NOT NULL,
     authorize_url TEXT NOT NULL,

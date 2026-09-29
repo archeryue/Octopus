@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from ..auth import verify_token
 from ..connector_manager import ConnectorError, ConnectorManager
 from ..connectors.oauth import ConnectorLoginError, ConnectorLoginManager
+from ..deps import OperatorUser, ScopeUser, SessionMgr
 from ..models import (
     AgentConnectorsResponse,
     ConnectorCatalogEntry,
@@ -103,11 +104,28 @@ def _callback_page(title: str, body: str) -> HTMLResponse:
     )
 
 
+async def _own_agent(
+    session_manager: SessionMgr, agent_id: str, user_id: str | None
+) -> None:
+    """404 unless this account owns the agent (multi-tenancy.md §5).
+
+    Enabling a connector on an agent is a write to that agent's configuration,
+    so it needs the same check the agents router makes — and without it, an
+    agent id was enough to attach somebody's Gmail to your own agent.
+    """
+    if await session_manager.db.get_agent(agent_id, user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
+
+
 # --- catalog + installations ----------------------------------------------
 
 
 @router.get("/catalog", response_model=list[ConnectorCatalogEntry])
 async def list_catalog(_: str = Depends(verify_token)):
+    """What this install can connect to — the kinds and whether each one has an
+    OAuth client registered. Install-level and the same for everybody, which is
+    why it carries no account scope: you cannot decide whether to connect GitHub
+    without being told this box has a GitHub app."""
     return [ConnectorCatalogEntry(**e) for e in await _require_manager().catalog()]
 
 
@@ -115,6 +133,9 @@ async def list_catalog(_: str = Depends(verify_token)):
 async def get_oauth_client(
     kind: str, request: Request, _: str = Depends(verify_token)
 ):
+    # Readable by any account: you cannot decide whether to connect GitHub
+    # without knowing whether this install has a GitHub app registered. The
+    # secret itself is never in the response.
     try:
         return ConnectorOAuthClientInfo(
             **await _require_manager().client_config(kind, _public_base(request))
@@ -128,8 +149,11 @@ async def set_oauth_client(
     kind: str,
     req: SetConnectorOAuthClientRequest,
     request: Request,
-    _: str = Depends(verify_token),
+    _operator: OperatorUser,
 ):
+    """The operator's, not an account's: an OAuth client is this install's
+    registration with the provider, shared by everybody (multi-tenancy.md §5).
+    An admin once accounts exist; the token-holder before then."""
     mgr = _require_manager()
     try:
         await mgr.set_client_creds(kind, req.client_id, req.client_secret)
@@ -141,7 +165,7 @@ async def set_oauth_client(
 
 
 @router.delete("/{kind}/oauth-client", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_oauth_client(kind: str, _: str = Depends(verify_token)):
+async def delete_oauth_client(kind: str, _operator: OperatorUser):
     await _require_manager().clear_client_creds(kind)
 
 
@@ -154,8 +178,10 @@ async def delete_oauth_client(kind: str, _: str = Depends(verify_token)):
     status_code=status.HTTP_201_CREATED,
 )
 async def create_custom_connector(
-    req: CustomConnectorCreateRequest, _: str = Depends(verify_token)
+    req: CustomConnectorCreateRequest, _operator: OperatorUser
 ):
+    """The operator's, for the same reason as the OAuth client: a connector
+    *kind* is install-level configuration, keyed by the kind alone."""
     mgr = _require_manager()
     try:
         await mgr.create_custom_connector(**req.model_dump())
@@ -167,7 +193,7 @@ async def create_custom_connector(
 
 
 @router.delete("/custom/{kind}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_custom_connector(kind: str, _: str = Depends(verify_token)):
+async def delete_custom_connector(kind: str, _operator: OperatorUser):
     try:
         await _require_manager().delete_custom_connector(kind)
     except ConnectorError as e:
@@ -175,8 +201,10 @@ async def delete_custom_connector(kind: str, _: str = Depends(verify_token)):
 
 
 @router.get("", response_model=list[ConnectorInstallationInfo])
-async def list_installations(_: str = Depends(verify_token)):
-    rows = await _require_manager().list_installations()
+async def list_installations(
+    user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
+    rows = await _require_manager().list_installations(user_id)
     return [_to_info(r) for r in rows]
 
 
@@ -189,7 +217,10 @@ async def list_installations(_: str = Depends(verify_token)):
     status_code=status.HTTP_201_CREATED,
 )
 async def oauth_start(
-    req: ConnectorOAuthStartRequest, request: Request, _: str = Depends(verify_token)
+    req: ConnectorOAuthStartRequest,
+    request: Request,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
     mgr = _require_manager()
     connector = await mgr.get(req.kind)
@@ -205,11 +236,14 @@ async def oauth_start(
             ),
         )
     redirect_uri = f"{_public_base(request)}/api/connectors/oauth/callback"
+    # The account is remembered on the pending login here, where the request is
+    # authenticated — the provider's redirect below carries no bearer of ours.
     pl = _login_mgr.start(
         provider=connector.oauth,
         client_id=creds[0],
         redirect_uri=redirect_uri,
         requested_label=req.label,
+        user_id=user_id,
     )
     return ConnectorOAuthStartResponse(login_id=pl.login_id, authorize_url=pl.authorize_url)
 
@@ -252,7 +286,10 @@ async def oauth_callback(
             state=pl.state,
         )
         inst = await _require_manager().complete_install(
-            kind=pl.kind, token_set=token_set, requested_label=pl.requested_label
+            kind=pl.kind,
+            token_set=token_set,
+            requested_label=pl.requested_label,
+            user_id=pl.user_id,
         )
     except Exception as e:  # exchange / identity / persistence failure
         logger.warning("connector oauth callback failed: %s", e)
@@ -268,9 +305,13 @@ async def oauth_callback(
 @router.get(
     "/oauth/status/{login_id}", response_model=ConnectorOAuthStatusResponse
 )
-async def oauth_status(login_id: str, _: str = Depends(verify_token)):
+async def oauth_status(
+    login_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     pl = _login_mgr.get(login_id)
-    if pl is None:
+    # Scoped as well as unguessable: an id nobody can guess is a reason this has
+    # never been exploited, not a reason it is authorised (multi-tenancy.md §7).
+    if pl is None or pl.user_id != user_id:
         raise HTTPException(status_code=404, detail="unknown or expired login")
     return ConnectorOAuthStatusResponse(
         status=pl.status.value,
@@ -281,9 +322,13 @@ async def oauth_status(login_id: str, _: str = Depends(verify_token)):
 
 @router.post("/oauth/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def oauth_cancel(
-    req: ConnectorOAuthCancelRequest, _: str = Depends(verify_token)
+    req: ConnectorOAuthCancelRequest,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
 ):
-    _login_mgr.cancel(req.login_id)
+    pl = _login_mgr.get(req.login_id)
+    if pl is not None and pl.user_id == user_id:
+        _login_mgr.cancel(req.login_id)
 
 
 # --- installation management ----------------------------------------------
@@ -293,20 +338,25 @@ async def oauth_cancel(
 async def update_installation(
     installation_id: str,
     req: UpdateConnectorRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     fields = req.model_dump(exclude_unset=True)
     try:
-        row = await _require_manager().update_installation(installation_id, **fields)
+        row = await _require_manager().update_installation(
+            installation_id, user_id, **fields
+        )
     except ConnectorError as e:
         raise _http_error(e)
     return _to_info(row)
 
 
 @router.delete("/{installation_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_installation(installation_id: str, _: str = Depends(verify_token)):
+async def delete_installation(
+    installation_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
     try:
-        await _require_manager().delete_installation(installation_id)
+        await _require_manager().delete_installation(installation_id, user_id)
     except ConnectorError as e:
         raise _http_error(e)
 
@@ -315,9 +365,14 @@ async def delete_installation(installation_id: str, _: str = Depends(verify_toke
 
 
 @router.get("/{installation_id}/token", response_model=ConnectorTokenResponse)
-async def get_token(installation_id: str, _: str = Depends(verify_token)):
+async def get_token(
+    installation_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
+):
+    # Called from inside a turn, so the bearer is the MCP scope and `user_id` is
+    # the session's owner: an installation id is not enough to read somebody
+    # else's access token.
     try:
-        out = await _require_manager().get_access_token(installation_id)
+        out = await _require_manager().get_access_token(installation_id, user_id)
     except ConnectorError as e:
         raise _http_error(e)
     return ConnectorTokenResponse(**out)
@@ -330,10 +385,13 @@ async def get_token(installation_id: str, _: str = Depends(verify_token)):
 async def mark_needs_reconnect(
     installation_id: str,
     error_code: str = Query(default="invalid_grant"),
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
     try:
-        await _require_manager().mark_needs_reconnect(installation_id, error_code)
+        await _require_manager().mark_needs_reconnect(
+            installation_id, error_code, user_id
+        )
     except ConnectorError as e:
         raise _http_error(e)
 
@@ -344,7 +402,13 @@ async def mark_needs_reconnect(
 @agent_router.get(
     "/{agent_id}/connectors", response_model=AgentConnectorsResponse
 )
-async def list_agent_connectors(agent_id: str, _: str = Depends(verify_token)):
+async def list_agent_connectors(
+    session_manager: SessionMgr,
+    agent_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
+    await _own_agent(session_manager, agent_id, user_id)
     ids = await _require_manager().get_agent_connector_ids(agent_id)
     return AgentConnectorsResponse(installation_ids=ids)
 
@@ -353,13 +417,16 @@ async def list_agent_connectors(agent_id: str, _: str = Depends(verify_token)):
     "/{agent_id}/connectors", response_model=AgentConnectorsResponse
 )
 async def set_agent_connectors(
+    session_manager: SessionMgr,
     agent_id: str,
     req: SetAgentConnectorsRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
+    await _own_agent(session_manager, agent_id, user_id)
     try:
         ids = await _require_manager().replace_agent_connectors(
-            agent_id, req.installation_ids
+            agent_id, req.installation_ids, user_id
         )
     except ConnectorError as e:
         raise _http_error(e)
@@ -371,14 +438,17 @@ async def set_agent_connectors(
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def toggle_agent_connector(
+    session_manager: SessionMgr,
     agent_id: str,
     installation_id: str,
     req: ToggleAgentConnectorRequest,
+    user_id: ScopeUser = None,
     _: str = Depends(verify_token),
 ):
+    await _own_agent(session_manager, agent_id, user_id)
     try:
         await _require_manager().set_agent_connector(
-            agent_id, installation_id, req.enabled
+            agent_id, installation_id, req.enabled, user_id
         )
     except ConnectorError as e:
         raise _http_error(e)

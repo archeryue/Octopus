@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 _SECRET_COLUMNS = (
     ("credential_secrets", "credential_id", "secret_encrypted"),
     ("connector_installation_secrets", "installation_id", "secret_encrypted"),
+)
+
+# And the install's own, which move to the **master key** instead: an OAuth
+# client is this box's app registration with a provider, not a user's secret, so
+# handing it to whoever happens to create the first account would be wrong in
+# exactly the way that matters when a second one arrives (multi-tenancy.md §4).
+_INSTALL_SECRET_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("connector_oauth_clients", "kind", "client_secret_encrypted"),
 )
 
@@ -51,39 +58,58 @@ class BootstrapError(Exception):
 
 
 async def _rekey_secrets(db: Any, old_key: str, new_key: str) -> dict[str, int]:
-    """Move every stored secret from the old key to the new one. All, or none.
+    """Move every stored secret off the old key. All, or none.
+
+    A user's secrets go to `new_key`, their own DEK; the install's own go to the
+    master key, because they belong to the box rather than to the first person
+    who claimed it.
 
     Read and re-key everything before writing anything, which is the lesson
     `token_rotation` already paid for: a row that will not decrypt must cost
     nothing rather than leave the rows before it on the new key and the rows
     after it on the old.
     """
+    from .crypto import master_key
+
     await db._ensure_connected()
     counts: dict[str, int] = {}
     updates: list[tuple[str, str, str, str, str]] = []
 
-    for table, key_col, secret_col in _SECRET_COLUMNS:
-        cursor = await db.conn.execute(f"SELECT {key_col}, {secret_col} FROM {table}")  # noqa: S608
-        rows = await cursor.fetchall()
-        counts[table] = 0
-        for key, ciphertext in rows:
-            if not ciphertext:
-                continue
-            try:
-                plaintext = decrypt(ciphertext, old_key)
-            except ValueError as exc:
-                raise BootstrapError(
-                    f"{table}.{key_col}={key!r} could not be decrypted with the "
-                    f"current token, so nothing was changed ({exc}). Fix or "
-                    "delete that row and try again."
-                ) from exc
-            updates.append((table, key_col, secret_col, key, encrypt(plaintext, new_key)))
-            counts[table] += 1
+    for tables, destination in (
+        (_SECRET_COLUMNS, new_key),
+        (_INSTALL_SECRET_COLUMNS, master_key()),
+    ):
+        for table, key_col, secret_col in tables:
+            cursor = await db.conn.execute(
+                f"SELECT {key_col}, {secret_col} FROM {table}"  # noqa: S608
+            )
+            counts[table] = 0
+            for row_key, ciphertext in await cursor.fetchall():
+                if not ciphertext:
+                    continue
+                try:
+                    plaintext = decrypt(ciphertext, old_key)
+                except ValueError as exc:
+                    raise BootstrapError(
+                        f"{table}.{key_col}={row_key!r} could not be decrypted "
+                        f"with the current token, so nothing was changed "
+                        f"({exc}). Fix or delete that row and try again."
+                    ) from exc
+                updates.append(
+                    (
+                        table,
+                        key_col,
+                        secret_col,
+                        row_key,
+                        encrypt(plaintext, destination),
+                    )
+                )
+                counts[table] += 1
 
-    for table, key_col, secret_col, key, ciphertext in updates:
+    for table, key_col, secret_col, row_key, ciphertext in updates:
         await db.conn.execute(
             f"UPDATE {table} SET {secret_col} = ? WHERE {key_col} = ?",  # noqa: S608
-            (ciphertext, key),
+            (ciphertext, row_key),
         )
     await db.conn.commit()
     return counts

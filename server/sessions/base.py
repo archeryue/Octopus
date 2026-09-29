@@ -313,6 +313,9 @@ class SessionManagerBase:
     async def _blit_attachments_to_descendant_forks(self, session_id: str) -> None:
         raise NotImplementedError  # provided by a mixin
 
+    async def drain_turns(self, timeout: float = 5.0) -> int:
+        raise NotImplementedError  # provided by a mixin
+
     def _cancel_all_question_timers(self, session: Session) -> None:
         raise NotImplementedError  # provided by a mixin
 
@@ -482,6 +485,11 @@ class SessionManagerBase:
 
     async def initialize(self, db: Database) -> None:
         self.db = db
+        # Turns in flight unwind before this connection does (see
+        # `drain_turns`). Registered here rather than in the lifespan so a test
+        # that builds its own manager gets it too — which is where the hang it
+        # prevents actually showed up.
+        db.add_close_hook(self.drain_turns)
         rows = await db.load_sessions()
         for row in rows:
             session = Session(
