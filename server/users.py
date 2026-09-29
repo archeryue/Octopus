@@ -34,6 +34,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from .crypto import new_dek, unwrap_dek, wrap_dek
+
 # scrypt cost. ~17 MB and tens of milliseconds per attempt — enough to make
 # offline guessing expensive, little enough that a login feels instant.
 _SCRYPT_N = 2**14
@@ -181,6 +183,24 @@ class UserManager:
 
     # -- accounts -----------------------------------------------------------
 
+    async def _insert(
+        self, *, username: str, password: str, is_admin: bool
+    ) -> dict[str, Any]:
+        """The row, with its data key minted at the same moment.
+
+        A user without a DEK would be a user whose first stored credential has
+        to decide what to do about it, and "create it lazily" is how two halves
+        of a system end up disagreeing about whether one exists.
+        """
+        return await self.db.create_user(
+            user_id=uuid.uuid4().hex[:12],
+            username=username,
+            password_hash=hash_password(password),
+            created_at=_now(),
+            is_admin=is_admin,
+            dek_wrapped=wrap_dek(new_dek()),
+        )
+
     async def create_user(
         self, *, username: str, password: str, is_admin: bool = False
     ) -> dict[str, Any]:
@@ -188,13 +208,21 @@ class UserManager:
         validate_password(password, username=name)
         if await self.db.get_user_by_username(name) is not None:
             raise UserError("That username is taken", status_code=409)
-        return await self.db.create_user(
-            user_id=uuid.uuid4().hex[:12],
-            username=name,
-            password_hash=hash_password(password),
-            created_at=_now(),
-            is_admin=is_admin,
-        )
+        return await self._insert(username=name, password=password, is_admin=is_admin)
+
+    def data_key(self, user: dict[str, Any]) -> str:
+        """The key this user's secrets are encrypted with.
+
+        Unwrapped on demand rather than held: the master key is already in
+        memory, so caching the plaintext DEK would only widen what a heap dump
+        gives away in exchange for a PBKDF2 that is already cached.
+        """
+        wrapped = user.get("dek_wrapped")
+        if not wrapped:
+            raise UserError(
+                f"user {user.get('username')!r} has no data key", status_code=500
+            )
+        return unwrap_dek(wrapped)
 
     async def authenticate(self, username: str, password: str) -> dict[str, Any]:
         """The user, or `UserError(401)` — never which half was wrong.
@@ -333,10 +361,4 @@ class UserManager:
         if not await self.db.claim_invite(invite["code"]):
             # Lost a race for the last use.
             raise UserError("That invite code has been used", status_code=403)
-        return await self.db.create_user(
-            user_id=uuid.uuid4().hex[:12],
-            username=name,
-            password_hash=hash_password(password),
-            created_at=_now(),
-            is_admin=False,
-        )
+        return await self._insert(username=name, password=password, is_admin=False)

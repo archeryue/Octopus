@@ -9,6 +9,13 @@ class Settings(BaseSettings):
     # screenshot, a shared window, someone walking past. A label identifies the
     # operator without being a secret, so it can be read out loud.
     user_label: str = "octopus"
+    # The key that wraps every user's data key (multi-tenancy.md §4). Set
+    # `OCTOPUS_MASTER_KEY` to hand it in from a secret manager; leave it empty
+    # and the server creates one at `master_key_file` on first boot, which is
+    # what a single box wants — a key nobody has to remember cannot be lost by
+    # being forgotten.
+    master_key: str = ""
+    master_key_file: str = "~/.octopus/master.key"
     host: str = "0.0.0.0"
     port: int = 8000
     default_working_dir: str = "."

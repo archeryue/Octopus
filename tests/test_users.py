@@ -292,3 +292,62 @@ class TestInvites:
                 invite_code="nope", username="archer", password="password2"
             )
         assert e.value.status_code == 403 and "invite" in e.value.message.lower()
+
+
+class TestDataKeys:
+    """Every user gets a data key at creation, wrapped by the server's master
+    key (multi-tenancy.md §4). The password is not involved, and that is the
+    point: a schedule fires while its owner is asleep, and the server still has
+    to decrypt their credential to run it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_new_account_has_a_wrapped_key_that_unwraps(self, users):
+        mgr, _db = users
+        user = await mgr.create_user(username="archer", password="password1")
+        assert user["dek_wrapped"], "no data key was minted"
+        key = mgr.data_key(user)
+        assert len(key) > 20
+        # It really is this user's key: a secret sealed with it comes back.
+        from server.crypto import decrypt, encrypt
+
+        assert decrypt(encrypt("sk-ant-secret", key), key) == "sk-ant-secret"
+
+    @pytest.mark.asyncio
+    async def test_two_users_do_not_share_a_key(self, users):
+        mgr, _db = users
+        a = await mgr.create_user(username="archer", password="password1")
+        b = await mgr.create_user(username="vera", password="password2")
+        assert mgr.data_key(a) != mgr.data_key(b)
+
+        from server.crypto import decrypt, encrypt
+
+        sealed = encrypt("archer's api key", mgr.data_key(a))
+        with pytest.raises(ValueError):
+            decrypt(sealed, mgr.data_key(b))
+
+    @pytest.mark.asyncio
+    async def test_an_invited_account_gets_one_too(self, users):
+        """The two creation paths mint it through one helper, so they cannot
+        drift into one of them forgetting."""
+        mgr, _db = users
+        invite = await mgr.create_invite(created_by=None)
+        user = await mgr.register(
+            invite_code=invite["code"], username="vera", password="password2"
+        )
+        assert user["dek_wrapped"]
+        assert mgr.data_key(user)
+
+    @pytest.mark.asyncio
+    async def test_changing_a_password_leaves_the_data_key_alone(self, users):
+        """The whole reason for the hierarchy: re-keying on every password
+        change would mean a password change could half-fail and strand
+        secrets."""
+        mgr, db = users
+        user = await mgr.create_user(username="archer", password="password1")
+        before = mgr.data_key(user)
+
+        await mgr.set_password(user["id"], "a-better-password")
+
+        after = mgr.data_key(await db.get_user(user["id"]))
+        assert after == before
