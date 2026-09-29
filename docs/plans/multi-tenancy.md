@@ -340,6 +340,25 @@ production database first — the way `A3` was.
 Steps 1–2 are the spine; 3–5 can be reviewed independently; 6 is small; 7 is
 the only irreversible one.
 
+**Tested by deploying it.** A second install of this branch runs from its own
+state directory on its own port, with a *snapshot* of the live database
+(sqlite's backup API, read-only at the source) and copies of the agent and
+application directories. Every `working_dir` and `app_dir` in the copy is
+repointed inside that directory first, so a test agent cannot write into what
+the running install works in, and the copied OAuth tokens are cleared once the
+read path has been proven — a *successful* refresh there would let the provider
+rotate the refresh token and break the live install's copy of it, which is the
+one way a read-only snapshot can still reach out and hurt something.
+
+That deployment is what found the bug the whole test suite could not: neither
+`_CREDENTIAL_COLS` nor `_CONNECTOR_COLS` selected `user_id`, so the readers
+asked for the key of owner `None` and got the install token. The connector
+route answered 500; the credential path was worse, because
+`resolve_credential_by_id` catches the failure and runs the turn *without* the
+user's credential — silently, on every turn. Both are covered now by a test
+that decrypts through the readers rather than by re-deriving the key, which is
+precisely what the passing tests had been doing.
+
 **Where this stands.** Steps 1–6 are done, along with the interface: the
 sign-in screen asks whichever question the install can answer, and the Account
 page is where an install becomes an account, a password changes, and an admin

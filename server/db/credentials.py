@@ -28,6 +28,7 @@ class CredentialsMixin(DatabaseBase):
             "token_expires_at": row[7],
             "needs_reconnect": bool(row[8]),
             "last_refresh_error_code": row[9],
+            "user_id": row[10],
         }
 
     async def save_credential(

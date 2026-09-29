@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b --force",
     "lint": "eslint .",
     "generate:contracts": "../.venv/bin/python ../scripts/dump-openapi.py > .openapi.json && openapi-typescript .openapi.json -o src/api/contracts.ts && rm .openapi.json",
     "preview": "vite preview",

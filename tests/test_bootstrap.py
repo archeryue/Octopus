@@ -213,3 +213,68 @@ async def test_the_live_sessions_are_adopted_too(legacy):
     assert [s.id for s in session_manager.list_sessions(summary["user_id"])] == [
         "s-old"
     ]
+
+
+@pytest.mark.asyncio
+async def test_every_secret_still_opens_through_the_paths_that_read_it(legacy):
+    """Re-keying is only half of it: the readers have to find the same key.
+
+    Both of them derive it from the *row's* owner — `data_key_for(row["user_id"])`
+    — and neither `_CREDENTIAL_COLS` nor `_CONNECTOR_COLS` selected `user_id`,
+    so `row.get("user_id")` was None and the key fell back to the install
+    token. The connector path answered 500; the credential path is worse,
+    because `resolve_credential_by_id` catches the failure and runs the turn
+    *without* the user's credential — silently, on every turn, forever.
+
+    Found by deploying a copy of a real install and asking it for a connector
+    token. So this asserts through the readers rather than by re-deriving the
+    key, which is exactly what the earlier tests did and why they passed.
+    """
+    from server import deps
+    from server.connector_manager import ConnectorManager
+    from server.crypto import encrypt
+    from server.users import UserManager
+
+    db, _agent = legacy
+    users = UserManager(db)
+    deps.set_user_manager(users)
+
+    # A connector installation, keyed to the install token, as one written
+    # before accounts would be.
+    await db.save_connector_installation(
+        installation_id="inst-1",
+        kind="github",
+        label="archeryue",
+        auth_type="oauth",
+        secret_encrypted=encrypt(
+            json.dumps({"access_token": "gho_real", "expires_at_epoch": None}),
+            "the-old-token",
+        ),
+        created_at="2026-01-01T00:00:00Z",
+    )
+
+    summary = await bootstrap_first_account(
+        db, username="archer", password="password1"
+    )
+    uid = summary["user_id"]
+
+    # The rows can say who owns them...
+    cred = (await db.load_credentials(uid))[0]
+    assert cred["user_id"] == uid, "a credential row cannot name its owner"
+    inst = await db.get_connector_installation("inst-1", uid)
+    assert inst["user_id"] == uid, "an installation row cannot name its owner"
+
+    # ...so the readers find the right key. Through the real call, not a
+    # key this test derived for itself.
+    mgr = ConnectorManager(db)
+    token = await mgr.get_access_token("inst-1")
+    assert token["access_token"] == "gho_real"
+
+    session_manager.sessions.clear()
+    await session_manager.initialize(db)
+    resolved = await session_manager.resolve_credential_by_id(
+        cred["id"], style="env", context="test"
+    )
+    assert resolved is not None, (
+        "the credential resolved to nothing — the turn would have run without it"
+    )

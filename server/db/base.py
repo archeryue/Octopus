@@ -119,6 +119,7 @@ class DatabaseBase:
             "token_expires_at": row[8],
             "last_refresh_error_code": row[9],
             "created_at": row[10],
+            "user_id": row[11],
         }
     @staticmethod
     def _row_to_research_job(row: sqlite3.Row) -> dict[str, Any]:
@@ -155,11 +156,19 @@ class DatabaseBase:
         "c.token_expires_at",
         "c.needs_reconnect",
         "c.last_refresh_error_code",
+        # Appended, never inserted: these rows are mapped by POSITION below.
+        # It is here because the secret is encrypted with its *owner's* key —
+        # a row that cannot say who owns it is a row nothing can decrypt
+        # (multi-tenancy.md §4).
+        "c.user_id",
     )
     _CONNECTOR_COLS = (
         "id, kind, label, auth_type, external_account_id, scopes, "
         "enable_by_default, needs_reconnect, token_expires_at, "
-        "last_refresh_error_code, created_at"
+        "last_refresh_error_code, created_at, "
+        # Appended, never inserted — see `_CREDENTIAL_COLS`. Same reason: the
+        # stored token is encrypted with its owner's key.
+        "user_id"
     )
     _CUSTOM_COLS = (
         "kind, display_name, authorize_url, token_url, scopes, pkce, "

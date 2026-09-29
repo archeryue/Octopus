@@ -53,7 +53,10 @@ You MUST verify your changes before considering them done:
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
 2. **Frontend unit tests**: `cd web && bun run test` (284 tests)
-3. **TypeScript check**: `cd web && npx tsc --noEmit`
+3. **TypeScript check**: `cd web && bun run typecheck` (`tsc -b --force`).
+   Not `tsc --noEmit`: `web/tsconfig.json` is a solution file — `"files": []`
+   plus two references — so `--noEmit` on it checks *zero* files and exits 0
+   whatever is broken. It passed for months while `bun run build` failed.
 4. **E2E tests**: `cd web && bun run test:e2e` (105 tests, no skips, ~4.5 min,
    Playwright auto-starts servers). It *is* the two buckets, run as two
    invocations — not one run that covers both. The accounts spec needs a second

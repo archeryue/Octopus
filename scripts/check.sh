@@ -78,7 +78,7 @@ run_gate "backend types (mypy)"                gate_mypy
 run_gate "backend unit (pytest -m 'not real')" gate_pytest
 run_gate "frontend lint (eslint)"              gate_eslint
 run_gate "frontend unit (vitest)"              gate_vitest
-run_gate "typecheck (tsc --noEmit)"            gate_tsc
+run_gate "typecheck (tsc -b)"                  gate_tsc
 run_gate "generated contracts in sync"         gate_contracts
 run_gate "docs plans index in sync"            gate_docs_index
 

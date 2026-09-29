@@ -126,7 +126,7 @@ export function AccountPage({ onToggleSidebar }: { onToggleSidebar?: () => void 
           )}
           {identity?.user_id && <ChangePassword headers={headers} />}
           {identity?.is_admin && <Invites headers={headers} />}
-          {identity?.is_admin && <People headers={headers} me={identity.user_id} />}
+          {identity?.is_admin && <People headers={headers} me={identity.user_id ?? null} />}
         </div>
       </div>
     </div>
