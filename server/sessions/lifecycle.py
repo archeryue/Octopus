@@ -8,6 +8,7 @@ so no call site moved.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +17,7 @@ from ..aio import stopped_within
 from ..attachments import delete_session_attachments
 from ..large_prompts import delete_session_large_prompts
 from ..models import MessageContent, SessionDetail, SessionStatus
+from ..workspace import confine
 from .base import (
     Session,
     SessionManagerBase,
@@ -32,6 +34,25 @@ _ARCHIVED_MESSAGE_WINDOW = 200
 
 
 class LifecycleMixin(SessionManagerBase):
+
+    async def _owner_extra_roots(self, user_id: str | None) -> list[str]:
+        """The additional paths this account may work in (§6).
+
+        A single-box affordance: the first user develops Octopus itself at a
+        path outside any workspace, and moving that repository is not something
+        accounts should force. Empty for everyone in the cloud version.
+        """
+        if not user_id or not self.db:
+            return []
+        user = await self.db.get_user(user_id)
+        raw = (user or {}).get("extra_roots")
+        if not raw:
+            return []
+        try:
+            roots = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [str(r) for r in roots] if isinstance(roots, list) else []
 
     async def create_session(
         self,
@@ -68,11 +89,18 @@ class LifecycleMixin(SessionManagerBase):
             stamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M")
             name = f"{label} — {stamp}"
 
+        owner_id = (agent or {}).get("user_id")
+        extra_roots = await self._owner_extra_roots(owner_id)
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
             name=name,
-            working_dir=resolve_working_dir(working_dir),
+            # Confined to the owner's workspace (multi-tenancy.md §6), then
+            # frozen absolute as it always was — in that order, because a path
+            # that escapes must be refused before it is stored, not after.
+            working_dir=resolve_working_dir(
+                confine(working_dir, user_id=owner_id, extra_roots=extra_roots)
+            ),
             credential_id=credential_id,
             agent_id=agent_id,
             origin=origin,
@@ -86,7 +114,7 @@ class LifecycleMixin(SessionManagerBase):
             # delegation, an application build — gets the owner right without
             # each of them having to remember. Before accounts exist there is
             # no owner, and `adopt_orphan_rows` settles that at upgrade.
-            user_id=(agent or {}).get("user_id"),
+            user_id=owner_id,
         )
         self.sessions[sid] = session
         if self.db:
@@ -119,11 +147,15 @@ class LifecycleMixin(SessionManagerBase):
         backend: str = "claude-code",
     ) -> Session:
         agent = await self.db.get_agent(agent_id) if (self.db and agent_id) else None
+        owner_id = (agent or {}).get("user_id")
+        extra_roots = await self._owner_extra_roots(owner_id)
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
             name=name,
-            working_dir=resolve_working_dir(working_dir),
+            working_dir=resolve_working_dir(
+                confine(working_dir, user_id=owner_id, extra_roots=extra_roots)
+            ),
             claude_session_id=claude_session_id,
             credential_id=credential_id,
             agent_id=agent_id,
@@ -131,7 +163,7 @@ class LifecycleMixin(SessionManagerBase):
             backend=backend,
             # As in `create_session`: an imported transcript belongs to whoever
             # owns the agent it is imported under.
-            user_id=(agent or {}).get("user_id"),
+            user_id=owner_id,
         )
         self.sessions[sid] = session
         if self.db:

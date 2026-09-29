@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     # being forgotten.
     master_key: str = ""
     master_key_file: str = "~/.octopus/master.key"
+    # One directory per account, holding that account's workspace, agent
+    # memory, applications and uploads (multi-tenancy.md §6). The legacy
+    # single-user directories above stay exactly as they are and keep serving
+    # an install that has no accounts yet.
+    users_root: str = "~/.octopus/users"
     host: str = "0.0.0.0"
     port: int = 8000
     default_working_dir: str = "."

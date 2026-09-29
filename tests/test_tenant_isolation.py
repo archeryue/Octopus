@@ -14,6 +14,8 @@ half right.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -26,11 +28,16 @@ from server.routers import agents as agents_router
 from server.routers import auth as auth_router
 from server.session_manager import session_manager
 from server.users import UserManager
+from server.workspace import WorkspaceError, paths_for
 
 
 @pytest.fixture
-async def two_accounts(monkeypatch):
+async def two_accounts(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "master_key", "test-master-key")
+    # Each account's files under this test's own root, which is also what makes
+    # the working directories below legal: a session may only work inside its
+    # owner's workspace (§6).
+    monkeypatch.setattr(settings, "users_root", str(tmp_path / "users"))
     crypto._MASTER_CACHE.clear()
 
     db = Database(":memory:")
@@ -52,10 +59,14 @@ async def two_accounts(monkeypatch):
     archer_agent = await mgr.create_agent(name="Archer's agent", user_id=archer["id"])
     vera_agent = await mgr.create_agent(name="Vera's agent", user_id=vera["id"])
     archer_session = await session_manager.create_session(
-        archer_agent["id"], "archer's work", "/tmp"
+        archer_agent["id"],
+        "archer's work",
+        str(paths_for(archer["id"]).ensure().workspace),
     )
     vera_session = await session_manager.create_session(
-        vera_agent["id"], "vera's work", "/tmp"
+        vera_agent["id"],
+        "vera's work",
+        str(paths_for(vera["id"]).ensure().workspace),
     )
 
     transport = ASGITransport(app=app)
@@ -166,3 +177,52 @@ async def test_the_transcript_is_not_readable_through_the_messages_route(
         headers=_as(ctx["vera"]["token"]),
     )
     assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_session_cannot_be_pointed_outside_its_owners_workspace(
+    two_accounts,
+):
+    """Confinement has to be *enforced where sessions are made*, not merely
+    available in a helper. The helper is unit-tested in test_workspace.py; this
+    is the wiring, which is the half that gets forgotten."""
+    ctx = two_accounts
+    archer = ctx["archer"]
+
+    with pytest.raises(WorkspaceError):
+        await session_manager.create_session(
+            archer["agent"]["id"], "escape", "/etc"
+        )
+
+    # Another account's workspace is outside too — that is the whole point.
+    with pytest.raises(WorkspaceError):
+        await session_manager.create_session(
+            archer["agent"]["id"],
+            "reach across",
+            str(paths_for(ctx["vera"]["user"]["id"]).workspace),
+        )
+
+
+@pytest.mark.asyncio
+async def test_extra_roots_let_the_first_user_keep_their_repository(two_accounts):
+    """The single-box affordance from §6, tested where it is read rather than
+    only where it is written — an `extra_roots` that nothing consults would
+    look configured and do nothing."""
+    ctx = two_accounts
+    archer = ctx["archer"]
+
+    outside = paths_for("somewhere").workspace.parent.parent / "a-repo"
+    outside.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(WorkspaceError):
+        await session_manager.create_session(
+            archer["agent"]["id"], "outside", str(outside)
+        )
+
+    await ctx["db"].update_user_field(
+        archer["user"]["id"], extra_roots=json.dumps([str(outside)])
+    )
+    allowed = await session_manager.create_session(
+        archer["agent"]["id"], "outside, now permitted", str(outside)
+    )
+    assert allowed.working_dir == str(outside)
