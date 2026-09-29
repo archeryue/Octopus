@@ -281,6 +281,43 @@ class DatabaseBase:
         ("agents", "pinned",
          "ALTER TABLE agents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 1"),
         ("agents", "pin_order", "ALTER TABLE agents ADD COLUMN pin_order INTEGER"),
+        # multi-tenancy.md §5 — who owns the row. Seven root tables, plus
+        # `sessions`, which breaks the own-it-through-a-foreign-key rule on
+        # purpose: its `agent_id` is nullable and the WebSocket fan-out routes
+        # by owner on every frame, so one denormalised column beats a join on
+        # the hottest path in the product.
+        #
+        # Nullable with no default and no REFERENCES: the column has to exist
+        # before the first user does (this runs on a database that predates
+        # accounts entirely), and a NOT NULL would have nothing to put there.
+        # `_backfill_owner` fills it in once a user exists; NULL means
+        # "belongs to the install", which is what every row is before the
+        # upgrade and what no row is after it.
+        ("agents", "user_id", "ALTER TABLE agents ADD COLUMN user_id TEXT"),
+        ("sessions", "user_id", "ALTER TABLE sessions ADD COLUMN user_id TEXT"),
+        ("applications", "user_id", "ALTER TABLE applications ADD COLUMN user_id TEXT"),
+        ("backend_credentials", "user_id",
+         "ALTER TABLE backend_credentials ADD COLUMN user_id TEXT"),
+        ("connector_installations", "user_id",
+         "ALTER TABLE connector_installations ADD COLUMN user_id TEXT"),
+        ("custom_connectors", "user_id",
+         "ALTER TABLE custom_connectors ADD COLUMN user_id TEXT"),
+        ("connector_oauth_clients", "user_id",
+         "ALTER TABLE connector_oauth_clients ADD COLUMN user_id TEXT"),
+        ("notifiers", "user_id", "ALTER TABLE notifiers ADD COLUMN user_id TEXT"),
+    )
+
+    # The tables above, for the backfill and for anything else that has to
+    # treat "every owned table" as one list rather than eight literals.
+    OWNED_TABLES: tuple[str, ...] = (
+        "agents",
+        "sessions",
+        "applications",
+        "backend_credentials",
+        "connector_installations",
+        "custom_connectors",
+        "connector_oauth_clients",
+        "notifiers",
     )
 
 

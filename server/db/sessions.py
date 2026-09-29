@@ -30,6 +30,7 @@ class SessionsMixin(DatabaseBase):
         backend: str = "claude-code",
         parent_session_id: str | None = None,
         delegation_request: str | None = None,
+        user_id: str | None = None,
         app_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
@@ -37,8 +38,8 @@ class SessionsMixin(DatabaseBase):
             "INSERT INTO sessions "
             "(id, name, working_dir, created_at, claude_session_id, "
             " credential_id, agent_id, origin, backend, "
-            " parent_session_id, delegation_request, app_id) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " parent_session_id, delegation_request, app_id, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session_id,
                 name,
@@ -52,6 +53,7 @@ class SessionsMixin(DatabaseBase):
                 parent_session_id,
                 delegation_request,
                 app_id,
+                user_id,
             ),
         )
         await self.conn.commit()
@@ -71,6 +73,7 @@ class SessionsMixin(DatabaseBase):
         parent_id: str,
         backend: str,
         model: str | None = None,
+        user_id: str | None = None,
         agent_id: str | None,
         credential_id: str | None,
         resume_id: str | None,
@@ -93,14 +96,14 @@ class SessionsMixin(DatabaseBase):
             await self.conn.execute(
                 "INSERT INTO sessions "
                 "(id, name, working_dir, created_at, claude_session_id, "
-                " credential_id, agent_id, origin, backend, model, "
+                " credential_id, agent_id, origin, backend, model, user_id, "
                 " forked_from_session_id, fork_after_seq, fork_needs_replay, "
                 " fork_status, fork_metadata) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, ?, 0, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'fork', ?, ?, ?, ?, ?, 0, "
                 " 'initializing', ?)",
                 (
                     fork_id, name, working_dir, created_at, resume_id,
-                    credential_id, agent_id, backend, model, parent_id,
+                    credential_id, agent_id, backend, model, user_id, parent_id,
                     fork_after_seq, fork_metadata,
                 ),
             )
@@ -133,7 +136,8 @@ class SessionsMixin(DatabaseBase):
             "credential_id, archived, agent_id, origin, backend, "
             "parent_session_id, delegation_request, forked_from_session_id, "
             "fork_after_seq, fork_needs_replay, fork_metadata, "
-            "fork_revert_record, fork_status, app_id, model FROM sessions"
+            "fork_revert_record, fork_status, app_id, model, user_id "
+            "FROM sessions"
         )
         if not include_archived:
             query += " WHERE archived = 0"
@@ -161,6 +165,7 @@ class SessionsMixin(DatabaseBase):
                 "fork_status": row[17],
                 "app_id": row[18],
                 "model": row[19],
+                "user_id": row[20],
             }
             for row in rows
         ]

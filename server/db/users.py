@@ -101,6 +101,42 @@ class UsersMixin(DatabaseBase):
         )
         await self.conn.commit()
 
+    # -- ownership ----------------------------------------------------------
+
+    async def adopt_orphan_rows(self, user_id: str) -> dict[str, int]:
+        """Give every unowned row to `user_id`. Returns what moved, per table.
+
+        `user_id IS NULL` is the state of every row written before accounts
+        existed, and of no row written after — so this is both the upgrade path
+        for an existing install (multi-tenancy.md §9) and a no-op on every boot
+        after it. Idempotent by that predicate rather than by a ledger stamp,
+        because "adopt anything orphaned" stays correct if a later import or a
+        restored backup ever produces one.
+        """
+        await self._ensure_connected()
+        moved: dict[str, int] = {}
+        for table in self.OWNED_TABLES:
+            cursor = await self.conn.execute(
+                f"UPDATE {table} SET user_id = ? WHERE user_id IS NULL",  # noqa: S608
+                (user_id,),
+            )
+            if cursor.rowcount:
+                moved[table] = cursor.rowcount
+        await self.conn.commit()
+        return moved
+
+    async def count_orphan_rows(self) -> dict[str, int]:
+        """Unowned rows per table — what `adopt_orphan_rows` would move."""
+        await self._ensure_connected()
+        out: dict[str, int] = {}
+        for table in self.OWNED_TABLES:
+            n = await self._count(
+                f"SELECT COUNT(*) FROM {table} WHERE user_id IS NULL"  # noqa: S608
+            )
+            if n:
+                out[table] = n
+        return out
+
     # -- invites ------------------------------------------------------------
 
     async def create_invite(

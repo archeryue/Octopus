@@ -351,3 +351,52 @@ class TestDataKeys:
 
         after = mgr.data_key(await db.get_user(user["id"]))
         assert after == before
+
+
+class TestOwnership:
+    """Rows written before accounts existed have no owner. The upgrade gives
+    them to user #1 (multi-tenancy.md §9), and the same call is a no-op on
+    every boot after that."""
+
+    @pytest.mark.asyncio
+    async def test_existing_rows_are_adopted_once(self, users):
+        mgr, db = users
+        # A pre-accounts install: an agent, a session and a credential, none of
+        # which knows about users.
+        agent = await db.get_system_agent()
+        await db.save_session(
+            session_id="s1",
+            name="old work",
+            working_dir="/tmp",
+            created_at="2026-01-01T00:00:00Z",
+            agent_id=agent["id"],
+        )
+        orphans = await db.count_orphan_rows()
+        assert orphans.get("agents", 0) >= 1 and orphans.get("sessions", 0) == 1
+
+        user = await mgr.create_user(username="archer", password="password1")
+        moved = await db.adopt_orphan_rows(user["id"])
+        assert moved.get("agents", 0) >= 1 and moved.get("sessions", 0) == 1
+        assert await db.count_orphan_rows() == {}
+
+        # The row itself, not just the counter.
+        loaded = {r["id"]: r for r in await db.load_sessions()}
+        assert loaded["s1"]["user_id"] == user["id"]
+
+        # A second run moves nothing: the predicate is "unowned", not a stamp.
+        assert await db.adopt_orphan_rows(user["id"]) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_later_arrival_does_not_take_someone_elses_rows(self, users):
+        """Adoption only ever touches *unowned* rows, so running it for a
+        second user cannot quietly transfer the first user's install."""
+        mgr, db = users
+        first = await mgr.create_user(username="archer", password="password1")
+        await db.adopt_orphan_rows(first["id"])
+
+        second = await mgr.create_user(username="vera", password="password2")
+        assert await db.adopt_orphan_rows(second["id"]) == {}
+
+        cursor = await db.conn.execute("SELECT DISTINCT user_id FROM agents")
+        owners = {r[0] for r in await cursor.fetchall()}
+        assert owners == {first["id"]}

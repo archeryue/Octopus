@@ -211,6 +211,10 @@ class Session:
     # Per-session model (`/model`). None = inherit the agent's, whose None
     # means the backend's own default. Same shape as `backend` above.
     model: str | None = None
+    # Who owns this conversation (multi-tenancy.md §5). Denormalised from the
+    # agent on purpose: `agent_id` is nullable, and the WebSocket fan-out has
+    # to route by owner on every frame.
+    user_id: str | None = None
     # Agent-to-agent: parent session that spawned this delegation, or None
     # for every non-delegation session. Used by the delegation listener to
     # route replies/questions/errors back to the parent and by guards to
@@ -490,6 +494,7 @@ class SessionManagerBase:
                 origin=row.get("origin") or "user",
                 backend=row.get("backend") or "claude-code",
                 model=row.get("model") or None,
+                user_id=row.get("user_id") or None,
                 parent_session_id=row.get("parent_session_id"),
                 delegation_request=row.get("delegation_request"),
                 app_id=row.get("app_id"),
