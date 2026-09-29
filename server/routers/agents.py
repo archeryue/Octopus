@@ -41,7 +41,11 @@ async def _publish(session_manager, kind: str, agent: dict) -> None:
     `agent_updated` upsert, `agent_archived` / `agent_deleted` remove.
     """
     await session_manager._broadcast(
-        {"type": kind, "agent_id": agent["id"], "agent": AgentRead(**agent).model_dump()}
+        {"type": kind, "agent_id": agent["id"], "agent": AgentRead(**agent).model_dump()},
+        # An agent event carries a row, not a session, so the owner is told
+        # rather than derived (multi-tenancy.md §7). Without this the sidebar
+        # of every open tab would learn about everyone's agents.
+        user_id=agent.get("user_id"),
     )
 
 

@@ -583,7 +583,11 @@ async def test_agent_changes_are_broadcast(client, monkeypatch):
     made in one tab shows in the others (sidebar-pins.md §7)."""
     events: list[dict] = []
 
-    async def capture(msg):
+    # `**_` so the double keeps matching `_broadcast`, which now takes the
+    # frame's owner as a keyword (multi-tenancy.md §7). A stub that does not
+    # accept what the real thing is called with is how the Telegram
+    # Allow/Deny bug shipped green.
+    async def capture(msg, **_):
         events.append(msg)
 
     monkeypatch.setattr(session_manager, "_broadcast", capture)

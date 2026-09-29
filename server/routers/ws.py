@@ -4,8 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
-from ..config import settings
-from ..deps import SessionMgr
+from ..deps import SessionMgr, scope_user_id_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -13,7 +12,16 @@ router = APIRouter()
 
 @router.websocket("/ws")
 async def websocket_endpoint(session_manager: SessionMgr, ws: WebSocket, token: str = Query(...)):
-    if token != settings.auth_token:
+    """The live stream, for one account.
+
+    This compared the ticket to `OCTOPUS_AUTH_TOKEN` directly rather than going
+    through `verify_ws_token` — so it would have kept accepting the retired
+    global token and rejecting the session bearers everything else had moved to.
+    A WebSocket cannot send an Authorization header, which is why the ticket is
+    a query parameter, and why this path has to be kept in step by hand.
+    """
+    allowed, user_id = await scope_user_id_for(token)
+    if not allowed:
         await ws.close(code=4001, reason="Unauthorized")
         return
 
@@ -33,7 +41,9 @@ async def websocket_endpoint(session_manager: SessionMgr, ws: WebSocket, token: 
         except Exception:
             logger.debug("broadcast to %s failed", conn_id, exc_info=True)
 
-    session_manager.on_broadcast(conn_id, broadcast)
+    # Subscribed *as this account*: the bus then routes frames by owner, so a
+    # session belonging to somebody else never reaches this socket (§7).
+    session_manager.on_broadcast(conn_id, broadcast, user_id)
 
     try:
         while True:

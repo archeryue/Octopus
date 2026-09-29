@@ -226,3 +226,79 @@ async def test_extra_roots_let_the_first_user_keep_their_repository(two_accounts
         archer["agent"]["id"], "outside, now permitted", str(outside)
     )
     assert allowed.working_dir == str(outside)
+
+
+# ---------------------------------------------------------------------------
+# The live stream (multi-tenancy.md §7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_accounts_frames_never_reach_anothers_socket(two_accounts):
+    """The quietest way to get multi-tenancy wrong.
+
+    The bus was a fan-out to every subscriber, so with accounts it would have
+    streamed one person's assistant text into another person's browser —
+    nothing errors, both tabs look plausible, and the only symptom is someone
+    reading work that is not theirs.
+    """
+    ctx = two_accounts
+    archer_seen: list[dict] = []
+    vera_seen: list[dict] = []
+    internal_seen: list[dict] = []
+
+    async def archer_cb(msg):
+        archer_seen.append(msg)
+
+    async def vera_cb(msg):
+        vera_seen.append(msg)
+
+    async def internal_cb(msg):
+        internal_seen.append(msg)
+
+    session_manager.on_broadcast("archer-tab", archer_cb, ctx["archer"]["user"]["id"])
+    session_manager.on_broadcast("vera-tab", vera_cb, ctx["vera"]["user"]["id"])
+    # No account: the delegation manager and friends, which must keep seeing
+    # everything because they act on the server's behalf.
+    session_manager.on_broadcast("internal", internal_cb)
+    try:
+        await session_manager._broadcast(
+            {
+                "type": "assistant_text",
+                "session_id": ctx["archer"]["session"].id,
+                "content": "something private",
+            }
+        )
+
+        assert len(archer_seen) == 1
+        assert vera_seen == [], "another account's assistant text reached this socket"
+        assert len(internal_seen) == 1, "an internal subscriber stopped seeing frames"
+
+        # A frame that belongs to the install rather than to a person — no
+        # session, no owner — still reaches everyone.
+        await session_manager._broadcast({"type": "schedules_changed"})
+        assert len(archer_seen) == 2 and len(vera_seen) == 1
+    finally:
+        for key in ("archer-tab", "vera-tab", "internal"):
+            session_manager.remove_broadcast(key)
+
+
+@pytest.mark.asyncio
+async def test_a_frame_can_name_its_owner_when_there_is_no_session(two_accounts):
+    """Agent and application events carry a row rather than a session id, so
+    the owner is told rather than derived."""
+    ctx = two_accounts
+    vera_seen: list[dict] = []
+
+    async def vera_cb(msg):
+        vera_seen.append(msg)
+
+    session_manager.on_broadcast("vera-tab", vera_cb, ctx["vera"]["user"]["id"])
+    try:
+        await session_manager._broadcast(
+            {"type": "agent_created", "agent": {"name": "Archer's second"}},
+            user_id=ctx["archer"]["user"]["id"],
+        )
+        assert vera_seen == [], "another account's agent event reached this socket"
+    finally:
+        session_manager.remove_broadcast("vera-tab")

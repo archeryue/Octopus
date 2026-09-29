@@ -1360,7 +1360,11 @@ async def test_unpin_and_repin_broadcast_and_append(am, db, mgr, sent, monkeypat
     b = await _create_app(am, db, name="B")
     events: list[dict] = []
 
-    async def capture(msg):
+    # `**_` so the double keeps matching `_broadcast`, which now takes the
+    # frame's owner as a keyword (multi-tenancy.md §7). A stub that does not
+    # accept what the real thing is called with is how the Telegram
+    # Allow/Deny bug shipped green.
+    async def capture(msg, **_):
         events.append(msg)
 
     monkeypatch.setattr(mgr, "_broadcast", capture)
@@ -1402,7 +1406,11 @@ async def test_reorder_broadcasts_only_the_rows_that_moved(
     c = await _create_app(am, db, name="C")
     events: list[dict] = []
 
-    async def capture(msg):
+    # `**_` so the double keeps matching `_broadcast`, which now takes the
+    # frame's owner as a keyword (multi-tenancy.md §7). A stub that does not
+    # accept what the real thing is called with is how the Telegram
+    # Allow/Deny bug shipped green.
+    async def capture(msg, **_):
         events.append(msg)
 
     monkeypatch.setattr(mgr, "_broadcast", capture)

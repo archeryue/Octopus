@@ -459,7 +459,8 @@ class SessionManagerBase:
 
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
-        self._broadcast_callbacks: dict[str, Callable] = {}
+        # key -> (callback, subscriber user_id or None for internal)
+        self._broadcast_callbacks: dict[str, tuple[Callable, str | None]] = {}
         self.db: Database | None = None
         # Background task that drops idle held CLI processes.
         self._reaper_task: asyncio.Task[None] | None = None
@@ -508,14 +509,51 @@ class SessionManagerBase:
         # Sweep delegation children orphaned by a restart (agent-collaboration.md §5.2).
         await self._recover_orphaned_delegations()
 
-    def on_broadcast(self, key: str, callback: Callable) -> None:
-        self._broadcast_callbacks[key] = callback
+    def on_broadcast(
+        self, key: str, callback: Callable, user_id: str | None = None
+    ) -> None:
+        """Subscribe to the bus.
+
+        `user_id=None` means *internal*: the delegation manager, the
+        application manager and the notifier all need every frame, because
+        their job is to react to other people's sessions on the server's
+        behalf. A browser connection passes its account and sees only that
+        account's frames (multi-tenancy.md §7).
+        """
+        self._broadcast_callbacks[key] = (callback, user_id)
 
     def remove_broadcast(self, key: str) -> None:
         self._broadcast_callbacks.pop(key, None)
 
-    async def _broadcast(self, message: dict) -> None:
-        for cb in list(self._broadcast_callbacks.values()):
+    def _audience(self, message: dict, user_id: str | None) -> str | None:
+        """Whose frame this is, or None for one that belongs to the install.
+
+        Told explicitly when the caller knows (an agent row carries its owner),
+        otherwise derived from the session the frame is about. A frame with
+        neither is a system event — `schedules_changed` has no session and no
+        owner — and goes to everyone.
+        """
+        if user_id is not None:
+            return user_id
+        sid = message.get("session_id")
+        if isinstance(sid, str):
+            session = self.sessions.get(sid)
+            if session is not None:
+                return session.user_id
+        return None
+
+    async def _broadcast(self, message: dict, *, user_id: str | None = None) -> None:
+        """Deliver to the subscribers entitled to see it.
+
+        Before accounts this was a fan-out to every callback, which with
+        accounts would stream one person's assistant text into another
+        person's browser — the quietest possible way to get multi-tenancy
+        wrong, since nothing errors and both tabs look plausible.
+        """
+        audience = self._audience(message, user_id)
+        for cb, subscriber in list(self._broadcast_callbacks.values()):
+            if subscriber is not None and audience is not None and subscriber != audience:
+                continue
             try:
                 await cb(message)
             except Exception:

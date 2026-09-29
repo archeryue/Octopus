@@ -176,6 +176,25 @@ async def scope_user_id(
 ScopeUser = Annotated[str | None, Depends(scope_user_id)]
 
 
+async def scope_user_id_for(token: str) -> tuple[bool, str | None]:
+    """`(allowed, user_id)` for a bearer presented outside the request cycle.
+
+    The WebSocket needs both answers at once and cannot use `Depends` for
+    either: it authenticates a query parameter before the socket is accepted,
+    and it has to know whose frames to subscribe to. Kept here, beside the
+    request-scoped versions, so there is one implementation of "is this bearer
+    good" rather than the hand-rolled comparison this endpoint used to carry.
+    """
+    from .auth import _allowed
+
+    if not await _allowed(token):
+        return False, None
+    if _user_manager is None:
+        return True, None
+    user = await _user_manager.resolve_token(token)
+    return True, (user["id"] if user else None)
+
+
 async def require_admin(user: CurrentUser) -> dict[str, Any]:
     if not user.get("is_admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only")

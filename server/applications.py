@@ -947,7 +947,11 @@ class ApplicationManager:
         if self.session_mgr is None or row is None:
             return
         await self.session_mgr._broadcast(
-            {"type": kind, "application_id": row["id"], "application": row}
+            {"type": kind, "application_id": row["id"], "application": row},
+            # As for agents: the row carries its owner, so the frame says whose
+            # it is rather than leaving the bus to guess from a session that
+            # is not there (multi-tenancy.md §7).
+            user_id=row.get("user_id"),
         )
 
 
