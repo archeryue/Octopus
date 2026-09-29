@@ -1,6 +1,6 @@
 # Multi-tenancy (`user-1.0`)
 
-> **Status:** planned — one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys.
+> **Status:** in-progress — one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys.
 
 Octopus is single-user by construction: one `OCTOPUS_AUTH_TOKEN` is the API
 credential, the WebSocket ticket, the application cookie, the MCP signing key
@@ -203,10 +203,19 @@ database (or a container), only `Ctx` changes.
     workspace/      ← every session's working_dir lives under here
     agents/         ← per-agent memory (agent_memory.py)
     applications/   ← <slug>/ <slug>.data/ <slug>.runtime/
-    attachments/  large-prompts/  codex/  fork/
+    attachments/  large-prompts/  codex/  research/
 ```
 
-The eight `settings.*_dir` constants become functions of a user.
+The `settings.*_dir` constants become functions of a user, through
+`workspace.paths_for(user_id)`.
+
+`research/` is on that list because it was not a setting at all: a deep-research
+job's scratch cwd and its report went to a hardcoded `~/.octopus/research`.
+That pooled every account's research output in one directory no confinement
+check covers — and, on the way here, filled the deployed install's state
+directory with the hermetic test suite's output. It is a setting now, so the
+pre-accounts install keeps the reports it already has and a test run keeps its
+own.
 
 **`working_dir` is confined to the workspace.** Today it is
 `Path(raw).expanduser().resolve()` with no boundary at all — any absolute path

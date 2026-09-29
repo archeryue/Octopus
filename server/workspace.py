@@ -46,6 +46,7 @@ class UserPaths:
     attachments: Path
     large_prompts: Path
     codex_home: Path
+    research: Path
 
     def ensure(self) -> UserPaths:
         for path in (
@@ -55,6 +56,7 @@ class UserPaths:
             self.attachments,
             self.large_prompts,
             self.codex_home,
+            self.research,
         ):
             path.mkdir(parents=True, exist_ok=True)
         return self
@@ -84,6 +86,7 @@ def paths_for(user_id: str | None) -> UserPaths:
             attachments=_expand(settings.attachments_dir),
             large_prompts=_expand(settings.large_prompts_dir),
             codex_home=_expand(settings.codex_home_dir),
+            research=_expand(settings.research_dir),
         )
     root = user_root(user_id)
     return UserPaths(
@@ -93,6 +96,7 @@ def paths_for(user_id: str | None) -> UserPaths:
         attachments=root / "attachments",
         large_prompts=root / "large-prompts",
         codex_home=root / "codex",
+        research=root / "research",
     )
 
 

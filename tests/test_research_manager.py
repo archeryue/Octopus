@@ -9,6 +9,7 @@ without a real CLI.
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -144,3 +145,29 @@ async def test_recover_interrupted(rm, mgr, db):
     n = await rm.recover_interrupted()
     assert n == 1
     assert (await db.get_research_job("old"))["status"] == "interrupted"
+
+
+class TestResearchLivesUnderItsOwner:
+    """A job's scratch cwd and report are the user's data (multi-tenancy.md §6).
+
+    They used to go to a hardcoded `~/.octopus/research` — which pooled every
+    account's research in one directory no confinement check covers, and which
+    an ordinary test run wrote into on whatever box it ran on.
+    """
+
+    def test_each_account_researches_in_its_own_directory(self, tmp_path, monkeypatch):
+        from server.config import settings
+        from server.research.manager import _research_dir
+
+        monkeypatch.setattr(settings, "users_root", str(tmp_path / "users"))
+        one, two = _research_dir("u1"), _research_dir("u2")
+        assert one != two
+        assert not one.startswith(two) and not two.startswith(one)
+        assert os.path.isdir(one) and os.path.isdir(two)
+
+    def test_before_accounts_it_is_where_it_has_always_been(self, tmp_path, monkeypatch):
+        from server.config import settings
+        from server.research.manager import _research_dir
+
+        monkeypatch.setattr(settings, "research_dir", str(tmp_path / "legacy"))
+        assert _research_dir(None) == str(tmp_path / "legacy")

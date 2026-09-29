@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import settings
 from ..harness import get_harness, has_backend
+from ..workspace import paths_for
 from .orchestrator import ResearchLimits, ResearchProgress, run_research
 
 if TYPE_CHECKING:
@@ -47,8 +48,15 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _research_dir() -> str:
-    d = os.path.expanduser(os.path.join("~", ".octopus", "research"))
+def _research_dir(user_id: str | None) -> str:
+    """Where this account's research scratch and reports live.
+
+    A job's scratch cwd and its report are the user's own data, so they belong
+    under the user's own root rather than in one shared directory (§6). The
+    pre-accounts answer is the directory Octopus has always used, so an install
+    being upgraded keeps the reports it already wrote.
+    """
+    d = str(paths_for(user_id).research)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -148,7 +156,7 @@ class ResearchManager:
                 # working_dir — a web/reasoning leaf has no reason to read the
                 # user's repo, and this keeps the read-only-sandbox/denylist
                 # leaves from touching real files (Vera review).
-                scratch = os.path.join(_research_dir(), job_id, "cwd")
+                scratch = os.path.join(_research_dir(session.user_id), job_id, "cwd")
                 os.makedirs(scratch, exist_ok=True)
                 report = await asyncio.wait_for(
                     run_research(
@@ -164,7 +172,7 @@ class ResearchManager:
                 )
 
             # Persist the report file (best-effort) + mark completed.
-            report_path = self._write_report(job_id, report.report)
+            report_path = self._write_report(job_id, report.report, session.user_id)
             await self.db.update_research_job(
                 job_id, status="completed", phase="done", cost=report.cost,
                 completed_at=_now(), report_path=report_path,
@@ -273,9 +281,9 @@ class ResearchManager:
 
     # --------------------------------------------------------------- helpers
 
-    def _write_report(self, job_id: str, report: str) -> str | None:
+    def _write_report(self, job_id: str, report: str, user_id: str | None) -> str | None:
         try:
-            path = os.path.join(_research_dir(), f"{job_id}.md")
+            path = os.path.join(_research_dir(user_id), f"{job_id}.md")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(report)
             return path

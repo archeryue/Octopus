@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     # in-app Codex login gets `<codex_home_dir>/<credential_id>/`, which holds
     # the `auth.json` Codex writes + manages. `~` expanded at use time.
     codex_home_dir: str = "~/.octopus/codex"
+    # A deep-research job's scratch cwd and its report. It was hardcoded to
+    # `~/.octopus/research`, which put every test run's output into whichever
+    # install happened to be deployed on the box, and — once accounts exist —
+    # would have pooled every account's research in one directory no
+    # confinement check covers. A setting for the pre-accounts install, and
+    # `<users_root>/<id>/research` after (multi-tenancy.md §6).
+    research_dir: str = "~/.octopus/research"
     # Per-agent durable state root (docs/plans/memory.md §2). Each agent gets
     # `<agents_dir>/<agent_id>/memory/` — the canonical native, agent-written
     # markdown memory both harnesses point at (Claude via

@@ -30,7 +30,7 @@ class TestPaths:
         a, b = paths_for("u1"), paths_for("u2")
         assert a.workspace != b.workspace
         assert not str(a.workspace).startswith(str(b.workspace))
-        for name in ("agents", "applications", "attachments", "codex_home"):
+        for name in ("agents", "applications", "attachments", "codex_home", "research"):
             assert getattr(a, name) != getattr(b, name)
 
     def test_before_accounts_the_legacy_layout_is_kept(self):
@@ -38,6 +38,9 @@ class TestPaths:
         applications it already has; moving them is §9's job, done once and
         deliberately, not a surprise from path resolution."""
         assert str(paths_for(None).agents) == os.path.expanduser(settings.agents_dir)
+        assert str(paths_for(None).research) == os.path.expanduser(
+            settings.research_dir
+        )
 
 
 class TestConfinement:

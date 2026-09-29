@@ -89,6 +89,31 @@ def _surviving_cli_pids() -> list[int]:
 
 
 @pytest.fixture(autouse=True)
+def _account_state_stays_in_tmp(tmp_path_factory, monkeypatch):
+    """No test may write into a real install's state directory.
+
+    Three settings default into `~/.octopus`: `master_key_file`, which
+    `crypto.master_key()` *creates* when it is missing; `users_root`, under
+    which `paths_for(user_id).ensure()` makes an account's directories; and
+    `research_dir`, where a research job writes its scratch cwd and report.
+    All three are reached by ordinary hermetic tests, so a plain `pytest` run
+    left a 0600 key file, a `users/` tree and hundreds of research directories
+    in the state directory of whatever install happened to be deployed on the
+    box — found exactly that way.
+
+    Pointed at a per-session tmp dir for every test. A test that cares about
+    the value still sets its own afterwards; this only decides where the
+    default lands.
+    """
+    from server.config import settings
+
+    root = tmp_path_factory.mktemp("octopus-state")
+    monkeypatch.setattr(settings, "master_key_file", str(root / "master.key"))
+    monkeypatch.setattr(settings, "users_root", str(root / "users"))
+    monkeypatch.setattr(settings, "research_dir", str(root / "research"))
+
+
+@pytest.fixture(autouse=True)
 def _accounts_start_empty():
     """Every test begins in the pre-accounts era.
 

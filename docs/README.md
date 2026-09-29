@@ -30,6 +30,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 
 | Plan | Status | What |
 |---|---|---|
+| [Multi-tenancy (`user-1.0`)](plans/multi-tenancy.md) | in-progress | one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys. |
 | [/fork — duplicate a session onto a copied working directory](plans/session-fork.md) | shipped | Duplicate a session onto an independent full copy of its working directory. |
 | [Agent Collaboration — Tech Plan (agent-to-agent delegation)](plans/agent-collaboration.md) | shipped | Agent-to-agent delegation — the `mcp__ask_agent__*` tools, one hop, replies injected as follow-up turns. Reverses the "no A2A" carve-out in `agent-refactor.md` §40-41. |
 | [Agent Memory — Tech Plan (native, agent-written, per-agent)](plans/memory.md) | shipped | Per-agent native memory: one markdown directory per agent, shared by both harnesses. |
@@ -55,7 +56,6 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 | [The schedule an agent sets for itself](plans/schedule-tool.md) | shipped | `mcp__schedule__*` over session-scoped routes: an agent sets, lists, re-times and pauses its own schedules. |
 | [Three small affordances: message time, composer history, `/model`](plans/composer-and-time.md) | shipped | hover a message for its time, ArrowUp for what you sent, `/model` to switch model for one session. |
 | [Turn safety (Layer 1): timeout + process-group reaping](plans/turn-safety.md) | shipped | The per-turn watchdog (idle + overall) and process-group reaping, so a wedged tool cannot hang a session forever. |
-| [Multi-tenancy (`user-1.0`)](plans/multi-tenancy.md) | planned | one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys. |
 
 <!-- END plans-index -->
 
