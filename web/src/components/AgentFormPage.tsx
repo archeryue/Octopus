@@ -10,6 +10,7 @@ import {
   type PageTab,
   type SubagentDefinition,
 } from "../stores/sessionStore";
+import { EmojiPicker } from "./EmojiPicker";
 import { ItemLibrary, type LibraryItem } from "./ItemLibrary";
 import { PageHeader } from "./PageHeader";
 import { Button } from "./ui/button";
@@ -308,32 +309,25 @@ export function AgentFormPage({
           ) : (
             <div className="space-y-6">
               <div className="flex items-start gap-4">
-                <span className="tile mt-7 size-14 rounded-xl bg-primary text-2xl text-white">
-                  {avatar || (name.trim()[0] || "A").toUpperCase()}
-                </span>
+                <div className="mt-7">
+                  <EmojiPicker
+                    value={avatar}
+                    onChange={setAvatar}
+                    fallback={(name.trim()[0] || "A").toUpperCase()}
+                  />
+                </div>
                 <div className="grid flex-1 gap-4 md:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="agent-name">Name</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        id="agent-avatar"
-                        className="agent-avatar-input w-16 text-center"
-                        value={avatar}
-                        onChange={(e) => setAvatar(e.target.value)}
-                        placeholder="🐙"
-                        maxLength={4}
-                        aria-label="Avatar"
-                      />
-                      <Input
-                        id="agent-name"
-                        className="agent-name-input flex-1"
-                        value={name}
-                        onChange={(e) => setName(e.target.value)}
-                        placeholder="sre-ops"
-                        disabled={!!editing?.is_system}
-                        autoFocus={!editing}
-                      />
-                    </div>
+                    <Input
+                      id="agent-name"
+                      className="agent-name-input w-full"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="sre-ops"
+                      disabled={!!editing?.is_system}
+                      autoFocus={!editing}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="agent-role">One-line role</Label>
