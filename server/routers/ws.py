@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from ..deps import SessionMgr, scope_user_id_for
+from ..sessions.turns import QuotaExceeded
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -83,6 +84,13 @@ async def websocket_endpoint(session_manager: SessionMgr, ws: WebSocket, token: 
                         content,
                         attachment_ids=attachment_ids,
                         steerable=True,
+                    )
+                except QuotaExceeded as e:
+                    # Its own branch: this is "you, shortly" rather than
+                    # "that request was wrong", and the difference is what the
+                    # person needs to read (multi-tenancy.md §8).
+                    await ws.send_json(
+                        {"type": "error", "session_id": session_id, "message": str(e)}
                     )
                 except ValueError as e:
                     await ws.send_json(

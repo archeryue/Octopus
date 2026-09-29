@@ -14,6 +14,7 @@ half right.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -302,3 +303,82 @@ async def test_a_frame_can_name_its_owner_when_there_is_no_session(two_accounts)
         assert vera_seen == [], "another account's agent event reached this socket"
     finally:
         session_manager.remove_broadcast("vera-tab")
+
+
+# ---------------------------------------------------------------------------
+# Quotas (multi-tenancy.md §8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_account_cannot_run_the_box_out_of_memory(two_accounts, monkeypatch):
+    """A held `claude` is ~250 MB and inline-steering.md §7 records the OOM a
+    single user managed. With several accounts the cap is not a refinement.
+
+    Counted per account, not per box: one person filling their own allowance
+    must not stop anybody else working, which is the difference between a
+    quota and an outage.
+    """
+    from server.config import settings as cfg
+    from server.sessions.turns import QuotaExceeded
+
+    monkeypatch.setattr(cfg, "max_concurrent_turns_per_user", 1)
+    ctx = two_accounts
+    archer, vera = ctx["archer"], ctx["vera"]
+
+    # Pretend one of Archer's sessions is mid-turn.
+    async def forever():
+        await asyncio.sleep(3600)
+
+    busy = asyncio.create_task(forever())
+    archer["session"]._active_task = busy
+    try:
+        second = await session_manager.create_session(
+            archer["agent"]["id"],
+            "another",
+            str(paths_for(archer["user"]["id"]).workspace),
+        )
+        with pytest.raises(QuotaExceeded):
+            await session_manager.start_message(second.id, "hello")
+
+        # Vera is unaffected by Archer's allowance.
+        assert session_manager.running_turns_for(vera["user"]["id"]) == 0
+        vera_second = await session_manager.create_session(
+            vera["agent"]["id"],
+            "vera's second",
+            str(paths_for(vera["user"]["id"]).workspace),
+        )
+        # Far enough to prove the quota did not refuse it; the turn itself
+        # needs a CLI, which is the real tier's business.
+        session_manager._check_turn_quota(
+            session_manager.get_session(vera_second.id)
+        )
+    finally:
+        busy.cancel()
+        archer["session"]._active_task = None
+
+
+@pytest.mark.asyncio
+async def test_a_message_queued_behind_a_running_turn_is_not_refused(
+    two_accounts, monkeypatch
+):
+    """A queue is one CLI process however long it gets, so refusing to queue
+    would make the cap feel like data loss for no saving."""
+    from server.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "max_concurrent_turns_per_user", 1)
+    ctx = two_accounts
+    session = ctx["archer"]["session"]
+
+    async def forever():
+        await asyncio.sleep(3600)
+
+    busy = asyncio.create_task(forever())
+    session._active_task = busy
+    try:
+        await session_manager.start_message(session.id, "queue me")
+        assert [q.prompt for q in session._pending_queue] == ["queue me"]
+    finally:
+        busy.cancel()
+        session._active_task = None
+        session._pending_queue.clear()

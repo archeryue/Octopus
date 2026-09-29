@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # single-user directories above stay exactly as they are and keep serving
     # an install that has no accounts yet.
     users_root: str = "~/.octopus/users"
+    # How many turns one account may have running at once (multi-tenancy.md
+    # §8). A held `claude` is ~250 MB, and inline-steering.md §7 records the
+    # OOM that a *single* user managed; with several, an unbounded box is a
+    # question of when. 0 disables the cap, which is what a single-user
+    # install has always effectively had.
+    max_concurrent_turns_per_user: int = 4
     host: str = "0.0.0.0"
     port: int = 8000
     default_working_dir: str = "."

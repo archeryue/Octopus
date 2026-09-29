@@ -21,6 +21,7 @@ from .. import monitor as _monitor
 from ..aio import drain_cancelled, stopped_within
 from ..attachments import MAX_ATTACHMENTS_PER_MESSAGE
 from ..attachments import get_path as get_attachment_path
+from ..config import settings
 from ..harness import (
     Harness,
     HarnessCredential,
@@ -168,6 +169,15 @@ class _Decision:
         return cls(retry=True, events=list(events), prompt=prompt, delay=delay)
 
 
+class QuotaExceeded(Exception):
+    """Too many turns at once for one account (multi-tenancy.md §8).
+
+    Its own type rather than a ValueError because the router answers it with
+    429 — "try again shortly" — and that is a different thing from the 400 a
+    malformed request gets.
+    """
+
+
 class TurnsMixin(SessionManagerBase):
 
     @staticmethod
@@ -230,6 +240,36 @@ class TurnsMixin(SessionManagerBase):
         )
         return seq
 
+    def running_turns_for(self, user_id: str | None) -> int:
+        """How many of this account's sessions are mid-turn."""
+        return sum(
+            1
+            for s in self.sessions.values()
+            if s.user_id == user_id and s._active_task and not s._active_task.done()
+        )
+
+    def _check_turn_quota(self, session: Session) -> None:
+        """Refuse a turn that would put an account over its cap (§8).
+
+        Checked before the busy/idle split rather than after, so it applies to
+        the message that *starts* a turn and not to one queued behind a turn
+        that is already running — a queue is one CLI process however long it
+        gets, and refusing to queue would make the cap feel like data loss.
+
+        A single-user install is unaffected: `user_id` is None there, and a cap
+        on "everybody's sessions" is not what this is for.
+        """
+        cap = settings.max_concurrent_turns_per_user
+        if cap <= 0 or session.user_id is None:
+            return
+        if session._active_task and not session._active_task.done():
+            return  # this one is already counted; the message will queue
+        if self.running_turns_for(session.user_id) >= cap:
+            raise QuotaExceeded(
+                f"You already have {cap} turns running. Wait for one to finish, "
+                "or interrupt it."
+            )
+
     async def start_message(
         self,
         session_id: str,
@@ -262,6 +302,8 @@ class TurnsMixin(SessionManagerBase):
             raise ValueError(
                 f"too many attachments: max {MAX_ATTACHMENTS_PER_MESSAGE}"
             )
+
+        self._check_turn_quota(session)
 
         queued = QueuedPrompt(prompt=prompt, attachment_ids=list(attachment_ids or []))
 
