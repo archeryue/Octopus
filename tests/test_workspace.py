@@ -179,3 +179,33 @@ class TestExtraRootValidation:
         f.write_text("x")
         with pytest.raises(WorkspaceError):
             normalise_root(str(f))
+
+
+class TestRelativePathsResolveAgainstTheWorkspace:
+    """A folder name typed in the new-session form is "inside my workspace",
+    not a path relative to where the server was launched (found when Nancy's
+    `myproject` resolved to /home/start-up/myproject and was refused)."""
+
+    def test_a_bare_folder_name_lands_in_the_workspace(self):
+        got = confine("myproject", user_id="u1")
+        assert got == str(paths_for("u1").workspace / "myproject")
+
+    def test_a_nested_relative_path_too(self):
+        got = confine("a/b/c", user_id="u1")
+        assert got == str(paths_for("u1").workspace / "a" / "b" / "c")
+
+    def test_it_still_cannot_climb_out_with_dotdot(self):
+        # `..` is collapsed by resolve() before the check, so this lands outside
+        # the workspace and is refused — the confinement still holds.
+        with pytest.raises(WorkspaceError):
+            confine("../../etc", user_id="u1")
+
+    def test_an_absolute_path_is_still_taken_literally_and_confined(self):
+        with pytest.raises(WorkspaceError):
+            confine("/etc", user_id="u1")
+
+    def test_before_accounts_a_relative_path_is_unchanged(self, tmp_path, monkeypatch):
+        # Pre-accounts keeps resolving against the server cwd, as it always did.
+        monkeypatch.chdir(tmp_path)
+        got = confine("sub", user_id=None)
+        assert got == str((tmp_path / "sub").resolve())

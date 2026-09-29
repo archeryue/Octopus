@@ -20,6 +20,7 @@ import { ResearchCard } from "./ResearchCard";
 import { MessageBubble } from "./MessageBubble";
 import { MessageTime } from "./MessageTime";
 import { ModelPickerDialog } from "./ModelPickerDialog";
+import { isImeComposing } from "../lib/composerKeys";
 import { isAutoInjectedPrompt } from "../lib/injectedTurns";
 import {
   IDLE as HISTORY_IDLE,
@@ -1051,6 +1052,15 @@ export function ChatView({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // An IME is mid-composition — Chinese/Japanese/Korean input, where the
+    // keystrokes build a candidate the user then commits. During that, Enter
+    // *confirms the candidate*; the arrows *move through candidates*; none of
+    // it is text navigation or a send. Safari on macOS is the case that bit a
+    // user: committing a Chinese word with Enter fired this handler and sent
+    // the half-typed message. The composing keydown is flagged either as
+    // `isComposing` (the standard) or `keyCode === 229` (older WebKit), so we
+    // bow out on both and let the IME own the keys until composition ends.
+    if (isImeComposing(e.nativeEvent as KeyboardEvent)) return;
     // When the slash-command menu is open it captures navigation keys:
     // arrows move the highlight, Enter/Tab complete, Esc dismisses (without
     // bubbling to the global Esc-to-interrupt handler).

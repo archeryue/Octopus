@@ -188,11 +188,23 @@ def confine(
     if not requested:
         return str(paths.workspace.resolve())
 
-    candidate = _expand(requested).resolve()
+    expanded = _expand(requested)
     if user_id is None:
         # Pre-accounts: unchanged behaviour, because there is no owner to
         # confine to and the install's existing sessions point where they do.
-        return str(candidate)
+        return str(expanded.resolve())
+
+    # A *relative* path from an account holder means "inside my workspace" —
+    # the folder name they typed in the new-session form — not a path relative
+    # to wherever the server process happens to have been launched. Resolving it
+    # against the server cwd (the old behaviour) sent a bare folder name to
+    # `/home/start-up/<name>`, outside the workspace, and the session was
+    # refused. An absolute path (or a `~`-path) is still taken literally and
+    # checked against the allowed roots below.
+    if expanded.is_absolute():
+        candidate = expanded.resolve()
+    else:
+        candidate = (paths.workspace / expanded).resolve()
 
     roots = allowed_roots(user_id, extra_roots)
     if any(_within(candidate, root) for root in roots):
