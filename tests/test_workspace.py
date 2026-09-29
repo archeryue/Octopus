@@ -146,3 +146,36 @@ async def test_a_refused_working_dir_is_a_400_not_a_500():
     reply = await handler(None, WorkspaceError("/etc is outside your workspace"))
     assert reply.status_code == 400
     assert b"outside your workspace" in reply.body
+
+
+class TestExtraRootValidation:
+    """What an extra root may be. It is a hole in the confinement, so the rules
+    are about what the hole may be rather than about typos."""
+
+    def test_a_real_directory_is_stored_resolved(self, tmp_path):
+        from server.workspace import normalise_root
+
+        real = tmp_path / "repo"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        # Resolved on the way in, so a symlink cannot change what an approved
+        # root means afterwards.
+        assert normalise_root(str(link)) == real.resolve()
+
+    @pytest.mark.parametrize(
+        "bad", ["", "   ", "relative/path", "~/nope-not-here", "/", "/home"]
+    )
+    def test_refused(self, bad):
+        from server.workspace import normalise_root
+
+        with pytest.raises(WorkspaceError):
+            normalise_root(bad)
+
+    def test_a_file_is_not_a_root(self, tmp_path):
+        from server.workspace import normalise_root
+
+        f = tmp_path / "a-file"
+        f.write_text("x")
+        with pytest.raises(WorkspaceError):
+            normalise_root(str(f))

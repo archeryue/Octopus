@@ -100,6 +100,43 @@ def paths_for(user_id: str | None) -> UserPaths:
     )
 
 
+def normalise_root(raw: str) -> Path:
+    """Vet one `extra_roots` entry, or raise `WorkspaceError`.
+
+    An extra root is a hole in the confinement, so the rules are about what the
+    hole may be rather than about typos:
+
+    * **Absolute**, because a relative path means something different depending
+      on where the server was started.
+    * **Real, and a directory** — a path that does not exist yet would be
+      allowed to become anything later, including a symlink somewhere else.
+    * **Resolved**, so what is stored is what `confine()` will compare against;
+      storing the unresolved spelling would let a symlink change the meaning of
+      an approved root after the fact.
+    * **Not the filesystem root, and not a home directory's parent**: `/` or
+      `/home` do not open a repository, they switch confinement off while
+      leaving it looking switched on.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise WorkspaceError("An extra root cannot be empty")
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise WorkspaceError(f"{text} is not an absolute path")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise WorkspaceError(f"{text} does not exist") from exc
+    if not resolved.is_dir():
+        raise WorkspaceError(f"{text} is not a directory")
+    if resolved == Path(resolved.root) or resolved in (Path("/home"), Path("/Users")):
+        raise WorkspaceError(
+            f"{resolved} is too broad to be an extra root — name the directory "
+            "you actually work in"
+        )
+    return resolved
+
+
 def _within(candidate: Path, root: Path) -> bool:
     """Is `candidate` inside `root`, both already resolved?
 

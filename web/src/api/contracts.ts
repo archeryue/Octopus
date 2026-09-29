@@ -1541,6 +1541,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Workspace
+         * @description Where this account may work.
+         *
+         *     The UI needs it to explain a refusal: "that path is outside your workspace"
+         *     is only actionable if you can see what the workspace *is* and what else has
+         *     been opened up.
+         */
+        get: operations["workspace_api_auth_workspace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/users/{user_id}/extra-roots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Extra Roots
+         * @description Open a path outside an account's workspace to it, or close one.
+         *
+         *     The operator's, not the account holder's, and deliberately: an extra root
+         *     is a hole in the confinement, so an account that could punch its own would
+         *     make the confinement advisory. On an install with one person that is the
+         *     same person — which is the point of the affordance (§6), not a hole in it.
+         *
+         *     The list is replaced whole, and every entry is vetted by `normalise_root`;
+         *     what is stored is the resolved path, so a symlink cannot change what an
+         *     approved root means afterwards.
+         */
+        put: operations["set_extra_roots_api_auth_users__user_id__extra_roots_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/invites": {
         parameters: {
             query?: never;
@@ -2763,6 +2816,18 @@ export interface components {
             label?: string | null;
         };
         /**
+         * ExtraRootsRequest
+         * @description The whole list, not a delta.
+         *
+         *     Replacing rather than appending because the list *is* the boundary: a
+         *     caller that can only add can only ever widen it, and reading back what you
+         *     just set is then the only way to know what it says.
+         */
+        ExtraRootsRequest: {
+            /** Extra Roots */
+            extra_roots: string[];
+        };
+        /**
          * FollowUpDelegationRequest
          * @description Body for the continuation mode of `mcp__ask_agent__ask`
          *     (delegation_id passed in place of name): continue a prior
@@ -3557,6 +3622,27 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /**
+         * WorkspaceInfo
+         * @description Where this account may put a session's working directory.
+         *
+         *     `confined` is False for an install with no accounts, which has never
+         *     restricted anything and must not start (multi-tenancy.md §6).
+         */
+        WorkspaceInfo: {
+            /** Workspace */
+            workspace: string;
+            /**
+             * Extra Roots
+             * @default []
+             */
+            extra_roots: string[];
+            /**
+             * Confined
+             * @default true
+             */
+            confined: boolean;
         };
     };
     responses: never;
@@ -6776,6 +6862,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["IdentityResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workspace_api_auth_workspace_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_extra_roots_api_auth_users__user_id__extra_roots_put: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExtraRootsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceInfo"];
                 };
             };
             /** @description Validation Error */

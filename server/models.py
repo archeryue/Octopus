@@ -568,6 +568,29 @@ class InviteInfo(BaseModel):
     revoked_at: str | None = None
 
 
+class WorkspaceInfo(BaseModel):
+    """Where this account may put a session's working directory.
+
+    `confined` is False for an install with no accounts, which has never
+    restricted anything and must not start (multi-tenancy.md §6).
+    """
+
+    workspace: str
+    extra_roots: list[str] = []
+    confined: bool = True
+
+
+class ExtraRootsRequest(BaseModel):
+    """The whole list, not a delta.
+
+    Replacing rather than appending because the list *is* the boundary: a
+    caller that can only add can only ever widen it, and reading back what you
+    just set is then the only way to know what it says.
+    """
+
+    extra_roots: list[str]
+
+
 class UserDisabledRequest(BaseModel):
     """Disable or restore an account — a body, not a query string.
 

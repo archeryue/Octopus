@@ -56,6 +56,7 @@ export type BootstrapResponse = components["schemas"]["BootstrapResponse"];
 export type LoginResponse = components["schemas"]["LoginResponse"];
 export type InviteInfo = components["schemas"]["InviteInfo"];
 export type UserInfo = components["schemas"]["UserInfo"];
+export type WorkspaceInfo = components["schemas"]["WorkspaceInfo"];
 
 export type CreateCredentialRequest = components["schemas"]["CreateCredentialRequest"];
 export type CreateNotifierRequest = components["schemas"]["CreateNotifierRequest"];

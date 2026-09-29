@@ -12,6 +12,7 @@ anyone who could see the screen. It answers with a label instead.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import UTC, datetime
@@ -20,11 +21,19 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..auth import verify_token
 from ..bootstrap import BootstrapError, bootstrap_first_account
-from ..deps import AdminUser, CurrentUser, SessionMgr, UserMgr
+from ..deps import (
+    AdminUser,
+    CurrentUser,
+    OperatorUser,
+    ScopeUser,
+    SessionMgr,
+    UserMgr,
+)
 from ..models import (
     AuthStateResponse,
     BootstrapRequest,
     BootstrapResponse,
+    ExtraRootsRequest,
     IdentityResponse,
     InviteCreateRequest,
     InviteInfo,
@@ -36,9 +45,11 @@ from ..models import (
     TokenRotateResponse,
     UserDisabledRequest,
     UserInfo,
+    WorkspaceInfo,
 )
 from ..token_rotation import TokenRotationError, rotate_auth_token
 from ..users import UserError, token_digest
+from ..workspace import normalise_root, paths_for
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -226,6 +237,66 @@ async def identity(user: CurrentUser) -> IdentityResponse:
     """
     return IdentityResponse(
         label=user["username"], user_id=user["id"], is_admin=user["is_admin"]
+    )
+
+
+@router.get("/workspace", response_model=WorkspaceInfo)
+async def workspace(users: UserMgr, user_id: ScopeUser = None) -> WorkspaceInfo:
+    """Where this account may work.
+
+    The UI needs it to explain a refusal: "that path is outside your workspace"
+    is only actionable if you can see what the workspace *is* and what else has
+    been opened up.
+    """
+    if user_id is None:
+        # No accounts: nothing has ever been confined, and saying otherwise
+        # would invite somebody to fix a restriction that is not there.
+        return WorkspaceInfo(
+            workspace=str(paths_for(None).workspace), extra_roots=[], confined=False
+        )
+    row = await users.db.get_user(user_id)
+    raw = (row or {}).get("extra_roots")
+    try:
+        roots = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError):
+        roots = []
+    return WorkspaceInfo(
+        workspace=str(paths_for(user_id).workspace),
+        extra_roots=[str(r) for r in roots],
+        confined=True,
+    )
+
+
+@router.put("/users/{user_id}/extra-roots", response_model=WorkspaceInfo)
+async def set_extra_roots(
+    user_id: str,
+    req: ExtraRootsRequest,
+    users: UserMgr,
+    _operator: OperatorUser = None,
+) -> WorkspaceInfo:
+    """Open a path outside an account's workspace to it, or close one.
+
+    The operator's, not the account holder's, and deliberately: an extra root
+    is a hole in the confinement, so an account that could punch its own would
+    make the confinement advisory. On an install with one person that is the
+    same person — which is the point of the affordance (§6), not a hole in it.
+
+    The list is replaced whole, and every entry is vetted by `normalise_root`;
+    what is stored is the resolved path, so a symlink cannot change what an
+    approved root means afterwards.
+    """
+    if await users.db.get_user(user_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such account")
+    roots = [str(normalise_root(r)) for r in req.extra_roots]
+    # Deduplicated, keeping the order given, so the list reads as it was typed.
+    seen: dict[str, None] = {}
+    for r in roots:
+        seen.setdefault(r, None)
+    await users.db.update_user_field(user_id, extra_roots=json.dumps(list(seen)))
+    return WorkspaceInfo(
+        workspace=str(paths_for(user_id).workspace),
+        extra_roots=list(seen),
+        confined=True,
     )
 
 

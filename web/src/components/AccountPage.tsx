@@ -13,6 +13,7 @@ import type {
   IdentityResponse,
   InviteInfo,
   UserInfo,
+  WorkspaceInfo,
 } from "../api";
 import { useSessionStore } from "../stores/sessionStore";
 import { PageHeader } from "./PageHeader";
@@ -119,6 +120,9 @@ export function AccountPage({ onToggleSidebar }: { onToggleSidebar?: () => void 
                * just created. */
               onClaimed={setToken}
             />
+          )}
+          {identity?.user_id && (
+            <Workspace headers={headers} me={identity} />
           )}
           {identity?.user_id && <ChangePassword headers={headers} />}
           {identity?.is_admin && <Invites headers={headers} />}
@@ -295,6 +299,132 @@ function ClaimInstall({
         </Button>
         {error && <p className="claim-error text-xs text-destructive">{error}</p>}
       </div>
+    </Section>
+  );
+}
+
+function Workspace({
+  headers,
+  me,
+}: {
+  headers: () => HeadersInit;
+  me: IdentityResponse;
+}) {
+  const [info, setInfo] = useState<WorkspaceInfo | null>(null);
+  const [adding, setAdding] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    getJson<WorkspaceInfo>(`${API}/workspace`, headers()).then((w) => {
+      if (alive && w) setInfo(w);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [headers, reload]);
+
+  const save = async (roots: string[]) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`${API}/users/${me.user_id}/extra-roots`, {
+        method: "PUT",
+        headers: headers(),
+        body: JSON.stringify({ extra_roots: roots }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(
+          typeof data?.detail === "string"
+            ? data.detail
+            : `Could not save — HTTP ${res.status}`
+        );
+        return;
+      }
+      setAdding("");
+      setReload((n) => n + 1);
+    } catch {
+      setError("Could not reach Octopus.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!info) return null;
+  const roots = info.extra_roots ?? [];
+
+  return (
+    <Section
+      className="account-workspace"
+      title="Where you can work"
+      description="A session's working directory has to be inside your workspace. Add the directories you work in outside it — a repository you already had, say."
+    >
+      <p className="workspace-path font-mono text-[11.5px] text-gray-700">
+        {info.workspace}
+      </p>
+      {roots.length > 0 && (
+        <ul className="mt-3 divide-y divide-gray-200 rounded-lg border border-gray-200">
+          {roots.map((root) => (
+            <li key={root} className="root-row flex items-center gap-3 px-3 py-2">
+              <code className="root-path min-w-0 flex-1 truncate font-mono text-[12px] text-gray-900">
+                {root}
+              </code>
+              {me.is_admin && (
+                <button
+                  type="button"
+                  className="btn-remove-root rounded p-1 text-gray-700 hover:bg-gray-100"
+                  aria-label={`Stop allowing ${root}`}
+                  disabled={busy}
+                  onClick={() => save(roots.filter((r) => r !== root))}
+                >
+                  <IconTrash size={15} />
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {me.is_admin ? (
+        <div className="mt-3 flex max-w-lg items-end gap-2">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <Label htmlFor="new-root">Add a directory</Label>
+            <Input
+              id="new-root"
+              className="input-new-root"
+              placeholder="/home/you/some-repo"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              value={adding}
+              onChange={(e) => setAdding(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && adding.trim()) {
+                  void save([...roots, adding.trim()]);
+                }
+              }}
+            />
+          </div>
+          <Button
+            className="btn-add-root"
+            variant="outline"
+            disabled={busy || !adding.trim()}
+            onClick={() => save([...roots, adding.trim()])}
+          >
+            <IconPlus size={14} />
+            Add
+          </Button>
+        </div>
+      ) : (
+        roots.length === 0 && (
+          <p className="mt-2 text-[12.5px] text-gray-700">
+            Only your workspace. An admin can open another directory to you.
+          </p>
+        )
+      )}
+      {error && <p className="workspace-error mt-2 text-xs text-destructive">{error}</p>}
     </Section>
   );
 }

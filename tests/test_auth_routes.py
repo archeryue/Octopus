@@ -341,3 +341,98 @@ async def test_a_personal_access_token_works_where_a_session_does(client):
     pat = await users.issue_token(user["id"], kind="pat", label="a script")
 
     assert (await c.get("/api/sessions", headers=_bearer(pat))).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_workspace_says_what_it_is_before_accounts(client):
+    """Nothing has ever been confined on an install with no accounts, and
+    saying otherwise would invite somebody to fix a restriction that is not
+    there."""
+    c, _users, _db = client
+    res = await c.get("/api/auth/workspace", headers=_bearer("changeme"))
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["confined"] is False
+    assert body["extra_roots"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_extra_root_can_be_opened_and_closed_after_the_upgrade(
+    client, tmp_path, monkeypatch
+):
+    """The gap this closes: `extra_roots` was written once, by the upgrade, and
+    nothing could change it afterwards. Clone a repository the day after and
+    every session in it is refused, with no way to allow it short of editing
+    the database by hand."""
+    from server.config import settings
+
+    c, users, _db = client
+    monkeypatch.setattr(settings, "users_root", str(tmp_path / "users"))
+    admin = await users.create_user(username="archer", password="password1", is_admin=True)
+    token = await users.issue_token(admin["id"])
+    repo = tmp_path / "a-new-repo"
+    repo.mkdir()
+
+    opened = await c.put(
+        f"/api/auth/users/{admin['id']}/extra-roots",
+        json={"extra_roots": [str(repo)]},
+        headers=_bearer(token),
+    )
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["extra_roots"] == [str(repo.resolve())]
+
+    # And it is what `confine` now consults.
+    from server.workspace import confine
+
+    assert confine(str(repo / "src"), user_id=admin["id"], extra_roots=[str(repo)])
+
+    seen = await c.get("/api/auth/workspace", headers=_bearer(token))
+    assert seen.json() == {
+        "workspace": str(tmp_path / "users" / admin["id"] / "workspace"),
+        "extra_roots": [str(repo.resolve())],
+        "confined": True,
+    }
+
+    closed = await c.put(
+        f"/api/auth/users/{admin['id']}/extra-roots",
+        json={"extra_roots": []},
+        headers=_bearer(token),
+    )
+    assert closed.json()["extra_roots"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_extra_root_that_would_switch_confinement_off_is_refused(
+    client, tmp_path
+):
+    """`/` and `/home` do not open a repository — they turn the boundary off
+    while leaving it looking on."""
+    c, users, _db = client
+    admin = await users.create_user(username="archer", password="password1", is_admin=True)
+    token = await users.issue_token(admin["id"])
+
+    for bad in ("/", "/home", "relative/path", str(tmp_path / "does-not-exist")):
+        res = await c.put(
+            f"/api/auth/users/{admin['id']}/extra-roots",
+            json={"extra_roots": [bad]},
+            headers=_bearer(token),
+        )
+        assert res.status_code == 400, f"{bad!r} answered {res.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_an_account_cannot_open_its_own_hole_in_the_confinement(client):
+    """An extra root is a hole in the boundary, so it is the operator's to
+    punch. An account that could punch its own would make the boundary
+    advisory."""
+    c, users, _db = client
+    await users.create_user(username="archer", password="password1", is_admin=True)
+    vera = await users.create_user(username="vera", password="password2")
+    token = await users.issue_token(vera["id"])
+
+    res = await c.put(
+        f"/api/auth/users/{vera['id']}/extra-roots",
+        json={"extra_roots": ["/tmp"]},
+        headers=_bearer(token),
+    )
+    assert res.status_code == 403, res.text

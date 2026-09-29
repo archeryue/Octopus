@@ -40,34 +40,12 @@ export const E2E_STATE_DIR = path.join(os.tmpdir(), "octopus-e2e-state");
 // fresh each run rather than reused: a leftover server from a previous run
 // would already be claimed, and the spec would pass by testing nothing.
 //
-// They are started ONLY for a run that can select an accounts test. Two idle
-// servers are not free here: with them up, the `@llm` bucket — which drives
-// real `claude` processes two at a time — failed a different Chat test on each
-// of two runs and passed with them gone. `test:e2e` is therefore the two
-// buckets as two invocations (package.json), so the real-CLI half gets a box
-// with nothing extra on it.
-/** Does this invocation select only `@llm` tests? Then no accounts test can
- * run, and the two servers it needs would be pure load. Any other selection —
- * the default, `--grep-invert @llm`, a file list — may reach accounts.spec.ts,
- * so they start. Read from argv rather than an env flag because a flag can be
- * forgotten, and a forgotten one is a spec that fails for no visible reason. */
-function llmOnlyRun(argv: string[]): boolean {
-  if (argv.some((a) => a.startsWith("--grep-invert"))) return false;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    const value = a.startsWith("--grep=")
-      ? a.slice("--grep=".length)
-      : a.startsWith("-g=")
-        ? a.slice("-g=".length)
-        : a === "--grep" || a === "-g"
-          ? argv[i + 1]
-          : undefined;
-    if (value !== undefined) return value === "@llm";
-  }
-  return false;
-}
-
-export const E2E_ACCOUNTS = !llmOnlyRun(process.argv.slice(2));
+// Both buckets need them: the UI story is in accounts.spec.ts and the real
+// turn — the one that proves an agent's tools still work once an account owns
+// the session — is in accounts-llm.spec.ts. They were briefly started only for
+// non-`@llm` runs, because two idle servers were destabilising the real-CLI
+// half; the cause turned out to be two *workers* driving two `claude`
+// processes at once, and `test:e2e:llm` runs serially now (package.json).
 export const E2E_ACCOUNTS_PORT = 8766;
 export const E2E_ACCOUNTS_WEB_PORT = 5175;
 export const E2E_ACCOUNTS_STATE_DIR = path.join(
@@ -80,7 +58,7 @@ export const E2E_ACCOUNTS_STATE_DIR = path.join(
 // server exits "unable to open database file" and the run dies waiting for a
 // port. The shared backend avoids this only by keeping its metrics DB loose in
 // the temp directory.
-if (E2E_ACCOUNTS) mkdirSync(E2E_ACCOUNTS_STATE_DIR, { recursive: true });
+mkdirSync(E2E_ACCOUNTS_STATE_DIR, { recursive: true });
 
 export default defineConfig({
   testDir: "./e2e",
@@ -167,66 +145,58 @@ export default defineConfig({
         OCTOPUS_API_PORT: "8765",
       },
     },
-    // Only for a run that can select an accounts test; see E2E_ACCOUNTS.
-    ...(E2E_ACCOUNTS
-      ? [
-          {
-            command:
-              "cd .. && .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port " +
-              `${E2E_ACCOUNTS_PORT}`,
-            port: E2E_ACCOUNTS_PORT,
-            reuseExistingServer: false,
-            timeout: 10_000,
-            env: {
-              ...process.env,
-              PATH: `${process.env.HOME ?? ""}/.local/bin:${process.env.PATH ?? ""}`,
-              OCTOPUS_AUTH_TOKEN: "changeme",
-              OCTOPUS_PORT: `${E2E_ACCOUNTS_PORT}`,
-              OCTOPUS_DB_PATH: ":memory:",
-              OCTOPUS_METRICS_DB_PATH: path.join(
-                E2E_ACCOUNTS_STATE_DIR,
-                "metrics.db",
-              ),
-              OCTOPUS_AGENTS_DIR: path.join(E2E_ACCOUNTS_STATE_DIR, "agents"),
-              OCTOPUS_APPLICATIONS_DIR: path.join(
-                E2E_ACCOUNTS_STATE_DIR,
-                "applications",
-              ),
-              OCTOPUS_ATTACHMENTS_DIR: path.join(
-                E2E_ACCOUNTS_STATE_DIR,
-                "attachments",
-              ),
-              OCTOPUS_DEFAULT_WORKING_DIR: path.join(
-                E2E_ACCOUNTS_STATE_DIR,
-                "workspace",
-              ),
-              OCTOPUS_MASTER_KEY_FILE: path.join(
-                E2E_ACCOUNTS_STATE_DIR,
-                "master.key",
-              ),
-              OCTOPUS_USERS_ROOT: path.join(E2E_ACCOUNTS_STATE_DIR, "users"),
-              OCTOPUS_RESEARCH_DIR: path.join(
-                E2E_ACCOUNTS_STATE_DIR,
-                "research",
-              ),
-            },
-          },
-          {
-            command: `bun dev --port ${E2E_ACCOUNTS_WEB_PORT}`,
-            port: E2E_ACCOUNTS_WEB_PORT,
-            reuseExistingServer: true,
-            timeout: 10_000,
-            env: {
-              ...process.env,
-              OCTOPUS_API_PORT: `${E2E_ACCOUNTS_PORT}`,
-              // Its own dependency-optimizer cache; see `cacheDir` in
-              // vite.config.ts. Kept in node_modules rather than the run's temp
-              // state, so it survives between runs instead of cold-starting each
-              // time.
-              VITE_CACHE_DIR: "node_modules/.vite-e2e-accounts",
-            },
-          },
-        ]
-      : []),
+    {
+      command:
+        "cd .. && .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port " +
+        `${E2E_ACCOUNTS_PORT}`,
+      port: E2E_ACCOUNTS_PORT,
+      reuseExistingServer: false,
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        PATH: `${process.env.HOME ?? ""}/.local/bin:${process.env.PATH ?? ""}`,
+        OCTOPUS_AUTH_TOKEN: "changeme",
+        OCTOPUS_PORT: `${E2E_ACCOUNTS_PORT}`,
+        OCTOPUS_DB_PATH: ":memory:",
+        OCTOPUS_METRICS_DB_PATH: path.join(
+          E2E_ACCOUNTS_STATE_DIR,
+          "metrics.db",
+        ),
+        OCTOPUS_AGENTS_DIR: path.join(E2E_ACCOUNTS_STATE_DIR, "agents"),
+        OCTOPUS_APPLICATIONS_DIR: path.join(
+          E2E_ACCOUNTS_STATE_DIR,
+          "applications",
+        ),
+        OCTOPUS_ATTACHMENTS_DIR: path.join(
+          E2E_ACCOUNTS_STATE_DIR,
+          "attachments",
+        ),
+        OCTOPUS_DEFAULT_WORKING_DIR: path.join(
+          E2E_ACCOUNTS_STATE_DIR,
+          "workspace",
+        ),
+        OCTOPUS_MASTER_KEY_FILE: path.join(
+          E2E_ACCOUNTS_STATE_DIR,
+          "master.key",
+        ),
+        OCTOPUS_USERS_ROOT: path.join(E2E_ACCOUNTS_STATE_DIR, "users"),
+        OCTOPUS_RESEARCH_DIR: path.join(E2E_ACCOUNTS_STATE_DIR, "research"),
+      },
+    },
+    {
+      command: `bun dev --port ${E2E_ACCOUNTS_WEB_PORT}`,
+      port: E2E_ACCOUNTS_WEB_PORT,
+      reuseExistingServer: true,
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        OCTOPUS_API_PORT: `${E2E_ACCOUNTS_PORT}`,
+        // Its own dependency-optimizer cache; see `cacheDir` in
+        // vite.config.ts. Kept in node_modules rather than the run's temp
+        // state, so it survives between runs instead of cold-starting each
+        // time.
+        VITE_CACHE_DIR: "node_modules/.vite-e2e-accounts",
+      },
+    },
   ],
 });
