@@ -147,6 +147,35 @@ async def current_user(
 CurrentUser = Annotated[dict, Depends(current_user)]
 
 
+async def scope_user_id(
+    request: Request,
+    creds: _BearerCreds,
+    token: _QueryToken = None,
+) -> str | None:
+    """Whose rows this request may see, or None when nobody owns anything yet.
+
+    `None` is not "unscoped because we could not tell" — `verify_token` has
+    already refused anyone who should not be here. It is the pre-accounts era
+    (§9), where the install has one operator and no `user_id` on any row, and
+    filtering by an owner that does not exist would return nothing at all.
+
+    The moment the first account exists this always resolves to that account,
+    and from then on a route filters whether or not its author thought about
+    it. That is the point: ownership is the default, not a thing to remember.
+    """
+    if _user_manager is None:
+        # No account layer bound at all. Asking for a scope must not be how a
+        # request discovers that: `get_user_manager` answers 503 because a
+        # *login* without accounts is broken, while a *read* without accounts
+        # is the pre-accounts install working exactly as it always did.
+        return None
+    user = await _user_manager.resolve_token(_presented(request, creds, token))
+    return user["id"] if user else None
+
+
+ScopeUser = Annotated[str | None, Depends(scope_user_id)]
+
+
 async def require_admin(user: CurrentUser) -> dict[str, Any]:
     if not user.get("is_admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only")

@@ -521,11 +521,32 @@ class SessionManagerBase:
             except Exception:
                 logger.exception("Broadcast callback error")
 
-    def list_sessions(self) -> list[Session]:
-        return list(self.sessions.values())
+    def list_sessions(self, user_id: str | None = None) -> list[Session]:
+        """Every live session, or only one account's (multi-tenancy.md §5).
 
-    def get_session(self, session_id: str) -> Session | None:
-        return self.sessions.get(session_id)
+        `user_id=None` means "no scoping asked for", which is what the
+        background paths want — the scheduler firing everyone's jobs, the
+        delegation manager walking a chain, the recovery sweeps at boot. A
+        *request* must always pass one, and `deps.Ctx` is what makes that the
+        path of least resistance rather than a thing to remember.
+        """
+        rows = list(self.sessions.values())
+        if user_id is None:
+            return rows
+        return [s for s in rows if s.user_id == user_id]
+
+    def get_session(
+        self, session_id: str, user_id: str | None = None
+    ) -> Session | None:
+        """One session, or None — including when it exists but belongs to
+        someone else, which a caller must not be able to tell apart from
+        "no such session"."""
+        session = self.sessions.get(session_id)
+        if session is None:
+            return None
+        if user_id is not None and session.user_id != user_id:
+            return None
+        return session
 
     async def _recover_orphaned_delegations(self) -> None:
         """Archive delegation children left live by a restart

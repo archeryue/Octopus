@@ -80,6 +80,13 @@ class LifecycleMixin(SessionManagerBase):
             parent_session_id=parent_session_id,
             delegation_request=delegation_request,
             app_id=app_id,
+            # A conversation belongs to whoever owns the agent having it
+            # (multi-tenancy.md §5). Derived rather than passed in, so every
+            # path that creates a session — a route, a schedule firing, a
+            # delegation, an application build — gets the owner right without
+            # each of them having to remember. Before accounts exist there is
+            # no owner, and `adopt_orphan_rows` settles that at upgrade.
+            user_id=(agent or {}).get("user_id"),
         )
         self.sessions[sid] = session
         if self.db:
@@ -96,6 +103,7 @@ class LifecycleMixin(SessionManagerBase):
                 parent_session_id=session.parent_session_id,
                 delegation_request=session.delegation_request,
                 app_id=session.app_id,
+                user_id=session.user_id,
             )
         return session
 
@@ -110,6 +118,7 @@ class LifecycleMixin(SessionManagerBase):
         origin: str = "user",
         backend: str = "claude-code",
     ) -> Session:
+        agent = await self.db.get_agent(agent_id) if (self.db and agent_id) else None
         sid = uuid.uuid4().hex[:12]
         session = Session(
             id=sid,
@@ -120,6 +129,9 @@ class LifecycleMixin(SessionManagerBase):
             agent_id=agent_id,
             origin=origin,
             backend=backend,
+            # As in `create_session`: an imported transcript belongs to whoever
+            # owns the agent it is imported under.
+            user_id=(agent or {}).get("user_id"),
         )
         self.sessions[sid] = session
         if self.db:
@@ -133,6 +145,7 @@ class LifecycleMixin(SessionManagerBase):
                 agent_id=session.agent_id,
                 origin=session.origin,
                 backend=session.backend,
+                user_id=session.user_id,
             )
         if messages:
             for msg in messages:

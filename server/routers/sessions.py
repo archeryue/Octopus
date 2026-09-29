@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 
 from ..auth import verify_token
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr
 from ..harness import BackendForkNotSupported, StdinMode, get_harness
 from ..models import (
     CreateSessionRequest,
@@ -83,10 +83,11 @@ def _to_session_info(
 @router.get("", response_model=list[SessionInfo])
 async def list_sessions(
     session_manager: SessionMgr,
+    user_id: ScopeUser = None,
     include_archived: bool = Query(False),
     _: str = Depends(verify_token),
 ):
-    live = [_to_session_info(s) for s in session_manager.list_sessions()]
+    live = [_to_session_info(s) for s in session_manager.list_sessions(user_id)]
     if not include_archived:
         return live
     archived = await session_manager.list_archived_sessions()
@@ -115,7 +116,8 @@ async def _check_credential_backend(
 @router.patch("/{session_id}", response_model=SessionInfo)
 async def update_session(
     session_manager: SessionMgr,
-    session_id: str, req: SessionUpdate, _: str = Depends(verify_token)
+    session_id: str, req: SessionUpdate, user_id: ScopeUser = None,
+    _: str = Depends(verify_token)
 ):
     """Repoint a live session — today its credential, its name and its model.
 
@@ -125,7 +127,7 @@ async def update_session(
     session), and an unknown credential id is refused rather than silently
     stored, because a dangling id is exactly the state this route exists to
     get out of."""
-    session = session_manager.get_session(session_id)
+    session = session_manager.get_session(session_id, user_id)
     if session is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
 
@@ -252,10 +254,15 @@ async def import_session(
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
-async def get_session(session_manager: SessionMgr, session_id: str, _: str = Depends(verify_token)):
+async def get_session(
+    session_manager: SessionMgr,
+    session_id: str,
+    user_id: ScopeUser = None,
+    _: str = Depends(verify_token),
+):
     # Live session: read straight from the in-memory state (includes
     # pending queue / pending questions / live status).
-    s = session_manager.get_session(session_id)
+    s = session_manager.get_session(session_id, user_id)
     if s is not None:
         messages_raw = await session_manager.db.load_messages(
             s.id, limit=MESSAGE_WINDOW, newest_first=True
@@ -307,6 +314,7 @@ async def get_session(session_manager: SessionMgr, session_id: str, _: str = Dep
 async def older_messages(
     session_manager: SessionMgr,
     session_id: str,
+    user_id: ScopeUser = None,
     before_seq: int = Query(..., ge=0, description="Return messages with seq < this"),
     limit: int = Query(MESSAGE_WINDOW, ge=1, le=500),
     _: str = Depends(verify_token),
@@ -317,12 +325,25 @@ async def older_messages(
     same rows — the transcript lives in the database either way — so this does
     not care which the id refers to; it only refuses an id with no rows at all,
     which is the same 404 as opening it.
+
+    The archived fallback has to carry the scope too. It reads the database
+    rather than the in-memory map, so a bare "does a row with this id exist"
+    answered *yes* for another account's session and handed over the transcript
+    — the live lookup above was scoped and this one silently was not. It is the
+    exact shape of leak that makes per-route scoping a bad idea, and the
+    cross-tenant test is what found it.
     """
     if session_manager.db is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "no database")
-    if session_manager.get_session(session_id) is None:
+    if session_manager.get_session(session_id, user_id) is None:
         rows = await session_manager.db.load_sessions(include_archived=True)
-        if not any(r["id"] == session_id for r in rows):
+        owned = [
+            r
+            for r in rows
+            if r["id"] == session_id
+            and (user_id is None or r.get("user_id") == user_id)
+        ]
+        if not owned:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     if before_seq == 0:
         return MessagePage(messages=[], oldest_loaded_seq=None, has_more_messages=False)

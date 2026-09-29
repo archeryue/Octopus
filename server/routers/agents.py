@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ..agent_manager import AgentError, AgentManager
 from ..auth import verify_token
-from ..deps import SessionMgr
+from ..deps import ScopeUser, SessionMgr
 from ..models import (
     AgentCreate,
     AgentRead,
@@ -53,15 +53,15 @@ def _agent_http_error(e: AgentError) -> HTTPException:
 
 @router.get("", response_model=list[AgentRead])
 async def list_agents(
-    include_archived: bool = Query(False), _: str = Depends(verify_token)
+    include_archived: bool = Query(False), user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
-    agents = await _get_manager().list_agents(include_archived=include_archived)
+    agents = await _get_manager().list_agents(include_archived=include_archived, user_id=user_id)
     return [AgentRead(**a) for a in agents]
 
 
 @router.post("", response_model=AgentRead, status_code=status.HTTP_201_CREATED)
 async def create_agent(
-    session_manager: SessionMgr, req: AgentCreate, _: str = Depends(verify_token)
+    session_manager: SessionMgr, req: AgentCreate, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     try:
         agent = await _get_manager().create_agent(**req.model_dump())
@@ -73,7 +73,7 @@ async def create_agent(
 
 @router.put("/pin-order", response_model=list[AgentRead])
 async def reorder_agent_pins(
-    session_manager: SessionMgr, req: PinOrderRequest, _: str = Depends(verify_token)
+    session_manager: SessionMgr, req: PinOrderRequest, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """The sidebar order of the pinned agents (sidebar-pins.md). Returns
     every live agent, so the caller replaces its list in one step."""
@@ -91,8 +91,8 @@ async def reorder_agent_pins(
 
 
 @router.get("/{agent_id}", response_model=AgentRead)
-async def get_agent(agent_id: str, _: str = Depends(verify_token)):
-    agent = await _get_manager().get_agent(agent_id)
+async def get_agent(agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)):
+    agent = await _get_manager().get_agent(agent_id, user_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     return AgentRead(**agent)
@@ -103,7 +103,7 @@ async def update_agent(
     session_manager: SessionMgr,
     agent_id: str,
     req: AgentUpdate,
-    _: str = Depends(verify_token),
+    user_id: ScopeUser = None, _: str = Depends(verify_token),
 ):
     # exclude_unset so omitting a field leaves it untouched while explicitly
     # passing null clears a nullable field (model/credential_id/avatar).
@@ -117,7 +117,7 @@ async def update_agent(
 
 
 @router.post("/{agent_id}/archive", response_model=AgentRead)
-async def archive_agent(session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)):
+async def archive_agent(session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)):
     try:
         await _get_manager().archive_agent(agent_id)
     except AgentError as e:
@@ -125,7 +125,7 @@ async def archive_agent(session_manager: SessionMgr, agent_id: str, _: str = Dep
     # DB rows are archived by the manager; evict the agent's sessions from
     # the in-memory map so they leave the live list immediately.
     await session_manager.evict_agent_sessions(agent_id)
-    agent = await _get_manager().get_agent(agent_id)
+    agent = await _get_manager().get_agent(agent_id, user_id)
     if agent is None:
         raise HTTPException(status_code=404, detail="agent not found")
     await _publish(session_manager, "agent_archived", agent)
@@ -134,7 +134,7 @@ async def archive_agent(session_manager: SessionMgr, agent_id: str, _: str = Dep
 
 @router.post("/{agent_id}/unarchive", response_model=AgentRead)
 async def unarchive_agent(
-    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """Restore an archived agent (the Agents page's Archived section). It
     comes back pinned; its sessions stay archived — those come back from the
@@ -158,7 +158,7 @@ async def _set_pinned(session_manager, agent_id: str, pinned: bool) -> AgentRead
 
 @router.post("/{agent_id}/pin", response_model=AgentRead)
 async def pin_agent(
-    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """Put the agent in the sidebar, at the bottom of the pinned ones."""
     return await _set_pinned(session_manager, agent_id, True)
@@ -166,7 +166,7 @@ async def pin_agent(
 
 @router.post("/{agent_id}/unpin", response_model=AgentRead)
 async def unpin_agent(
-    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """Take the agent out of the sidebar. It stays live — listed on the
     Agents page, callable, its schedules running."""
@@ -175,9 +175,9 @@ async def unpin_agent(
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_agent(
-    session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)
+    session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
-    agent = await _get_manager().get_agent(agent_id)
+    agent = await _get_manager().get_agent(agent_id, user_id)
     try:
         await _get_manager().delete_agent(agent_id)
     except AgentError as e:
@@ -187,8 +187,8 @@ async def delete_agent(
 
 
 @router.get("/{agent_id}/sessions", response_model=list[SessionInfo])
-async def list_agent_sessions(session_manager: SessionMgr, agent_id: str, _: str = Depends(verify_token)):
-    if await _get_manager().get_agent(agent_id) is None:
+async def list_agent_sessions(session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)):
+    if await _get_manager().get_agent(agent_id, user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     from .sessions import _to_session_info
 
@@ -206,14 +206,14 @@ async def list_agent_sessions(session_manager: SessionMgr, agent_id: str, _: str
 )
 async def create_agent_session(
     session_manager: SessionMgr,
-    agent_id: str, req: CreateSessionRequest, _: str = Depends(verify_token)
+    agent_id: str, req: CreateSessionRequest, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """Preferred path to start a session — the agent comes from the URL, so
     the body's `agent_id` (if any) is ignored."""
     from .sessions import _check_credential_backend, _to_session_info
 
     # Inherit the agent's default backend when the request doesn't pin one.
-    agent = await _get_manager().get_agent(agent_id)
+    agent = await _get_manager().get_agent(agent_id, user_id)
     backend = (
         req.backend.value
         if req.backend is not None
@@ -234,8 +234,8 @@ async def create_agent_session(
 
 
 @router.get("/{agent_id}/schedules", response_model=list[ScheduleInfo])
-async def list_agent_schedules(agent_id: str, _: str = Depends(verify_token)):
-    if await _get_manager().get_agent(agent_id) is None:
+async def list_agent_schedules(agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)):
+    if await _get_manager().get_agent(agent_id, user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     from .schedules import _get_db, to_schedule_info
 
@@ -249,9 +249,9 @@ async def list_agent_schedules(agent_id: str, _: str = Depends(verify_token)):
     status_code=status.HTTP_201_CREATED,
 )
 async def create_agent_schedule(
-    agent_id: str, req: CreateScheduleRequest, _: str = Depends(verify_token)
+    agent_id: str, req: CreateScheduleRequest, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
-    if await _get_manager().get_agent(agent_id) is None:
+    if await _get_manager().get_agent(agent_id, user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     from .schedules import create_schedule_for_agent, to_schedule_info
 
@@ -272,13 +272,13 @@ async def create_agent_schedule(
 )
 async def create_agent_schedule_from_text(
     session_manager: SessionMgr,
-    agent_id: str, req: ScheduleFromTextRequest, _: str = Depends(verify_token)
+    agent_id: str, req: ScheduleFromTextRequest, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """Natural-language schedule creation. Parses `text` (rigid `<interval>
     <prompt>` fast-path, else a one-shot AI parse on the agent's own harness)
     into a recurrence + prompt, then creates the schedule. Parse failures
     surface as 422 with a user-facing detail."""
-    agent = await _get_manager().get_agent(agent_id)
+    agent = await _get_manager().get_agent(agent_id, user_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Agent not found")
     from ..harness import get_harness

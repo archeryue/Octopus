@@ -90,10 +90,16 @@ class AgentsMixin(DatabaseBase):
             "subagents": _load_json_list(row[15]),
             "pinned": bool(row[16]),
             "pin_order": row[17],
+            "user_id": row[18],
         }
-        # Optional active-session count appended by load_agents / get_agent.
-        if len(row) > 18:
-            agent["active_session_count"] = row[18]
+        # The active-session count that `load_agents` / `get_agent` append
+        # after the columns. Derived from the column list rather than written
+        # as a literal, because a literal is what just broke: adding `user_id`
+        # to `_AGENT_COLS` shifted this by one and eighty tests went red with
+        # "active_session_count: input should be a valid integer".
+        trailing = len(DatabaseBase._AGENT_COLS.split(", "))
+        if len(row) > trailing:
+            agent["active_session_count"] = row[trailing]
         return agent
 
     async def save_agent(
@@ -114,6 +120,7 @@ class AgentsMixin(DatabaseBase):
         tool_deny: str = "",
         is_system: bool = False,
         subagents: list[dict[str, Any]] | None = None,
+        user_id: str | None = None,
     ) -> None:
         await self._ensure_connected()
         servers_json = json.dumps(
@@ -123,42 +130,59 @@ class AgentsMixin(DatabaseBase):
             "INSERT INTO agents "
             "(id, name, description, avatar, system_prompt, model, "
             " credential_id, backend, mcp_servers, tool_allow, tool_deny, "
-            " is_system, archived, created_at, updated_at, subagents, "
+            " is_system, archived, created_at, updated_at, subagents, user_id, "
             " pinned, pin_order) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 1, "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, "
             f" {self._NEXT_PIN_ORDER.format(table='agents')})",
             (
                 agent_id, name, description, avatar, system_prompt, model,
                 credential_id, backend or "claude-code", servers_json,
                 tool_allow, tool_deny, int(bool(is_system)),
-                created_at, updated_at, json.dumps(subagents or []),
+                created_at, updated_at, json.dumps(subagents or []), user_id,
             ),
         )
         await self.conn.commit()
 
     async def load_agents(
-        self, *, include_archived: bool = False
+        self, *, include_archived: bool = False, user_id: str | None = None
     ) -> list[dict[str, Any]]:
+        """Agents, optionally only one account's (multi-tenancy.md §5).
+
+        `user_id=None` means "no scoping asked for" — the boot-time backfills
+        and the delegation manager want every row. A *request* passes one.
+        """
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
         query = (
             f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a"
         )
+        where: list[str] = []
+        params: list[Any] = []
         if not include_archived:
-            query += " WHERE a.archived = 0"
+            where.append("a.archived = 0")
+        if user_id is not None:
+            where.append("a.user_id = ?")
+            params.append(user_id)
+        if where:
+            query += " WHERE " + " AND ".join(where)
         query += " ORDER BY a.is_system DESC, a.created_at"
-        cursor = await self.conn.execute(query)
+        cursor = await self.conn.execute(query, params)
         rows = await cursor.fetchall()
         return [self._row_to_agent(row) for row in rows]
 
-    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+    async def get_agent(
+        self, agent_id: str, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """One agent, or None — including when it exists and belongs to someone
+        else, which a caller must not be able to tell from "no such agent"."""
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
-        cursor = await self.conn.execute(
-            f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a "
-            "WHERE a.id = ?",
-            (agent_id,),
-        )
+        sql = f"SELECT {cols}, {self._ACTIVE_SESSION_COUNT} FROM agents a WHERE a.id = ?"
+        params: list[Any] = [agent_id]
+        if user_id is not None:
+            sql += " AND a.user_id = ?"
+            params.append(user_id)
+        cursor = await self.conn.execute(sql, params)
         row = await cursor.fetchone()
         return self._row_to_agent(row) if row else None
 

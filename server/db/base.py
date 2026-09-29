@@ -166,7 +166,9 @@ class DatabaseBase:
     _AGENT_COLS = (
         "id, name, description, avatar, system_prompt, model, credential_id, "
         "mcp_servers, tool_allow, tool_deny, is_system, archived, "
-        "created_at, updated_at, backend, subagents, pinned, pin_order"
+        "created_at, updated_at, backend, subagents, pinned, pin_order, "
+        # Appended, never inserted: `_row_to_agent` maps by position.
+        "user_id"
     )
     # Subquery counting live (non-archived) sessions for an agent — shared
     # by load_agents and get_agent so the UI can show "3 sessions".

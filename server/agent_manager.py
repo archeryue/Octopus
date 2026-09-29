@@ -27,12 +27,19 @@ class AgentManager:
         self.db = db
 
     async def list_agents(
-        self, *, include_archived: bool = False
+        self, *, include_archived: bool = False, user_id: str | None = None
     ) -> list[dict[str, Any]]:
-        return await self.db.load_agents(include_archived=include_archived)
+        return await self.db.load_agents(
+            include_archived=include_archived, user_id=user_id
+        )
 
-    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
-        return await self.db.get_agent(agent_id)
+    async def get_agent(
+        self, agent_id: str, user_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """One agent, scoped when a scope is given. `None` covers "belongs to
+        someone else" as well as "does not exist", which a caller must not be
+        able to tell apart."""
+        return await self.db.get_agent(agent_id, user_id=user_id)
 
     async def get_default_agent(self) -> dict[str, Any] | None:
         """The protected Default Agent (is_system=1), created by migration."""
@@ -47,6 +54,7 @@ class AgentManager:
         system_prompt: str = "",
         model: str | None = None,
         credential_id: str | None = None,
+        user_id: str | None = None,
         backend: str = "claude-code",
         mcp_servers: list[str] | None = None,
         tool_allow: str = "",
@@ -76,6 +84,7 @@ class AgentManager:
             tool_deny=tool_deny,
             subagents=subagents,
             is_system=False,
+            user_id=user_id,
         )
         agent = await self.db.get_agent(agent_id)
         assert agent is not None
