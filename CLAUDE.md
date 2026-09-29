@@ -193,6 +193,14 @@ agents, which gained `POST /api/agents/{id}/unarchive` for the same section).
 > before `octopus serve` / `uvicorn server.main:app` users will see it.
 > For live HMR, run `cd web && bun dev` and hit the dev server's port
 > (5173) instead of the backend.
+>
+> **Shipping to the running service**: restart the backend *before*
+> rebuilding the frontend (`sudo systemctl restart octopus`, wait for
+> `/health`, then `bun run build`). The other order leaves a new SPA
+> calling an old server — on 2026-09-27 a fresh sidebar's `POST
+> /agents/{id}/unpin` got 405 for the two minutes until the restart. An
+> open tab still on the old `index.html` will 404 its hashed assets
+> after the rebuild either way; a reload fixes it.
 
 ```bash
 # Backend

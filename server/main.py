@@ -202,17 +202,26 @@ async def _record_request(request, call_next):
 
     The template matters: labelling by raw path would mint a new dimension per
     session id and make the table useless within a day (§9 G1).
+
+    A long-poll (a handler that sets `request.state.long_poll`) is tagged so
+    latency questions can leave it out: it lasts as long as the user takes to
+    answer, and its 408 is the designed "nothing yet", not an error.
     """
     started = time.perf_counter()
     response = await call_next(request)
     route = request.scope.get("route")
     template = getattr(route, "path", None) or request.url.path
+    long_poll = getattr(request.state, "long_poll", False)
+    detail = {"route": template, "method": request.method}
+    if long_poll:
+        detail["long_poll"] = True
+    failed = response.status_code >= 400 and not (long_poll and response.status_code == 408)
     _mon_record(_MonEvent(
         kind="http",
         duration_ms=(time.perf_counter() - started) * 1000,
         ok=response.status_code < 500,
-        error_code=None if response.status_code < 400 else str(response.status_code),
-        detail={"route": template, "method": request.method},
+        error_code=str(response.status_code) if failed else None,
+        detail=detail,
     ))
     return response
 

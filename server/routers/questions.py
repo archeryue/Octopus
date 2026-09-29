@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
 from ..auth import verify_token
@@ -90,6 +90,7 @@ async def create_question(
 
 @router.get("/{session_id}/questions/{question_id}/answer")
 async def wait_for_answer(
+    request: Request,
     session_manager: SessionMgr,
     session_id: str,
     question_id: str,
@@ -99,6 +100,9 @@ async def wait_for_answer(
     """MCP-server-facing long-poll. Returns when the user (or the
     session-level auto-answer timeout) submits. 408 on per-call
     timeout — the MCP server should loop and retry."""
+    # Tells the request monitor this call's duration is the user's think
+    # time and its 408 is "no answer yet", not a slow or failing request.
+    request.state.long_poll = True
     if session_manager.get_session(session_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Session not found")
     # Cap timeout so a misbehaving MCP server can't park a connection

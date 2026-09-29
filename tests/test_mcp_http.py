@@ -273,3 +273,40 @@ class TestServedToolCalls:
             # And a stopped host leaves the process able to serve, which is the
             # contract the rest of the real-CLI tier rests on.
             assert AppStatus.should_exit is False
+
+    @pytest.mark.asyncio
+    async def test_a_400_is_logged_with_the_sdks_reason(self, caplog):
+        """The Monitor only records the status; the reason is in the body.
+
+        Every CLI start draws one 400 per namespace, and without the SDK's
+        message and the headers its 400 branches check, the cause can't be
+        told apart from the next request, which succeeds.
+        """
+        import logging
+
+        import httpx
+
+        from server.routers import schedules as schedules_routes
+        from tests.callback_api import start_callback_api
+
+        api = await start_callback_api(schedules_routes.session_router)
+        try:
+            with caplog.at_level(logging.INFO, logger="server.mcp_http"):
+                async with httpx.AsyncClient(timeout=10) as client:
+                    reply = await client.post(
+                        f"http://127.0.0.1:{api.port}/mcp/bg/mcp",
+                        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                        headers={
+                            "Authorization": f"Bearer {mint('s-1')}",
+                            "Accept": "application/json, text/event-stream",
+                            "Content-Type": "application/json",
+                        },
+                    )
+        finally:
+            await api.stop()
+        assert reply.status_code == 400
+        logged = [r.getMessage() for r in caplog.records if "-> 400" in r.getMessage()]
+        assert len(logged) == 1
+        assert "mcp/bg: POST -> 400" in logged[0]
+        assert "Missing session ID" in logged[0]
+        assert "mcp-session-id=absent" in logged[0]
