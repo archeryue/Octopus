@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,307 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,320 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1,273 tests, ~45 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,286 tests, ~47 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -52,7 +52,7 @@ You MUST verify your changes before considering them done:
    import is what used to make a plain `--collect-only` spawn a real `claude`
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
-2. **Frontend unit tests**: `cd web && bun run test` (280 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (284 tests)
 3. **TypeScript check**: `cd web && npx tsc --noEmit`
 4. **E2E tests**: `cd web && bun run test:e2e` (105 tests, no skips, ~4.5 min,
    Playwright auto-starts servers). It *is* the two buckets, run as two
@@ -78,14 +78,14 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1273 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, accounts + keys + workspace confinement + tenant isolation, the in-process MCP namespaces, monitoring. No CLI, no network. ~45 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1286 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, accounts + keys + workspace confinement + tenant isolation (behavioural *and* structural — no route may go unscoped), the in-process MCP namespaces, monitoring. No CLI, no network. ~45 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
-| Frontend unit | vitest | `cd web && bun run test` | 280 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height, the sign-in screen's two eras, the account page. ~4 s. |
+| Frontend unit | vitest | `cd web && bun run test` | 284 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height, the sign-in screen's two eras, the account page. ~4 s. |
 | E2E | Playwright | `cd web && bun run test:e2e` | 105 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, sidebar pins (drag + keyboard reorder), `/rewind`, `/research`, the monitor page, and accounts end to end (claim the install, invite, register, isolation, sign-out, password change) against a backend of their own. `:fast` (67, ~45 s) skips the `@llm` half; `:llm` (38, ~3.7 min) is the rest, and `test:e2e` is the two in sequence. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
-hand-written inventory of 1,307 tests cannot stay true, and it cost ~16 KB of
+hand-written inventory of 1,320 tests cannot stay true, and it cost ~16 KB of
 every session's context to try.
 
 ## Project Structure

@@ -340,6 +340,16 @@ production database first — the way `A3` was.
 Steps 1–2 are the spine; 3–5 can be reviewed independently; 6 is small; 7 is
 the only irreversible one.
 
+**Where this stands.** Steps 1–6 are done, along with the interface: the
+sign-in screen asks whichever question the install can answer, and the Account
+page is where an install becomes an account, a password changes, and an admin
+manages invites and people. Every route either takes an account scope or is
+listed in `tests/test_route_scoping.py` with the reason it needs none, and
+`tests/test_tenant_isolation.py` asks each router whether Vera can reach
+Archer's work. Step 7 — the live install — is deliberately not done: it is the
+one-way door, and it wants a rehearsal against a copy of the production
+database first.
+
 ---
 
 ## 11. What this defers
