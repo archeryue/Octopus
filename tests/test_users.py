@@ -420,3 +420,23 @@ async def test_a_session_token_is_long_lived_but_still_expires(users):
     assert row["expires_at"] is not None, "a session token with no expiry lives for ever"
     remaining = datetime.fromisoformat(row["expires_at"]) - datetime.now(UTC)
     assert 28 <= remaining.days <= 30
+
+
+@pytest.mark.asyncio
+async def test_a_registered_account_gets_its_workspace_provisioned(users):
+    """The bug Nancy hit: an invite-registered account had no workspace
+    directory, so its first session spawned the CLI with a cwd that did not
+    exist and the turn died on FileNotFoundError. Bootstrap provisioned the
+    first account's dirs; registration did not. `_insert` now does it for every
+    account, so this holds for register, bootstrap and admin-created alike."""
+    from server.workspace import paths_for
+
+    mgr, db = users
+    admin = await mgr.create_user(username="owner", password="password1", is_admin=True)
+    invite = await mgr.create_invite(created_by=admin["id"], max_uses=1, ttl_days=1)
+    nancy = await mgr.register(
+        invite_code=invite["code"], username="nancy", password="password2"
+    )
+
+    ws = paths_for(nancy["id"]).workspace
+    assert ws.is_dir(), "a registered account's workspace was not created"

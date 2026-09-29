@@ -199,9 +199,10 @@ class UserManager:
         of a system end up disagreeing about whether one exists.
         """
         from . import deps
+        from .workspace import paths_for
 
         deps.forget_accounts_exist()
-        return await self.db.create_user(
+        user = await self.db.create_user(
             user_id=uuid.uuid4().hex[:12],
             username=username,
             password_hash=hash_password(password),
@@ -209,6 +210,13 @@ class UserManager:
             is_admin=is_admin,
             dek_wrapped=wrap_dek(new_dek()),
         )
+        # Provision the account's directories at creation, so the first session
+        # has a working directory to run in. Bootstrap did this for the first
+        # account; invite-registration did not, so a registered account's first
+        # turn spawned the CLI with cwd=<workspace> and died on
+        # FileNotFoundError. One place now covers every way an account is made.
+        paths_for(user["id"]).ensure()
+        return user
 
     async def create_user(
         self, *, username: str, password: str, is_admin: bool = False

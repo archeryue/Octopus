@@ -97,6 +97,17 @@ def prepare_spawn(
                 f"{argv[0]} not found on PATH — install the CLI first"
             )
         argv = [resolved, *argv[1:]]
+    # The working directory must exist, or `create_subprocess_exec` raises
+    # FileNotFoundError on the *cwd* — a failure that reads like "the CLI is
+    # missing" but is not. An account is provisioned with its workspace when it
+    # is created (users._insert), so in normal operation it already exists; this
+    # is the safety net for every other way it could be absent (a dir removed
+    # under a live session, an older account created before provisioning), so a
+    # turn never dies on a missing directory. Confinement has already vetted the
+    # path by the time it reaches here.
+    cwd = kwargs.get("cwd")
+    if cwd:
+        os.makedirs(cwd, exist_ok=True)
     env = kwargs.get("env") or os.environ.copy()
     cli_dir = os.path.dirname(argv[0]) if argv and os.path.isabs(argv[0]) else None
     env["PATH"] = augmented_path(env.get("PATH"), cli_dir)

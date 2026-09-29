@@ -133,4 +133,83 @@ test.describe("A real turn under an account @llm", () => {
     // And the work really happened in the account's own workspace.
     expect(fs.existsSync(wd)).toBeTruthy();
   });
+
+  test("a freshly-registered account can create a session and run a turn", async ({
+    page,
+    request,
+  }) => {
+    test.setTimeout(180_000);
+
+    // Exactly the path that broke for the first real invited user (Nancy): an
+    // invite-registered account — NOT the bootstrap account — makes an agent,
+    // opens a session with the DEFAULT working directory (its own workspace),
+    // and sends a message. Registration did not provision that workspace, so
+    // the CLI spawned with a cwd that did not exist and the turn died on
+    // FileNotFoundError before a token of output. Every earlier accounts test
+    // ran as the bootstrap account, whose workspace bootstrap *did* create, so
+    // none of them saw it.
+
+    // The install is claimed by the first test in this serial file.
+    const ownerLogin = await request.post(`${API}/auth/login`, { data: OWNER });
+    expect(ownerLogin.ok(), await ownerLogin.text()).toBeTruthy();
+    const ownerTok = (await ownerLogin.json()).token;
+
+    const invRes = await request.post(`${API}/auth/invites`, {
+      headers: { Authorization: `Bearer ${ownerTok}` },
+      data: { max_uses: 1, ttl_days: 1 },
+    });
+    expect(invRes.ok(), await invRes.text()).toBeTruthy();
+    const inviteCode = (await invRes.json()).code;
+
+    const guest = { username: "nancy", password: "nancy-password-1" };
+    const reg = await request.post(`${API}/auth/register`, {
+      data: { invite_code: inviteCode, ...guest },
+    });
+    expect(reg.ok(), await reg.text()).toBeTruthy();
+    const guestTok = (await reg.json()).token;
+    const guestHeaders = { Authorization: `Bearer ${guestTok}` };
+
+    // A fresh account has no agent — it must make one before it can chat.
+    const agent = await request.post(`${API}/agents`, {
+      headers: guestHeaders,
+      data: { name: "Nancy Agent" },
+    });
+    expect(agent.ok(), await agent.text()).toBeTruthy();
+    const agentId = (await agent.json()).id;
+
+    // Session with NO working_dir → defaults to the account's own workspace,
+    // which is exactly the directory that was missing.
+    const sess = await request.post(`${API}/sessions`, {
+      headers: guestHeaders,
+      data: { name: "Nancy Chat", agent_id: agentId },
+    });
+    expect(sess.ok(), await sess.text()).toBeTruthy();
+
+    // Sign in as the new account in the browser and run a turn.
+    await page.goto("/");
+    await expect(page.locator("#username")).toBeVisible();
+    await page.locator("#username").fill(guest.username);
+    await page.locator("#password").fill(guest.password);
+    await page.locator("button.btn-login").click();
+    await expect(page.locator(".agent-list-header")).toBeVisible();
+    await expect(page.locator(".conn-status.on")).toBeVisible({ timeout: 15_000 });
+
+    await page.locator(".agent-item", { hasText: "Nancy Agent" }).first().click();
+    await page
+      .locator(".session-item .session-name", { hasText: "Nancy Chat" })
+      .click();
+    await expect(page.locator(".chat-header .crumb-current")).toHaveText("Nancy Chat");
+
+    await page
+      .locator(".chat-input-bar textarea")
+      .fill("Reply with exactly: NANCY-OK");
+    await page.locator("button.btn-send").click();
+
+    // The turn producing a reply at all is the proof: before the fix it died
+    // on the missing cwd and surfaced an error instead.
+    await expect(page.locator(".msg-error")).toHaveCount(0);
+    await expect(
+      page.locator(".msg-assistant .msg-content").last()
+    ).toContainText("NANCY-OK", { timeout: 90_000 });
+  });
 });
