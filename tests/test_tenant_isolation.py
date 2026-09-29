@@ -382,3 +382,34 @@ async def test_a_message_queued_behind_a_running_turn_is_not_refused(
         busy.cancel()
         session._active_task = None
         session._pending_queue.clear()
+
+
+@pytest.mark.asyncio
+async def test_two_accounts_can_both_have_an_application_called_notes(two_accounts):
+    """The name index was unique across the box. That is a bug with accounts:
+    the second person who wants an app called "Notes" cannot have one, and the
+    refusal tells them somebody else already does."""
+    from server.applications import application_manager
+
+    ctx = two_accounts
+    application_manager.bind(db=ctx["db"], session_mgr=session_manager)
+
+    first = await application_manager.create_application(
+        name="Notes", description="Archer's", agent_id=ctx["archer"]["agent"]["id"]
+    )
+    second = await application_manager.create_application(
+        name="Notes", description="Vera's", agent_id=ctx["vera"]["agent"]["id"]
+    )
+
+    assert first["user_id"] == ctx["archer"]["user"]["id"]
+    assert second["user_id"] == ctx["vera"]["user"]["id"]
+    # Separate directories, so the files cannot collide either.
+    assert first["app_dir"] != second["app_dir"]
+    assert str(paths_for(ctx["archer"]["user"]["id"]).applications) in first["app_dir"]
+
+    # Still taken within one account.
+    with pytest.raises(Exception) as e:
+        await application_manager.create_application(
+            name="notes", description="again", agent_id=ctx["archer"]["agent"]["id"]
+        )
+    assert "already exists" in str(e.value)

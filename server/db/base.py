@@ -82,6 +82,7 @@ class DatabaseBase:
             "last_built_at": row[14],
             "pinned": bool(row[15]),
             "pin_order": row[16],
+            "user_id": row[17],
         }
     @staticmethod
     def _row_to_bg_task(row: sqlite3.Row) -> dict[str, Any]:
@@ -187,7 +188,8 @@ class DatabaseBase:
     _APPLICATION_COLS = (
         "id, name, description, icon, icon_src, agent_id, session_id, "
         "app_dir, entrypoint, status, error, archived, created_at, "
-        "updated_at, last_built_at, pinned, pin_order"
+        # Appended, never inserted: `_row_to_application` maps by position.
+        "updated_at, last_built_at, pinned, pin_order, user_id"
     )
 
     # The position after every existing one, for a row being pinned now: it
@@ -423,12 +425,36 @@ class DatabaseBase:
             logger.info("migration applied: applications_name_unique -> live-only")
         await self._stamp("index:applications_name_unique_live_only")
 
+
         await self._migrate_agents()
         await self._migrate_schedule_recurrence()
         await self._migrate_schedule_run_at()
 
         for table, column, ddl in self._LATE_COLUMN_MIGRATIONS:
             await self._add_column(table, column, ddl)
+
+        # After the columns, necessarily: this index names `user_id`, which the
+        # loop above is what adds to a database that predates accounts. Placed
+        # earlier it fails with "no such column" on exactly the installs the
+        # migration exists for — which is how the pre-pins fixture found it.
+        #
+        # Unique per *account* (multi-tenancy.md §5): a name reserved across the
+        # whole box would mean the second person who wants an app called "Notes"
+        # cannot have one, and would be told that somebody else already does.
+        # Guarded on the index's own SQL, so it runs exactly once.
+        cur = await self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND name = 'applications_name_unique'"
+        )
+        row = await cur.fetchone()
+        if row and row[0] and "user_id" not in row[0]:
+            await self.conn.execute("DROP INDEX applications_name_unique")
+            await self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique"
+                " ON applications(user_id, name COLLATE NOCASE) WHERE archived = 0"
+            )
+            logger.info("migration applied: applications_name_unique -> per user")
+        await self._stamp("index:applications_name_unique_per_user")
 
         await self._backfill_pin_order()
 

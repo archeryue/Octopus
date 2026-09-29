@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- policy. They OWN sessions and schedules. Memory (the
 -- north star) hangs off the agent_id later; not in this refactor.
 CREATE TABLE IF NOT EXISTS agents (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     id TEXT PRIMARY KEY,                    -- 12-char hex, same scheme as sessions
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -54,6 +57,9 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE UNIQUE INDEX IF NOT EXISTS agents_name_unique ON agents(name) WHERE archived = 0;
 
 CREATE TABLE IF NOT EXISTS sessions (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     working_dir TEXT NOT NULL,
@@ -174,6 +180,9 @@ CREATE TABLE IF NOT EXISTS schedules (
 );
 
 CREATE TABLE IF NOT EXISTS backend_credentials (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     id TEXT PRIMARY KEY,
     backend TEXT NOT NULL,                 -- "claude-code" | "codex" | …
     label TEXT NOT NULL,
@@ -207,6 +216,9 @@ CREATE TABLE IF NOT EXISTS credential_secrets (
 -- secret. Unlike credentials there is no legacy in-table secret column — the
 -- token blob lives ONLY in connector_installation_secrets.
 CREATE TABLE IF NOT EXISTS connector_installations (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     id TEXT PRIMARY KEY,                   -- 12-char hex
     kind TEXT NOT NULL,                    -- 'gmail' | 'github' | …
     label TEXT NOT NULL,                   -- 'archeryue7@gmail.com'
@@ -260,6 +272,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_connectors_agent
 -- is not secret; the secret is encrypted like connector tokens. When there's
 -- no row, resolution falls back to env (OCTOPUS_<KIND>_OAUTH_CLIENT_ID/_SECRET).
 CREATE TABLE IF NOT EXISTS connector_oauth_clients (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     kind TEXT PRIMARY KEY,                 -- 'github' | 'gmail' | …
     client_id TEXT NOT NULL,
     client_secret_encrypted TEXT NOT NULL,
@@ -272,6 +287,9 @@ CREATE TABLE IF NOT EXISTS connector_oauth_clients (
 -- connector_oauth_clients (same as built-ins); this row holds the definition
 -- the generic OAuth provider + generic MCP server read.
 CREATE TABLE IF NOT EXISTS custom_connectors (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     kind TEXT PRIMARY KEY,                 -- user-chosen slug, e.g. 'linear'
     display_name TEXT NOT NULL,
     authorize_url TEXT NOT NULL,
@@ -289,6 +307,9 @@ CREATE TABLE IF NOT EXISTS custom_connectors (
 -- `config` is a JSON blob whose shape depends on `type` (e.g. for
 -- type='webhook': {"url": "https://…"}).
 CREATE TABLE IF NOT EXISTS notifiers (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,                    -- 'webhook' | future: 'email', 'browser_push'
     label TEXT NOT NULL,
@@ -361,6 +382,9 @@ CREATE INDEX IF NOT EXISTS idx_research_jobs_session
 -- conversation that produced it. New-table-only — CREATE IF NOT EXISTS is a
 -- no-op migration on existing DBs.
 CREATE TABLE IF NOT EXISTS applications (
+    -- Who owns this row (multi-tenancy.md §5). NULL means the install:
+    -- true of every row before accounts, of none after.
+    user_id TEXT,
     id TEXT PRIMARY KEY,                   -- 12-char hex, as sessions/agents
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -383,6 +407,11 @@ CREATE TABLE IF NOT EXISTS applications (
     pin_order INTEGER
 );
 
+-- Created in its pre-accounts form here and rebuilt per account by
+-- `_apply_migrations` on the same boot. It cannot name `user_id` at this
+-- point: on a database that predates accounts the CREATE TABLE above is a
+-- no-op, the column does not exist yet, and this script would fail outright —
+-- on exactly the installs the migration exists for.
 CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique
   ON applications(name COLLATE NOCASE) WHERE archived = 0;
 

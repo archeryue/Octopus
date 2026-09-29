@@ -85,6 +85,18 @@ class TestConfinement:
         with pytest.raises(WorkspaceError):
             confine(str(paths_for("u2").workspace), user_id="u1")
 
+    def test_the_accounts_own_application_directory_is_allowed(self):
+        """The boundary is the account's root, not the workspace subdirectory
+        inside it: an application's build session works in that application's
+        directory, which lives beside the workspace rather than in it."""
+        app_dir = paths_for("u1").applications / "notes"
+        assert confine(str(app_dir), user_id="u1") == str(app_dir)
+
+    def test_but_another_accounts_application_directory_is_not(self):
+        paths_for("u2").ensure()
+        with pytest.raises(WorkspaceError):
+            confine(str(paths_for("u2").applications / "notes"), user_id="u1")
+
     def test_extra_roots_open_exactly_what_they_name(self, tmp_path):
         """The single-box affordance the cloud version drops: user #1 keeps
         working on a repository that lives outside any workspace."""

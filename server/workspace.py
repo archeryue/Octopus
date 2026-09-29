@@ -106,10 +106,21 @@ def _within(candidate: Path, root: Path) -> bool:
 
 
 def allowed_roots(user_id: str | None, extra_roots: list[str] | None = None) -> list[Path]:
-    """Everywhere this account may put a working directory."""
+    """Everywhere this account may put a working directory.
+
+    The account's **root**, not just its workspace. The workspace is where a
+    person works and stays the default, but the account owns more than that —
+    an application's build session legitimately works inside that application's
+    directory, which lives beside the workspace rather than in it.
+
+    This does not weaken anything across accounts, which is the boundary that
+    matters: one account's root contains only that account's files. It does
+    mean an agent can read its own account's stored credentials, which it could
+    anyway — the CLI it is already running holds them.
+    """
     if user_id is None:
         return []
-    roots = [paths_for(user_id).workspace.resolve()]
+    roots = [user_root(user_id).resolve()]
     for raw in extra_roots or []:
         try:
             roots.append(_expand(raw).resolve())
@@ -149,3 +160,4 @@ def confine(
         f"{requested} is outside your workspace. Sessions work inside "
         f"{paths.workspace}."
     )
+

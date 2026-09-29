@@ -33,6 +33,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from .config import settings
+from .workspace import paths_for
 
 if TYPE_CHECKING:
     from .database import Database
@@ -110,14 +111,21 @@ def slugify(name: str) -> str:
     return slug[:48] or "app"
 
 
-def allocate_app_dir(name: str) -> str:
+def allocate_app_dir(name: str, user_id: str | None = None) -> str:
     """Pick an unused directory for `name` under the managed root.
 
     The slug is the readable part; collisions get a `-2`, `-3`, … suffix so
     two applications never share a directory. The result is stored on the row,
-    which is why renaming an application later never has to move files.
+    which is why renaming an application later never has to move files — and
+    why applications that already exist keep working when this root moves: the
+    row says where they are, not this function.
+
+    Under the owner's root once there is one (multi-tenancy.md §6), which also
+    means two accounts' apps cannot collide on a slug.
     """
-    root = applications_root()
+    root = (
+        str(paths_for(user_id).applications) if user_id else applications_root()
+    )
     os.makedirs(root, exist_ok=True)
     stem = slugify(name)
     candidate = os.path.join(root, stem)
@@ -368,7 +376,16 @@ class ApplicationManager:
         name = (name or "").strip()
         if not name:
             raise ApplicationError("Application name is required")
-        if await db.get_application_by_name(name) is not None:
+        # The agent is resolved first because the owner comes from it — whoever
+        # owns the agent that builds the app owns the app (multi-tenancy.md §5)
+        # — and the name check below is "taken for *this account*", not for the
+        # whole box: two people must both be able to have an app called Notes.
+        agent = await db.get_agent(agent_id) if agent_id else None
+        if agent is None:
+            raise ApplicationError("Agent not found", status_code=404)
+        owner_id = agent.get("user_id")
+
+        if await db.get_application_by_name(name, user_id=owner_id) is not None:
             raise ApplicationError(
                 f"An application named {name!r} already exists", status_code=409
             )
@@ -376,16 +393,12 @@ class ApplicationManager:
         if not description:
             raise ApplicationError("Application description is required")
 
-        agent = await db.get_agent(agent_id) if agent_id else None
-        if agent is None:
-            raise ApplicationError("Agent not found", status_code=404)
-
         entrypoint = (entrypoint or DEFAULT_ENTRYPOINT).strip()
         if not is_safe_relative_path(entrypoint):
             raise ApplicationError("entrypoint must be a path inside the app")
 
         app_id = uuid.uuid4().hex[:12]
-        app_dir = allocate_app_dir(name)
+        app_dir = allocate_app_dir(name, owner_id)
         os.makedirs(app_dir, exist_ok=True)
         now = _now()
         await db.save_application(
@@ -400,6 +413,7 @@ class ApplicationManager:
             status=STATUS_BUILDING,
             created_at=now,
             updated_at=now,
+            user_id=owner_id,
         )
 
         session = await self.session_mgr.create_session(
