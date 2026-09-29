@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from . import deps
 from . import monitor as monitor_pkg
 from .agent_manager import AgentManager
 from .app_agent import app_agent_manager
@@ -55,6 +56,7 @@ from .routers import research as research_router
 from .scheduler import ScheduleRunner
 from .session_manager import session_manager
 from .tunnel import CloudflareTunnel
+from .users import UserManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +82,9 @@ async def lifespan(app: FastAPI):
     connectors.set_manager(ConnectorManager(db))
     applications_router.set_manager(application_manager)
     auth_router.set_db(db)
+    # Accounts. Bound like the other managers; `deps.current_user` resolves
+    # every request's bearer through it (multi-tenancy.md §5.1).
+    deps.set_user_manager(UserManager(db))
     credentials.set_db(db)
     notifiers.set_db(db)
     notifier_manager.set_db(db)

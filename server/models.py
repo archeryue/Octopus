@@ -488,9 +488,68 @@ class AgentUpdate(BaseModel):
 
 
 class IdentityResponse(BaseModel):
-    """Who the account row says you are — a label, deliberately not the token."""
+    """Who the account row says you are — a label, deliberately not the token.
+
+    `label` is the username now (multi-tenancy.md §3): the field that used to
+    carry `OCTOPUS_USER_LABEL` carries the account's own name, so the sidebar
+    needed a different value rather than a different shape.
+    """
 
     label: str
+    user_id: str | None = None
+    is_admin: bool = False
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RegisterRequest(BaseModel):
+    invite_code: str
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    """The bearer, and who it belongs to.
+
+    The token is readable exactly once — here. The row keeps a digest, so this
+    reply is the only opportunity to store it, which is why it comes back with
+    the identity rather than needing a second call to find out who you are.
+    """
+
+    token: str
+    user_id: str
+    username: str
+    is_admin: bool = False
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class InviteCreateRequest(BaseModel):
+    max_uses: int = 1
+    ttl_days: int | None = 14
+
+
+class InviteInfo(BaseModel):
+    code: str
+    created_at: str
+    expires_at: str | None = None
+    max_uses: int
+    used_count: int
+    revoked_at: str | None = None
+
+
+class UserInfo(BaseModel):
+    id: str
+    username: str
+    is_admin: bool
+    created_at: str
+    disabled_at: str | None = None
 
 
 class TokenRotateRequest(BaseModel):

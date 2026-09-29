@@ -21,12 +21,14 @@ splits made for keeping one object with the same method names.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException, Query, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .sessions import SessionManager
 from .sessions import session_manager as _singleton
+from .users import UserManager
 
 
 def get_session_manager() -> SessionManager:
@@ -38,3 +40,89 @@ def get_session_manager() -> SessionManager:
 # so the parameter has no default value and can sit first in a signature
 # regardless of what follows it.
 SessionMgr = Annotated[SessionManager, Depends(get_session_manager)]
+
+
+# ---------------------------------------------------------------------------
+# Who is asking (multi-tenancy.md §5.1)
+# ---------------------------------------------------------------------------
+#
+# There are ~100 routes. Writing `WHERE user_id = ?` into each of them is how
+# multi-tenant systems leak: it only has to be forgotten once, by anyone, ever,
+# and the bug is invisible until someone sees another account's data.
+#
+# So the scoping lives here instead. A route asks for `CurrentUser` and gets an
+# authenticated account or a 401; it asks for `Ctx` and gets that account
+# *together with* the managers already bound to it. A route that wants another
+# user's rows has to go out of its way rather than merely forget something.
+
+_user_manager: UserManager | None = None
+
+
+def set_user_manager(manager: UserManager) -> None:
+    """Bound at startup, like the other managers (`main.py`)."""
+    global _user_manager
+    _user_manager = manager
+
+
+def get_user_manager() -> UserManager:
+    if _user_manager is None:  # pragma: no cover - startup wiring bug
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "accounts are not available"
+        )
+    return _user_manager
+
+
+UserMgr = Annotated[UserManager, Depends(get_user_manager)]
+
+_bearer = HTTPBearer(auto_error=False)
+
+# Annotated rather than `= Depends(...)` defaults, which is the style this
+# module already states in its docstring — and the reason it is not on the
+# B008 ignore list the routers are on.
+_BearerCreds = Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)]
+_QueryToken = Annotated[str | None, Query()]
+
+
+def _presented(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None,
+    query_token: str | None,
+) -> str:
+    """The bearer this request carries, from any of the three places one can
+    travel: the header, `?token=` (a WebSocket cannot set headers) and the
+    application cookie (neither can an iframe)."""
+    if creds is not None and creds.credentials:
+        return creds.credentials
+    if query_token:
+        return query_token
+    return request.cookies.get("octopus_app_token") or ""
+
+
+async def current_user(
+    request: Request,
+    manager: UserMgr,
+    creds: _BearerCreds,
+    token: _QueryToken = None,
+) -> dict[str, Any]:
+    """The account this request belongs to, or 401.
+
+    One failure for every way a bearer can be no good — unknown, revoked,
+    expired, belonging to a disabled account — because a reply that
+    distinguished them would tell an attacker which.
+    """
+    user = await manager.resolve_token(_presented(request, creds, token))
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    return user
+
+
+CurrentUser = Annotated[dict, Depends(current_user)]
+
+
+async def require_admin(user: CurrentUser) -> dict[str, Any]:
+    if not user.get("is_admin"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Admins only")
+    return user
+
+
+AdminUser = Annotated[dict, Depends(require_admin)]
