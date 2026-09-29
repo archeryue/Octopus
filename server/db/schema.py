@@ -385,4 +385,58 @@ CREATE TABLE IF NOT EXISTS applications (
 
 CREATE UNIQUE INDEX IF NOT EXISTS applications_name_unique
   ON applications(name COLLATE NOCASE) WHERE archived = 0;
+
+-- ---------------------------------------------------------------------------
+-- Accounts (multi-tenancy.md §3). New tables rather than columns, so an
+-- existing install grows them on the next boot with nothing to migrate.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    -- NOCASE so `Archer` and `archer` cannot both exist: two accounts whose
+    -- names differ only in case is an impersonation surface, not a feature.
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    -- Self-describing: `scrypt$n$r$p$salt$hash`, so the cost parameters can be
+    -- raised later without invalidating everyone's password.
+    password_hash TEXT NOT NULL,
+    -- This user's data key, wrapped by the server master key (§4). Filled in
+    -- by the key work; NULL until then, which is why it is nullable.
+    dek_wrapped TEXT,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    -- JSON list of extra permitted working-dir prefixes (§6). A single-box
+    -- affordance the cloud version drops; NULL means "workspace only".
+    extra_roots TEXT,
+    created_at TEXT NOT NULL,
+    -- Set rather than deleted: a disabled account keeps its rows, and its
+    -- sessions and schedules stop running.
+    disabled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS invites (
+    code TEXT PRIMARY KEY,
+    created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    max_uses INTEGER NOT NULL DEFAULT 1,
+    used_count INTEGER NOT NULL DEFAULT 0,
+    revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    -- The SHA-256 of the token, never the token. Reading this table gives you
+    -- no live session; the bearer is 256 bits of randomness, so a slow KDF
+    -- would buy nothing a plain digest does not.
+    token_hash TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- 'session' expires; 'pat' is a personal access token for scripts and the
+    -- CLI, revocable and long-lived (§3.1).
+    kind TEXT NOT NULL DEFAULT 'session',
+    label TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    last_seen_at TEXT,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
 """

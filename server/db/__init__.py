@@ -29,6 +29,7 @@ from .notifiers import NotifiersMixin
 from .research import ResearchMixin
 from .schedules import SchedulesMixin
 from .sessions import SessionsMixin
+from .users import UsersMixin
 
 
 class Database(
@@ -41,6 +42,7 @@ class Database(
     ResearchMixin,
     ApplicationsMixin,
     NotifiersMixin,
+    UsersMixin,
     DatabaseBase,
 ):
     """SQLite persistence (aiosqlite, WAL, FK cascade).
