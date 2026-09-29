@@ -537,3 +537,82 @@ async def test_the_monitor_belongs_to_the_operator(two_accounts):
     for token in (ctx["vera"]["token"], ctx["archer"]["token"]):
         res = await ctx["client"].get("/api/monitor/overview", headers=_as(token))
         assert res.status_code == 403, res.status_code
+
+
+@pytest.mark.asyncio
+async def test_an_agent_belongs_to_the_account_that_made_it(two_accounts):
+    """`create_agent` declared a scope and never passed it, so every agent made
+    through the route was unowned: invisible to its own account, and a 404 the
+    moment that account opened a session under it. A second account could not
+    use the product at all."""
+    ctx = two_accounts
+    c = ctx["client"]
+    vera = _as(ctx["vera"]["token"])
+
+    made = await c.post("/api/agents", json={"name": "Vera's own"}, headers=vera)
+    assert made.status_code == 201, made.text
+    agent_id = made.json()["id"]
+
+    row = await ctx["db"].get_agent(agent_id)
+    assert row["user_id"] == ctx["vera"]["user"]["id"], "the agent has no owner"
+
+    listed = await c.get("/api/agents", headers=vera)
+    assert "Vera's own" in {a["name"] for a in listed.json()}
+
+    # And the thing that actually broke: a session under it.
+    opened = await c.post(
+        f"/api/agents/{agent_id}/sessions",
+        json={"name": "works", "working_dir": str(paths_for(ctx["vera"]["user"]["id"]).workspace)},
+        headers=vera,
+    )
+    assert opened.status_code == 201, opened.text
+
+
+@pytest.mark.asyncio
+async def test_nobody_can_rename_pin_or_restore_someone_elses_agent(two_accounts):
+    """The other half of the same omission: `update`, `pin`, `unpin` and
+    `unarchive` all took an agent id and never checked whose it was."""
+    ctx = two_accounts
+    c = ctx["client"]
+    vera = _as(ctx["vera"]["token"])
+    victim = ctx["archer"]["agent"]["id"]
+
+    for method, path, body in (
+        ("patch", f"/api/agents/{victim}", {"name": "mine now"}),
+        ("post", f"/api/agents/{victim}/pin", None),
+        ("post", f"/api/agents/{victim}/unpin", None),
+        ("post", f"/api/agents/{victim}/unarchive", None),
+    ):
+        call = getattr(c, method)
+        res = await (
+            call(path, json=body, headers=vera) if body is not None
+            else call(path, headers=vera)
+        )
+        assert res.status_code == 404, (
+            f"{method.upper()} {path} answered {res.status_code}"
+        )
+
+    # Untouched.
+    still = await ctx["db"].get_agent(victim)
+    assert still["name"] == "Archer's agent"
+
+
+@pytest.mark.asyncio
+async def test_two_accounts_can_both_have_an_agent_called_octo(two_accounts):
+    """Agent names are unique per account, like application names — the index
+    says so, and `get_agent_by_name` has to agree or the second person to want
+    an agent called "Octo" is told somebody else already has one."""
+    ctx = two_accounts
+    c = ctx["client"]
+
+    for who in ("archer", "vera"):
+        res = await c.post(
+            "/api/agents", json={"name": "Octo"}, headers=_as(ctx[who]["token"])
+        )
+        assert res.status_code == 201, f"{who}: {res.text}"
+
+    # Still taken within one account.
+    again = await c.post(
+        "/api/agents", json={"name": "Octo"}, headers=_as(ctx["vera"]["token"])
+    )
+    assert again.status_code >= 400

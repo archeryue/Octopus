@@ -190,8 +190,18 @@ class AgentsMixin(DatabaseBase):
         return self._row_to_agent(row) if row else None
 
     async def get_agent_by_name(
-        self, name: str, *, include_archived: bool = False
+        self,
+        name: str,
+        *,
+        include_archived: bool = False,
+        user_id: str | None = None,
     ) -> dict[str, Any] | None:
+        """One agent by name, within an account.
+
+        Scoped because the uniqueness it guards is per account (see the
+        `agents_name_unique` index): unscoped, the second person to want an
+        agent called "Octo" would be told somebody else already had one.
+        """
         await self._ensure_connected()
         cols = ", ".join(f"a.{c}" for c in self._AGENT_COLS.split(", "))
         query = (
@@ -201,6 +211,9 @@ class AgentsMixin(DatabaseBase):
         params: list[Any] = [name]
         if not include_archived:
             query += " AND a.archived = 0"
+        if user_id is not None:
+            query += " AND a.user_id = ?"
+            params.append(user_id)
         cursor = await self.conn.execute(query, params)
         row = await cursor.fetchone()
         return self._row_to_agent(row) if row else None

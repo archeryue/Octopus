@@ -68,7 +68,13 @@ async def create_agent(
     session_manager: SessionMgr, req: AgentCreate, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     try:
-        agent = await _get_manager().create_agent(**req.model_dump())
+        # The owner, which is the whole point of the `ScopeUser` above: it was
+        # declared and never passed, so every agent created through this route
+        # was unowned — invisible to the account that made it, and a 404 the
+        # moment they tried to open a session under it.
+        agent = await _get_manager().create_agent(
+            user_id=user_id, **req.model_dump()
+        )
     except AgentError as e:
         raise _agent_http_error(e)
     await _publish(session_manager, "agent_created", agent)
@@ -82,9 +88,11 @@ async def reorder_agent_pins(
     """The sidebar order of the pinned agents (sidebar-pins.md). Returns
     every live agent, so the caller replaces its list in one step."""
     mgr = _get_manager()
-    before = {a["id"]: a["pin_order"] for a in await mgr.list_agents()}
+    before = {
+        a["id"]: a["pin_order"] for a in await mgr.list_agents(user_id=user_id)
+    }
     try:
-        agents = await mgr.reorder_pins(req.ids)
+        agents = await mgr.reorder_pins(req.ids, user_id)
     except AgentError as e:
         raise _agent_http_error(e)
     # Only the rows whose position moved need to travel to other clients.
@@ -113,7 +121,7 @@ async def update_agent(
     # passing null clears a nullable field (model/credential_id/avatar).
     fields = req.model_dump(exclude_unset=True)
     try:
-        agent = await _get_manager().update_agent(agent_id, **fields)
+        agent = await _get_manager().update_agent(agent_id, user_id, **fields)
     except AgentError as e:
         raise _agent_http_error(e)
     await _publish(session_manager, "agent_updated", agent)
@@ -144,16 +152,18 @@ async def unarchive_agent(
     comes back pinned; its sessions stay archived — those come back from the
     archived-sessions page individually."""
     try:
-        agent = await _get_manager().unarchive_agent(agent_id)
+        agent = await _get_manager().unarchive_agent(agent_id, user_id)
     except AgentError as e:
         raise _agent_http_error(e)
     await _publish(session_manager, "agent_updated", agent)
     return AgentRead(**agent)
 
 
-async def _set_pinned(session_manager, agent_id: str, pinned: bool) -> AgentRead:
+async def _set_pinned(
+    session_manager, agent_id: str, pinned: bool, user_id: str | None
+) -> AgentRead:
     try:
-        agent = await _get_manager().set_pinned(agent_id, pinned)
+        agent = await _get_manager().set_pinned(agent_id, pinned, user_id)
     except AgentError as e:
         raise _agent_http_error(e)
     await _publish(session_manager, "agent_updated", agent)
@@ -165,7 +175,7 @@ async def pin_agent(
     session_manager: SessionMgr, agent_id: str, user_id: ScopeUser = None, _: str = Depends(verify_token)
 ):
     """Put the agent in the sidebar, at the bottom of the pinned ones."""
-    return await _set_pinned(session_manager, agent_id, True)
+    return await _set_pinned(session_manager, agent_id, True, user_id)
 
 
 @router.post("/{agent_id}/unpin", response_model=AgentRead)
@@ -174,7 +184,7 @@ async def unpin_agent(
 ):
     """Take the agent out of the sidebar. It stays live — listed on the
     Agents page, callable, its schedules running."""
-    return await _set_pinned(session_manager, agent_id, False)
+    return await _set_pinned(session_manager, agent_id, False, user_id)
 
 
 @router.delete("/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)

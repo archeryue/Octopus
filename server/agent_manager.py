@@ -66,7 +66,7 @@ class AgentManager:
         name = (name or "").strip()
         if not name:
             raise AgentError("Agent name is required")
-        if await self.db.get_agent_by_name(name) is not None:
+        if await self.db.get_agent_by_name(name, user_id=user_id) is not None:
             raise AgentError(f"An agent named {name!r} already exists")
         agent_id = uuid.uuid4().hex[:12]
         now = datetime.now(UTC).isoformat()
@@ -96,15 +96,19 @@ class AgentManager:
         agent_memory.ensure_agent_dirs(agent_id, user_id)
         return agent
 
-    async def update_agent(self, agent_id: str, **fields: Any) -> dict[str, Any]:
-        agent = await self.db.get_agent(agent_id)
+    async def update_agent(
+        self, agent_id: str, user_id: str | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        agent = await self.db.get_agent(agent_id, user_id=user_id)
         if agent is None:
             raise AgentError("Agent not found")
         if "name" in fields and fields["name"] is not None:
             new_name = fields["name"].strip()
             if not new_name:
                 raise AgentError("Agent name cannot be empty")
-            clash = await self.db.get_agent_by_name(new_name)
+            clash = await self.db.get_agent_by_name(
+                new_name, user_id=agent.get("user_id")
+            )
             if clash is not None and clash["id"] != agent_id:
                 raise AgentError(f"An agent named {new_name!r} already exists")
             fields["name"] = new_name
@@ -121,16 +125,20 @@ class AgentManager:
             raise AgentError("The Default Agent cannot be archived")
         await self.db.archive_agent(agent_id)
 
-    async def unarchive_agent(self, agent_id: str) -> dict[str, Any]:
+    async def unarchive_agent(
+        self, agent_id: str, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Bring an archived agent back. Refuses if a live agent has taken the
         name in the meantime — the unique index only covers live rows, so two
         live agents could otherwise share one."""
-        agent = await self.db.get_agent(agent_id)
+        agent = await self.db.get_agent(agent_id, user_id=user_id)
         if agent is None:
             raise AgentError("Agent not found")
         if not agent["archived"]:
             return agent
-        clash = await self.db.get_agent_by_name(agent["name"])
+        clash = await self.db.get_agent_by_name(
+            agent["name"], user_id=agent.get("user_id")
+        )
         if clash is not None and clash["id"] != agent_id:
             raise AgentError(
                 f"An agent named {agent['name']!r} already exists — rename it "
@@ -145,7 +153,9 @@ class AgentManager:
         assert restored is not None
         return restored
 
-    async def set_pinned(self, agent_id: str, pinned: bool) -> dict[str, Any]:
+    async def set_pinned(
+        self, agent_id: str, pinned: bool, user_id: str | None = None
+    ) -> dict[str, Any]:
         """Pin an agent to the sidebar or unpin it (sidebar-pins.md).
 
         Only where it is *shown* changes: an unpinned agent is still listed
@@ -153,7 +163,7 @@ class AgentManager:
         still fire. The Default Agent stays pinned — it is where a fresh
         session goes when nothing else is chosen, so it can't go missing.
         """
-        agent = await self.db.get_agent(agent_id)
+        agent = await self.db.get_agent(agent_id, user_id=user_id)
         if agent is None:
             raise AgentError("Agent not found")
         if agent["archived"]:
@@ -165,19 +175,25 @@ class AgentManager:
         assert updated is not None
         return updated
 
-    async def reorder_pins(self, ordered_ids: list[str]) -> list[dict[str, Any]]:
+    async def reorder_pins(
+        self, ordered_ids: list[str], user_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """Set the sidebar order of the pinned agents; returns every live
-        agent. Every id must name a pinned, live agent, once."""
+        agent. Every id must name a pinned, live agent of this account's,
+        once — an id from another account is "not a pinned agent" rather than
+        a row this reorders."""
         if len(set(ordered_ids)) != len(ordered_ids):
             raise AgentError("An agent appears twice in the order")
         pinned = {
-            a["id"] for a in await self.db.load_agents() if a["pinned"]
+            a["id"]
+            for a in await self.db.load_agents(user_id=user_id)
+            if a["pinned"]
         }
         stray = [i for i in ordered_ids if i not in pinned]
         if stray:
             raise AgentError(f"Not a pinned agent: {', '.join(stray)}")
         await self.db.reorder_agent_pins(ordered_ids)
-        return await self.db.load_agents()
+        return await self.db.load_agents(user_id=user_id)
 
     async def delete_agent(self, agent_id: str) -> None:
         agent = await self.db.get_agent(agent_id)

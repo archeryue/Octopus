@@ -13,11 +13,16 @@ scope a new route is not.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import pathlib
 
 from fastapi.routing import APIRoute
 
 from server.main import app
+
+ROUTERS = pathlib.Path(__file__).resolve().parent.parent / "server" / "routers"
+_HTTP_METHODS = {"get", "post", "put", "patch", "delete", "websocket"}
 
 # The dependency aliases that answer "whose rows may this request see". Matched
 # by name because `from __future__ import annotations` leaves annotations as
@@ -146,3 +151,54 @@ def test_the_scope_markers_are_real_dependencies():
 
     for name in SCOPE_MARKERS:
         assert hasattr(deps, name), f"{name} is not in server.deps"
+
+
+def _endpoints_declaring_a_scope():
+    """`(where, name, body)` for every route function that takes a `ScopeUser`."""
+    for path in sorted(ROUTERS.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            decorated = any(
+                isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Attribute)
+                and d.func.attr in _HTTP_METHODS
+                for d in node.decorator_list
+            )
+            if not decorated:
+                continue
+            args = node.args.args + node.args.kwonlyargs
+            declares = any(
+                a.arg == "user_id"
+                and a.annotation is not None
+                and "ScopeUser" in ast.unparse(a.annotation)
+                for a in args
+            )
+            if declares:
+                body = ast.unparse(ast.Module(body=node.body, type_ignores=[]))
+                yield f"{path.name}:{node.lineno}", node.name, body
+
+
+def test_a_route_that_takes_a_scope_actually_uses_it():
+    """Declaring `user_id: ScopeUser` and then ignoring it is worse than not
+    declaring it: the route reads as scoped, the test above passes, and every
+    row it writes is unowned or somebody else's.
+
+    Six routes were exactly that — the whole of `agents.py`'s write half. A
+    second account could create an agent it then could not open a session
+    under (the row had no owner), and could rename, pin, unpin and unarchive
+    *anybody's* agent by id. Found by registering a second account on a
+    running deployment and watching it fail to use what it had just made.
+    """
+    ignored = [
+        f"{where} {name}"
+        for where, name, body in _endpoints_declaring_a_scope()
+        if "user_id" not in body
+    ]
+    assert not ignored, (
+        "these routes declare an account scope and never use it:\n  "
+        + "\n  ".join(ignored)
+        + "\n\nPass `user_id` to the lookup, or drop the parameter so the "
+        "route stops claiming to be scoped."
+    )
