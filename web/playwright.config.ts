@@ -97,6 +97,13 @@ export default defineConfig({
   // 8 workers took 4.2-4.4 min with 3 failures, 2 workers 2.6 min with none,
   // because the timeouts and worker restarts an overloaded run produces cost
   // far more than the parallelism saves.
+  //
+  // The same argument goes one step further for the `@llm` half, which
+  // `test:e2e:llm` runs with `--workers=1`: two concurrent real-CLI turns on
+  // this box time out about one run in three — a different test each time,
+  // each passing alone — and serially the bucket is *faster* anyway (4.2 min
+  // against 5.5). The pure-UI half keeps two workers, where they do help
+  // (45 s).
   workers: 2,
   use: {
     baseURL: "http://localhost:5174",

@@ -64,7 +64,9 @@ You MUST verify your changes before considering them done:
    `bun run test:e2e:fast` (67 pure-UI tests, ~45 s — login / accounts /
    sessions /
    dialogs / sidebar / sidebar pins / virtualized chat / attachments / etc.) and
-   `bun run test:e2e:llm` (38 real-LLM tests, ~3.7 min — chat, /schedule,
+   `bun run test:e2e:llm` (38 real-LLM tests, ~4.2 min, **one worker** — two
+   concurrent real-CLI turns on this box time out about one run in three, a
+   different test each time, and serially the bucket is faster anyway — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
    notifier, codex sign-in, handoff/pull). Anything that drives a real
    `claude` / `codex` turn carries `@llm` in its describe title; the

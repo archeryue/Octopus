@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "test:e2e": "bun run test:e2e:fast && bun run test:e2e:llm",
     "test:e2e:fast": "playwright test --grep-invert @llm",
-    "test:e2e:llm": "playwright test --grep @llm",
+    "test:e2e:llm": "playwright test --grep @llm --workers=1",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:bridge": "playwright test --config playwright.bridge.config.ts"
   },
