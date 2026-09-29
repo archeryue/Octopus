@@ -152,6 +152,10 @@ class RunConfig:
     resume_id/credential), which arrive per invocation."""
 
     session_id: str | None = None
+    # Whose turn this is (multi-tenancy.md §7). Travels into the MCP bearer, so
+    # a tool call carries an owner without a round trip and the signature
+    # covers it.
+    user_id: str | None = None
     system_prompt: str | None = None   # agent persona
     model: str | None = None
     mcp_servers: list[str] | None = None
@@ -232,6 +236,7 @@ class HarnessRun:
             self._config.connectors,
             callback_env,
             session_id=self._config.session_id,
+            user_id=self._config.user_id,
         )
         system_prompt = assembly.compose_system_prompt(
             self._config.system_prompt,

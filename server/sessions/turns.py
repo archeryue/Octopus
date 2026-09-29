@@ -1502,6 +1502,7 @@ class TurnsMixin(SessionManagerBase):
 
         return RunConfig(
             session_id=session.id,
+            user_id=session.user_id,
             system_prompt=system_prompt,
             model=model,
             mcp_servers=mcp_servers,

@@ -42,10 +42,21 @@ class TestIdentity:
         """Swapping the session in the clear part must not survive: the
         signature covers it, so the claim no longer verifies."""
         good = mint("sess-a")
-        _, install, sig = good.split(".")
-        assert verify(f"sess-b.{install}.{sig}") is None
+        _, install, user, sig = good.split(".")
+        assert verify(f"sess-b.{install}.{user}.{sig}") is None
 
-    @pytest.mark.parametrize("bad", [None, "", "nope", "a.b", "a.b.c.d"])
+    def test_the_owner_cannot_be_edited_either(self):
+        """The bearer carries whose call this is (multi-tenancy.md §7), so the
+        signature has to cover that too — otherwise a tool call could be
+        relabelled as another account's and the scope would agree."""
+        good = mint("sess-a", None, "user-1")
+        session, install, _user, sig = good.split(".")
+        assert verify(f"{session}.{install}.user-2.{sig}") is None
+        # And the honest one still verifies, with the owner intact.
+        scope = verify(good)
+        assert scope is not None and scope.user_id == "user-1"
+
+    @pytest.mark.parametrize("bad", [None, "", "nope", "a.b", "a.b.c", "a.b.c.d.e"])
     def test_malformed_bearers_are_refused(self, bad):
         assert verify(bad) is None
 

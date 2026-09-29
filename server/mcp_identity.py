@@ -23,8 +23,6 @@ import hmac
 from contextvars import ContextVar
 from dataclasses import dataclass
 
-from .config import settings
-
 # Set per request by the ASGI middleware below and read by the tool bodies.
 # A ContextVar rather than a parameter because the MCP SDK owns the call path
 # between the HTTP request and the tool function, so there is nowhere to thread
@@ -40,27 +38,53 @@ class McpScope:
 
     session_id: str
     installation_id: str | None = None
+    # Whose call this is (multi-tenancy.md §7). Carried alongside the session
+    # rather than looked up from it, so a tool body that needs an owner has one
+    # without a round trip — and so the signature covers it, which is what
+    # stops a bearer being edited into somebody else's.
+    user_id: str | None = None
 
 
 def _sign(payload: str) -> str:
+    """Signed with the **master key**, not the access token.
+
+    It was the access token, from the era when that string was also the
+    encryption key and the client credential. Now that a password can change
+    and a bearer can be revoked, signing with either would invalidate every
+    tool call in a turn that is currently running the moment somebody changed
+    their password (multi-tenancy.md §7). The master key belongs to the
+    server, changes only when an operator rotates it, and is exactly the right
+    lifetime for this.
+    """
+    from .crypto import master_key
+
     return hmac.new(
-        settings.auth_token.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        master_key().encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
 
 def _payload(scope: McpScope) -> str:
-    return f"mcp:{scope.session_id}:{scope.installation_id or ''}"
+    return (
+        f"mcp:{scope.session_id}:{scope.installation_id or ''}:{scope.user_id or ''}"
+    )
 
 
-def mint(session_id: str, installation_id: str | None = None) -> str:
+def mint(
+    session_id: str,
+    installation_id: str | None = None,
+    user_id: str | None = None,
+) -> str:
     """The bearer for one session (and one connector installation, if any).
 
     The scope is carried in the clear alongside its signature so the server can
     tell *which* session is calling without a lookup table, while the signature
     is what makes the claim trustworthy. Nothing here is stored.
     """
-    scope = McpScope(session_id, installation_id)
-    return f"{scope.session_id}.{scope.installation_id or ''}.{_sign(_payload(scope))}"
+    scope = McpScope(session_id, installation_id, user_id)
+    return (
+        f"{scope.session_id}.{scope.installation_id or ''}."
+        f"{scope.user_id or ''}.{_sign(_payload(scope))}"
+    )
 
 
 def verify(bearer: str | None) -> McpScope | None:
@@ -72,12 +96,12 @@ def verify(bearer: str | None) -> McpScope | None:
     if not bearer:
         return None
     parts = bearer.split(".")
-    if len(parts) != 3:
+    if len(parts) != 4:
         return None
-    session_id, installation_id, signature = parts
+    session_id, installation_id, user_id, signature = parts
     if not session_id:
         return None
-    scope = McpScope(session_id, installation_id or None)
+    scope = McpScope(session_id, installation_id or None, user_id or None)
     if not hmac.compare_digest(signature, _sign(_payload(scope))):
         return None
     return scope

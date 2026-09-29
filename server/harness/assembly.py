@@ -63,6 +63,7 @@ def select_mcp_servers(
     connectors: list[tuple[Any, Any]],
     callback_env: dict[str, str],
     session_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[McpServerEntry]:
     """The built-in servers the agent enabled (None = all builtins) plus one
     entry per enabled connector installation. Order is stable: bg, ask, then
@@ -77,7 +78,7 @@ def select_mcp_servers(
     argv inspection, and it is the only remaining caller of the old shape.
     """
     if session_id:
-        return _http_entries(mcp_servers, connectors, session_id)
+        return _http_entries(mcp_servers, connectors, session_id, user_id)
     builtin_specs: dict[str, dict[str, Any]] = {
         "bg": {
             "command": sys.executable,
@@ -135,6 +136,7 @@ def _http_entries(
     mcp_servers: list[str] | None,
     connectors: list[tuple[Any, Any]],
     session_id: str,
+    user_id: str | None = None,
 ) -> list[McpServerEntry]:
     """The same namespaces, served over HTTP by this process.
 
@@ -156,7 +158,10 @@ def _http_entries(
         return McpServerEntry(
             key=key,
             url=f"{base}{mount_path(namespace)}/mcp",
-            credential=mint(session_id, installation_id),
+            # The bearer carries whose call this is as well as which session
+            # (multi-tenancy.md §7), so a tool body has an owner without a
+            # round trip and the signature covers it.
+            credential=mint(session_id, installation_id, user_id),
         )
 
     names = list(_BUILTIN_MODULES) if mcp_servers is None else [
