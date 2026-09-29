@@ -89,8 +89,9 @@ class AgentManager:
         agent = await self.db.get_agent(agent_id)
         assert agent is not None
         # Provision the agent's canonical memory/ dir up front; also ensured
-        # lazily per turn.
-        agent_memory.ensure_agent_dirs(agent_id)
+        # lazily per turn. Under the owner's root (multi-tenancy.md §6), so two
+        # accounts' agents cannot read each other's memory.
+        agent_memory.ensure_agent_dirs(agent_id, user_id)
         return agent
 
     async def update_agent(self, agent_id: str, **fields: Any) -> dict[str, Any]:
@@ -137,7 +138,7 @@ class AgentManager:
         # Restoring is choosing to use it again: it comes back to the sidebar
         # (where it was, if it was pinned when it left).
         await self.db.set_agent_pinned(agent_id, True)
-        agent_memory.ensure_agent_dirs(agent_id)
+        agent_memory.ensure_agent_dirs(agent_id, agent.get("user_id"))
         restored = await self.db.get_agent(agent_id)
         assert restored is not None
         return restored
@@ -186,7 +187,8 @@ class AgentManager:
             raise AgentError(
                 "Agent still has sessions; archive it instead of deleting"
             )
+        owner_id = agent.get("user_id")
         await self.db.delete_agent(agent_id)
         # Hard delete also removes the agent's memory dir. Archiving keeps it,
         # mirroring archived-session history.
-        agent_memory.remove_agent_dir(agent_id)
+        agent_memory.remove_agent_dir(agent_id, owner_id)

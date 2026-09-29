@@ -19,8 +19,12 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..auth import verify_token
+from ..bootstrap import BootstrapError, bootstrap_first_account
 from ..deps import AdminUser, CurrentUser, SessionMgr, UserMgr
 from ..models import (
+    AuthStateResponse,
+    BootstrapRequest,
+    BootstrapResponse,
     IdentityResponse,
     InviteCreateRequest,
     InviteInfo,
@@ -72,6 +76,48 @@ def _too_many_failures(key: str) -> bool:
 
 def _record_failure(key: str) -> None:
     _FAILURES.setdefault(key, []).append(time.monotonic())
+
+
+@router.get("/state", response_model=AuthStateResponse)
+async def auth_state() -> AuthStateResponse:
+    """Whether this install has accounts yet.
+
+    Unauthenticated, deliberately and narrowly: the sign-in screen cannot ask
+    the right question without it, and the answer — "has anybody set this box
+    up" — is already implied by whether the sign-in screen works at all.
+    """
+    from .. import deps
+
+    return AuthStateResponse(accounts_exist=await deps.accounts_exist())
+
+
+@router.post("/bootstrap", response_model=BootstrapResponse)
+async def bootstrap(
+    req: BootstrapRequest, users: UserMgr, _: str = Depends(verify_token)
+) -> BootstrapResponse:
+    """Create this install's first account, and hand it what is already here.
+
+    Authenticated with the install's own token, which is the only credential
+    that exists at this point and stops working the moment this succeeds — the
+    two facts are the same fact (§9). Refused outright once an account exists,
+    so it cannot be a second way in.
+    """
+    if _db is None:
+        raise HTTPException(503, "database not available")
+    try:
+        summary = await bootstrap_first_account(
+            _db, username=req.username, password=req.password
+        )
+    except BootstrapError as e:
+        raise HTTPException(e.status_code, e.message) from e
+
+    token = await users.issue_token(str(summary["user_id"]))
+    return BootstrapResponse(
+        token=token,
+        user_id=str(summary["user_id"]),
+        username=str(summary["username"]),
+        summary=summary,
+    )
 
 
 @router.post("/login", response_model=LoginResponse)

@@ -1524,8 +1524,10 @@ class TurnsMixin(SessionManagerBase):
         if session.agent_id:
             from .. import agent_memory
 
-            agent_memory.ensure_agent_dirs(session.agent_id)
-            memory_dir = str(agent_memory.agent_memory_dir(session.agent_id))
+            agent_memory.ensure_agent_dirs(session.agent_id, session.user_id)
+            memory_dir = str(
+                agent_memory.agent_memory_dir(session.agent_id, session.user_id)
+            )
 
         # Fork first-turn note (session-rewind.md §5.6.4): present while
         # the fork's ephemeral fork_metadata is set (i.e. before its first

@@ -500,6 +500,30 @@ class IdentityResponse(BaseModel):
     is_admin: bool = False
 
 
+class AuthStateResponse(BaseModel):
+    """Which era this install is in, for the sign-in screen.
+
+    Before the first account there is no username to ask for, and the way in
+    is the install's own token; after it, there is (multi-tenancy.md §9). The
+    screen has to know which question to ask, and this is the only thing it may
+    learn without being signed in.
+    """
+
+    accounts_exist: bool
+
+
+class BootstrapRequest(BaseModel):
+    username: str
+    password: str
+
+
+class BootstrapResponse(BaseModel):
+    token: str
+    user_id: str
+    username: str
+    summary: dict[str, object] = {}
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
