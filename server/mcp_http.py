@@ -157,20 +157,45 @@ class _ScopeMiddleware:
             await self.app(scope, receive, send)
             return
         bearer: str | None = None
-        for key, value in scope.get("headers") or []:
-            if key == b"authorization":
-                raw = value.decode("latin-1")
-                if raw.lower().startswith("bearer "):
-                    bearer = raw[7:].strip()
-                break
+        headers = dict(scope.get("headers") or [])
+        raw = headers.get(b"authorization", b"").decode("latin-1")
+        if raw.lower().startswith("bearer "):
+            bearer = raw[7:].strip()
         resolved = verify(bearer)
         if resolved is None:
             logger.warning("mcp/%s: call carried no verifiable scope", self.name)
         token = set_current_scope(resolved)
         try:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, self._log_bad_request(scope, headers, send))
         finally:
             reset_current_scope(token)
+
+    def _log_bad_request(self, scope: Scope, headers: dict[bytes, bytes], send: Send) -> Send:
+        """Log why the SDK answered 400, then pass the response through.
+
+        Every CLI start draws one 400 per namespace immediately before a
+        request that succeeds, and the Monitor records only the status; the
+        SDK's reason lives in the body. Logging it with the two headers the
+        SDK's 400 branches check is what tells those branches apart.
+        """
+        status = 0
+
+        async def wrapped(message: Any) -> None:
+            nonlocal status
+            if message["type"] == "http.response.start":
+                status = message["status"]
+            elif message["type"] == "http.response.body" and status == 400:
+                logger.info(
+                    "mcp/%s: %s -> 400 %s (mcp-session-id=%s, mcp-protocol-version=%s)",
+                    self.name,
+                    scope.get("method"),
+                    message.get("body", b"")[:300].decode("utf-8", "replace"),
+                    "present" if b"mcp-session-id" in headers else "absent",
+                    headers.get(b"mcp-protocol-version", b"-").decode("latin-1"),
+                )
+            await send(message)
+
+        return wrapped
 
 
 @contextlib.asynccontextmanager

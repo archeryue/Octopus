@@ -315,3 +315,29 @@ async def test_archive_session_without_replacement(client):
     assert old_id in [
         s["id"] for s in (await client.get("/api/sessions", headers=HEADERS)).json()
     ]
+
+
+@pytest.mark.asyncio
+async def test_answer_long_poll_timeout_is_not_recorded_as_an_error(client, monkeypatch):
+    """The answer long-poll's 408 is "no answer yet", and its duration is the
+    user's think time — the monitor tags it rather than counting an error."""
+    import server.main as main
+
+    events = []
+    monkeypatch.setattr(main, "_mon_record", events.append)
+    created = await client.post("/api/sessions", headers=HEADERS, json={"name": "Asker"})
+    sid = created.json()["id"]
+
+    resp = await client.get(
+        f"/api/sessions/{sid}/questions/q-unknown/answer?timeout=1", headers=HEADERS
+    )
+    assert resp.status_code == 408
+    poll = [e for e in events if e.detail["route"].endswith("/answer")]
+    assert len(poll) == 1
+    assert poll[0].error_code is None
+    assert poll[0].detail["long_poll"] is True
+
+    missing = await client.get("/api/sessions/nonexistent", headers=HEADERS)
+    assert missing.status_code == 404
+    assert events[-1].error_code == "404"
+    assert "long_poll" not in events[-1].detail
