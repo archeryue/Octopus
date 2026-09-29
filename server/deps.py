@@ -74,6 +74,34 @@ def get_user_manager() -> UserManager:
 
 UserMgr = Annotated[UserManager, Depends(get_user_manager)]
 
+_accounts_exist: bool | None = None
+
+
+async def accounts_exist() -> bool:
+    """Whether this install has any account at all.
+
+    The answer is the difference between a site and a single-user install, and
+    it is what lets the legacy `OCTOPUS_AUTH_TOKEN` keep working right up until
+    the moment the first account is created and not one request after
+    (multi-tenancy.md §9). Cached because it is consulted on every
+    unauthenticated request and the answer only ever goes False → True.
+    """
+    global _accounts_exist
+    if _accounts_exist:
+        return True
+    if _user_manager is None:
+        return False
+    _accounts_exist = await _user_manager.db.count_users() > 0
+    return _accounts_exist
+
+
+def forget_accounts_exist() -> None:
+    """Drop the cached answer. Called when an account is created, and by tests
+    that build a fresh database under the same process."""
+    global _accounts_exist
+    _accounts_exist = None
+
+
 _bearer = HTTPBearer(auto_error=False)
 
 # Annotated rather than `= Depends(...)` defaults, which is the style this

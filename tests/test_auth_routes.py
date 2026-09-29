@@ -13,8 +13,10 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from server import deps
+from server.agent_manager import AgentManager
 from server.database import Database
 from server.main import app
+from server.routers import agents as agents_router
 from server.routers import auth as auth_router
 from server.session_manager import session_manager
 from server.users import UserManager
@@ -35,6 +37,8 @@ async def client(tmp_path, monkeypatch):
     session_manager.sessions.clear()
     await session_manager.initialize(db)
     auth_router.set_db(db)
+    # The routes these tests reach through, bound the way main.py binds them.
+    agents_router.set_manager(AgentManager(db))
     users = UserManager(db)
     deps.set_user_manager(users)
     auth_router._FAILURES.clear()
@@ -277,3 +281,60 @@ async def test_disabling_an_account_ends_its_sessions_now(client):
     assert (
         await c.get("/api/auth/identity", headers=_bearer(victim_token))
     ).status_code == 401, "a disabled account kept its bearer"
+
+
+# ---------------------------------------------------------------------------
+# The two eras (multi-tenancy.md §9)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_legacy_token_opens_an_install_with_no_accounts(client):
+    """Before the first account exists this is still the single-user install
+    it has always been, and its token is how an upgrade gets in to create that
+    account. Without this, upgrading would lock the box."""
+    from server.config import settings
+
+    c, _users, _db = client
+    res = await c.get("/api/sessions", headers=_bearer(settings.auth_token))
+    assert res.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_legacy_token_dies_the_moment_an_account_exists(client):
+    """The whole defence of keeping it at all: it is self-limiting. There is
+    no setting that brings it back, and no account it can impersonate."""
+    from server.config import settings
+
+    c, users, _db = client
+    assert (
+        await c.get("/api/sessions", headers=_bearer(settings.auth_token))
+    ).status_code == 200
+
+    await users.create_user(username="archer", password="password1")
+
+    assert (
+        await c.get("/api/sessions", headers=_bearer(settings.auth_token))
+    ).status_code == 401, "the global token outlived the first account"
+
+
+@pytest.mark.asyncio
+async def test_a_session_bearer_opens_the_ordinary_routes(client):
+    """The replacement works on the surface the global token used to open,
+    which is what makes retiring it possible rather than theoretical."""
+    c, users, _db = client
+    user = await users.create_user(username="archer", password="password1")
+    token = await users.issue_token(user["id"])
+
+    assert (await c.get("/api/sessions", headers=_bearer(token))).status_code == 200
+    assert (await c.get("/api/agents", headers=_bearer(token))).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_a_personal_access_token_works_where_a_session_does(client):
+    """What scripts and the CLI use once the global token is gone (§3.1)."""
+    c, users, _db = client
+    user = await users.create_user(username="archer", password="password1")
+    pat = await users.issue_token(user["id"], kind="pat", label="a script")
+
+    assert (await c.get("/api/sessions", headers=_bearer(pat))).status_code == 200

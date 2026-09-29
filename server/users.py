@@ -192,6 +192,9 @@ class UserManager:
         to decide what to do about it, and "create it lazily" is how two halves
         of a system end up disagreeing about whether one exists.
         """
+        from . import deps
+
+        deps.forget_accounts_exist()
         return await self.db.create_user(
             user_id=uuid.uuid4().hex[:12],
             username=username,

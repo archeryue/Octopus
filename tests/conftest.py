@@ -89,6 +89,27 @@ def _surviving_cli_pids() -> list[int]:
 
 
 @pytest.fixture(autouse=True)
+def _accounts_start_empty():
+    """Every test begins in the pre-accounts era.
+
+    `deps._user_manager` and the cached "does this install have accounts"
+    answer are module globals, so a test that creates an account would
+    otherwise decide, for every test after it in the process, that the legacy
+    `OCTOPUS_AUTH_TOKEN` no longer opens anything — and leave a manager bound
+    to a database that has since been closed. Reset for the same reason
+    `session_manager.sessions.clear()` appears everywhere: shared state that
+    outlives a test is not state, it is a haunting.
+    """
+    from server import deps
+
+    deps._user_manager = None
+    deps.forget_accounts_exist()
+    yield
+    deps._user_manager = None
+    deps.forget_accounts_exist()
+
+
+@pytest.fixture(autouse=True)
 def _no_cli_left_behind(request):
     """Release every CLI a real test started, whether or not it remembered to.
 
