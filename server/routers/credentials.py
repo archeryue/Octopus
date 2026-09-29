@@ -374,6 +374,13 @@ async def oauth_complete(
         auth_type=AuthType.oauth.value,
         secret_encrypted=secret_encrypted,
         created_at=created_at,
+        # The owner — missing here was the bug that made a Claude sign-in
+        # "disappear": the secret was encrypted with the account's DEK
+        # (`secret_key` above) but the row was left unowned, so it fell out of
+        # the account's scoped credential list AND later decrypted with the
+        # wrong key (`data_key_for(None)` = the install token), and every turn
+        # ran without the credential.
+        user_id=user_id,
     )
     if token_expires_at is not None:
         await db.update_credential(cid, token_expires_at=token_expires_at)

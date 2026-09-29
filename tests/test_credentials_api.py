@@ -773,3 +773,78 @@ async def test_backends_lists_a_model_shortlist_per_backend(client):
     assert body["models"]["claude-code"] == ["opus", "sonnet", "haiku"]
     # Every listed backend has an entry, even when its shortlist is empty.
     assert set(body["models"]) == set(body["available"])
+
+
+@pytest.mark.asyncio
+async def test_a_claude_signin_credential_belongs_to_the_account(client, monkeypatch):
+    """The bug that made Nancy's Claude sign-in "disappear": oauth/complete
+    encrypted the secret with the account's key but saved the row with no
+    owner. So it fell out of her scoped credential list, and every turn
+    decrypted it with the wrong key (the install token) and ran without it.
+
+    This drives the real route as a real account and checks the row is owned,
+    is listed for that account, and decrypts with that account's data key.
+    """
+    from server import deps, oauth_login
+    from server.config import settings
+    from server.users import UserManager
+
+    c, db = client
+    monkeypatch.setattr(settings, "master_key", "test-master-key")
+    monkeypatch.setattr(settings, "users_root", "/tmp/octopus-cred-test-users")
+    from server import crypto
+
+    crypto._MASTER_CACHE.clear()
+
+    users = UserManager(db)
+    deps.set_user_manager(users)
+    creds_router.set_db(db)
+    try:
+        nancy = await users.create_user(username="nancy", password="password1")
+        token = await users.issue_token(nancy["id"])
+        acct = {"Authorization": f"Bearer {token}"}
+
+        async def fake_submit(self, login_id, code):
+            return _StubLoginSession(
+                oauth_login.LoginState.success,
+                token="sk-ant-nancy-oauth-key-1234567890",
+            )
+
+        monkeypatch.setattr(oauth_login.OAuthLoginManager, "submit_code", fake_submit)
+        # The login record must resolve to *this* account, since only the
+        # account that started a sign-in may finish it.
+        monkeypatch.setattr(
+            oauth_login.OAuthLoginManager,
+            "get",
+            lambda self, lid: _make_login_for(nancy["id"]),
+        )
+
+        res = await c.post(
+            "/api/credentials/oauth/complete",
+            json={"login_id": "login-xyz", "code": "the-code", "label": "Claude"},
+            headers=acct,
+        )
+        assert res.status_code == 201, res.text
+        cid = res.json()["id"]
+
+        # Owned by Nancy.
+        row = await db.get_credential(cid)
+        assert row["user_id"] == nancy["id"], "the credential has no owner"
+
+        # Shows up in HER scoped list (the "it disappeared" symptom).
+        listed = await c.get("/api/credentials", headers=acct)
+        assert cid in {x["id"] for x in listed.json()}
+
+        # And decrypts with her data key — the same key the row's owner selects,
+        # so a turn actually gets the credential instead of running without it.
+        key = users.data_key(await db.get_user(nancy["id"]))
+        assert decrypt(row["secret_encrypted"], key).startswith("sk-ant-nancy")
+    finally:
+        deps.set_user_manager(None)
+        deps.forget_accounts_exist()
+
+
+def _make_login_for(user_id: str):
+    s = _StubLoginSession(None)
+    s.user_id = user_id
+    return s
