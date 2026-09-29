@@ -43,6 +43,12 @@ _SCRYPT_R = 8
 _SCRYPT_P = 1
 _DKLEN = 32
 
+# A signed-in browser holds this in localStorage and is not asked to log in
+# again until it lapses. Thirty days is the "remember me" window: long enough
+# that day-to-day use never sees the login screen, finite so a forgotten
+# session does not live for ever. Changing a password or disabling the account
+# still revokes every session at once (set_password / set_disabled), so the
+# window is not a way around either.
 SESSION_TTL = timedelta(days=30)
 
 _USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{2,31}$")

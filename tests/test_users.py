@@ -400,3 +400,23 @@ class TestOwnership:
         cursor = await db.conn.execute("SELECT DISTINCT user_id FROM agents")
         owners = {r[0] for r in await cursor.fetchall()}
         assert owners == {first["id"]}
+
+
+@pytest.mark.asyncio
+async def test_a_session_token_is_long_lived_but_still_expires(users):
+    """A signed-in browser is not asked to log in again for 30 days — but the
+    token must still carry an expiry, so a forgotten one does not live for
+    ever."""
+    from datetime import UTC, datetime
+
+    from server.users import SESSION_TTL
+
+    assert SESSION_TTL.days == 30, "the remember-me window"
+
+    mgr, db = users
+    user = await mgr.create_user(username="trip", password="password1")
+    token = await mgr.issue_token(user["id"])
+    row = await db.get_token(token_digest(token))
+    assert row["expires_at"] is not None, "a session token with no expiry lives for ever"
+    remaining = datetime.fromisoformat(row["expires_at"]) - datetime.now(UTC)
+    assert 28 <= remaining.days <= 30
