@@ -158,10 +158,31 @@ def test_scope_token_is_per_app_and_not_the_master_token():
     assert not is_app_scope_token("app-a", None)
 
 
-def test_scope_token_follows_the_master_token(monkeypatch):
+def test_scope_token_follows_the_master_key(monkeypatch):
+    """Rotating the server's master key rotates every application's token with
+    it, which is the whole reason this is derived rather than stored.
+
+    It used to follow `OCTOPUS_AUTH_TOKEN`. With accounts that is the wrong
+    lifetime (multi-tenancy.md §7): a token belonging to a *person* would have
+    locked every running application backend out the moment somebody changed
+    their password.
+    """
+    from server import crypto
+
+    monkeypatch.setattr(settings, "master_key", "master-key-one")
+    crypto._MASTER_CACHE.clear()
     before = app_scope_token("app-a")
-    monkeypatch.setattr(settings, "auth_token", "rotated-secret")
+
+    monkeypatch.setattr(settings, "master_key", "master-key-two")
+    crypto._MASTER_CACHE.clear()
     assert app_scope_token("app-a") != before
+
+    # And a person's credential no longer moves it.
+    monkeypatch.setattr(settings, "auth_token", "some-other-token")
+    assert app_scope_token("app-a") != before
+    monkeypatch.setattr(settings, "master_key", "master-key-one")
+    crypto._MASTER_CACHE.clear()
+    assert app_scope_token("app-a") == before
 
 
 def test_backend_scripts_get_the_agent_api_but_never_the_master_token():

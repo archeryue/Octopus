@@ -61,18 +61,26 @@ class ApplicationError(Exception):
 def app_scope_token(app_id: str) -> str:
     """The credential an application's *backend* uses to reach Octopus.
 
-    Derived, not stored: ``HMAC-SHA256(auth_token, "app:<id>")``. It opens
+    Derived, not stored: ``HMAC-SHA256(master_key, "app:<id>")``. It opens
     exactly one application's ``/apps/<id>/…`` surface and nothing else, which
     is what lets a backend hold a conversation with an agent without ever
-    seeing the master token — the promise ``script_env`` makes by refusing to
-    inherit the server's environment (application-backends.md §4).
+    seeing a user's credential — the promise ``script_env`` makes by refusing
+    to inherit the server's environment (application-backends.md §4).
 
-    Deriving it means there is no new secret to store, back up or leak, and
-    rotating ``OCTOPUS_AUTH_TOKEN`` rotates every app's token with it.
+    Keyed on the **master key** since accounts (multi-tenancy.md §7). It was
+    keyed on `OCTOPUS_AUTH_TOKEN`, which is being retired — and more to the
+    point, a token that belongs to a person is the wrong lifetime for a
+    credential a *server process* holds: every running application backend
+    would have been locked out the moment somebody changed their password.
+
+    Still derived, so there is no new secret to store, back up or leak, and
+    rotating the master key rotates every app's token with it.
     (app-agent-access.md §4)
     """
+    from .crypto import master_key
+
     return hmac.new(
-        settings.auth_token.encode("utf-8"),
+        master_key().encode("utf-8"),
         f"app:{app_id}".encode(),
         hashlib.sha256,
     ).hexdigest()
