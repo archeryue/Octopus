@@ -591,6 +591,13 @@ export interface paths {
          *     same rows — the transcript lives in the database either way — so this does
          *     not care which the id refers to; it only refuses an id with no rows at all,
          *     which is the same 404 as opening it.
+         *
+         *     The archived fallback has to carry the scope too. It reads the database
+         *     rather than the in-memory map, so a bare "does a row with this id exist"
+         *     answered *yes* for another account's session and handed over the transcript
+         *     — the live lookup above was scoped and this one silently was not. It is the
+         *     exact shape of leak that makes per-route scoping a bad idea, and the
+         *     cross-tenant test is what found it.
          */
         get: operations["older_messages_api_sessions__session_id__messages_get"];
         put?: never;
@@ -1365,6 +1372,145 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Auth State
+         * @description Whether this install has accounts yet.
+         *
+         *     Unauthenticated, deliberately and narrowly: the sign-in screen cannot ask
+         *     the right question without it, and the answer — "has anybody set this box
+         *     up" — is already implied by whether the sign-in screen works at all.
+         */
+        get: operations["auth_state_api_auth_state_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bootstrap
+         * @description Create this install's first account, and hand it what is already here.
+         *
+         *     Authenticated with the install's own token, which is the only credential
+         *     that exists at this point and stops working the moment this succeeds — the
+         *     two facts are the same fact (§9). Refused outright once an account exists,
+         *     so it cannot be a second way in.
+         */
+        post: operations["bootstrap_api_auth_bootstrap_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Login
+         * @description Sign in and receive a session bearer.
+         *
+         *     The password is never a bearer: it is spent here, once, for a token that
+         *     can be revoked without changing it.
+         */
+        post: operations["login_api_auth_login_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register
+         * @description Create an account against an invite code, and sign it in.
+         *
+         *     Signed in on success because the alternative is asking someone to type the
+         *     password they just chose, which teaches nothing and only loses people.
+         */
+        post: operations["register_api_auth_register_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Logout
+         * @description Revoke the bearer this request came with — this device only.
+         */
+        post: operations["logout_api_auth_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Change Password
+         * @description Change your own password, which signs your other devices out.
+         *
+         *     The current password is required even though the request is already
+         *     authenticated: a bearer left behind on a shared machine must not be enough
+         *     to take the account over.
+         */
+        post: operations["change_password_api_auth_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/identity": {
         parameters: {
             query?: never;
@@ -1374,15 +1520,90 @@ export interface paths {
         };
         /**
          * Identity
-         * @description The operator's handle, for the sidebar.
+         * @description Who you are, for the sidebar's account row.
          *
-         *     Authenticated, so it tells nothing to anyone not already holding the token,
-         *     and it returns `OCTOPUS_USER_LABEL` rather than the token, which is the
-         *     whole point: the account row is visible on screen at all times.
+         *     It used to answer `OCTOPUS_USER_LABEL` — a single-user install's idea of a
+         *     name. Now it answers the account's own username, which is the same field
+         *     doing the same job for a site with several people on it.
          */
         get: operations["identity_api_auth_identity_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/invites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Invites */
+        get: operations["list_invites_api_auth_invites_get"];
+        put?: never;
+        /** Create Invite */
+        post: operations["create_invite_api_auth_invites_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/invites/{code}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke Invite */
+        delete: operations["revoke_invite_api_auth_invites__code__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Users */
+        get: operations["list_users_api_auth_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/users/{user_id}/disabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set User Disabled
+         * @description Disable or restore an account.
+         *
+         *     An admin cannot disable themselves: the one way to end up with a site
+         *     nobody can administer is to allow it.
+         */
+        post: operations["set_user_disabled_api_auth_users__user_id__disabled_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2183,6 +2404,19 @@ export interface components {
             mime_type: string;
         };
         /**
+         * AuthStateResponse
+         * @description Which era this install is in, for the sign-in screen.
+         *
+         *     Before the first account there is no username to ask for, and the way in
+         *     is the install's own token; after it, there is (multi-tenancy.md §9). The
+         *     screen has to know which question to ask, and this is the only thing it may
+         *     learn without being signed in.
+         */
+        AuthStateResponse: {
+            /** Accounts Exist */
+            accounts_exist: boolean;
+        };
+        /**
          * AuthType
          * @enum {string}
          */
@@ -2196,6 +2430,29 @@ export interface components {
         Body_upload_attachment_api_sessions__session_id__attachments_post: {
             /** File */
             file: string;
+        };
+        /** BootstrapRequest */
+        BootstrapRequest: {
+            /** Username */
+            username: string;
+            /** Password */
+            password: string;
+        };
+        /** BootstrapResponse */
+        BootstrapResponse: {
+            /** Token */
+            token: string;
+            /** User Id */
+            user_id: string;
+            /** Username */
+            username: string;
+            /**
+             * Summary
+             * @default {}
+             */
+            summary: {
+                [key: string]: unknown;
+            };
         };
         /** CancelDelegationRequest */
         CancelDelegationRequest: {
@@ -2548,10 +2805,21 @@ export interface components {
         /**
          * IdentityResponse
          * @description Who the account row says you are — a label, deliberately not the token.
+         *
+         *     `label` is the username now (multi-tenancy.md §3): the field that used to
+         *     carry `OCTOPUS_USER_LABEL` carries the account's own name, so the sidebar
+         *     needed a different value rather than a different shape.
          */
         IdentityResponse: {
             /** Label */
             label: string;
+            /** User Id */
+            user_id?: string | null;
+            /**
+             * Is Admin
+             * @default false
+             */
+            is_admin: boolean;
         };
         /** ImportSessionRequest */
         ImportSessionRequest: {
@@ -2575,6 +2843,62 @@ export interface components {
              * @default []
              */
             messages: components["schemas"]["MessageContent"][];
+        };
+        /** InviteCreateRequest */
+        InviteCreateRequest: {
+            /**
+             * Max Uses
+             * @default 1
+             */
+            max_uses: number;
+            /**
+             * Ttl Days
+             * @default 14
+             */
+            ttl_days: number | null;
+        };
+        /** InviteInfo */
+        InviteInfo: {
+            /** Code */
+            code: string;
+            /** Created At */
+            created_at: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Max Uses */
+            max_uses: number;
+            /** Used Count */
+            used_count: number;
+            /** Revoked At */
+            revoked_at?: string | null;
+        };
+        /** LoginRequest */
+        LoginRequest: {
+            /** Username */
+            username: string;
+            /** Password */
+            password: string;
+        };
+        /**
+         * LoginResponse
+         * @description The bearer, and who it belongs to.
+         *
+         *     The token is readable exactly once — here. The row keeps a digest, so this
+         *     reply is the only opportunity to store it, which is why it comes back with
+         *     the identity rather than needing a second call to find out who you are.
+         */
+        LoginResponse: {
+            /** Token */
+            token: string;
+            /** User Id */
+            user_id: string;
+            /** Username */
+            username: string;
+            /**
+             * Is Admin
+             * @default false
+             */
+            is_admin: boolean;
         };
         /** MessageContent */
         MessageContent: {
@@ -2695,6 +3019,13 @@ export interface components {
             /** Device Url */
             device_url: string;
         };
+        /** PasswordChangeRequest */
+        PasswordChangeRequest: {
+            /** Current Password */
+            current_password: string;
+            /** New Password */
+            new_password: string;
+        };
         /** PendingQuestionInfo */
         PendingQuestionInfo: {
             /** Question Id */
@@ -2712,6 +3043,15 @@ export interface components {
         PinOrderRequest: {
             /** Ids */
             ids: string[];
+        };
+        /** RegisterRequest */
+        RegisterRequest: {
+            /** Invite Code */
+            invite_code: string;
+            /** Username */
+            username: string;
+            /** Password */
+            password: string;
         };
         /**
          * ScheduleFromTextRequest
@@ -3159,6 +3499,31 @@ export interface components {
             /** Enabled */
             enabled?: boolean | null;
         };
+        /**
+         * UserDisabledRequest
+         * @description Disable or restore an account — a body, not a query string.
+         *
+         *     A state change reads better as something you send than as something you
+         *     append to a URL, and it keeps this route the same shape as every other
+         *     write on the auth router.
+         */
+        UserDisabledRequest: {
+            /** Disabled */
+            disabled: boolean;
+        };
+        /** UserInfo */
+        UserInfo: {
+            /** Id */
+            id: string;
+            /** Username */
+            username: string;
+            /** Is Admin */
+            is_admin: boolean;
+            /** Created At */
+            created_at: string;
+            /** Disabled At */
+            disabled_at?: string | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -3185,6 +3550,7 @@ export interface operations {
         parameters: {
             query?: {
                 include_archived?: boolean;
+                token?: string | null;
             };
             header?: never;
             path?: never;
@@ -3214,7 +3580,9 @@ export interface operations {
     };
     create_agent_api_agents_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3247,7 +3615,9 @@ export interface operations {
     };
     reorder_agent_pins_api_agents_pin_order_put: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -3280,7 +3650,9 @@ export interface operations {
     };
     get_agent_api_agents__agent_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3311,7 +3683,9 @@ export interface operations {
     };
     delete_agent_api_agents__agent_id__delete: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3340,7 +3714,9 @@ export interface operations {
     };
     update_agent_api_agents__agent_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3375,7 +3751,9 @@ export interface operations {
     };
     archive_agent_api_agents__agent_id__archive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3406,7 +3784,9 @@ export interface operations {
     };
     unarchive_agent_api_agents__agent_id__unarchive_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3437,7 +3817,9 @@ export interface operations {
     };
     pin_agent_api_agents__agent_id__pin_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3468,7 +3850,9 @@ export interface operations {
     };
     unpin_agent_api_agents__agent_id__unpin_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3499,7 +3883,9 @@ export interface operations {
     };
     list_agent_sessions_api_agents__agent_id__sessions_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3530,7 +3916,9 @@ export interface operations {
     };
     create_agent_session_api_agents__agent_id__sessions_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3565,7 +3953,9 @@ export interface operations {
     };
     list_agent_schedules_api_agents__agent_id__schedules_get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3596,7 +3986,9 @@ export interface operations {
     };
     create_agent_schedule_api_agents__agent_id__schedules_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -3631,7 +4023,9 @@ export interface operations {
     };
     create_agent_schedule_from_text_api_agents__agent_id__schedules_from_text_post: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 agent_id: string;
@@ -4307,6 +4701,7 @@ export interface operations {
         parameters: {
             query?: {
                 include_archived?: boolean;
+                token?: string | null;
             };
             header?: never;
             path?: never;
@@ -4369,7 +4764,9 @@ export interface operations {
     };
     get_session_api_sessions__session_id__get: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -4429,7 +4826,9 @@ export interface operations {
     };
     update_session_api_sessions__session_id__patch: {
         parameters: {
-            query?: never;
+            query?: {
+                token?: string | null;
+            };
             header?: never;
             path: {
                 session_id: string;
@@ -4501,6 +4900,7 @@ export interface operations {
                 /** @description Return messages with seq < this */
                 before_seq: number;
                 limit?: number;
+                token?: string | null;
             };
             header?: never;
             path: {
@@ -6031,7 +6431,7 @@ export interface operations {
             };
         };
     };
-    identity_api_auth_identity_get: {
+    auth_state_api_auth_state_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -6046,7 +6446,364 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
+                    "application/json": components["schemas"]["AuthStateResponse"];
+                };
+            };
+        };
+    };
+    bootstrap_api_auth_bootstrap_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BootstrapResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    login_api_auth_login_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_api_auth_register_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    logout_api_auth_logout_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    change_password_api_auth_password_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PasswordChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    identity_api_auth_identity_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
                     "application/json": components["schemas"]["IdentityResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invites_api_auth_invites_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_invite_api_auth_invites_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InviteInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invite_api_auth_invites__code__delete: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path: {
+                code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_users_api_auth_users_get: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserInfo"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_user_disabled_api_auth_users__user_id__disabled_post: {
+        parameters: {
+            query?: {
+                token?: string | null;
+            };
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserDisabledRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -255,7 +255,9 @@ async def test_an_admin_cannot_disable_themselves(client):
     token = await users.issue_token(admin["id"])
 
     res = await c.post(
-        f"/api/auth/users/{admin['id']}/disabled?disabled=true", headers=_bearer(token)
+        f"/api/auth/users/{admin['id']}/disabled",
+        json={"disabled": True},
+        headers=_bearer(token),
     )
     assert res.status_code == 400
 
@@ -274,7 +276,8 @@ async def test_disabling_an_account_ends_its_sessions_now(client):
     ).status_code == 200
 
     res = await c.post(
-        f"/api/auth/users/{victim['id']}/disabled?disabled=true",
+        f"/api/auth/users/{victim['id']}/disabled",
+        json={"disabled": True},
         headers=_bearer(admin_token),
     )
     assert res.status_code == 200 and res.json()["disabled_at"]

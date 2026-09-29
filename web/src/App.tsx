@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { IconMenu2 } from "@tabler/icons-react";
+import { AccountPage } from "./components/AccountPage";
 import { AgentFormPage } from "./components/AgentFormPage";
 import { ApplicationFormPage } from "./components/ApplicationFormPage";
 import { ApplicationView } from "./components/ApplicationView";
@@ -17,9 +18,7 @@ import { SidebarAgents } from "./components/SidebarAgents";
 import { SidebarApplications } from "./components/SidebarApplications";
 import { SidebarEdgeToggle } from "./components/SidebarEdgeToggle";
 import { SidebarManage } from "./components/SidebarManage";
-import { Button } from "./components/ui/button";
-import { Input } from "./components/ui/input";
-import { Label } from "./components/ui/label";
+import { SignIn } from "./components/SignIn";
 import { useViewportHeight } from "./hooks/useViewportHeight";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { useSessionStore } from "./stores/sessionStore";
@@ -28,48 +27,8 @@ function App() {
   useViewportHeight();
   const token = useSessionStore((s) => s.token);
   const setToken = useSessionStore((s) => s.setToken);
-  const [tokenInput, setTokenInput] = useState("");
 
-  if (!token) {
-    const submit = () => {
-      if (tokenInput.trim()) setToken(tokenInput.trim());
-    };
-    return (
-      <div className="login-screen flex min-h-screen items-center justify-center bg-gray-50 p-6">
-        <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-card p-8 shadow-[0_24px_60px_-28px_rgba(28,44,72,0.28)]">
-          <h1 className="mb-6 text-2xl font-bold tracking-tight text-gray-950">
-            Octopus
-          </h1>
-          <p className="mb-6 text-sm leading-relaxed text-gray-800">
-            Enter your access token to continue.
-          </p>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="token">Token</Label>
-              <Input
-                id="token"
-                type="password"
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                enterKeyHint="go"
-                value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submit();
-                }}
-                placeholder="Paste your token"
-                autoFocus
-              />
-            </div>
-            <Button className="btn-login w-full" onClick={submit}>
-              Connect
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  if (!token) return <SignIn onSignedIn={setToken} />;
 
   return <AuthenticatedApp />;
 }
@@ -87,6 +46,17 @@ function AuthenticatedApp() {
   const [archivedOpen, setArchivedOpen] = useState(false);
 
   const signOut = () => {
+    // Hand the bearer back before forgetting it — a token the server still
+    // honours is one whoever finds it can use (multi-tenancy.md §3). Best
+    // effort: the install's own token has nothing to revoke, and an
+    // unreachable server must not trap anybody on a signed-in screen.
+    const bearer = useSessionStore.getState().token;
+    if (bearer) {
+      void fetch(`${window.location.origin}/api/auth/logout`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${bearer}` },
+      }).catch(() => {});
+    }
     setToken("");
     window.location.reload();
   };
@@ -178,6 +148,9 @@ function AuthenticatedApp() {
         )}
         {mainView === "monitor" && (
           <MonitorPage onToggleSidebar={toggleSidebar} />
+        )}
+        {mainView === "account" && (
+          <AccountPage onToggleSidebar={toggleSidebar} />
         )}
       </div>
 

@@ -125,7 +125,8 @@ export type MainView =
   | "schedules"
   | "connectors"
   | "harness"
-  | "monitor";
+  | "monitor"
+  | "account";
 
 export type PageTab = "all" | "form";
 
@@ -173,7 +174,9 @@ interface SessionStore {
   // them; the sidebar shows them until they're opened (sidebar-pins.md §5).
   unseenFailedApplications: string[];
   noteApplicationFailed: (id: string) => void;
-  openManage: (view: "schedules" | "connectors" | "harness" | "monitor") => void;
+  openManage: (
+    view: "schedules" | "connectors" | "harness" | "monitor" | "account"
+  ) => void;
   showChat: () => void;
 
   // Which AI backends this host can run (GET /api/backends). 'claude-code'

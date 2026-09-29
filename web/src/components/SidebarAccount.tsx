@@ -4,6 +4,7 @@ import {
   IconCopy,
   IconLogout,
   IconSettings,
+  IconUser,
   IconUserCog,
 } from "@tabler/icons-react";
 import { useSessionStore } from "../stores/sessionStore";
@@ -21,12 +22,14 @@ import {
  * mono — rather than a settings gear, and it stays the single home for
  * app-level actions: there are no gear icons anywhere else in the sidebar.
  *
- * The handle is a **label** (`OCTOPUS_USER_LABEL`, via `/api/auth/identity`),
- * never the token. It used to be the token, on the reasoning that in
- * single-user mode the token is the identity — but the account row is on screen
- * permanently, so that put the credential in every screenshot, screen share and
- * over-the-shoulder glance. Copying it is still one click; *displaying* it is
- * not something the user ever asked for.
+ * The handle is a **label** (via `/api/auth/identity`), never the token. It
+ * used to be the token, on the reasoning that in single-user mode the token is
+ * the identity — but the account row is on screen permanently, so that put the
+ * credential in every screenshot, screen share and over-the-shoulder glance.
+ * Copying it is still one click; *displaying* it is not something the user ever
+ * asked for. Since accounts (multi-tenancy.md §3) the label is the account's
+ * own username, which is the same field doing the same job on a site with
+ * several people on it.
  */
 export function SidebarAccount({
   onSignOut,
@@ -40,6 +43,7 @@ export function SidebarAccount({
   const agents = useSessionStore((s) => s.agents);
   const activeAgentId = useSessionStore((s) => s.activeAgentId);
   const openAgentForm = useSessionStore((s) => s.openAgentForm);
+  const openManage = useSessionStore((s) => s.openManage);
 
   const token = useSessionStore((s) => s.token);
   const [label, setLabel] = useState("");
@@ -98,6 +102,13 @@ export function SidebarAccount({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="w-56">
+        <DropdownMenuItem
+          className="menu-account"
+          onClick={() => openManage("account")}
+        >
+          <IconUser size={15} />
+          Account
+        </DropdownMenuItem>
         <DropdownMenuItem className="menu-settings" onClick={onOpenSettings}>
           <IconSettings size={15} />
           Settings

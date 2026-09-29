@@ -34,6 +34,7 @@ from ..models import (
     RegisterRequest,
     TokenRotateRequest,
     TokenRotateResponse,
+    UserDisabledRequest,
     UserInfo,
 )
 from ..token_rotation import TokenRotationError, rotate_auth_token
@@ -257,7 +258,7 @@ async def list_users(users: UserMgr, _admin: AdminUser) -> list[UserInfo]:
 
 @router.post("/users/{user_id}/disabled", response_model=UserInfo)
 async def set_user_disabled(
-    user_id: str, disabled: bool, users: UserMgr, admin: AdminUser
+    user_id: str, req: UserDisabledRequest, users: UserMgr, admin: AdminUser
 ) -> UserInfo:
     """Disable or restore an account.
 
@@ -269,7 +270,7 @@ async def set_user_disabled(
             status.HTTP_400_BAD_REQUEST, "You cannot disable your own account"
         )
     try:
-        await users.set_disabled(user_id, disabled)
+        await users.set_disabled(user_id, req.disabled)
     except UserError as e:
         raise HTTPException(e.status_code, e.message) from e
     row = await users.db.get_user(user_id)

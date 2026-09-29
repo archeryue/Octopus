@@ -568,6 +568,17 @@ class InviteInfo(BaseModel):
     revoked_at: str | None = None
 
 
+class UserDisabledRequest(BaseModel):
+    """Disable or restore an account — a body, not a query string.
+
+    A state change reads better as something you send than as something you
+    append to a URL, and it keeps this route the same shape as every other
+    write on the auth router.
+    """
+
+    disabled: bool
+
+
 class UserInfo(BaseModel):
     id: str
     username: str
