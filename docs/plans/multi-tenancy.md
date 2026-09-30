@@ -388,3 +388,12 @@ database first.
   containers, where the export script from §5 is the migration anyway.
 * **Audit logging.** Cheap to add later and valueless without a trust boundary
   to audit against.
+* **Re-scoping token rotation for per-account keys** — *known gap, not yet
+  fixed.* `token_rotation.py` predates §4's key hierarchy: it still re-keys
+  *every* `credential_secrets` / `connector_*` row with the access token, but
+  account secrets are now encrypted under their per-user DEK, not the token. So
+  `POST /api/auth/rotate` raises `InvalidToken` on the first account-owned
+  secret and rolls back — it fails **safe** (nothing corrupted) but rotation is
+  **blocked** whenever any account has stored a credential. The fix is to limit
+  rotation to `user_id IS NULL` (install-era) secrets and leave DEK-keyed rows
+  alone. See [`token-rotation.md`](token-rotation.md) §6.

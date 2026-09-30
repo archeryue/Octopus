@@ -3,8 +3,9 @@
 Recorded against **codex-cli 0.132.0** (`~/.nvm/versions/node/v22.16.0/bin/codex`),
 confirmed on a **live, logged-in ChatGPT subscription** (2026-05-19, Phase C of
 `plans/codex-backend.md`). Sibling of `cli-protocol-notes.md` (the Claude CLI).
-The normalizer lives in `server/backends/codex.py`; the fake CLI that scripts
-these shapes is `tests/_fixtures/fake_codex_cli.py`.
+The normalizer lives in `server/harness/codex.py` (formerly
+`server/backends/codex.py`, before the harness-layer refactor); the fake CLI
+that scripts these shapes is `tests/_fixtures/fake_codex_cli.py`.
 
 ## Spawn command
 

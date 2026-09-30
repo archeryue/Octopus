@@ -111,3 +111,30 @@ secrets, a "helpful" fallback is a loaded gun.
   in-process by design.
 * **Per-device tokens.** The real answer to "one device leaked" is a token per
   client, which is a different design (issue, list, revoke) and a bigger UI.
+
+## 6. Known gap: not re-scoped for multi-tenancy (to fix later)
+
+This feature was designed when the access token was the key for *every* stored
+secret. [`multi-tenancy.md`](multi-tenancy.md) §4 changed that: an account's
+credentials and connector tokens are now encrypted under its own **DEK** (a
+master-wrapped per-user key), and only **install-era** secrets (`user_id IS
+NULL`) are still keyed by the token.
+
+`_reencrypt_secrets` was not updated for that split. It still walks *all* rows in
+`credential_secrets` / `connector_installation_secrets` / `connector_oauth_clients`
+and does `decrypt(ciphertext, old_token)` on each. For an account-owned row that
+`decrypt` fails (`InvalidToken`), so `POST /api/auth/rotate` raises and rolls
+back the whole operation.
+
+Consequences:
+
+* It fails **safe** — the rewrite is transactional, so nothing is changed or
+  corrupted.
+* But rotation is **blocked** on any install where an account has stored a
+  credential or connector (which is the normal case once accounts exist).
+
+The fix (deferred, deliberately): scope `_reencrypt_secrets` to `WHERE user_id
+IS NULL` (plus the un-owned `connector_oauth_clients`), so it re-keys only the
+token-encrypted install-era secrets and leaves DEK-keyed account rows untouched.
+Until then, `§1`–`§2` above describe the *intended* behaviour, not what runs on
+a multi-tenant install.

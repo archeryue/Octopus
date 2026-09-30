@@ -1,8 +1,9 @@
 # Claude Code CLI JSONL Protocol Notes
 
 Empirical capture of the `claude` CLI's stream-json protocol, used as
-the source of truth for `ClaudeCodeBackend` in
-`server/backends/claude_code.py`.
+the source of truth for the Claude profile in
+`server/harness/claude_code.py` (formerly `ClaudeCodeBackend` under
+`server/backends/`, before the harness-layer refactor).
 
 **Captured against**: `claude` v2.1.143.
 
