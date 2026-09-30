@@ -8,7 +8,7 @@ the model, with different scopes and reload semantics:
 | Layer | How it reaches the model | Scope | When to use |
 |---|---|---|---|
 | `--append-system-prompt` (CLI argv) | Octopus's `harness/claude_code.py` sets it on every spawn (`_OCTOPUS_SYSTEM_PROMPT`) | Every CLI invocation Octopus makes, for every user, every session | Rules about how to use Octopus's *own* tools (`mcp__bg__run`, `mcp__ask__user`, `mcp__ask_agent__ask`); behaviors the agent must follow regardless of which human is driving |
-| Auto-memory (`~/.claude/projects/<repo>/memory/`) | Loaded by the harness as conversation context | Per-user, per-repo. A teammate cloning the repo starts with empty memory | Personal preferences, feedback corrections, things the *user* discovered they want the agent to remember |
+| Auto-memory | Loaded by the harness as conversation context | Per-agent in Octopus — the CLI's default `~/.claude/projects/<repo>/memory/` is overridden to `<agents_dir>/<id>/memory/` via `CLAUDE_COWORK_MEMORY_PATH_OVERRIDE` ([`plans/memory.md`](plans/memory.md)) | Things the agent discovered about its setup that it should remember across sessions |
 | `CLAUDE.md` (in the repo) | Loaded by the harness, checked into git | Per-repo, per-clone | Project conventions: commands, test layout, conventions everyone working on this repo should know |
 
 ## How `--append-system-prompt` is wired
@@ -28,10 +28,9 @@ argv = [
 ]
 ```
 
-VM0 uses the same hook (`vm0/crates/guest-agent/src/cli/command.rs`
-around line 52, reading from `VM0_APPEND_SYSTEM_PROMPT` env var) —
-this is the canonical path for an outer controller to teach the
-model about controller-specific tools.
+`--append-system-prompt` is the canonical path for an outer controller
+to teach the model about controller-specific tools — every turn, without
+touching the user's own config or memory.
 
 ## Why the bg-vs-Bash rule moved here
 

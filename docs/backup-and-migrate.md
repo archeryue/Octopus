@@ -14,9 +14,9 @@ current list before trusting this one.
 **The database — in the service's working directory, not `~/.octopus/`.**
 `db_path` defaults to the *relative* path `octopus.db`, so it lands wherever
 the process was started from (for a systemd unit, its `WorkingDirectory`). It
-holds sessions, messages, agents, schedules, credentials, connector
-installations and applications — everything the UI shows. Find
-it with:
+holds accounts (`users` / `invites` / `auth_tokens`), sessions, messages,
+agents, schedules, credentials, connector installations and applications —
+everything the UI shows. Find it with:
 
 ```bash
 systemctl show octopus -p WorkingDirectory --value    # then: ls $THAT/octopus.db
@@ -47,23 +47,32 @@ that turn.
 
 | dir | what it is | needed in a restore? |
 |---|---|---|
-| `agents/` | per-agent memory dirs the agent writes to | **yes** — it's the agent's long-term memory |
-| `applications/` | agent-built web apps, plain static files | **yes** — nothing else has a copy (§5) |
+| `master.key` | wraps every account's data key — **without it, no account's credentials or connectors can be decrypted** | **yes, critically** (unless `OCTOPUS_MASTER_KEY` is set from a secret manager) |
+| `users/<id>/` | one tree per account: its `workspace/`, agent memory, applications, attachments, codex home, research | **yes** — this is where each account's state lives (multi-tenancy) |
+| `agents/` | per-agent memory dirs (install-era / no-account owner) | **yes** — it's the agent's long-term memory |
+| `applications/` | agent-built web apps (install-era owner), plain static files | **yes** — nothing else has a copy (§5) |
 | `attachments/` | files you uploaded, one subdir per session | yes, if you want old messages' files to resolve |
 | `codex/` | per-credential `CODEX_HOME` (Codex auth + state) | yes, or re-run the Codex device login after |
 | `large-prompts/` | spill files for prompts too big for argv | no — transient |
 | `research/` | deep-research artefacts | only if you want old reports |
 | `fork/` | full working-directory copies made by `/fork` | usually **no** — see §5 |
 
+With accounts, `agents/`, `applications/`, `attachments/`, `codex/` and
+`research/` also appear per-account under `users/<id>/`; the top-level copies
+serve the install-era (pre-account) owner. A full `~/.octopus/` backup captures
+both, plus `master.key` — which is exactly why you back up the directory, not a
+hand-picked subset.
+
 **Credentials, outside both**: `~/.claude/.credentials.json` (Claude login),
 `~/.codex/auth.json` (host-level Codex login), and the `.env` holding
-`OCTOPUS_AUTH_TOKEN` and any tunnel config.
+`OCTOPUS_AUTH_TOKEN` and any tunnel config. `~/.octopus/master.key` is the one
+whose loss is unrecoverable: the database only holds secrets *wrapped* by it.
 
 ## 2. The minimum backup set
 
 ```
 <WorkingDirectory>/octopus.db          # plus -wal and -shm, or checkpoint first
-~/.octopus/                            # excluding fork/ (§5)
+~/.octopus/                            # incl. master.key + users/<id>/; excluding fork/ (§5)
 ~/.claude/projects/                    # engine transcripts
 ~/.claude/.credentials.json            # Claude login
 ~/.codex/                              # Codex login (if you use Codex)

@@ -7,9 +7,14 @@ their stream-JSON protocols — there is **no `claude-code-sdk` dependency** and
 no extra per-token API cost beyond the CLI's own auth (your subscription or an
 attached API key).
 
+One install can host **multiple accounts**, each a fully isolated Octopus of
+its own (see **Accounts & isolation** below); it stays a personal product —
+there is no cross-account sharing. Design:
+[`plans/multi-tenancy.md`](plans/multi-tenancy.md).
+
 This doc describes the *current* system design. Per-initiative design history
 lives in [`plans/`](plans/); CLI/stream-protocol research notes live in the
-`*-notes.md` files. `server/database.py` (`_SCHEMA`) is the source of truth for
+`*-notes.md` files. `server/db/schema.py` (`_SCHEMA`) is the source of truth for
 the data model — this doc describes it conceptually rather than pasting SQL.
 
 ## System Overview
@@ -75,6 +80,39 @@ their Sessions and Schedules. A protected **Default Agent**
   editing an agent is picked up by its open sessions on their next turn (no
   restart, no re-bind).
 
+## Accounts & isolation
+
+One install serves several people, each fully isolated (design:
+[`plans/multi-tenancy.md`](plans/multi-tenancy.md)):
+
+- **Accounts.** A `users` row is a username, a scrypt password hash, an admin
+  flag, and a wrapped **data-encryption key** (DEK). Signup is invite-only
+  (`invites`); a login mints a **session bearer** stored hashed in `auth_tokens`
+  (30-day TTL) — that bearer, not the password, is what every later request
+  carries. Before the first account exists the install authenticates with its
+  **install token** (`OCTOPUS_AUTH_TOKEN`), and creating the first account (`POST
+  /api/auth/bootstrap`, install-token-authed) makes it admin and adopts whatever
+  data is already on disk.
+- **Row ownership.** Every owned table carries a `user_id` — `agents`,
+  `sessions`, `applications`, `backend_credentials`, `connector_installations`,
+  `notifiers` — and routers resolve the caller's id (the `ScopeUser` /
+  `CurrentUser` / `AdminUser` deps in `server/deps.py`) so a query never crosses
+  accounts. Schedules are owned transitively through their agent.
+- **Key isolation.** A server-held **master key** wraps each account's DEK, and
+  that DEK — not the access token — encrypts that account's credentials and
+  connector tokens, so even direct DB access cannot read one account's secrets
+  with another's key. A password change re-wraps the DEK; dropping it
+  crypto-shreds the account.
+- **Workspace confinement.** Each account gets a directory under `users_root`
+  (`~/.octopus/users/<id>/`) holding its workspace, agent memory, applications
+  and uploads (`paths_for(user_id)` in `server/workspace.py`). A session's
+  working dir must resolve *inside* that workspace (a relative path means "inside
+  my workspace"); admins can grant extra roots. Each account also has its own
+  concurrency cap (`max_concurrent_turns_per_user`).
+- **Admin.** Admins mint/revoke invites, list and disable/enable people, and the
+  Monitor page is operator-only. It stays a personal product: no shared
+  workspace, no cross-account delegation.
+
 ## Components
 
 ### Backend (`server/`)
@@ -83,8 +121,8 @@ their Sessions and Schedules. A protected **Default Agent**
 |---|---|
 | `main.py` | FastAPI app + lifespan. Clears the `CLAUDECODE` env var so a nested `claude` subprocess behaves normally. Wires DB, SessionManager, ScheduleRunner, ConnectorManager, AgentManager, the in-process MCP namespaces, the metrics store, optional CloudflareTunnel. Registers routers, `GET /api/backends`, `GET /health`, and the SPA static mount. |
 | `config.py` | Pydantic settings from `.env` (prefix `OCTOPUS_`) — see **Configuration** below. |
-| `auth.py` | Bearer-token check for REST (`Authorization`) and WebSocket (`?token=`). |
-| `crypto.py` | Fernet encryption (keyed off `OCTOPUS_AUTH_TOKEN`) for secrets at rest. |
+| `auth.py` / `users.py` / `bootstrap.py` | Accounts: login → session bearer, register-against-invite, password change, admin invites/disable, first-account bootstrap. Requests present a session bearer (`Authorization` / WS `?token=`), or the install token before any account exists; `deps.py` resolves the scoped `user_id`. |
+| `crypto.py` | Encryption at rest: a server-held **master key** wraps each account's data-encryption key (DEK), which Fernet-encrypts that account's secrets. Install-era secrets (before the first account) are keyed by `OCTOPUS_AUTH_TOKEN`. A password only authenticates. |
 | `models.py` | Pydantic request/response models + enums (`SessionStatus`, `MessageRole`, agent/schedule/connector/credential DTOs). |
 | `session_manager.py` | Core turn engine. Owns in-memory `Session` objects, drives each turn through the **Harness**, persists + broadcasts events to WebSocket clients, runs tool-result forwarding, interactive questions, mid-turn interrupt, the per-session message queue, premature-exit auto-respawn, and large-prompt spill. |
 | `harness/` | The single boundary for all model/runtime interaction (see below). Also normalizes **native sub-agents** ([`plans/native-subagents.md`](plans/native-subagents.md)): Claude Code's `system/task_*` events and Codex's `collab_tool_call` items collapse onto one `SubagentUpdate`, keyed on the spawning tool call's id, and `agents.subagents` renders to `--agents` so an Octopus agent can bring its own helpers. |
@@ -95,10 +133,10 @@ their Sessions and Schedules. A protected **Default Agent**
 | `schedule_ai.py` | Natural-language `/schedule` parsing — turns "every weekday at 9am" into a cron/interval spec via the agent's own harness (backend-agnostic). |
 | `database.py` | SQLite (`aiosqlite`, WAL, FK cascade, `busy_timeout`, `synchronous=NORMAL`). `_SCHEMA` defines all tables. Migrations are declared as data and applied through one guarded path that asks `PRAGMA table_info` first, so a genuine DDL failure raises instead of being swallowed; a `schema_migrations` ledger records what ran. Appends defer their commit but are bounded (~0.5 s / 32 rows), so a hard kill cannot lose a whole turn. |
 | `jsonl_parser.py` / `jsonl_writer.py` | Read/write Claude Code JSONL session files for `octopus handoff` (import) and `octopus pull` (export → local `claude --resume`). |
-| `applications.py` | **Applications** ([`plans/applications.md`](plans/applications.md)) — agent-built web apps. Owns the app directory under `~/.octopus/applications`, the *build session* (a normal session with `origin='application'` whose working dir is the app dir), and a `building\|ready\|failed` status **derived** from whether the entrypoint exists when a build turn ends. Subscribes to the SessionManager broadcast bus (the DelegationManager pattern), so a change typed straight into the build session updates the badge too. Archive keeps row *and* files; the name index is live-only, so an archived name frees up. |
+| `applications.py` | **Applications** ([`plans/applications.md`](plans/applications.md)) — agent-built web apps. Owns the app directory under the owning account's workspace (`paths_for(user_id).applications`), the *build session* (a normal session with `origin='application'` whose working dir is the app dir), and a `building\|ready\|failed` status **derived** from whether the entrypoint exists when a build turn ends. Subscribes to the SessionManager broadcast bus (the DelegationManager pattern), so a change typed straight into the build session updates the badge too. Archive keeps row *and* files; the name index is live-only, so an archived name frees up. |
 | `app_backends.py` | **Application backends** ([`plans/application-backends.md`](plans/application-backends.md)) — an executable `start.sh` at the app root IS the declaration; no manifest. Allocates a port, runs install/start with a **minimal** environment (never the server's, so Octopus credentials cannot leak into app code), waits for the port to accept, proxies `/apps/{id}/api/*`, reaps when idle. Three directories, three owners: `<slug>/` code (a rebuild rewrites it), `<slug>.data/` the app's own state (never touched), `<slug>.runtime/` installed deps (delete to force a clean reinstall). |
 | `app_agent.py` | **Application↔agent conversations** ([`plans/app-agent-access.md`](plans/app-agent-access.md)) — a running app can hold a real conversation with an agent. A conversation is a session (`origin='app'`, `sessions.app_id`), so it resumes and is readable in the chat view. Mounted under the app's own path so its page reaches it relatively; its backend reaches it with a scoped token that opens exactly one app's surface. Converts session events into the vocabulary an app consumes (`delta`/`message`/`tool`/`question`/`done`/`error`), streamed as SSE. |
-| `token_rotation.py` | **Rotating the access token** ([`plans/token-rotation.md`](plans/token-rotation.md)) — the token is also the key every stored secret is encrypted with, so `POST /api/auth/rotate` re-keys `credential_secrets` / `connector_installation_secrets` / `connector_oauth_clients`, rewrites the env files, swaps the live setting, and drops the processes holding the old one — in an order where any failure leaves nothing changed. No restart. |
+| `token_rotation.py` | **Rotating the access token** ([`plans/token-rotation.md`](plans/token-rotation.md)) — the install token is the credential clients present *and* the key for install-era secrets, so `POST /api/auth/rotate` re-keys those token-encrypted secrets, rewrites the env files, swaps the live setting, and drops the processes holding the old one — in an order where any failure leaves nothing changed. No restart. (Account secrets ride the per-user DEK hierarchy in `crypto.py`, not the token.) |
 | `mcp_http.py` | **The MCP namespaces, served in-process** ([`plans/polish-2026-09.md`](plans/polish-2026-09.md) §4 B1) — each tool namespace is mounted at `/mcp/<name>` over streamable-HTTP instead of spawned as a stdio subprocess per session. Both CLIs build the tool name from the config key, so keys are unchanged and `mcp__bg__run` stays `mcp__bg__run`; connectors mount once per *kind* while their key stays per-installation. Replaces 7 subprocesses per session (~39 MB PSS each). |
 | `mcp_identity.py` | Per-session scope for those namespaces. One HTTP endpoint serves every session, so identity travels with the request rather than in a spawn environment — derived, never stored, and rotated along with the access token. Claude passes it as a header, Codex as an env var it names; that asymmetry stops at the profile boundary. |
 | `bg_tasks.py` | Cross-turn background shell tasks: spawn, stream capture (bounded), idle watchdog, cancel, persistence in `bg_tasks`. |
@@ -170,7 +208,7 @@ React 19 + TypeScript (strict) + Vite + zustand + Tailwind v4 + Radix.
 
 | Area | Files |
 |---|---|
-| Shell | `App.tsx`, `components/AccountDropdown.tsx`, `OctopusLogo.tsx`, `SettingsDialog.tsx` |
+| Shell & accounts | `App.tsx`, `SignIn.tsx` (sign-in / create-first-account), `SidebarAccount.tsx` (account row + menu), `AccountPage.tsx` (workspace roots, password, invites, people), `OctopusLogo.tsx`, `SettingsDialog.tsx` |
 | Agents | `AgentList.tsx` (two-pane sidebar: pick agent → see its sessions), `AgentSettings.tsx` (prompt/model/backend/credential/tools/connectors) |
 | Sessions & chat | `SessionList.tsx` (sidebar with fork-tree disclosure; forks nest under root sessions), `ChatView.tsx` (virtualized via `react-virtuoso`, Enter-to-send, Esc-interrupt, queued-message badge, waiting-for-answer hint, per-user-message "Fork from here" button), `MessageBubble.tsx`, `SlashCommandMenu.tsx` (`/schedule`, `/remember`, `/research`, `/showme`, `/rewind`, `/fork`, `/archive`, `/reset` slash commands), `ForkDialog.tsx` (message picker + confirm popover with side-effect summary + optional git-revert checkbox), `ArchivedSessionsDialog.tsx` |
 | In-app tools | `FileViewerDialog.tsx` (viewer), `BgTaskChip.tsx` (bg task status), `QuestionPrompt.tsx` (ask form), `ToolApproval.tsx` (approval prompt), `AgentDelegationRequestCard.tsx` (live status next to a `mcp__ask_agent__ask` tool_use), `AgentDelegationEventCard.tsx` (renders the `[agent-reply|question|error:…]` injected turns as collapsible cards with deep-links into the child session) |
@@ -292,9 +330,23 @@ A backend without web tools simply returns an "unavailable" message.
 
 ## REST API
 
-All endpoints require `Authorization: Bearer <token>`.
+All endpoints require `Authorization: Bearer <token>` — a per-account session
+bearer, or the install token before the first account exists. Owned resources
+are scoped to the caller's account; admin-only routes are marked below.
 
 ```
+# Accounts & auth
+GET                /api/auth/state                       # does this install have accounts yet?
+POST               /api/auth/bootstrap                   # create the first account (install-token auth)
+POST               /api/auth/login | /register | /logout # register uses an invite code
+POST               /api/auth/password                    # change password (re-wraps the DEK)
+GET                /api/auth/identity | /workspace
+PUT                /api/auth/users/{id}/extra-roots      # admin: grant workspace roots
+GET/POST/DELETE    /api/auth/invites[/{code}]            # admin: mint / list / revoke
+GET                /api/auth/users                       # admin: list people
+POST               /api/auth/users/{id}/disabled         # admin: disable / enable
+POST               /api/auth/rotate                      # rotate the install token
+
 # Agents — durable assistant definitions that own sessions and schedules
 GET/POST           /api/agents
 GET/PATCH/DELETE   /api/agents/{id}
@@ -341,10 +393,17 @@ GET                /health
 
 ## Data model
 
-`server/database.py` `_SCHEMA` is authoritative; this is the conceptual map.
+`server/db/schema.py` `_SCHEMA` is authoritative; this is the conceptual map.
 SQLite, WAL, foreign-key cascade; additive `ALTER`s go through idempotent
 migrations (never re-create or duplicate the schema in docs).
 
+- **`users`** + **`invites`** + **`auth_tokens`** — accounts (username, scrypt
+  `password_hash`, `is_admin`, wrapped `dek_wrapped`), invite codes (use count +
+  TTL), and hashed session bearers (`user_id`, `kind`, `expires_at`). Every
+  owned table below carries a `user_id` (`agents`, `sessions`, `applications`,
+  `backend_credentials`, `connector_installations`, `notifiers`); routers scope
+  queries by it via `server/deps.py`. `user_id IS NULL` is the install-era
+  (pre-account) owner. Design: [`plans/multi-tenancy.md`](plans/multi-tenancy.md).
 - **`agents`** — durable assistant definition (prompt, model, backend,
   credential, `mcp_servers`, tool allow/deny, `is_system`, `archived`). Owns the rest.
 - **`sessions`** — one thread: `working_dir`, `claude_session_id` (backend
@@ -369,7 +428,8 @@ migrations (never re-create or duplicate the schema in docs).
 - **`schedules`** — recurring prompts owned by an agent: `interval_seconds` **or**
   `cron`+`timezone`, `recurrence_label`, `origin_session_id`, `enabled`.
 - **`backend_credentials`** + **`credential_secrets`** — credential metadata and
-  its Fernet-encrypted secret, stored split; refresh/`needs_reconnect` lifecycle.
+  its secret, stored split; the secret is Fernet-encrypted under the owning
+  account's DEK (install-era rows under the access token); refresh/`needs_reconnect` lifecycle.
 - **`connector_installations`** + **`connector_installation_secrets`**,
   **`agent_connectors`**, **`connector_oauth_clients`**, **`custom_connectors`** —
   the connector tables (see Connector system).
@@ -397,9 +457,12 @@ provisioned on agent create, kept on archive, removed on hard delete.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `auth_token` | — | Bearer token for all API/WS calls + Fernet key. |
+| `auth_token` | `changeme` | The **install token**: pre-account API/WS auth, and the Fernet key for install-era secrets. Per-account requests use a session bearer instead. |
+| `master_key` / `master_key_file` | — / `~/.octopus/master.key` | Wraps each account's DEK. Hand it in from a secret manager, or let the server create one on first boot. |
+| `users_root` | `~/.octopus/users` | One directory per account (`<id>/` → workspace, agent memory, applications, uploads). |
+| `max_concurrent_turns_per_user` | `4` | Per-account cap on simultaneously running turns (`0` disables). |
 | `host` / `port` | `0.0.0.0` / `8000` | Bind address. |
-| `default_working_dir` | `.` | Working dir for new sessions. |
+| `default_working_dir` | `.` | Workspace base for the install-era (no-account) owner; accounts work under `users_root/<id>/`. |
 | `db_path` | `octopus.db` | SQLite file. |
 | `attachments_dir` / `large_prompts_dir` / `agents_dir` / `codex_home_dir` | under `~/.octopus/` | Upload cache · large-prompt spill · agent memory roots · per-credential Codex auth. |
 | `enable_tunnel` | `false` | Start a Cloudflare Tunnel. |
@@ -456,8 +519,9 @@ provisioned on agent create, kept on archive, removed on hard delete.
   premature CLI exit after a tool use auto-respawns once, and an idle watchdog
   reaps silent bg tasks. See [`post-mortems/2026-05-18-bg-pipeline-hardening.md`](post-mortems/2026-05-18-bg-pipeline-hardening.md).
 - **Secrets split + encrypted.** Credential/connector secrets live in dedicated
-  `*_secrets` tables, Fernet-encrypted with the auth token, read only by the
-  MCP subprocess at tool-call time.
+  `*_secrets` tables, Fernet-encrypted under the owning account's DEK (a
+  master-wrapped per-user key; install-era secrets under the access token), read
+  only by the in-process MCP namespace at tool-call time.
 - **Schema evolves additively.** New tables go in `_SCHEMA`; column changes go
   through idempotent migrations — never an in-place destructive change.
 
@@ -481,7 +545,8 @@ octopus pull SESSION_ID [--cwd DIR]            # export a session to local JSONL
 ## Tech stack
 
 - **Backend**: Python 3.12 · FastAPI · uvicorn · pydantic-settings · aiosqlite
-  (WAL) · APScheduler · cryptography (Fernet) · MCP stdio servers · httpx.
+  (WAL) · APScheduler · cryptography (Fernet) · MCP namespaces served in-process
+  (streamable-HTTP) · httpx.
 - **Model runtime**: `claude` + `codex` CLI subprocesses (stream-JSON) via the
   harness layer — no `claude-code-sdk`.
 - **Frontend**: React 19 · TypeScript (strict) · Vite · zustand · Tailwind v4 ·
@@ -491,8 +556,9 @@ octopus pull SESSION_ID [--cwd DIR]            # export a session to local JSONL
 ## Tests
 
 ```bash
-.venv/bin/pytest tests/ -v        # 882 backend (real-CLI tests run when claude/codex on PATH)
-cd web && bun run test            # 84 frontend unit (vitest)
-cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 67 Playwright e2e (35 fast UI-only + 32 real-CLI @llm)
+.venv/bin/pytest -m "not real"    # 1,313 backend, hermetic (no CLI, no network)
+.venv/bin/pytest -m real          # 34 that drive a live model (needs a signed-in claude / codex)
+cd web && bun run test            # 299 frontend unit (vitest)
+cd web && bun run typecheck       # TypeScript check (tsc -b)
+cd web && bun run test:e2e        # 107 Playwright e2e (67 fast UI-only + 40 real-CLI @llm)
 ```

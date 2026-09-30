@@ -85,5 +85,6 @@ OCTOPUS_PUBLIC_BASE_URL=https://your-stable-host
 ```
 
 Secrets (client secrets and connector tokens) are encrypted at rest with
-Fernet, keyed by `OCTOPUS_AUTH_TOKEN`; tokens are only ever read by the
-connector's MCP subprocess at tool-call time.
+Fernet under your account's own key (a master-wrapped per-account data key;
+install-era secrets use `OCTOPUS_AUTH_TOKEN`); tokens are only ever read by the
+connector's in-process MCP namespace at tool-call time.
