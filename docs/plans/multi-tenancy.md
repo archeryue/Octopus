@@ -1,6 +1,6 @@
 # Multi-tenancy (`user-1.0`)
 
-> **Status:** in-progress — one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys.
+> **Status:** shipped — one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys.
 
 Octopus is single-user by construction: one `OCTOPUS_AUTH_TOKEN` is the API
 credential, the WebSocket ticket, the application cookie, the MCP signing key

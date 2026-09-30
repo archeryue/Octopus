@@ -30,7 +30,6 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 
 | Plan | Status | What |
 |---|---|---|
-| [Multi-tenancy (`user-1.0`)](plans/multi-tenancy.md) | in-progress | one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys. |
 | [/fork — duplicate a session onto a copied working directory](plans/session-fork.md) | shipped | Duplicate a session onto an independent full copy of its working directory. |
 | [Agent Collaboration — Tech Plan (agent-to-agent delegation)](plans/agent-collaboration.md) | shipped | Agent-to-agent delegation — the `mcp__ask_agent__*` tools, one hop, replies injected as follow-up turns. Reverses the "no A2A" carve-out in `agent-refactor.md` §40-41. |
 | [Agent Memory — Tech Plan (native, agent-written, per-agent)](plans/memory.md) | shipped | Per-agent native memory: one markdown directory per agent, shared by both harnesses. |
@@ -43,6 +42,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 | [Harness credential re-authorization (reactive 401 detection)](plans/harness-credential-reauth.md) | shipped | Reactive 401 detection: flag a credential that died mid-turn as `needs_reconnect` and offer re-authorization. |
 | [Harness transient-error retry](plans/harness-transient-retry.md) | shipped | Bounded retry on transient provider failures, kept distinct from auth failures and quota errors. |
 | [Inline steering — and the turn latency that pays for it](plans/inline-steering.md) | shipped | A message typed mid-turn reaches the agent already running, and the held CLI process that makes a turn cheap to start. |
+| [Multi-tenancy (`user-1.0`)](plans/multi-tenancy.md) | shipped | one site, many users: the label becomes a username, the token becomes a password, and every user gets their own directory, rows and keys. |
 | [Native sub-agents, surfaced](plans/native-subagents.md) | shipped | The CLIs' own sub-agents surfaced as one event and one card — including the ones that finish after the turn that started them. |
 | [Octopus on a phone](plans/mobile.md) | shipped | Octopus on a phone — the drawer that puts itself away, 16px fields, touch targets, and safe-area insets. |
 | [Octopus-native deep research](plans/native-deep-research.md) | shipped | Octopus-orchestrated deep research: scoped fan-out of web-search sub-turns, adversarially verified, then synthesized. |
