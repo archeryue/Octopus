@@ -21,12 +21,17 @@ async def websocket_endpoint(session_manager: SessionMgr, ws: WebSocket, token: 
     A WebSocket cannot send an Authorization header, which is why the ticket is
     a query parameter, and why this path has to be kept in step by hand.
     """
+    # Accept first, THEN close on a bad token. Closing *before* accept makes
+    # the browser see a failed handshake (onclose code 1006), not the 4001 the
+    # client keys "this token is dead" on — so it retried forever and the page
+    # sat on an empty main view with no way to reach sign-in. Accepting first
+    # lets a real 4001 close frame through, which the client turns into the
+    # sign-in screen.
     allowed, user_id = await scope_user_id_for(token)
+    await ws.accept()
     if not allowed:
         await ws.close(code=4001, reason="Unauthorized")
         return
-
-    await ws.accept()
     logger.info("WebSocket client connected")
 
     conn_id = uuid.uuid4().hex

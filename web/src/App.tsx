@@ -42,6 +42,21 @@ function AuthenticatedApp() {
   useEffect(() => {
     void loadIdentity();
   }, [token]);
+  // And whenever the tab comes back to the foreground. A phone that was asleep
+  // during a server restart returns to a page whose token may have lapsed;
+  // re-checking here turns that into a clean trip to sign-in (loadIdentity
+  // drops a 401'd token) instead of a stuck, dataless main view.
+  useEffect(() => {
+    const recheck = () => {
+      if (document.visibilityState === "visible") void loadIdentity();
+    };
+    document.addEventListener("visibilitychange", recheck);
+    window.addEventListener("focus", recheck);
+    return () => {
+      document.removeEventListener("visibilitychange", recheck);
+      window.removeEventListener("focus", recheck);
+    };
+  }, []);
   const sidebarOpen = useSessionStore((s) => s.sidebarOpen);
   const setSidebarOpen = useSessionStore((s) => s.setSidebarOpen);
   const connected = useSessionStore((s) => s.connected);

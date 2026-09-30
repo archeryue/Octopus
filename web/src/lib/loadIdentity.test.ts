@@ -43,10 +43,26 @@ describe("loadIdentity", () => {
     ).toBe("Bearer a-token");
   });
 
-  it("leaves the identity unknown when the route refuses", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, json: async () => null })));
+  it("clears the token on 401 so the app falls back to sign-in", async () => {
+    useSessionStore.getState().setIdentity({ label: "x", user_id: "u", is_admin: false });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 401, json: async () => null }))
+    );
     await loadIdentity();
+    // The dead token is dropped — App renders <SignIn> when token is falsy —
+    // rather than left to 401 every request and strand an empty main view.
+    expect(useSessionStore.getState().token).toBe("");
     expect(useSessionStore.getState().identity).toBeNull();
+  });
+
+  it("keeps the token on a server error (a restart is not a logout)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 503, json: async () => null }))
+    );
+    await loadIdentity();
+    expect(useSessionStore.getState().token).toBe("a-token");
   });
 
   it("leaves the identity unknown when the server is unreachable", async () => {
