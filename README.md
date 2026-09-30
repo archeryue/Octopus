@@ -4,6 +4,14 @@
 into durable, always-on AI agents that run on your own machine and work for you
 around the clock — reachable from your phone or any browser.
 
+One install can serve more than one person. Each **account** is a completely
+separate Octopus — its own agents, sessions, applications, credentials, memory,
+and a workspace it cannot see out of — so a household or a few trusted people
+share the machine without sharing anything else. Signup is invite-only, and the
+first account (created with the install's own token) is the admin who mints the
+invites. It stays a *personal* product either way: there is no cross-account
+collaboration, no shared team space — just several private ones side by side.
+
 Each agent keeps its own persistent setup (prompt, model, tools, schedules,
 connectors), keeps work running in the background across turns, and can reach
 real third-party APIs. Octopus drives the `claude` / `codex` CLIs directly via
@@ -36,12 +44,25 @@ Phone / Browser
   tokens encrypted at rest; the OAuth redirect URI is derived from your request
   so it works behind a tunnel. ([setup guide](docs/connectors-setup.md))
 - **Credentials** — Store backend API keys / OAuth logins in-app, encrypted at
-  rest (Fernet), and attach them per agent; falls back to the CLI's own login
-  (`claude login` / `codex login`) when none is attached.
+  rest (Fernet, under your account's key), and attach them per agent; falls back
+  to the CLI's own login (`claude login` / `codex login`) when none is attached.
+- **Accounts & isolation** — Multiple people on one install, each fully
+  isolated. Accounts sign in with a username + password (scrypt-hashed);
+  signup is **invite-only** (admins mint codes with a use count and TTL). Every
+  owned row — sessions, agents, applications, credentials, connectors, schedules
+  — carries a `user_id`, so one account never sees another's data, and each
+  account's secrets are encrypted under a **per-user key** so even the database
+  can't cross the line. A session's working directory is **confined** to the
+  account's own workspace (a relative path means "inside my workspace"; admins
+  can grant extra roots), and each account gets its own concurrency quota.
+  Admin surface: invites, disable/enable people, operator-only Monitor. Before
+  the first account exists the install runs on its **install token**; creating
+  that first account adopts whatever is already there.
+  Design: [`docs/plans/multi-tenancy.md`](docs/plans/multi-tenancy.md).
 - **Run from anywhere** — One command serves the API and web UI on a single
   port; reach it from any browser or phone. `octopus serve --tunnel` gives
-  instant public HTTPS via Cloudflare Tunnel. Token auth; HTTPS/WSS behind
-  tunnels and reverse proxies.
+  instant public HTTPS via Cloudflare Tunnel. Session-bearer auth that a browser
+  or phone remembers for 30 days; HTTPS/WSS behind tunnels and reverse proxies.
 - **Background & scheduled work** — Agents fire off shell commands that run in
   the background **across turns** (the result arrives as a follow-up turn), and
   recurring scheduled prompts run per agent into fresh, auto-archiving sessions.
@@ -114,8 +135,8 @@ Phone / Browser
   Design: [`docs/plans/native-deep-research.md`](docs/plans/native-deep-research.md).
 - **Applications** — Ask an agent to build you a web app and it lands in the
   sidebar. Describe what you want, pick the agent, and it writes a
-  self-contained static site into a directory Octopus owns
-  (`~/.octopus/applications/<app>`); the moment the entry page exists, the app
+  self-contained static site into a directory Octopus owns inside your account's
+  workspace; the moment the entry page exists, the app
   renders in the main pane like a browser tab. Ask for changes right from that
   pane — each request is another turn in the same build session, so the agent
   keeps its context and the frame reloads itself when the rebuild lands. An app
@@ -143,18 +164,25 @@ Phone / Browser
   twice), database and WAL size. Sampled continuously, kept 30 days, and an
   empty section says "nothing recorded" rather than rendering blank — a blank
   panel reads as a clean bill of health.
-- **Token rotation** — Changing the access token is one operation from
+- **Encryption at rest** — Secrets ride a key hierarchy: a server-held **master
+  key** wraps each account's data-encryption key (DEK), which encrypts that
+  account's credentials and connector tokens. A password only authenticates —
+  changing it re-wraps just that account's DEK, and dropping the DEK
+  crypto-shreds the account (its ciphertext becomes noise). Install-era secrets,
+  from before the first account, are keyed by the access token instead.
+- **Token rotation** — The access token is the credential clients present *and*
+  the key for those install-era secrets, so changing it is one operation from
   Settings (`POST /api/auth/rotate`), with no restart and nothing to edit by
-  hand. It matters because the token is *also* the key every stored secret is
-  encrypted with: editing `.env` yourself changes what the server checks while
-  leaving the database keyed to a token nobody has. Rotation re-encrypts every
-  secret, rewrites the env files, swaps the live setting, drops the processes
-  carrying the old one, and hands the new token to tabs already open.
+  hand: editing `.env` yourself changes what the server checks while leaving
+  those secrets keyed to a token nobody has. Rotation re-keys them, rewrites the
+  env files, swaps the live setting, drops the processes carrying the old token,
+  and hands the new one to tabs already open.
   Design: [`docs/plans/token-rotation.md`](docs/plans/token-rotation.md).
 - **Local handoff** — `octopus handoff` imports local Claude Code sessions;
   `octopus pull` exports a session as JSONL for local `claude --resume`.
-- **Persistence** — SQLite (WAL, batched commits per turn); sessions, messages,
-  agents, credentials, connectors, and schedules survive restarts.
+- **Persistence** — SQLite (WAL, batched commits per turn); accounts, invites,
+  sessions, messages, agents, credentials, connectors, and schedules survive
+  restarts.
 
 ## Quick Start
 
@@ -171,9 +199,14 @@ cd web && bun install && bun run build && cd ..
 octopus serve
 ```
 
-Open `http://localhost:8000`, enter your token, pick the default **Octo** agent,
-create a session, and start chatting. For phone access, `octopus serve --tunnel`
-gives you a public HTTPS URL.
+Open `http://localhost:8000` and enter the install token from your `.env`. On a
+fresh install that first token gets you to **Create the first account** —
+pick a username and password, and that account becomes the admin (it also
+adopts any agents/sessions already on disk). From then on you sign in with that
+username and password, and the admin mints **invite codes** for anyone else who
+should have their own account. Then pick the default **Octo** agent, create a
+session, and start chatting. For phone access, `octopus serve --tunnel` gives
+you a public HTTPS URL.
 
 Auth for the agent's backend uses your existing CLI login (`claude login` /
 `codex login`) by default — or add an API key under **Credentials** and attach
@@ -212,13 +245,13 @@ in-process over streamable-HTTP
 ```bash
 ./scripts/check.sh                # every gate: ruff · mypy · pytest · eslint · vitest · tsc · contracts · docs index
 
-.venv/bin/pytest -m "not real"    # 1,164 backend tests, hermetic — no CLI, no network, ~34s
+.venv/bin/pytest -m "not real"    # 1,313 backend tests, hermetic — no CLI, no network, ~34s
 .venv/bin/pytest -m real          # the 34 that drive a live model (needs a signed-in claude / codex)
-cd web && bun run test            # 214 frontend unit tests (vitest)
-cd web && npx tsc --noEmit        # TypeScript check
-cd web && bun run test:e2e        # 84 Playwright tests in a real browser
-cd web && bun run test:e2e:fast   # ... the 47 that need no model (~35s)
-cd web && bun run test:e2e:llm    # ... the 37 that drive real Claude / Codex turns
+cd web && bun run test            # 299 frontend unit tests (vitest)
+cd web && bun run typecheck       # TypeScript check (tsc -b across the project)
+cd web && bun run test:e2e        # 107 Playwright tests in a real browser
+cd web && bun run test:e2e:fast   # ... the 67 that need no model (~40s)
+cd web && bun run test:e2e:llm    # ... the 40 that drive real Claude / Codex turns
 ```
 
 The real-CLI tier is selected by marker rather than by filename, so a plain
