@@ -30,6 +30,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 
 | Plan | Status | What |
 |---|---|---|
+| [Connectors under multi-tenancy: one call, one owner, one installation](plans/connector-tenancy.md) | in-progress | Proposal: make every connector call carry its own identity, so no account can reach another's mailbox, and close the design gaps around it. |
 | [/fork — duplicate a session onto a copied working directory](plans/session-fork.md) | shipped | Duplicate a session onto an independent full copy of its working directory. |
 | [Agent Collaboration — Tech Plan (agent-to-agent delegation)](plans/agent-collaboration.md) | shipped | Agent-to-agent delegation — the `mcp__ask_agent__*` tools, one hop, replies injected as follow-up turns. Reverses the "no A2A" carve-out in `agent-refactor.md` §40-41. |
 | [Agent Memory — Tech Plan (native, agent-written, per-agent)](plans/memory.md) | shipped | Per-agent native memory: one markdown directory per agent, shared by both harnesses. |
