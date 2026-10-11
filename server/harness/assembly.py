@@ -44,12 +44,14 @@ def repo_root() -> str:
     return _REPO_ROOT
 
 
-def build_callback_env(session_id: str | None) -> dict[str, str]:
-    """The env our bg/ask MCP servers use to call back into FastAPI."""
+def build_callback_env(session_id: str | None, user_id: str | None = None) -> dict[str, str]:
+    """The env our bg/ask MCP servers use to call back into FastAPI — at this
+    server as seen from the runtime the turn runs in (runtime-providers.md §7)."""
     from ..config import settings as _settings  # local import: avoid cycle at load
+    from ..runtime import get_runtime
 
     env: dict[str, str] = {
-        "OCTOPUS_API_BASE": f"http://127.0.0.1:{_settings.port}",
+        "OCTOPUS_API_BASE": get_runtime().callback_base(user_id),
         "OCTOPUS_AUTH_TOKEN": _settings.auth_token,
         "PYTHONPATH": _REPO_ROOT,
     }
@@ -148,11 +150,12 @@ def _http_entries(
     so the name can stay stable while the mount is shared, and which
     installation a call belongs to comes from its bearer instead.
     """
-    from ..config import settings as _settings
     from ..mcp_http import mount_path
     from ..mcp_identity import mint
+    from ..runtime import get_runtime
 
-    base = f"http://127.0.0.1:{_settings.port}"
+    # Where the CLI, running in the tenant's runtime, reaches this server.
+    base = get_runtime().callback_base(user_id)
 
     def entry(key: str, namespace: str, installation_id: str | None = None) -> McpServerEntry:
         return McpServerEntry(

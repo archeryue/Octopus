@@ -51,6 +51,7 @@ async def run_web_leaf(
     credential: HarnessCredential | None,
     model: str | None,
     timeout: float = 120.0,
+    user_id: str | None = None,
 ) -> LeafResult:
     """Run one isolated, web-enabled, read-only-ish sub-turn and return its
     final text. Side-effect-contained: empty MCP set, no connectors/memory,
@@ -58,6 +59,7 @@ async def run_web_leaf(
     stop (turn-safety.md §2)."""
     config = RunConfig(
         session_id=None,        # no callback env → no bg/ask/ask_agent wiring
+        user_id=user_id,        # whose runtime the leaf runs in
         system_prompt=_LEAF_SYSTEM,
         model=model,
         mcp_servers=[],         # [] (not None) = NO servers (None = all defaults)
@@ -111,11 +113,13 @@ async def run_reason_leaf(
     model: str | None,
     working_dir: str | None,
     timeout: float = 90.0,
+    user_id: str | None = None,
 ) -> LeafResult:
     """Run one tool-free reasoning call (`run_oneshot`) — scope decompose /
     synthesize. Backend-agnostic; never raises."""
     ctx = OneShotContext(
-        prompt=prompt, model=model, credential=credential, working_dir=working_dir
+        prompt=prompt, model=model, credential=credential, working_dir=working_dir,
+        user_id=user_id,
     )
     try:
         text = await harness.run_oneshot(ctx, timeout=timeout)

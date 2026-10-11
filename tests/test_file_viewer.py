@@ -351,10 +351,13 @@ async def _patch_showme(monkeypatch):
     """Capture the credential argument the resolver was called with."""
     captured: dict = {}
 
-    async def _fake_resolve(text, *, harness, model, credential, working_dir, messages, session_name=None):
+    async def _fake_resolve(
+        text, *, harness, model, credential, working_dir, messages, session_name=None, user_id=None
+    ):
         captured["credential"] = credential
         captured["model"] = model
         captured["working_dir"] = working_dir
+        captured["user_id"] = user_id
         from server.showme_ai import ShowMeResolution
 
         return ShowMeResolution(path="answer.md")
@@ -379,6 +382,9 @@ async def test_showme_resolve_no_credential_passes_none(
     # No credential on the agent → resolver should receive None (the CLI
     # falls back to whatever host auth it finds).
     assert captured["credential"] is None
+    # The one-shot runs in the session owner's runtime; pre-accounts that is
+    # the install itself (runtime-providers.md §3).
+    assert captured["user_id"] is None
 
 
 async def test_showme_resolve_attached_credential_is_normalized(

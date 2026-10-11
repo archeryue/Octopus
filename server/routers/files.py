@@ -110,6 +110,7 @@ async def resolve_showme(
             working_dir=session.working_dir,
             messages=await session_manager.db.load_messages(session_id),
             session_name=session.name,
+            user_id=session.user_id,
         )
     except Exception:
         # Don't leak raw model/harness errors (paths, credential labels,

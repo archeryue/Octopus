@@ -367,6 +367,7 @@ class ForkingMixin(SessionManagerBase):
                     target.get("git_head"),
                     target.get("git_status_clean"),
                     fork_id,
+                    tenant=parent.user_id,
                 )
                 fork.fork_revert_record = json.dumps(record)
                 await self.db.update_session_field(
@@ -720,6 +721,7 @@ class ForkingMixin(SessionManagerBase):
             summary["agent_touched_paths"],
             target.get("git_head"),
             target.get("git_status_clean"),
+            tenant=parent.user_id,
         )
         return {
             "rewind_to_msg_seq": M,

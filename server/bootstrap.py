@@ -29,8 +29,8 @@ from typing import Any
 
 from .config import settings
 from .crypto import decrypt, encrypt
+from .runtime import get_runtime
 from .users import UserError, UserManager
-from .workspace import paths_for
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def _move_agent_memory(user_id: str) -> int:
     legacy = Path(settings.agents_dir).expanduser()
     if not legacy.is_dir():
         return 0
-    destination = paths_for(user_id).agents
+    destination = get_runtime().paths(user_id).agents
     destination.mkdir(parents=True, exist_ok=True)
     moved = 0
     for entry in legacy.iterdir():
@@ -202,7 +202,7 @@ async def bootstrap_first_account(
             await db.update_user_field(user["id"], extra_roots=json.dumps(roots))
         summary["extra_roots"] = roots
         summary["agent_memory_moved"] = _move_agent_memory(user["id"])
-        paths_for(user["id"]).ensure()
+        get_runtime().paths(user["id"]).ensure()
         if session_manager is not None:
             summary["live_sessions_adopted"] = session_manager.adopt_orphan_sessions(
                 user["id"]

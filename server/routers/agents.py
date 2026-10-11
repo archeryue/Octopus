@@ -322,6 +322,7 @@ async def create_agent_schedule_from_text(
             now_iso=req.now,
             model=agent.get("model") or None,
             credential=credential,
+            user_id=agent.get("user_id"),
         )
     except ScheduleParseError as e:
         raise HTTPException(422, str(e))

@@ -526,7 +526,7 @@ class TurnsMixin(SessionManagerBase):
             # branch-point state if the user later forks here. (None, None)
             # when working_dir isn't a git repo.
             git_head, git_status_clean = await fork_helpers.capture_git_anchor(
-                session.working_dir
+                session.working_dir, tenant=session.user_id
             )
 
             # Record user message — content is the *raw* prompt the user

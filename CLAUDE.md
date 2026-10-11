@@ -34,12 +34,12 @@ shortcut. Do the real thing the first time.
 
 You MUST verify your changes before considering them done:
 
-1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,320 tests; all of them
+1. **Backend unit tests**: `.venv/bin/pytest tests/ -v` (1,406 tests; all of them
    run on a dev box with both CLIs installed and signed in — a skip means a
    lapsed login, not a passing suite). The real-CLI tier is selected by marker,
    not by listing filenames:
 
-   - `pytest -m "not real"` — the hermetic tier: 1,286 tests, ~47 s, no CLI
+   - `pytest -m "not real"` — the hermetic tier: 1,372 tests, ~53 s, no CLI
      required. This is what the pre-commit hook and `scripts/check.sh` run.
    - `pytest -m real` — the 34 tests that drive a live model. `real_claude`
      (24) and `real_codex` (8) want a CLI that is installed *and signed in*;
@@ -52,12 +52,12 @@ You MUST verify your changes before considering them done:
    import is what used to make a plain `--collect-only` spawn a real `claude`
    call (16.44 s vs 0.80 s). Run with the nvm bin prepended so `codex`
    resolves (see Conventions).
-2. **Frontend unit tests**: `cd web && bun run test` (284 tests)
+2. **Frontend unit tests**: `cd web && bun run test` (299 tests)
 3. **TypeScript check**: `cd web && bun run typecheck` (`tsc -b --force`).
    Not `tsc --noEmit`: `web/tsconfig.json` is a solution file — `"files": []`
    plus two references — so `--noEmit` on it checks *zero* files and exits 0
    whatever is broken. It passed for months while `bun run build` failed.
-4. **E2E tests**: `cd web && bun run test:e2e` (105 tests, no skips, ~4.5 min,
+4. **E2E tests**: `cd web && bun run test:e2e` (107 tests, no skips, ~4.5 min,
    Playwright auto-starts servers). It *is* the two buckets, run as two
    invocations — not one run that covers both. The accounts spec needs a second
    backend and dev server of its own (`playwright.config.ts`: claiming an
@@ -67,7 +67,7 @@ You MUST verify your changes before considering them done:
    `bun run test:e2e:fast` (67 pure-UI tests, ~45 s — login / accounts /
    sessions /
    dialogs / sidebar / sidebar pins / virtualized chat / attachments / etc.) and
-   `bun run test:e2e:llm` (38 real-LLM tests, ~4.2 min, **one worker** — two
+   `bun run test:e2e:llm` (40 real-LLM tests, ~4 min, **one worker** — two
    concurrent real-CLI turns on this box time out about one run in three, a
    different test each time, and serially the bucket is faster anyway — chat, /schedule,
    an agent scheduling itself, /showme, /archive, mcp__bg__run, AskUserQuestion, agent-collaboration,
@@ -83,14 +83,14 @@ You MUST verify your changes before considering them done:
 
 | Suite | Tool | Command | Count | Scope |
 |-------|------|---------|-------|-------|
-| Backend unit | pytest | `pytest -m "not real"` | 1286 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, accounts + keys + workspace confinement + tenant isolation (behavioural *and* structural — no route may go unscoped), the in-process MCP namespaces, monitoring. No CLI, no network. ~45 s. |
+| Backend unit | pytest | `pytest -m "not real"` | 1372 | The whole backend, hermetically: config, models, session manager, database + migrations, REST + WS routers, harness layer, connectors, delegations, applications, scheduler, research, token rotation, accounts + keys + workspace confinement + tenant isolation (behavioural *and* structural — no route may go unscoped), the in-process MCP namespaces, monitoring, and the Runtime interface (LocalRuntime against the provider conformance suite, the server-side ensure/release lifecycle, every spawn site going through it). No CLI, no network. ~45 s. |
 | Real-CLI tier | pytest | `pytest -m real` | 34 | The cases that must drive a live model: both backends end to end, delegation chains, an agent scheduling itself, memory read-back, fork copy, codex login. Needs a signed-in CLI. |
-| Frontend unit | vitest | `cd web && bun run test` | 284 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height, the sign-in screen's two eras, the account page. ~4 s. |
-| E2E | Playwright | `cd web && bun run test:e2e` | 105 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, sidebar pins (drag + keyboard reorder), `/rewind`, `/research`, the monitor page, and accounts end to end (claim the install, invite, register, isolation, sign-out, password change) against a backend of their own. `:fast` (67, ~45 s) skips the `@llm` half; `:llm` (38, ~3.7 min) is the rest, and `test:e2e` is the two in sequence. |
+| Frontend unit | vitest | `cd web && bun run test` | 299 | Zustand store, `useWebSocket`, and every component with logic worth pinning — delegation and sub-agent cards, fork dialog, app icons and backends, streaming buffer, sidebar fold and pins, the All tab, mobile drawer, viewport height, the sign-in screen's two eras, the account page. ~4 s. |
+| E2E | Playwright | `cd web && bun run test:e2e` | 107 | The product as a user meets it, in a real browser: login, sessions, real Claude turns, steering, queue + interrupt, mobile layout, connectors, applications, sidebar pins (drag + keyboard reorder), `/rewind`, `/research`, the monitor page, and accounts end to end (claim the install, invite, register, isolation, sign-out, password change) against a backend of their own. `:fast` (67, ~45 s) skips the `@llm` half; `:llm` (40, ~3.9 min) is the rest, and `test:e2e` is the two in sequence. |
 
 For what any individual test covers, ask the suite rather than this table:
 `pytest --collect-only -q`, or `-m real` / `-m "not real"` to see a tier. A
-hand-written inventory of 1,320 tests cannot stay true, and it cost ~16 KB of
+hand-written inventory of 1,406 tests cannot stay true, and it cost ~16 KB of
 every session's context to try.
 
 ## Project Structure
@@ -179,6 +179,7 @@ agents, which gained `POST /api/agents/{id}/unarchive` for the same section).
 - `server/mcp_http.py` + `server/mcp_identity.py` — The tool namespaces, served in-process (`docs/plans/polish-2026-09.md` §4 B1): each is mounted at `/mcp/<key>` over streamable-HTTP instead of spawned as a stdio subprocess per session (7 per session, ~39 MB PSS each), and identity rides in a per-session bearer because Codex has no per-server header. `build_servers` also moves every `def` tool body onto a worker thread — FastMCP dispatches a sync tool on the event loop, and these bodies call back into this same process, so on the loop each call deadlocked until its own timeout.
 - `server/deps.py` — Request-scoped dependencies (`§3 A2`): routers declare `session_manager: SessionMgr` and FastAPI resolves it, so a test overrides one dependency instead of monkeypatching a module global in every router. The singleton stays for the background paths (scheduler, delegations, bridges).
 - `server/aio.py` — `drain_cancelled` / `stopped_within`: the two teardown shapes that were written as `except (asyncio.CancelledError, Exception): pass` in eight places (`§8 F4`). The cancellation is expected; anything else is the task's last words and now reaches the log.
+- `server/runtime/` — Where a tenant's work executes (`docs/plans/runtime-providers.md`): the `Runtime` protocol (`base`), `LocalRuntime` — child processes on this box, the behaviour Octopus always had (`local`), `get_runtime()` returning the configured provider (`runtime_provider`: `local` or `package.module:Class`) wrapped in `ManagedRuntime`, which calls `ensure` before every `exec` and `release` once a tenant has nothing running (`registry`), and the framework-free provider conformance suite (`conformance`). Every process Octopus starts for a tenant — turn, one-shot, bg task, Application backend, `git`, `codex login` — goes through `get_runtime().exec(ExecSpec(...))`; `ExecSpec.env` is the complete environment, so inheritance is always the caller's explicit act. `tunnel.py` is the one deliberate exception.
 - `server/harness/` — Harness layer: the single boundary for all model/runtime interaction (`docs/plans/harness-layer.md`). One `Harness` class + one `HarnessRun` engine, configured by a `RuntimeProfile` *value* per backend kind (`claude_code`, `codex`) — no per-framework subclasses. Holds `assembly` (shared per-turn MCP/system-prompt assembly), `run` (subprocess+JSONL engine + PATH helpers), `registry` (`get_harness`/`available_backends`), `login` (LoginDriver protocol). Capabilities are derived from the profile; `run_oneshot` powers backend-agnostic `/schedule` parsing.
 ### Connectors
 

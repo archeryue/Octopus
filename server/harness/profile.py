@@ -113,6 +113,9 @@ class OneShotContext:
     model: str | None = None
     credential: HarnessCredential | None = None
     working_dir: str | None = None
+    # Whose call this is — the tenant whose runtime runs it
+    # (runtime-providers.md §3). None for the install itself.
+    user_id: str | None = None
 
 
 @dataclass
