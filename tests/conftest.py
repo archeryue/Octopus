@@ -92,14 +92,22 @@ def _surviving_cli_pids() -> list[int]:
 def _account_state_stays_in_tmp(tmp_path_factory, monkeypatch):
     """No test may write into a real install's state directory.
 
-    Three settings default into `~/.octopus`: `master_key_file`, which
+    Every directory setting defaults into `~/.octopus` — which, on a box that
+    runs a deployed install with default paths, *is* that install's state.
+    Three were found the hard way: `master_key_file`, which
     `crypto.master_key()` *creates* when it is missing; `users_root`, under
     which `paths_for(user_id).ensure()` makes an account's directories; and
-    `research_dir`, where a research job writes its scratch cwd and report.
-    All three are reached by ordinary hermetic tests, so a plain `pytest` run
-    left a 0600 key file, a `users/` tree and hundreds of research directories
-    in the state directory of whatever install happened to be deployed on the
-    box — found exactly that way.
+    `research_dir`, where a research job writes its scratch cwd and report — a
+    plain `pytest` run left a 0600 key file, a `users/` tree and hundreds of
+    research directories in the deployed install's state directory.
+
+    The rest are redirected for the same reason, before a test finds them:
+    `attachments_dir` (uploads), `large_prompts_dir` (prompt spills),
+    `codex_home_dir` (one `CODEX_HOME` per Codex credential — a sign-in
+    test would otherwise leave a login inside the deployed install),
+    `applications_dir`, and `fork_dir` (a full-copy /fork's working-dir
+    copy). `agents_dir` is redirected once, through the environment, at the
+    top of this file.
 
     Pointed at a per-session tmp dir for every test. A test that cares about
     the value still sets its own afterwards; this only decides where the
@@ -111,6 +119,11 @@ def _account_state_stays_in_tmp(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(settings, "master_key_file", str(root / "master.key"))
     monkeypatch.setattr(settings, "users_root", str(root / "users"))
     monkeypatch.setattr(settings, "research_dir", str(root / "research"))
+    monkeypatch.setattr(settings, "attachments_dir", str(root / "attachments"))
+    monkeypatch.setattr(settings, "large_prompts_dir", str(root / "large-prompts"))
+    monkeypatch.setattr(settings, "codex_home_dir", str(root / "codex"))
+    monkeypatch.setattr(settings, "applications_dir", str(root / "applications"))
+    monkeypatch.setattr(settings, "fork_dir", str(root / "fork"))
 
 
 @pytest.fixture(autouse=True)

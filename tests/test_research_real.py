@@ -29,33 +29,62 @@ from server.session_manager import SessionManager
 from tests.cli_gate import _resolve_cli
 
 
+def _codex_works_in(exe: str, home: str) -> bool:
+    """A tiny real `codex exec` against `home` — the file can outlive its token."""
+    if not os.path.exists(os.path.join(home, "auth.json")):
+        return False
+    try:
+        proc = subprocess.run(
+            [exe, "exec", "--json", "--skip-git-repo-check",
+             "--dangerously-bypass-approvals-and-sandbox", "--", "Reply with OK."],
+            stdin=subprocess.DEVNULL, capture_output=True,
+            cwd=tempfile.gettempdir(), env={**os.environ, "CODEX_HOME": home},
+            timeout=90,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
 @functools.lru_cache(maxsize=1)
-def _usable_codex_credential() -> str | None:
-    """A signed-in, directory-backed codex credential id whose CODEX_HOME holds
-    a WORKING auth.json (probed for real). None if none is usable."""
+def _usable_codex_home() -> str | None:
+    """A CODEX_HOME holding a WORKING sign-in (probed for real), or None.
+
+    The box's own `~/.codex` — the login the CLI uses. Not a deployed install's
+    per-credential directories: this suite used to find one by scanning the
+    default `~/.octopus/codex`, which is a running install's state, and a test
+    has no business signing in as somebody's live credential (or refreshing its
+    token out from under them).
+    """
     exe = _resolve_cli("codex")
     if exe is None:
         return None
-    base = os.path.dirname(codex_home_for("_probe_"))  # the per-credential root
-    if not os.path.isdir(base):
+    home = os.path.expanduser("~/.codex")
+    return home if _codex_works_in(exe, home) else None
+
+
+_TEST_CREDENTIAL = "codex-test-host"
+
+
+def _usable_codex_credential() -> str | None:
+    """A directory-backed codex credential id for this test's isolated
+    `codex_home_dir`, or None if the box has no working codex sign-in.
+
+    A codex credential *is* its directory (`codex_home_for(id)`), so the
+    credential is a symlink to the working home rather than a copy: a copy
+    would be a second holder of the same refresh token, and the first refresh
+    through either would invalidate the other. Not cached — `codex_home_dir`
+    is a fresh tmp root per test (tests/conftest.py), so the link is made
+    wherever this test's root is.
+    """
+    home = _usable_codex_home()
+    if home is None:
         return None
-    for cid in sorted(os.listdir(base)):
-        home = os.path.join(base, cid)
-        if not os.path.exists(os.path.join(home, "auth.json")):
-            continue
-        env = {**os.environ, "CODEX_HOME": home}
-        try:
-            proc = subprocess.run(
-                [exe, "exec", "--json", "--skip-git-repo-check",
-                 "--dangerously-bypass-approvals-and-sandbox", "--", "Reply with OK."],
-                stdin=subprocess.DEVNULL, capture_output=True,
-                cwd=tempfile.gettempdir(), env=env, timeout=90,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if proc.returncode == 0:
-            return cid
-    return None
+    link = codex_home_for(_TEST_CREDENTIAL)
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    if not os.path.lexists(link):
+        os.symlink(home, link)
+    return _TEST_CREDENTIAL
 
 
 pytestmark = [pytest.mark.real, pytest.mark.real_codex]

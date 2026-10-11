@@ -1528,9 +1528,12 @@ export interface paths {
          * Identity
          * @description Who you are, for the sidebar's account row.
          *
-         *     It used to answer `OCTOPUS_USER_LABEL` — a single-user install's idea of a
-         *     name. Now it answers the account's own username, which is the same field
-         *     doing the same job for a site with several people on it.
+         *     An account answers with its own username. An install with no accounts yet
+         *     answers with `OCTOPUS_USER_LABEL` — its operator, signed in with the
+         *     install token — and no `user_id`, which is how the account page knows to
+         *     offer claiming the install rather than a password to change. The client
+         *     treats a 401 here as "signed out", so this must answer for every bearer the
+         *     install accepts, in both eras.
          */
         get: operations["identity_api_auth_identity_get"];
         put?: never;

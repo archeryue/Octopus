@@ -418,12 +418,15 @@ class ForkingMixin(SessionManagerBase):
 
     @staticmethod
     def _fork_copy_base() -> str:
-        """Base dir holding every /fork working-dir copy (session-fork.md)."""
-        return os.path.expanduser(os.path.join("~", ".octopus", "fork"))
+        """Base dir holding every /fork working-dir copy (session-fork.md):
+        `settings.fork_dir`, `~/.octopus/fork` unless configured."""
+        from ..config import settings
+
+        return os.path.expanduser(settings.fork_dir)
 
     @staticmethod
     def _fork_copy_dest(src_working_dir: str, fork_id: str) -> str:
-        """Destination for a /fork working-dir copy: ~/.octopus/fork/<name>-<id>
+        """Destination for a /fork working-dir copy: <fork_dir>/<name>-<id>
         (session-fork.md). Keeps the project basename for readability +
         the fork id for uniqueness. Creates the base dir."""
         base = ForkingMixin._fork_copy_base()

@@ -6,6 +6,7 @@ an independent full copy of the working directory and leaves the parent intact.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -83,10 +84,10 @@ async def test_duplicate_copies_dir_and_history(manager, tmp_path, monkeypatch):
     assert fork.fork_after_seq == 5
     assert json.loads(fork.fork_metadata)["full_copy"] is True
 
-    # Working dir is an independent full copy under ~/.octopus/fork/.
+    # Working dir is an independent full copy under the fork dir.
     dest = Path(fork.working_dir)
     assert dest != repo
-    assert str(dest).startswith(str(tmp_path / "home" / ".octopus" / "fork"))
+    assert str(dest).startswith(SessionManager._fork_copy_base() + os.sep)
     assert dest.is_dir()
     assert (dest / "code.py").read_text() == "print('hi')\n"
     assert (dest / "pkg" / "mod.py").read_text() == "X = 1\n"
@@ -277,7 +278,7 @@ async def test_duplicate_prepare_fork_failure_compensates(manager, tmp_path, mon
     rows = {r["id"]: r for r in await manager.db.load_sessions(include_archived=True)}
     assert parent.id in rows
     assert len(rows) == 1  # only the parent
-    fork_base = tmp_path / "home" / ".octopus" / "fork"
+    fork_base = Path(SessionManager._fork_copy_base())
     assert not fork_base.exists() or not any(fork_base.iterdir())
     assert parent._forking is False
 
@@ -483,7 +484,12 @@ async def test_resolve_credential_require_auth_false(manager, tmp_path, monkeypa
 
 
 def test_is_fork_copy_dir(monkeypatch, tmp_path):
+    from server.config import settings
+
+    # The default, `~`-relative form — so the last case below exercises the
+    # expanduser normalisation rather than an already-absolute setting.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(settings, "fork_dir", "~/.octopus/fork")
     base = SessionManager._fork_copy_base()
     assert SessionManager._is_fork_copy_dir(f"{base}/proj-abc") is True
     assert SessionManager._is_fork_copy_dir(base) is False  # the base itself

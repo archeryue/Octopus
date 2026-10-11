@@ -36,6 +36,8 @@ SCOPE_MARKERS = (
     "require_admin",
     "OperatorUser",
     "operator_user",
+    "SignedInUser",
+    "signed_in_user",
     "ViewerUser",
     "viewer_user_id",
 )
