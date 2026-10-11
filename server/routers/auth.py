@@ -21,12 +21,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..auth import verify_token
 from ..bootstrap import BootstrapError, bootstrap_first_account
+from ..config import settings
 from ..deps import (
     AdminUser,
     CurrentUser,
     OperatorUser,
     ScopeUser,
     SessionMgr,
+    SignedInUser,
     UserMgr,
 )
 from ..models import (
@@ -228,13 +230,18 @@ async def change_password(
 
 
 @router.get("/identity", response_model=IdentityResponse)
-async def identity(user: CurrentUser) -> IdentityResponse:
+async def identity(user: SignedInUser) -> IdentityResponse:
     """Who you are, for the sidebar's account row.
 
-    It used to answer `OCTOPUS_USER_LABEL` — a single-user install's idea of a
-    name. Now it answers the account's own username, which is the same field
-    doing the same job for a site with several people on it.
+    An account answers with its own username. An install with no accounts yet
+    answers with `OCTOPUS_USER_LABEL` — its operator, signed in with the
+    install token — and no `user_id`, which is how the account page knows to
+    offer claiming the install rather than a password to change. The client
+    treats a 401 here as "signed out", so this must answer for every bearer the
+    install accepts, in both eras.
     """
+    if user is None:
+        return IdentityResponse(label=settings.user_label)
     return IdentityResponse(
         label=user["username"], user_id=user["id"], is_admin=user["is_admin"]
     )

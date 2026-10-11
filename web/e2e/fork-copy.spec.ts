@@ -3,13 +3,18 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { E2E_STATE_DIR } from "../playwright.config";
+
 // Pure-UI e2e for the /fork copy-dir duplicate (session-fork.md). No real
 // LLM turn: we import a parent session pointing at a SMALL temp working dir,
 // run `/fork copy`, and assert a NEW session appears + becomes active with the
 // "full copy" banner while the ORIGINAL session stays put (not archived).
 //
-// /fork triggers a real backend copytree into ~/.octopus/fork/, so afterAll
-// deletes both sessions and removes the copied + source dirs.
+// /fork triggers a real backend copytree into the backend's fork dir — the
+// suite's own (`OCTOPUS_FORK_DIR` in playwright.config.ts), never a deployed
+// install's `~/.octopus/fork` — so afterAll deletes both sessions and removes
+// the copied + source dirs.
+const FORK_DIR = join(E2E_STATE_DIR, "fork");
 
 const TOKEN = "changeme";
 const API = "http://localhost:8765/api";
@@ -33,7 +38,7 @@ test.afterAll(async ({ request }) => {
         await res.json();
       for (const s of sessions) {
         if (!OWNED.has(s.name)) continue;
-        if (s.working_dir?.includes("/.octopus/fork/")) cleanupDirs.push(s.working_dir);
+        if (s.working_dir?.startsWith(FORK_DIR + "/")) cleanupDirs.push(s.working_dir);
         await request
           .delete(`${API}/sessions/${s.id}`, {
             headers: { Authorization: `Bearer ${TOKEN}` },

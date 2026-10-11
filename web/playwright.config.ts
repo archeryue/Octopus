@@ -133,6 +133,16 @@ export default defineConfig({
         OCTOPUS_MASTER_KEY_FILE: path.join(E2E_STATE_DIR, "master.key"),
         OCTOPUS_USERS_ROOT: path.join(E2E_STATE_DIR, "users"),
         OCTOPUS_RESEARCH_DIR: path.join(E2E_STATE_DIR, "research"),
+        // The rest of the state the suite writes. Left at their defaults
+        // these land in `~/.octopus` — on a box that also runs a deployed
+        // install with default paths, that install's own directories (the
+        // attachment and Codex-login dirs the suite's uploads and sign-in
+        // tests create). The accounts backend below gets the same three.
+        OCTOPUS_ATTACHMENTS_DIR: path.join(E2E_STATE_DIR, "attachments"),
+        OCTOPUS_LARGE_PROMPTS_DIR: path.join(E2E_STATE_DIR, "large-prompts"),
+        OCTOPUS_CODEX_HOME_DIR: path.join(E2E_STATE_DIR, "codex"),
+        // A full-copy /fork copies the whole working dir here (fork-copy.spec).
+        OCTOPUS_FORK_DIR: path.join(E2E_STATE_DIR, "fork"),
       },
     },
     {
@@ -181,6 +191,12 @@ export default defineConfig({
         ),
         OCTOPUS_USERS_ROOT: path.join(E2E_ACCOUNTS_STATE_DIR, "users"),
         OCTOPUS_RESEARCH_DIR: path.join(E2E_ACCOUNTS_STATE_DIR, "research"),
+        OCTOPUS_LARGE_PROMPTS_DIR: path.join(
+          E2E_ACCOUNTS_STATE_DIR,
+          "large-prompts",
+        ),
+        OCTOPUS_CODEX_HOME_DIR: path.join(E2E_ACCOUNTS_STATE_DIR, "codex"),
+        OCTOPUS_FORK_DIR: path.join(E2E_ACCOUNTS_STATE_DIR, "fork"),
       },
     },
     {

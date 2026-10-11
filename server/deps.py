@@ -282,3 +282,42 @@ async def operator_user(
 
 
 OperatorUser = Annotated[dict | None, Depends(operator_user)]
+
+
+async def signed_in_user(
+    request: Request,
+    creds: _BearerCreds,
+    token: _QueryToken = None,
+) -> dict[str, Any] | None:
+    """Whoever this bearer signs in as — an account, or the single operator of
+    an install that has no accounts yet.
+
+    `CurrentUser` answers only the first, so on an install with no accounts it
+    refuses the very token that install is entered with. That is right for the
+    routes that only exist once there are accounts, and wrong for the one the
+    client asks on every load to learn whether it is still signed in
+    (`/api/auth/identity`): a 401 there signs the client out, and an install
+    with no accounts could never be signed into at all.
+
+    Returns `None` in that era — after checking the bearer is one the install
+    accepts, because unlike `OperatorUser` this does not assume `verify_token`
+    ran first — and the account's row after it. 401 otherwise, either way.
+    """
+    from .auth import _allowed
+
+    presented = _presented(request, creds, token)
+    if not await accounts_exist():
+        if not await _allowed(presented):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+        return None
+    if _user_manager is None:  # pragma: no cover - startup wiring bug
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "accounts are not available"
+        )
+    user = await _user_manager.resolve_token(presented)
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token")
+    return user
+
+
+SignedInUser = Annotated[dict | None, Depends(signed_in_user)]

@@ -77,6 +77,43 @@ async def test_login_returns_a_bearer_that_works(client):
 
 
 @pytest.mark.asyncio
+async def test_identity_answers_the_install_token_before_any_account(client, monkeypatch):
+    """An install with no accounts is entered with its token, and the client
+    asks `/identity` on every load to learn whether it is still signed in — a
+    401 there signs it out. So before the first account the install token must
+    get an answer: the operator's label, and no `user_id` (which is how the
+    account page knows to offer claiming the install). Answering 401 here put
+    every token sign-in straight back on the sign-in screen."""
+    from server.config import settings
+
+    c, _users, _db = client
+    monkeypatch.setattr(settings, "user_label", "archer's box")
+    who = await c.get("/api/auth/identity", headers=_bearer(settings.auth_token))
+    assert who.status_code == 200
+    assert who.json() == {"label": "archer's box", "user_id": None, "is_admin": False}
+
+    # Still a sign-in check, not an open door.
+    assert (await c.get("/api/auth/identity")).status_code == 401
+    assert (
+        await c.get("/api/auth/identity", headers=_bearer("not-the-token"))
+    ).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_identity_refuses_the_install_token_once_an_account_exists(client):
+    """The other half of the era boundary: after the first account, the install
+    token opens nothing — `/identity` included — so the client lands on
+    sign-in and asks for a username instead."""
+    from server.config import settings
+
+    c, users, _db = client
+    await users.create_user(username="archer", password="password1")
+    assert (
+        await c.get("/api/auth/identity", headers=_bearer(settings.auth_token))
+    ).status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_identity_needs_a_bearer_and_the_password_is_not_one(client):
     c, users, _db = client
     await users.create_user(username="archer", password="password1")

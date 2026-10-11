@@ -73,6 +73,12 @@ class Settings(BaseSettings):
     # that the server streams back under /apps/{id}/. `~` expanded at use
     # time so tests (and the e2e suite) can point it at a temp root.
     applications_dir: str = "~/.octopus/applications"
+    # Where a full-copy /fork puts its private copy of the working directory
+    # (session-fork.md): `<fork_dir>/<name>-<fork id>`, deleted with the fork.
+    # A setting rather than a constant so that two installs on one box — a
+    # deployed one and a development one, or the e2e suite — do not share it.
+    # `~` expanded at use time.
+    fork_dir: str = "~/.octopus/fork"
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False
