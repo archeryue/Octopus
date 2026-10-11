@@ -32,11 +32,11 @@ def _agents_root(user_id: str | None = None) -> Path:
     directory, which is both what a pre-accounts install has and what an
     upgraded one keeps until §9 moves it.
     """
-    from .workspace import paths_for
+    from .runtime import get_runtime
 
     if user_id is None:
         return Path(os.path.expanduser(settings.agents_dir))
-    return paths_for(user_id).agents
+    return get_runtime().paths(user_id).agents
 
 
 def agent_state_dir(agent_id: str, user_id: str | None = None) -> Path:

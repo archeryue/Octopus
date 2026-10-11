@@ -18,9 +18,12 @@ import json
 import logging
 import os
 import re
+import signal
 from typing import Any
 
+from .aio import stopped_within
 from .models import MessageContent, MessageRole
+from .runtime import ExecSpec, TenantId, get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -66,26 +69,33 @@ _LOST_HISTORY_HEADER = (
 # ------------------------------------------------------------------ git anchor
 
 
-async def _git(working_dir: str, *args: str, timeout: float = 10.0) -> tuple[int, str, str]:
-    """Run a git command in `working_dir`. Returns (returncode, stdout, stderr).
-    On spawn failure / timeout returns (-1, "", <reason>)."""
+async def _git(
+    working_dir: str, *args: str, timeout: float = 10.0, tenant: TenantId = None
+) -> tuple[int, str, str]:
+    """Run a git command in `working_dir`, in `tenant`'s runtime — the working
+    directory is there, not necessarily here. Returns (returncode, stdout,
+    stderr). On spawn failure / timeout returns (-1, "", <reason>)."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", *args,
-            cwd=working_dir,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        proc = await get_runtime().exec(
+            ExecSpec(
+                tenant=tenant,
+                argv=["git", *args],
+                env=dict(os.environ),
+                cwd=working_dir,
+                stdin="devnull",
+                # A short-lived child of ours, killed directly on timeout.
+                process_group=False,
+            )
         )
     except (OSError, ValueError):
         return (-1, "", "git not spawnable")
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        proc.signal(signal.SIGKILL, group=False)
+        # Reap it, so it neither lingers as a zombie nor keeps its tenant's
+        # runtime from being released.
+        await stopped_within(proc.wait(), "timed-out git", timeout=2.0)
         return (-1, "", "git timed out")
     return (
         proc.returncode if proc.returncode is not None else -1,
@@ -94,16 +104,18 @@ async def _git(working_dir: str, *args: str, timeout: float = 10.0) -> tuple[int
     )
 
 
-async def capture_git_anchor(working_dir: str) -> tuple[str | None, bool | None]:
+async def capture_git_anchor(
+    working_dir: str, *, tenant: TenantId = None
+) -> tuple[str | None, bool | None]:
     """Capture (git_head, git_status_clean) for a turn-start row. Returns
     (None, None) when `working_dir` isn't inside a git repo or git is
     unavailable. `git_status_clean` is True iff `git status --porcelain` was
     empty (no dirty tree)."""
-    rc, out, _ = await _git(working_dir, "rev-parse", "HEAD")
+    rc, out, _ = await _git(working_dir, "rev-parse", "HEAD", tenant=tenant)
     if rc != 0 or not out.strip():
         return (None, None)
     head = out.strip()
-    rc2, out2, _ = await _git(working_dir, "status", "--porcelain")
+    rc2, out2, _ = await _git(working_dir, "status", "--porcelain", tenant=tenant)
     if rc2 != 0:
         return (head, None)
     return (head, out2.strip() == "")
@@ -415,8 +427,8 @@ def _porcelain_paths(porcelain: str) -> list[str]:
     return paths
 
 
-async def _git_toplevel(working_dir: str) -> str | None:
-    rc, out, _ = await _git(working_dir, "rev-parse", "--show-toplevel")
+async def _git_toplevel(working_dir: str, *, tenant: TenantId = None) -> str | None:
+    rc, out, _ = await _git(working_dir, "rev-parse", "--show-toplevel", tenant=tenant)
     if rc != 0 or not out.strip():
         return None
     return out.strip()
@@ -432,12 +444,14 @@ async def safe_revert_preflight(
     agent_touched_paths: list[str],
     fork_head: str | None,
     fork_clean: bool | None,
+    *,
+    tenant: TenantId = None,
 ) -> tuple[bool, str | None, list[str]]:
     """The strict 4-check preflight (session-rewind.md §5.6.3), anchored on
     message M's captured git state. Returns (available, refused_reason,
     dirty_paths_to_revert). All four must hold; otherwise refuse with a precise
     reason and the fork still creates without a revert."""
-    top = await _git_toplevel(working_dir)
+    top = await _git_toplevel(working_dir, tenant=tenant)
     if top is None:
         return (False, "Not a git repo", [])
     if not fork_clean:
@@ -447,12 +461,12 @@ async def safe_revert_preflight(
             "uncommitted work",
             [],
         )
-    rc, out, _ = await _git(working_dir, "rev-parse", "HEAD")
+    rc, out, _ = await _git(working_dir, "rev-parse", "HEAD", tenant=tenant)
     if rc != 0 or not out.strip():
         return (False, "Not a git repo", [])
     if not fork_head or fork_head != out.strip():
         return (False, "HEAD has moved since the fork-point", [])
-    rc2, porcelain, _ = await _git(working_dir, "status", "--porcelain")
+    rc2, porcelain, _ = await _git(working_dir, "status", "--porcelain", tenant=tenant)
     if rc2 != 0:
         return (False, "Not a git repo", [])
     dirty_rel = _porcelain_paths(porcelain)
@@ -483,13 +497,15 @@ async def safe_revert_files(
     fork_head: str | None,
     fork_clean: bool | None,
     fork_id: str,
+    *,
+    tenant: TenantId = None,
 ) -> dict[str, Any]:
     """Run the §5.6.3 preflight, then (if it passes and there's anything dirty)
     stash + checkout the agent-touched files back to their fork-point state.
     Never rolls back the fork on failure — the outcome is recorded into the
     durable `fork_revert_record`."""
     available, reason, dirty = await safe_revert_preflight(
-        working_dir, agent_touched_paths, fork_head, fork_clean
+        working_dir, agent_touched_paths, fork_head, fork_clean, tenant=tenant
     )
     if not available:
         return {
@@ -510,7 +526,7 @@ async def safe_revert_files(
             "refused_reason": None,
             "error": None,
         }
-    top = await _git_toplevel(working_dir) or working_dir
+    top = await _git_toplevel(working_dir, tenant=tenant) or working_dir
     stash_msg = f"octopus: pre-fork stash {fork_id}"
     # `git stash push -u -- <paths>` both saves the agent's changes AND
     # restores the working tree to HEAD for those paths: tracked modifications
@@ -519,7 +535,7 @@ async def safe_revert_files(
     # needed, and it would in fact error on untracked paths that were never in
     # HEAD (`pathspec '…' did not match`).
     rc, _out, err = await _git(
-        top, "stash", "push", "-u", "-m", stash_msg, "--", *dirty
+        top, "stash", "push", "-u", "-m", stash_msg, "--", *dirty, tenant=tenant
     )
     if rc != 0:
         return {

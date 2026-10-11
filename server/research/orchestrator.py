@@ -81,6 +81,7 @@ async def run_research(
     on_progress: ProgressCallback | None = None,
     search: LeafCallable | None = None,
     reason: LeafCallable | None = None,
+    user_id: str | None = None,
 ) -> ResearchReport:
     """Run the full pipeline. Provide `search`/`reason` to inject leaf behavior
     (tests); otherwise they default to the real executors bound to `harness` +
@@ -93,13 +94,14 @@ async def run_research(
         async def search(p: str) -> LeafResult:  # noqa: E306
             return await run_web_leaf(
                 harness, prompt=p, working_dir=working_dir, credential=credential,
-                model=model, timeout=limits.leaf_timeout,
+                model=model, timeout=limits.leaf_timeout, user_id=user_id,
             )
     if reason is None:
         async def reason(p: str) -> LeafResult:  # noqa: E306
             return await run_reason_leaf(
                 harness, prompt=p, credential=credential, model=model,
                 working_dir=working_dir, timeout=limits.reason_timeout,
+                user_id=user_id,
             )
 
     async def _emit(phase: str, detail: str, **counts: int) -> None:

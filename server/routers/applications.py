@@ -381,13 +381,15 @@ async def proxy_application_api(request: Request, app_id: str, path: str):
     except ApplicationError as e:
         raise _http_error(e)
 
-    state = await backend_supervisor.ensure_running(app_id, row["app_dir"])
+    state = await backend_supervisor.ensure_running(
+        app_id, row["app_dir"], tenant=row.get("user_id")
+    )
     if state.state == ABSENT:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND,
             "This application has no backend (no executable start.sh)",
         )
-    if state.state != RUNNING or not state.port:
+    if state.state != RUNNING or not state.dial:
         # 503 rather than 500: the app is fine, its backend isn't up. The
         # message carries the reason because a dead backend with no output is
         # the thing this feature exists to avoid.
@@ -396,7 +398,7 @@ async def proxy_application_api(request: Request, app_id: str, path: str):
             state.error or f"backend is {state.state}",
         )
 
-    url = f"http://127.0.0.1:{state.port}/api/{path}"
+    url = f"http://{state.dial}/api/{path}"
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in _SKIP_REQUEST_HEADERS

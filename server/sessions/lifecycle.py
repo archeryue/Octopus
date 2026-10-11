@@ -17,7 +17,7 @@ from ..aio import stopped_within
 from ..attachments import delete_session_attachments
 from ..large_prompts import delete_session_large_prompts
 from ..models import MessageContent, SessionDetail, SessionStatus
-from ..workspace import confine
+from ..runtime import get_runtime
 from .base import (
     Session,
     SessionManagerBase,
@@ -99,7 +99,7 @@ class LifecycleMixin(SessionManagerBase):
             # frozen absolute as it always was — in that order, because a path
             # that escapes must be refused before it is stored, not after.
             working_dir=resolve_working_dir(
-                confine(working_dir, user_id=owner_id, extra_roots=extra_roots)
+                get_runtime().confine(working_dir, owner_id, extra_roots=extra_roots)
             ),
             credential_id=credential_id,
             agent_id=agent_id,
@@ -154,7 +154,7 @@ class LifecycleMixin(SessionManagerBase):
             id=sid,
             name=name,
             working_dir=resolve_working_dir(
-                confine(working_dir, user_id=owner_id, extra_roots=extra_roots)
+                get_runtime().confine(working_dir, owner_id, extra_roots=extra_roots)
             ),
             claude_session_id=claude_session_id,
             credential_id=credential_id,

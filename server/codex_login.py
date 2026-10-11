@@ -28,6 +28,7 @@ from enum import Enum
 from .aio import stopped_within
 from .config import settings
 from .harness.run import _which_with_fallback, augmented_path
+from .runtime import ExecSpec, Execution, get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class CodexLoginSession:
     persisted: bool = False  # set once the route saves the credential row
     # Who started this login — see `LoginSession.user_id` in oauth_login.py.
     user_id: str | None = None
-    _proc: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    _proc: Execution | None = field(default=None, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)
     _watchdog: asyncio.Task | None = field(default=None, repr=False)
     _scraped: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
@@ -84,20 +85,14 @@ def codex_home_for(credential_id: str) -> str:
     return os.path.join(codex_home_root(), credential_id)
 
 
-def _kill_process_group(proc: asyncio.subprocess.Process | None) -> None:
+def _kill_process_group(proc: Execution | None) -> None:
     """SIGKILL the whole process group. `codex login` spawns helpers that hold
     the stdout pipe open, so killing only the parent leaves our reader blocked
     until the device code expires (~15 min). We spawn it as a group leader
-    (`start_new_session=True`) and kill the group so the pipe EOFs at once."""
+    (`process_group=True`) and kill the group so the pipe EOFs at once."""
     if proc is None or proc.returncode is not None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+    proc.signal(signal.SIGKILL, group=True)
 
 
 class CodexLoginManager:
@@ -135,14 +130,16 @@ class CodexLoginManager:
         env["PATH"] = augmented_path(env.get("PATH"), os.path.dirname(argv[0]))
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=home,
-                env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,  # own process group → killable as a unit
+            proc = await get_runtime().exec(
+                ExecSpec(
+                    tenant=user_id,
+                    argv=argv,
+                    env=env,
+                    cwd=home,
+                    stdin="devnull",
+                    stderr="stdout",
+                    process_group=True,  # own process group → killable as a unit
+                )
             )
         except FileNotFoundError:
             shutil.rmtree(home, ignore_errors=True)

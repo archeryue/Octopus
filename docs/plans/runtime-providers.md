@@ -143,9 +143,13 @@ provider's, and it is made from facts the server already has:
 
 ## 4. The interface
 
+As implemented in `server/runtime/base.py` (`PROTOCOL_VERSION = "runtime-1.0"`):
+
 ```python
 class Runtime(Protocol):
-    # Lifecycle — per tenant, idempotent.
+    name: str
+
+    # Lifecycle — per tenant, idempotent. Called by the server (§3).
     async def ensure(self, tenant: TenantId) -> None: ...
     async def release(self, tenant: TenantId) -> None: ...
 
@@ -153,35 +157,59 @@ class Runtime(Protocol):
     async def exec(self, spec: ExecSpec) -> Execution: ...
 
     # Network, server → runtime — Applications, and only Applications (§6).
-    async def expose(self, tenant: TenantId) -> Exposed: ...
+    async def expose(self, tenant: TenantId) -> Exposed: ...   # (port, dial)
 
     # Network, runtime → server — the base URL work in this tenant's runtime
     # uses to reach this server: MCP tools, the Application agent API (§7).
-    async def callback_base(self, tenant: TenantId) -> str: ...
+    # Synchronous: it is read while argv and env are assembled, and a provider
+    # knows its own topology without asking anyone.
+    def callback_base(self, tenant: TenantId) -> str: ...
 
     # Paths — the tenant's directories, as the runtime sees them (§8, §9).
     def paths(self, tenant: TenantId) -> UserPaths: ...
-    def confine(self, requested: str | None, tenant: TenantId) -> str: ...
+    def confine(self, requested: str | None, tenant: TenantId, *,
+                extra_roots: list[str] | None = None) -> str: ...
 ```
 
 ```python
 @dataclass(frozen=True)
 class ExecSpec:
-    tenant: TenantId
+    tenant: TenantId               # an account id, or None for the install itself
     argv: Sequence[str]
-    cwd: str
-    env: Mapping[str, str]        # the COMPLETE environment — see below
-    stdin: Literal["none", "pipe"] = "none"
-    detach: bool = False          # survives the caller; own process group
-    line_limit: int | None = None # stdout reader's max line, as today
+    env: Mapping[str, str]         # the COMPLETE environment — see below
+    cwd: str | None = None
+    stdin: Literal["devnull", "pipe", "inherit"] = "devnull"
+    stderr: Literal["pipe", "stdout"] = "pipe"   # "stdout" = one merged log stream
+    process_group: bool = True     # own group: signalled as a unit, survives its caller
+    line_limit: int | None = None  # stdout reader's max line, as today
+    hints: Mapping[str, str] = {}  # provider-specific; LocalRuntime ignores them
 
 class Execution(Protocol):
-    stdin: AsyncWriter | None
-    stdout: AsyncIterator[bytes]
-    stderr: AsyncIterator[bytes]
+    stdin: AsyncWriter | None      # write / drain / close / is_closing
+    stdout: AsyncReader | None     # readline / read / async for
+    stderr: AsyncReader | None     # None when merged
+    returncode: int | None
     async def wait(self) -> int: ...
-    async def signal(self, sig: int, *, group: bool = True) -> None: ...
+    async def communicate(self) -> tuple[bytes, bytes]: ...
+    def signal(self, sig: int, *, group: bool = True) -> bool: ...
 ```
+
+Three shapes are the call sites', kept rather than tidied: `stdin="inherit"`
+(the two Application scripts have always spawned that way; under systemd it is
+`/dev/null`), `stderr="stdout"` (install.sh, start.sh and `codex login` pump one
+ordered log), and `process_group=False` (`git`, a short child killed directly on
+timeout). `signal` is synchronous and best-effort — it returns once the signal
+is on its way, swallows the already-exited race, and is True only when a group
+signal was sent — because every caller uses it from a teardown path that must
+not itself block. `communicate` is on the protocol because "read both pipes to
+EOF, then wait" is the one shape that cannot deadlock on a full pipe, and two
+call sites need it.
+
+The server never holds a bare provider: `get_runtime()` returns it wrapped in
+`ManagedRuntime` (`registry.py`), which owns §3's decisions — `ensure` before
+every `exec`, and `release` once every execution it handed out has been awaited
+to the end and `runtime_release_grace_seconds` has passed with nothing new. The
+provider is chosen by `runtime_provider`: `local`, or `package.module:Class`.
 
 **`env` is the complete environment.** The provider adds nothing from the
 server's own environment, because for any provider but `LocalRuntime` the
@@ -422,6 +450,15 @@ model can reach it, or the prompt silently points at nothing.
    contract, not a test folder.
 
 Steps 1–6 are individually revertible and ship no behaviour change.
+
+**Status (2026-10-11):** steps 1–7 are implemented on `runtime-provider` —
+`server/runtime/` (`base`, `local`, `registry`, `conformance`), every spawn
+site routed through `exec()` with its owning tenant, `expose()` and
+`callback_base()` at their sites, `confine()` / `paths()` behind the interface,
+and the lifecycle tested against a recording provider (`tests/test_runtime.py`).
+The conformance suite is `server/runtime/conformance.py`, framework-free so an
+out-of-tree provider runs it under its own runner; `LocalRuntime` passes it
+both bare and wrapped. Steps 8 and 9 remain.
 
 Two steps **do** change behaviour, and are listed separately because they are
 fixes rather than refactors — each ships on its own, with its own tests, after

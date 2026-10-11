@@ -192,6 +192,10 @@ async def lifespan(app: FastAPI):
     application_manager.shutdown()
     delegation_manager.shutdown()
     await schedule_runner.shutdown()
+    # Last of the execution owners: every process above has been stopped by
+    # its own owner, so all that is left is the runtime's pending releases.
+    from .runtime import get_runtime
+    await get_runtime().shutdown()
     # `db.close()` drains the turns still in flight first — they are registered
     # as a close hook when the manager is initialized — so nothing is left
     # awaiting a connection that has gone.

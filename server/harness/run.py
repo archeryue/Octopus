@@ -26,6 +26,14 @@ from pathlib import Path
 from typing import Any
 
 from ..aio import drain_cancelled
+from ..runtime import (
+    ExecSpec,
+    Execution,
+    TenantId,
+    get_runtime,
+    terminate_process_group,
+)
+from ..runtime import StdinMode as RuntimeStdin
 from . import assembly
 from .events import HarnessCredential, HarnessEvent
 from .profile import RuntimeProfile, StdinMode, TurnContext
@@ -119,28 +127,44 @@ def prepare_spawn(
     return argv, {**kwargs, "env": env, "start_new_session": True}
 
 
-def _terminate_process_group(proc: asyncio.subprocess.Process, sig: int) -> bool:
+def spawn_spec(
+    tenant: TenantId,
+    argv: list[str],
+    kwargs: dict[str, Any],
+    *,
+    stdin: RuntimeStdin,
+    line_limit: int | None = None,
+) -> ExecSpec:
+    """The `ExecSpec` for what `prepare_spawn` returned.
+
+    A profile's spawn kwargs are `cwd` and `env` and nothing else; anything
+    more would be a spawn option the runtime contract does not carry, so it is
+    refused here rather than silently dropped."""
+    unknown = set(kwargs) - {"cwd", "env", "start_new_session"}
+    if unknown:
+        raise TypeError(f"spawn kwargs the runtime cannot carry: {sorted(unknown)}")
+    return ExecSpec(
+        tenant=tenant,
+        argv=argv,
+        env=kwargs["env"],
+        cwd=kwargs.get("cwd"),
+        stdin=stdin,
+        process_group=bool(kwargs.get("start_new_session", True)),
+        line_limit=line_limit,
+    )
+
+
+def _terminate_process_group(proc: Execution | asyncio.subprocess.Process, sig: int) -> bool:
     """Signal the whole process group led by `proc` (so nested CLI children die
     with it), falling back to the direct child if the group can't be resolved.
     Returns True if a group signal was sent. Idempotent / best-effort —
-    swallows the races where the process already exited (turn-safety.md §2)."""
-    if proc.returncode is not None:
-        return False
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
-    if pgid is not None:
-        try:
-            os.killpg(pgid, sig)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
-    try:
-        proc.send_signal(sig)
-    except (ProcessLookupError, PermissionError):
-        pass
-    return False
+    swallows the races where the process already exited (turn-safety.md §2).
+
+    An `Execution` signals through its runtime; a bare local process (what a
+    test spawns itself) through the same code LocalRuntime uses."""
+    if isinstance(proc, asyncio.subprocess.Process):
+        return terminate_process_group(proc, sig)
+    return proc.signal(sig, group=True)
 
 
 def parse_json_line(line: str) -> dict[str, Any] | None:
@@ -198,7 +222,7 @@ class HarnessRun:
         self._profile = profile
         self._config = config or RunConfig()
         self._parser = profile.new_event_parser()
-        self._process: asyncio.subprocess.Process | None = None
+        self._process: Execution | None = None
         self._event_queue: asyncio.Queue[HarnessEvent | object] = asyncio.Queue()
         self._stdout_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
@@ -241,7 +265,9 @@ class HarnessRun:
         # Resolve working_dir to ABSOLUTE before handing it to the CLI: MCP
         # grandchildren inherit cwd, so a relative path would be double-resolved.
         abs_wd = str(Path(working_dir).resolve())
-        callback_env = assembly.build_callback_env(self._config.session_id)
+        callback_env = assembly.build_callback_env(
+            self._config.session_id, self._config.user_id
+        )
         mcp_servers = assembly.select_mcp_servers(
             self._config.mcp_servers,
             self._config.connectors,
@@ -301,13 +327,14 @@ class HarnessRun:
         argv, kwargs = prepare_spawn(argv, kwargs)
 
         logger.info("Spawning harness %s: %s (cwd=%s)", self._profile.backend, argv, kwargs.get("cwd"))
-        self._process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STDOUT_LINE_LIMIT_BYTES,
-            **kwargs,
+        self._process = await get_runtime().exec(
+            spawn_spec(
+                self._config.user_id,
+                argv,
+                kwargs,
+                stdin="pipe",
+                line_limit=_STDOUT_LINE_LIMIT_BYTES,
+            )
         )
         self._stdout_task = asyncio.create_task(
             self._read_stdout(), name=f"{self._profile.backend}-stdout"
@@ -399,7 +426,9 @@ class HarnessRun:
             ",".join(
                 f"{k}={v}"
                 for k, v in sorted(
-                    assembly.build_callback_env(self._config.session_id).items()
+                    assembly.build_callback_env(
+                        self._config.session_id, self._config.user_id
+                    ).items()
                 )
             ),
             ",".join(sorted(self._config.tool_allow or [])),

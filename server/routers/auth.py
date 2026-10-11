@@ -49,9 +49,10 @@ from ..models import (
     UserInfo,
     WorkspaceInfo,
 )
+from ..runtime import get_runtime
 from ..token_rotation import TokenRotationError, rotate_auth_token
 from ..users import UserError, token_digest
-from ..workspace import normalise_root, paths_for
+from ..workspace import normalise_root
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -259,7 +260,7 @@ async def workspace(users: UserMgr, user_id: ScopeUser = None) -> WorkspaceInfo:
         # No accounts: nothing has ever been confined, and saying otherwise
         # would invite somebody to fix a restriction that is not there.
         return WorkspaceInfo(
-            workspace=str(paths_for(None).workspace), extra_roots=[], confined=False
+            workspace=str(get_runtime().paths(None).workspace), extra_roots=[], confined=False
         )
     row = await users.db.get_user(user_id)
     raw = (row or {}).get("extra_roots")
@@ -268,7 +269,7 @@ async def workspace(users: UserMgr, user_id: ScopeUser = None) -> WorkspaceInfo:
     except (json.JSONDecodeError, TypeError):
         roots = []
     return WorkspaceInfo(
-        workspace=str(paths_for(user_id).workspace),
+        workspace=str(get_runtime().paths(user_id).workspace),
         extra_roots=[str(r) for r in roots],
         confined=True,
     )
@@ -301,7 +302,7 @@ async def set_extra_roots(
         seen.setdefault(r, None)
     await users.db.update_user_field(user_id, extra_roots=json.dumps(list(seen)))
     return WorkspaceInfo(
-        workspace=str(paths_for(user_id).workspace),
+        workspace=str(get_runtime().paths(user_id).workspace),
         extra_roots=list(seen),
         confined=True,
     )

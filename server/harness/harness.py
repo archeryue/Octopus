@@ -17,10 +17,11 @@ import logging
 import signal
 
 from ..aio import stopped_within
+from ..runtime import get_runtime
 from .events import HarnessOneshotError
 from .login import LoginDriver
 from .profile import OneShotContext, RuntimeProfile
-from .run import HarnessRun, RunConfig, _which_with_fallback, prepare_spawn
+from .run import HarnessRun, RunConfig, _which_with_fallback, prepare_spawn, spawn_spec
 
 logger = logging.getLogger(__name__)
 
@@ -198,15 +199,11 @@ class Harness:
         argv, kwargs = self.profile.build_oneshot_argv(ctx)
         try:
             argv, kwargs = prepare_spawn(argv, kwargs)
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                # DEVNULL so a CLI that reads stdin (codex exec) gets EOF
+            proc = await get_runtime().exec(
+                # devnull so a CLI that reads stdin (codex exec) gets EOF
                 # immediately and proceeds with the argv prompt instead of
                 # blocking forever; harmless for `claude --print`.
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                **kwargs,
+                spawn_spec(ctx.user_id, argv, kwargs, stdin="devnull")
             )
         except FileNotFoundError:
             raise HarnessOneshotError("not_found", f"{self.profile.binary} CLI not found")

@@ -33,7 +33,7 @@ from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from .config import settings
-from .workspace import paths_for
+from .runtime import get_runtime
 
 if TYPE_CHECKING:
     from .database import Database
@@ -124,7 +124,7 @@ def allocate_app_dir(name: str, user_id: str | None = None) -> str:
     means two accounts' apps cannot collide on a slug.
     """
     root = (
-        str(paths_for(user_id).applications) if user_id else applications_root()
+        str(get_runtime().paths(user_id).applications) if user_id else applications_root()
     )
     os.makedirs(root, exist_ok=True)
     stem = slugify(name)

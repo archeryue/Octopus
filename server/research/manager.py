@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..config import settings
 from ..harness import get_harness, has_backend
-from ..workspace import paths_for
+from ..runtime import get_runtime
 from .orchestrator import ResearchLimits, ResearchProgress, run_research
 
 if TYPE_CHECKING:
@@ -56,7 +56,7 @@ def _research_dir(user_id: str | None) -> str:
     pre-accounts answer is the directory Octopus has always used, so an install
     being upgraded keeps the reports it already wrote.
     """
-    d = str(paths_for(user_id).research)
+    d = str(get_runtime().paths(user_id).research)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -167,6 +167,7 @@ class ResearchManager:
                         working_dir=scratch,
                         limits=ResearchLimits(),
                         on_progress=on_progress,
+                        user_id=session.user_id,
                     ),
                     timeout=settings.research_job_timeout_seconds,
                 )

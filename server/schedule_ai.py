@@ -624,6 +624,7 @@ async def parse_schedule_text(
     model: str | None = None,
     credential: HarnessCredential | None = None,
     working_dir: str | None = None,
+    user_id: str | None = None,
     runner=None,
 ) -> ParsedSchedule:
     """Turn free text into a ParsedSchedule. Tries the rigid form first (no
@@ -648,7 +649,8 @@ async def parse_schedule_text(
     now = now_iso or datetime.now(ZoneInfo(tz)).isoformat(timespec="minutes")
     prompt = build_parse_prompt(text, now, tz)
     ctx = OneShotContext(
-        prompt=prompt, model=model, credential=credential, working_dir=working_dir
+        prompt=prompt, model=model, credential=credential, working_dir=working_dir,
+        user_id=user_id,
     )
     try:
         model_text = await run(ctx)

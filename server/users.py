@@ -199,7 +199,7 @@ class UserManager:
         of a system end up disagreeing about whether one exists.
         """
         from . import deps
-        from .workspace import paths_for
+        from .runtime import get_runtime
 
         deps.forget_accounts_exist()
         user = await self.db.create_user(
@@ -215,7 +215,7 @@ class UserManager:
         # account; invite-registration did not, so a registered account's first
         # turn spawned the CLI with cwd=<workspace> and died on
         # FileNotFoundError. One place now covers every way an account is made.
-        paths_for(user["id"]).ensure()
+        get_runtime().paths(user["id"]).ensure()
         return user
 
     async def create_user(

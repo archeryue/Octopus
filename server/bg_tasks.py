@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 import signal
 import uuid
@@ -40,6 +41,7 @@ from typing import Any
 
 from .aio import drain_cancelled, stopped_within
 from .database import Database
+from .runtime import ExecSpec, Execution, TenantId, get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,7 @@ class _RunningTask:
     handle + the asyncio.Task we await + buffers we're filling.
     """
 
-    def __init__(self, record: BgTaskRecord, proc: asyncio.subprocess.Process) -> None:
+    def __init__(self, record: BgTaskRecord, proc: Execution) -> None:
         self.record = record
         self.proc = proc
         self.stdout_buf = bytearray()
@@ -226,6 +228,7 @@ class BgTaskManager:
         working_dir: str,
         description: str | None = None,
         timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        tenant: TenantId = None,
     ) -> BgTaskRecord:
         """Create the row, spawn the process, return immediately.
 
@@ -239,17 +242,19 @@ class BgTaskManager:
 
         # Spawn through /bin/sh -c so the model can use shell syntax
         # (pipes, redirects, &&) — same trust model as the SDK's Bash
-        # tool. working_dir confines blast radius the same way.
+        # tool. working_dir confines blast radius the same way. It runs in the
+        # session owner's runtime, with this server's environment passed on
+        # explicitly — inheritance is the caller's act (runtime-providers.md §4).
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "/bin/sh",
-                "-c",
-                command,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=working_dir,
-                start_new_session=True,  # isolate process group so we can SIGTERM cleanly
+            proc = await get_runtime().exec(
+                ExecSpec(
+                    tenant=tenant,
+                    argv=["/bin/sh", "-c", command],
+                    env=dict(os.environ),
+                    cwd=working_dir,
+                    stdin="devnull",
+                    process_group=True,  # isolate process group so we can SIGTERM cleanly
+                )
             )
         except Exception as e:
             # Don't even persist a row — the task never existed. The
@@ -582,36 +587,28 @@ class BgTaskManager:
     async def _terminate_proc(self, rt: _RunningTask) -> None:
         """SIGTERM the whole process group; 5s grace; SIGKILL if needed.
 
-        We spawned with start_new_session=True, so killing the group
+        We spawned it as its own process group, so signalling the group
         sweeps up any children the model's shell command forked off
         (e.g. `bash -c "long_running &"`).
         """
         proc = rt.proc
         if proc.returncode is not None:
             return
-        try:
-            import os
-            pgid = os.getpgid(proc.pid)
-            # Audit trail: which path called the SIGTERM, and on what
-            # task. Pairs with the terminal-state log line so the
-            # forensics for an "exit -15" task are local to this file.
-            logger.info(
-                "bg task %s: SIGTERM pgid=%s cancel_requested=%s",
-                rt.record.id, pgid, rt.cancel_requested,
-            )
-            os.killpg(pgid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
+        # Audit trail: which path called the SIGTERM, and on what task. Pairs
+        # with the terminal-state log line so the forensics for an "exit -15"
+        # task are local to this file.
+        logger.info(
+            "bg task %s: SIGTERM process group cancel_requested=%s",
+            rt.record.id, rt.cancel_requested,
+        )
+        if not proc.signal(signal.SIGTERM, group=True):
             return
         # Don't await here — let the wait_for in _run_task notice the exit.
         # Schedule a SIGKILL fallback if the process resists SIGTERM.
         async def _kill_later() -> None:
             await asyncio.sleep(5.0)
             if proc.returncode is None:
-                try:
-                    import os as _os
-                    _os.killpg(_os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                proc.signal(signal.SIGKILL, group=True)
         asyncio.create_task(_kill_later(), name=f"bg-kill-{rt.record.id}")
 
 

@@ -31,7 +31,7 @@ from .applications import (
     data_dir_for,
     runtime_dir_for,
 )
-from .config import settings
+from .runtime import ExecSpec, Execution, TenantId, get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -65,27 +65,22 @@ LOG_TAIL_LINES = 200
 RETRY_BACKOFF_S = 30.0
 
 
-def _free_port() -> int:
-    """Ask the OS for an unused port, then hand the number to the child.
-
-    There is an unavoidable gap between closing this socket and the child
-    binding it. Binding in the parent and passing the fd would close that gap
-    but would force every backend to accept an inherited descriptor — a much
-    worse contract for a shell script. A collision here is rare, and shows up
-    as a start failure with the child's own "address in use" in the log.
-    """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
-
-
-def _port_accepts(port: int) -> bool:
+def _port_accepts(dial: str) -> bool:
+    """Whether the backend accepts a connection at `dial` (`host:port`, as the
+    runtime says the server reaches it — runtime-providers.md §6)."""
+    host, _, port = dial.rpartition(":")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.25)
-        return s.connect_ex(("127.0.0.1", port)) == 0
+        return s.connect_ex((host, int(port))) == 0
 
 
-def script_env(app_id: str, app_dir: str, *, port: int | None = None) -> dict[str, str]:
+def script_env(
+    app_id: str,
+    app_dir: str,
+    *,
+    port: int | None = None,
+    tenant: TenantId = None,
+) -> dict[str, str]:
     """The environment a backend script runs with.
 
     Deliberately NOT `os.environ.copy()`. The server's environment holds the
@@ -103,9 +98,10 @@ def script_env(app_id: str, app_dir: str, *, port: int | None = None) -> dict[st
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         # How a backend talks to the Octopus agents (app-agent-access.md §4).
         # The token is scoped to this one application, so handing it to app
-        # code doesn't hand over Octopus; the URL is the loopback origin, not
-        # the tunnel, because the backend is on this machine.
-        "OCTOPUS_AGENT_API": f"http://127.0.0.1:{settings.port}/apps/{app_id}/agent",
+        # code doesn't hand over Octopus; the URL is the server as seen from
+        # where the backend runs — the loopback origin for LocalRuntime, not
+        # the tunnel (runtime-providers.md §7).
+        "OCTOPUS_AGENT_API": f"{get_runtime().callback_base(tenant)}/apps/{app_id}/agent",
         "OCTOPUS_APP_TOKEN": app_scope_token(app_id),
     }
     if port is not None:
@@ -119,16 +115,21 @@ class BackendState:
 
     app_id: str
     app_dir: str
+    # The account that owns the app: its runtime runs the backend.
+    tenant: TenantId = None
     state: str = ABSENT
+    # What the backend binds, inside its runtime, and the `host:port` this
+    # server dials to reach it (runtime-providers.md §6). The same port on the
+    # loopback for LocalRuntime; not in general.
     port: int | None = None
-    pid: int | None = None
+    dial: str | None = None
     error: str | None = None
     started_at: float | None = None
     last_used: float = field(default_factory=time.monotonic)
     # Set once install has succeeded for the current code; cleared by a rebuild.
     installed: bool = False
     failed_at: float | None = None
-    process: asyncio.subprocess.Process | None = field(default=None, repr=False)
+    process: Execution | None = field(default=None, repr=False)
     log: deque[str] = field(default_factory=lambda: deque(maxlen=LOG_TAIL_LINES), repr=False)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _readers: list[asyncio.Task[None]] = field(default_factory=list, repr=False)
@@ -187,7 +188,7 @@ class BackendSupervisor:
         except OSError:
             pass  # a log we can't write must never break the app
 
-    async def _pump(self, st: BackendState, stream: asyncio.StreamReader, tag: str) -> None:
+    async def _pump(self, st: BackendState, stream: Any, tag: str) -> None:
         try:
             async for raw in stream:
                 self._log(st, f"[{tag}] {raw.decode(errors='replace').rstrip()}")
@@ -198,7 +199,7 @@ class BackendSupervisor:
 
     # -------------------------------------------------------------- install
 
-    async def install(self, app_id: str, app_dir: str) -> bool:
+    async def install(self, app_id: str, app_dir: str, *, tenant: TenantId = None) -> bool:
         """Run `install.sh` if the app ships one. True if the app is ready to start.
 
         A failed install is a state, not an exception: the app reports
@@ -206,6 +207,7 @@ class BackendSupervisor:
         log is the exact failure this feature exists to avoid.
         """
         st = self._state_for(app_id, app_dir)
+        st.tenant = tenant
         script = backend_script(app_dir, "install.sh")
         if script is None:
             st.installed = True
@@ -217,13 +219,16 @@ class BackendSupervisor:
         os.makedirs(runtime_dir_for(app_dir), exist_ok=True)
         os.makedirs(data_dir_for(app_dir), exist_ok=True)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                script,
-                cwd=app_dir,
-                env=script_env(app_id, app_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
+            proc = await get_runtime().exec(
+                ExecSpec(
+                    tenant=tenant,
+                    argv=[script],
+                    env=script_env(app_id, app_dir, tenant=tenant),
+                    cwd=app_dir,
+                    stdin="inherit",
+                    stderr="stdout",
+                    process_group=True,
+                )
             )
         except OSError as exc:
             st.state = FAILED
@@ -258,13 +263,16 @@ class BackendSupervisor:
 
     # ---------------------------------------------------------------- start
 
-    async def ensure_running(self, app_id: str, app_dir: str) -> BackendState:
+    async def ensure_running(
+        self, app_id: str, app_dir: str, *, tenant: TenantId = None
+    ) -> BackendState:
         """Start the backend if it isn't up. Returns its state either way.
 
         Lazy by design: called from the proxy, so a backend exists only once
         something actually asks it for something.
         """
         st = self._state_for(app_id, app_dir)
+        st.tenant = tenant
         st.last_used = time.monotonic()
 
         if backend_script(app_dir, "start.sh") is None:
@@ -281,7 +289,7 @@ class BackendSupervisor:
             ):
                 return st  # don't retry a crash in a tight loop
 
-            if not st.installed and not await self.install(app_id, app_dir):
+            if not st.installed and not await self.install(app_id, app_dir, tenant=tenant):
                 st.failed_at = time.monotonic()
                 return st
 
@@ -294,23 +302,29 @@ class BackendSupervisor:
         if script is None:
             st.state = ABSENT
             return
-        port = _free_port()
+        runtime = get_runtime()
+        exposed = await runtime.expose(st.tenant)
+        port = exposed.port
         st.state = STARTING
         st.error = None
         st.port = port
+        st.dial = exposed.dial
         self._log(st, f"--- start.sh (port {port}) ---")
         os.makedirs(data_dir_for(st.app_dir), exist_ok=True)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                script,
-                cwd=st.app_dir,
-                env=script_env(st.app_id, st.app_dir, port=port),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                # Its own group: a backend that spawns children (a git process,
-                # a worker) must not outlive its app, and only a group signal
-                # reaches them.
-                start_new_session=True,
+            proc = await runtime.exec(
+                ExecSpec(
+                    tenant=st.tenant,
+                    argv=[script],
+                    env=script_env(st.app_id, st.app_dir, port=port, tenant=st.tenant),
+                    cwd=st.app_dir,
+                    stdin="inherit",
+                    stderr="stdout",
+                    # Its own group: a backend that spawns children (a git
+                    # process, a worker) must not outlive its app, and only a
+                    # group signal reaches them.
+                    process_group=True,
+                )
             )
         except OSError as exc:
             st.state = FAILED
@@ -320,7 +334,6 @@ class BackendSupervisor:
             return
 
         st.process = proc
-        st.pid = proc.pid
         assert proc.stdout is not None  # spawned with stdout=PIPE
         st._readers = [asyncio.create_task(self._pump(st, proc.stdout, "app"))]
 
@@ -332,7 +345,7 @@ class BackendSupervisor:
                 st.failed_at = time.monotonic()
                 self._log(st, st.error)
                 return
-            if await asyncio.to_thread(_port_accepts, port):
+            if await asyncio.to_thread(_port_accepts, exposed.dial):
                 st.state = RUNNING
                 st.started_at = time.monotonic()
                 self._log(st, f"backend ready on port {port}")
@@ -361,8 +374,8 @@ class BackendSupervisor:
     async def _stop_state(self, st: BackendState) -> None:
         proc = st.process
         st.process = None
-        st.pid = None
         st.port = None
+        st.dial = None
         st.started_at = None
         for task in st._readers:
             task.cancel()
@@ -457,15 +470,15 @@ class BackendSupervisor:
         await self.stop_all()
 
 
-def _kill_group(proc: asyncio.subprocess.Process, sig: int = signal.SIGKILL) -> None:
+def _kill_group(proc: Execution, sig: int = signal.SIGKILL) -> None:
     """Signal the child's whole process group.
 
-    `start_new_session=True` made the child a group leader, so this reaches
+    `process_group=True` made the child a group leader, so this reaches
     anything it spawned. Signalling just the pid leaves a `git clone` or a
     worker running with no parent.
     """
     with contextlib.suppress(Exception):
-        os.killpg(os.getpgid(proc.pid), sig)
+        proc.signal(sig, group=True)
 
 
 backend_supervisor = BackendSupervisor()

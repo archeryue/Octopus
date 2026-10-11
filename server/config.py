@@ -79,6 +79,14 @@ class Settings(BaseSettings):
     # deployed one and a development one, or the e2e suite — do not share it.
     # `~` expanded at use time.
     fork_dir: str = "~/.octopus/fork"
+    # Where a tenant's work executes (runtime-providers.md): `local` — child
+    # processes on this box, the behaviour Octopus always had — or a provider
+    # living outside this repository, named as `package.module:Class`.
+    runtime_provider: str = "local"
+    # How long a tenant with nothing left running keeps its runtime before
+    # `release()` (runtime-providers.md §3). Long enough that the gap between
+    # one turn ending and the next starting does not cost a cold start.
+    runtime_release_grace_seconds: float = 300.0
 
     # Dev mode (enables uvicorn reload)
     debug: bool = False

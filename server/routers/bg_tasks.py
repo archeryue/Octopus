@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from ..auth import verify_token
 from ..bg_tasks import BgTaskError, BgTaskRecord, bg_task_manager
 from ..deps import ScopeUser, SessionMgr
-from ..sessions import SessionManager
+from ..sessions import Session, SessionManager
 
 router = APIRouter(prefix="/api/sessions", tags=["bg-tasks"])
 
@@ -48,7 +48,7 @@ def _record_to_json(rec: BgTaskRecord) -> dict[str, Any]:
 
 def _require_session(
     session_manager: SessionManager, session_id: str, user_id: str | None = None
-) -> str:
+) -> Session:
     """Live sessions only — bg tasks attach to in-memory sessions so
     the cross-turn delivery has a target. Archived sessions are
     read-only history. Scoped: another account's session is a 404."""
@@ -57,7 +57,7 @@ def _require_session(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Session {session_id} not found"
         )
-    return session.working_dir
+    return session
 
 
 @router.post(
@@ -79,13 +79,14 @@ async def start_bg_task(
     """
     if not req.command.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "command must be non-empty")
-    working_dir = _require_session(session_manager, session_id, user_id)
+    session = _require_session(session_manager, session_id, user_id)
     try:
         rec = await bg_task_manager.start_task(
             session_id=session_id,
             command=req.command,
-            working_dir=working_dir,
+            working_dir=session.working_dir,
             description=req.description,
+            tenant=session.user_id,
         )
     except BgTaskError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
