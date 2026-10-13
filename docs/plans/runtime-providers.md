@@ -60,6 +60,28 @@ laptop against your own subscription; that is the product. `LocalRuntime` is a
 first-class implementation and the default, not a degraded fallback. Any
 contract clause that is awkward for local execution is a bug in the contract.
 
+Concretely, three rules hold for every version of the protocol:
+
+* **Octopus alone runs every feature.** With `LocalRuntime` and nothing else
+  installed — no provider package, no cluster, no VM — every feature works:
+  turns, background tasks, Applications and their backends, `/rewind`, fork,
+  research, schedules, accounts. `LocalRuntime` implements the *whole*
+  protocol on this box's processes and filesystem; what it does not provide is
+  isolation between accounts, and it says so (`multi-tenancy.md` §2, level A).
+* **Every protocol addition lands in `LocalRuntime` in the same change.** File
+  operations (`runtime-1.1`, §9), an `ensure` that can report a runtime
+  offline, session history kept in the runtime — none of these exists until
+  `LocalRuntime` implements it and Octopus's own suites pass on it. A method
+  that only a remote provider implements is a feature the single-box install
+  silently lacks.
+* **The conformance suite has two tiers.** *Functional* cases — exec shapes,
+  signalling, ports, callbacks, the complete-environment rule, confinement,
+  state surviving `release` — bind every provider, `LocalRuntime` included.
+  *Isolation* cases — one tenant cannot read another's files, processes or
+  network — bind only a provider that claims isolation. `LocalRuntime` claims
+  none, so it is held to the first tier in full and is not a failure of the
+  second.
+
 ---
 
 ## 2. The seam, as it actually exists
