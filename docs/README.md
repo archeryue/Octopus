@@ -5,6 +5,9 @@ system works today; the rest is design history and reference.
 
 ## Current
 
+- **[roadmap.md](roadmap.md)** — what to build next, in order: the
+  multi-tenancy bugs, the Runtime architecture, the Router architecture, and
+  `octo`, each linked to its plan.
 - **[architecture.md](architecture.md)** — the current system design: harness
   layer, agents, sessions, backends, MCP tools, connectors, the
   WebSocket protocol, the data model, and key decisions. The doc to read first.
