@@ -30,6 +30,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 
 | Plan | Status | What |
 |---|---|---|
+| [`octo` — one way in to Octopus's data](plans/octo-cli.md) | in-progress | Design: a single client, `octo`, over one server-side interface layer, so agents, Applications and people reach Octopus's data the same way instead of each hacking the web API or the database. |
 | [Agent Router, Channels and the Ledger](plans/agent-router-and-channels.md) | in-progress | Design: an Agent becomes one continuous entity — a Ledger of all its work, an Agent Chat and Channels behind a Router, and hand-made sessions left direct and free. |
 | [Multi-tenancy, second pass: Connectors, Schedules, Harness](plans/multi-tenancy-gaps.md) | in-progress | Proposal: close the gaps a read-only review found where accounts can reach each other's work through the Manage surfaces, and make each class of gap structurally impossible. |
 | [/fork — duplicate a session onto a copied working directory](plans/session-fork.md) | shipped | Duplicate a session onto an independent full copy of its working directory. |

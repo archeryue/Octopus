@@ -266,10 +266,14 @@ ledger_events: item_id, kind, at, ref, text     -- turn started/ended, report, h
   - Router decisions and Worker reports.
 - **A one-line summary** may be generated asynchronously after a turn by a cheap
   model, off the session's critical path. The direct path does not wait on it.
-- **Read by pulling, never by pushing**: the Router reads it to route;
-  any session may call `ledger.list` / `ledger.read` / `sessions.read` when it
-  needs to; the Agent overview page shows the Board; the Watchdog and, later,
-  the Ontology distiller consume it. Nothing is injected into a turn by default.
+- **Read by pulling, never by pushing**:
+  - the Router reads it to route;
+  - any session runs `octo ledger …` / `octo sessions read` when it needs to
+    ([`octo-cli.md`](octo-cli.md));
+  - the official Board Application shows it (§5.9);
+  - the Watchdog and, later, the Ontology distiller consume it.
+
+  Nothing is injected into a turn by default.
 
 ### 5.4 Channels
 
@@ -362,12 +366,54 @@ is not left to the model alone:
   did not recall, so the gate can be tuned.
 
 It is personal Octopus's counterpart of Kraken's business Ontology. Its own plan
-when its turn comes.
+when its turn comes. Its browsing and editing surface is an official Application
+(§5.9).
 
 ### 5.8 Watchdog
 
 A schedule-driven session per Agent that reads the Board and each Worker's recent
 activity, flags work that is stuck or drifting, and tells the Router.
+
+### 5.9 Board and Ontology as official Applications
+
+The Board and the Ontology's interface ship as **two official Applications**, so
+users can change them freely. **The data and the interfaces stay Octopus's own.**
+
+| | In the core (`server/`) | In the official Application |
+|---|---|---|
+| **Board** | The Ledger: tables, event-driven writes, its routes on the interface layer, what the Router and Watchdog read | The view: filter by Agent / status / Channel, item details, jump to the Worker session |
+| **Ontology** | Storage, the distiller, the **gated auto-recall at the harness boundary**, its routes | Browse, search, edit, the link graph, each fact's provenance |
+
+The line is drawn where something else depends on it. Routing, recall and the
+Watchdog cannot hang on whether an Application is running, so what they read
+lives in the core. What a person looks at, and may want to look different,
+lives in the Application.
+
+- **Why Applications.**
+  - It proves the Applications platform can carry real product features, and
+    forces it to grow what that takes: permissions, a data API, versioned
+    updates.
+  - A user who wants another layout forks the official app. The official apps
+    are the first templates of the template marketplace.
+  - It mirrors Kraken. Its delivery plan already names **Kraken Overview** and
+    the **Ontology Platform** as official Applications; these are their personal
+    editions.
+  - For the Ontology, the Sapphire knowledge-base app — Obsidian-like, backed by
+    a git repository — is the natural starting point: a personal Ontology is
+    markdown and links.
+- **What the platform needs first.** Both come from [`octo-cli.md`](octo-cli.md):
+  - Applications reach Ledger and Ontology data only through the interface
+    layer, with scopes declared in the app's manifest and confirmed by the user
+    (`ledger:read`, `ontology:read`, `ontology:write`, …);
+  - an app token that carries those scopes.
+- **A new kind of Application: bundled.**
+  - Source lives in the repository (e.g. `apps/board/`, `apps/ontology/`) and
+    ships with Octopus. It is updated on upgrade, not built by an agent.
+  - The user cannot edit the original, but can fork it into an ordinary
+    Application they own.
+  - Code is shared; data is per account, decided by the token.
+- **Entry points.** The Agent page and the Agent Chat open the Board filtered to
+  that Agent.
 
 ---
 
@@ -391,10 +437,17 @@ Every step must keep the direct path unchanged. A hand-made session's
 time-to-first-token and per-turn tokens are measured before and after each step
 by a test that fails on regression.
 
-1. **The Ledger.** Tables, event-driven writes, async summaries, `ledger.*` and
-   `sessions.read` tools, the Agent overview page (the Board).
+0. **The interface layer and `octo`** ([`octo-cli.md`](octo-cli.md) §3 step 1),
+   so everything below is built on it rather than on direct database reads.
+1. **The Ledger, and the Board as an official Application.**
+   - The Ledger: tables, event-driven writes, async summaries, its `octo` and
+     interface routes.
+   - Application scopes and bundled Applications (§5.9).
+   - The official Board Application on top.
+
    *Done when* any session of an Agent can find out what its siblings are doing
-   without being told, and a hand-made session's turns are unchanged.
+   without being told, the Board shows it, and a hand-made session's turns are
+   unchanged.
 2. **The Agent Chat and the Router.** The Web Channel, worker mode of
    delegation, Router-owned replies, batching, rotation, slots, reclamation.
    *Done when* one conversation with an Agent runs three tasks in parallel Workers
@@ -404,7 +457,7 @@ by a test that fails on regression.
    optionally schedules as a Channel.
 4. **Router notes and hand-over** between the Router and hand-made sessions.
 5. **Watchdog.**
-6. **Ontology**, in its own plan.
+6. **Ontology**, in its own plan, with its official Application.
 
 ---
 
