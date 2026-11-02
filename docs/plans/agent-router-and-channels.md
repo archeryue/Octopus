@@ -1,13 +1,13 @@
 # Agent Router, Channels and the Ledger
 
-> **Status:** in-progress — Design: an Agent becomes one continuous entity — a Ledger of all its work, a default session and Channels behind a Router, and hand-made sessions left direct and free.
+> **Status:** in-progress — Design: an Agent becomes one continuous entity — a Ledger of all its work, an Agent Chat and Channels behind a Router, and hand-made sessions left direct and free.
 
 > Today an Agent is a shared configuration over sessions that cannot see each
 > other, and the user is the one routing work between them. This plan records
 > the architecture DeepSeek's Harness team published for the same problem
 > ("Super-agent", with its open-source prototype), and the design Archer settled
 > on for Octopus after working through it: a **Ledger** of every Worker's work, a
-> **default session** per Agent that — like every **Channel** — goes through a
+> **Agent Chat** per Agent that — like every **Channel** — goes through a
 > **Router**, and sessions the user creates by hand that stay direct,
 > independent and cost nothing extra. Nothing is built yet.
 
@@ -199,18 +199,29 @@ model override ([`composer-and-time.md`](composer-and-time.md)).
 |---|---|
 | **Ledger** | The Agent's record of all work by all its Workers. Written by the system. The truth §4.2 refers to |
 | **Board** | The Ledger's current view: what is in flight, by whom, waiting on what |
-| **Channel** | An input source and its way back: the default session, IM, GitHub, mail, schedules, webhooks |
+| **Agent Chat** | Each Agent's own conversation: the Web Channel, through the Router (§5.2) |
+| **Channel** | An input source and its way back: the Agent Chat, IM, GitHub, mail, schedules, webhooks |
 | **Router** | One per Agent. Decides what Channel input becomes, and owns every reply on a Channel |
 | **Worker** | A session doing one item of work: dispatched by the Router, or created by the user |
 | **Ontology** | Distilled long-term knowledge (people, projects, decisions, facts), Obsidian-like. Separate from the Ledger, built later from it (§5.7) |
 
 ### 5.2 Two kinds of session
 
-**The default session — talking to the Agent itself.** Every Agent has one, and
-it is the Web **Channel**: messages go through the Router. You hand work over,
-ask what is going on, have it keep track of several things at once. Clicking the
+**The Agent Chat — talking to the Agent itself.** Every Agent has one, and it is
+the Web **Channel**: messages go through the Router. You hand work over, ask
+what is going on, have it keep track of several things at once. Clicking the
 Agent in the sidebar opens it; it is the Agent's home, not one more row.
 
+- **Naming.** The UI calls it **Chat** ("Chat with Octo"); hand-made ones stay
+  **sessions**, so the two read as *talk to the Agent* and *open a workbench of
+  your own*. Docs and code call it **Agent Chat** (e.g. `kind = "agent_chat"`).
+  Not "default", which names the mechanism rather than the meaning. Not
+  "conversation", which already means an Application's talk with an Agent
+  (`server/app_agent.py`, `/apps/{id}/agent/conversations`). DeepSeek's prototype
+  calls the same thing the *main Session*.
+- **It takes over the existing Chat entry.** The Agent page's Chat button calls
+  `openAgentChat(agent.id)`, which today opens the Agent's latest session; it
+  will open the Agent Chat instead — same name, the meaning it should have had.
 - Its conversation is stored in Octopus's database, not tied to one CLI
   transcript; the Router behind it can rotate (§5.5).
 - It is asynchronous by nature. A question the Ledger answers ("what did you do
@@ -238,7 +249,7 @@ One item per piece of work:
 
 ```
 ledger_items: id, agent_id, user_id, title,
-              origin (default_session | channel:<kind> | manual | schedule | delegation),
+              origin (agent_chat | channel:<kind> | manual | schedule | delegation),
               origin_ref (trigger / thread / session), worker_session_id,
               status (queued | working | waiting | needs_person | done | dropped | stopped),
               outcome, summary, files_touched, threads (channel refs),
@@ -270,12 +281,12 @@ Event: id, agent_id, channel, thread_key, actor, addressed (bool),
 ```
 
 - **Sources**, in order:
-  1. the default session (§5.2);
+  1. the Agent Chat (§5.2);
   2. one external source — GitHub (issues, PRs, review comments, CI) or an IM
      (Feishu / Slack);
   3. then mail and webhooks;
   4. schedules may also become a Channel. Each fire is then routed and lands in
-     the default session and the Ledger, instead of a fresh session per fire.
+     the Agent Chat and the Ledger, instead of a fresh session per fire.
 - **Addressing and tags.** A mention of the Agent (`@Octo`), a label on an issue,
   a reply to the Agent's message marks an Event `addressed`. Unaddressed Events
   follow a per-source policy — *ignore*, *observe* (Ledger only) or *candidate*
@@ -292,7 +303,7 @@ Event: id, agent_id, channel, thread_key, actor, addressed (bool),
 
 ### 5.5 The Router
 
-- **One per Agent**, behind its default session and its Channels. A held session
+- **One per Agent**, behind its Agent Chat and its Channels. A held session
   on a lighter model; no Bash; tools: read the Ledger, `route` (accept / attach /
   ignore / stop, several candidates in one call), `reply`, `note`.
 - **Forwards, does not rewrite.** A dispatched Worker receives the original Event
@@ -307,7 +318,7 @@ Event: id, agent_id, channel, thread_key, actor, addressed (bool),
   **Rotation instead of compaction:** because the Ledger is the truth, a fresh
   Router seeded with a Ledger snapshot replaces one whose context has grown.
   This needs no summarization call, and it happens when the Agent is idle, so no
-  user waits on it. The default session's conversation is unaffected, since it is
+  user waits on it. The Agent Chat's history is unaffected, since it is
   stored by Octopus.
 
 ### 5.6 Workers
@@ -384,7 +395,7 @@ by a test that fails on regression.
    `sessions.read` tools, the Agent overview page (the Board).
    *Done when* any session of an Agent can find out what its siblings are doing
    without being told, and a hand-made session's turns are unchanged.
-2. **The default session and the Router.** The Web Channel, worker mode of
+2. **The Agent Chat and the Router.** The Web Channel, worker mode of
    delegation, Router-owned replies, batching, rotation, slots, reclamation.
    *Done when* one conversation with an Agent runs three tasks in parallel Workers
    and reports each back.
