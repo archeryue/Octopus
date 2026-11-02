@@ -30,7 +30,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 
 | Plan | Status | What |
 |---|---|---|
-| [Agent Router and Channels](plans/agent-router-and-channels.md) | in-progress | Design: an Agent becomes one continuous entity — Channels bring every input in, a Router per Agent holds the global view, sessions become its Workers. |
+| [Agent Router, Channels and the Ledger](plans/agent-router-and-channels.md) | in-progress | Design: an Agent becomes one continuous entity — a Ledger of all its work, a default session and Channels behind a Router, and hand-made sessions left direct and free. |
 | [Multi-tenancy, second pass: Connectors, Schedules, Harness](plans/multi-tenancy-gaps.md) | in-progress | Proposal: close the gaps a read-only review found where accounts can reach each other's work through the Manage surfaces, and make each class of gap structurally impossible. |
 | [/fork — duplicate a session onto a copied working directory](plans/session-fork.md) | shipped | Duplicate a session onto an independent full copy of its working directory. |
 | [Agent Collaboration — Tech Plan (agent-to-agent delegation)](plans/agent-collaboration.md) | shipped | Agent-to-agent delegation — the `mcp__ask_agent__*` tools, one hop, replies injected as follow-up turns. Reverses the "no A2A" carve-out in `agent-refactor.md` §40-41. |
