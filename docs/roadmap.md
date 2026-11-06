@@ -83,8 +83,8 @@ on the `runtime-provider` branch; the platform side is
   - **Step 9** — fork as a runtime step.
   - **`runtime-1.1` file operations**, implemented in `LocalRuntime` first: the
     largest gap for any remote provider.
-  - The standard as a **wire protocol**, so a provider in another language (a
-    Rust in-VM agent) conforms; the conformance suite runnable over the network.
+  - The standard as a **wire protocol**, so a provider written in any language
+    can conform; the conformance suite runnable over the network.
   - An `ensure` that can report "runtime offline", and every caller surfacing it.
   - Held-process policy per tenant (today `_MAX_HELD_PROCESSES = 4` box-wide).
 - **Session history in the tenant's Runtime storage.** The writer stays the
@@ -97,19 +97,17 @@ on the `runtime-provider` branch; the platform side is
   - The site keeps metadata, the Ledger and rebuildable derived indexes
     (search). Migrating today's shared `messages` table needs a rollback path.
   - A Runtime is always online by assumption, so no "history unreadable"
-    state exists. A Runtime down is an outage, recovered by the platform's
-    storage/compute separation.
+    state exists. A Runtime down is an outage, and recovering from it is the
+    provider's responsibility.
   - Fold this into `runtime-providers.md` when the branch merges.
-- **Octopus-Runtime v1 puts experience first:** the same latency and stability
-  as `LocalRuntime`, gated by a benchmark. No resource reclaim, no memory
-  overcommit. Each account gets a cloud computer: a full VM through KubeVirt by
-  default, confirmed by a bake-off on the real box (Kata as the fallback). One node, or two if the operator's PC passes the
-  criteria to be a Runtime node.
-- **Octopus-Runtime itself is not urgent:**
-  - buy the bare-metal box;
-  - k3s + Kata;
-  - the owner's WSL2 node;
-  - the controller and admin console.
+- **Octopus defines the standard; it does not choose how a provider implements
+  it.**
+  - The first remote provider is
+    [Octopus-Runtime](https://github.com/archeryue/Octopus-Runtime). Its
+    virtualization technology, topology, hardware and order of work live in
+    that repository.
+  - What Octopus asks of it is to implement the standard and pass the
+    conformance suite. It is not urgent on this side.
 
 ## 3. The Router architecture
 

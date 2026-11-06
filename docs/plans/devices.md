@@ -45,7 +45,7 @@ session there. This is DeepSeek's "decoupling the brain from the hands" and
 |---|---|---|
 | Assumption | **Always online.** Its going down is an outage the platform recovers from, never a state the design plans for | **May go offline at any time.** Being unreachable is normal |
 | Holds | All of a session's state: history, workspace, CLI state | Nothing of a session's. It runs what it is asked and returns the result |
-| Managed by | The Runtime platform, uniformly. A local machine that is to be a Runtime is virtualized and managed like any other node, not treated as special | Pairing, grants, approvals; offline is reported and work can queue |
+| Managed by | The Runtime provider. A machine that is to host sessions joins the provider's platform and is held to the always-online assumption; how the provider manages it is not Octopus's concern | Octopus: pairing, grants, approvals; offline is reported and work can queue |
 
 **A Device is never a Runtime.** One machine that is both offline-able and the
 persistent home of sessions is the hybrid this plan refuses. Its cost —
