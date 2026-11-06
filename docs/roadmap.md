@@ -87,6 +87,19 @@ on the `runtime-provider` branch; the platform side is
     Rust in-VM agent) conforms; the conformance suite runnable over the network.
   - An `ensure` that can report "runtime offline", and every caller surfacing it.
   - Held-process policy per tenant (today `_MAX_HELD_PROCESSES = 4` box-wide).
+- **Session history in the tenant's Runtime storage.** The writer stays the
+  same: the Octopus server parses the CLI stream as it does today. Only *where*
+  it writes moves behind the Runtime interface: append and read history as
+  storage operations, like the `runtime-1.1` file operations. A server cannot
+  open a SQLite file on another machine.
+  - `LocalRuntime` implements it as one SQLite file per user, which also makes
+    the single box physically isolated per account.
+  - The site keeps metadata, the Ledger and rebuildable derived indexes
+    (search). Migrating today's shared `messages` table needs a rollback path.
+  - A Runtime is always online by assumption, so no "history unreadable"
+    state exists. A Runtime down is an outage, recovered by the platform's
+    storage/compute separation.
+  - Fold this into `runtime-providers.md` when the branch merges.
 - **Octopus-Runtime itself is not urgent:**
   - buy the bare-metal box;
   - k3s + Kata;
@@ -134,6 +147,8 @@ Plan: [`plans/devices.md`](plans/devices.md) §6. Starts after `octo` step 1.
    Ledger records.
 2. Long jobs on devices (`octo bg run --device`), queueing for offline devices,
    phone approvals for sensitive actions.
-3. A Device as a Runtime, together with the Runtime wire protocol (item 2).
-4. Phones as capability devices.
-5. Cloud device providers, Lambda first.
+3. Phones as capability devices.
+4. Cloud device providers, Lambda first.
+
+A Device is never a Runtime: a Runtime is always online, a Device may go
+offline at any time, and the two get different designs.

@@ -39,7 +39,20 @@ session there. This is DeepSeek's "decoupling the brain from the hands" and
 "bring your own machine"
 ([`agent-router-and-channels.md`](agent-router-and-channels.md) §2.1).
 
-Both uses matter, and **one daemon serves both** (§3.4).
+**Two different assumptions, so two different designs:**
+
+| | Runtime | Device |
+|---|---|---|
+| Assumption | **Always online.** Its going down is an outage the platform recovers from, never a state the design plans for | **May go offline at any time.** Being unreachable is normal |
+| Holds | All of a session's state: history, workspace, CLI state | Nothing of a session's. It runs what it is asked and returns the result |
+| Managed by | The Runtime platform, uniformly. A local machine that is to be a Runtime is virtualized and managed like any other node, not treated as special | Pairing, grants, approvals; offline is reported and work can queue |
+
+**A Device is never a Runtime.** One machine that is both offline-able and the
+persistent home of sessions is the hybrid this plan refuses. Its cost —
+offline policies for sessions, schedules that cannot fire, history that cannot
+be read — is not worth what it buys. A machine that can be always on and should
+host sessions joins the Runtime platform. A machine that comes and goes is a
+Device.
 
 ---
 
@@ -75,8 +88,8 @@ As a device it is a capability provider and the place approvals are asked for
 - **It connects out; nothing connects in.** It holds one long-lived connection
   to the site (WebSocket or gRPC over TLS), and commands come back over it. A
   laptop behind home NAT, a cloud box behind its firewall, and a WSL2 distro
-  behind the Hyper-V firewall all work without opening a port. This is the
-  conclusion already reached for an owner's WSL node in Octopus-Runtime.
+  behind the Hyper-V firewall all work without opening a port — which is what
+  a machine that comes and goes needs.
 - **Pairing.**
   - `octod pair` prints a one-time code.
   - The user confirms it in Octopus (or `octo device approve <code>`).
@@ -85,11 +98,17 @@ As a device it is a capability provider and the place approvals are asked for
 - **It reports what it is:** OS and architecture, CPU / GPU / memory / disk, the
   directories it exposes, whether it allows command execution, and its
   capabilities (§2).
-- **It implements the Runtime wire protocol:** `exec`, file operations, `expose`.
-  It is held to the same conformance suite. This is why the Runtime standard has
-  to become a language-neutral wire protocol
-  ([`../roadmap.md`](../roadmap.md) item 2). `octod` is a natural first
-  implementation in Rust: a single static binary on every kind of machine.
+- **Its own small protocol**, not the Runtime protocol. It needs one-shot and
+  long-running commands, files, forwards and capabilities. It does not need what
+  only a session's home needs: held interactive processes, bidirectional stdin,
+  a caller-supplied complete environment, harness hosting.
+  - It shares the low-level process, signal and file primitives with Runtime
+    implementations, as a library, not as a protocol.
+  - The environment rule is the opposite of a Runtime's. A command runs in the
+    **device's own environment** with the device's own credentials; the
+    caller's environment does not come in.
+- `octod` is a natural Rust program: a single static binary on every kind of
+  machine.
 
 ### 3.2 Device control is part of `octo`
 
@@ -134,17 +153,20 @@ to the same CLI, for people.
 - A grant is on the Agent, so every session of that Agent may use it. A
   hand-made session gets nothing extra until its Agent is granted.
 
-### 3.4 A Device as a Runtime
+### 3.4 Coding on a device's repository
 
-Sometimes the whole session should run on the device:
+Claude Code's and Codex's built-in read, search and edit tools act on the
+filesystem of the machine the CLI runs on. An agent in its Runtime reaching a
+laptop through `octo device exec` would edit through `cat` and `sed`, which is
+worse and costs more tokens.
 
-- an agent working directly in the laptop's repository;
-- an agent resident on the GPU box.
+The answer is the ordinary workflow, not running the harness on the device:
 
-The same `octod` then serves as a **Runtime** for that Agent: the owner-machine
-node of Octopus-Runtime, reached through the Runtime protocol. A Device used as
-hands and a Device used as a home are the same machine, the same daemon and the
-same key. Which one it is depends on the grant.
+1. The code is in git. The agent works in its own checkout in its Runtime, with
+   its native tools, and pushes a branch.
+2. The device pulls and runs or tests it where the hardware or data is.
+
+What this does not cover is uncommitted local work on the device (§8).
 
 ### 3.5 Offline
 
@@ -236,9 +258,8 @@ interface layer, bearers and scopes it extends.
    under a grant, and the Ledger shows it.
 2. **Jobs and approvals.** `octo bg run --device`, `--when-online` queueing, the
    phone approval flow for sensitive actions.
-3. **A Device as a Runtime** (§3.4), together with the Runtime wire protocol.
-4. **Phones as capability devices** (§3.7).
-5. **Cloud device providers** (§3.6), Lambda first.
+3. **Phones as capability devices** (§3.7).
+4. **Cloud device providers** (§3.6), Lambda first.
 
 ---
 
@@ -257,6 +278,13 @@ interface layer, bearers and scopes it extends.
 
 ## 8. What this defers
 
+- **Running sessions on a Device.** A Device is the agent's hands, never its
+  home (§1).
+  - The one need this leaves uncovered is heavy editing of local files that
+    cannot go through git.
+  - If that need proves real, the answers are mounting the device's directory
+    into the Runtime, or making that machine an always-on Runtime node.
+  - It is never a session home that may go offline.
 - Fleet management for teams (shared devices across an organization's
   accounts). That is Kraken's, with its own authorization model.
 - Desktop GUI control (screen, mouse, keyboard). Shell, files and capabilities
