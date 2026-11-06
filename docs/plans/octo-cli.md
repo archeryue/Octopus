@@ -123,7 +123,13 @@ octo ask      <agent> <request> [--files …]     # agent-to-agent, as mcp__ask_
 octo ontology search <query> | get <entity> | put <entity> …
 octo apps     list | data get|put <key> …       # an Application's own store
 octo monitor  overview | turns | errors | …     # replaces reading octopus-metrics.db
+octo devices  | device show|exec|cp|forward|notify …   # machines the user connected
 ```
+
+The `device` verbs, and the `--device` option of `octo bg run`, are specified
+in [`devices.md`](devices.md). Device control is part of this CLI, not a
+separate tool: the same interface layer, bearers and scopes, extended with
+per-device grants.
 
 `octo monitor` moves the reports of today's `octopus monitor` behind the
 interface layer, so even operational reads stop opening the database.
@@ -171,6 +177,7 @@ interface layer, so even operational reads stop opening the database.
    §2.7.
 5. **Ontology routes** with the Ontology plan.
 6. **Static binary**, when a VM image wants it.
+7. **Devices** ([`devices.md`](devices.md)), on top of step 1.
 
 Every step keeps the direct path of a hand-made session unchanged. A session
 that never runs `octo` pays nothing for its existence beyond two environment

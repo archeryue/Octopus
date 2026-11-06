@@ -9,6 +9,8 @@ Suggested sequencing, by dependency rather than by number:
    install.
 2. Item 4, step 1 next: it is step 0 of item 3.
 3. Then items 3 and 2 can run in parallel.
+4. Item 5 after item 4, step 1: device control is part of `octo` and stands on
+   its interface layer, bearers and scopes.
 
 ---
 
@@ -122,3 +124,16 @@ Plan: [`plans/octo-cli.md`](plans/octo-cli.md) §3.
    retire.
 5. Ontology routes.
 6. A static binary, when a VM image wants it.
+
+## 5. Devices
+
+Plan: [`plans/devices.md`](plans/devices.md) §6. Starts after `octo` step 1.
+
+1. Shell devices: the `octod` daemon (pairing, outbound connection, `exec`,
+   files, forward), the device registry and per-Agent grants, `octo device …`,
+   Ledger records.
+2. Long jobs on devices (`octo bg run --device`), queueing for offline devices,
+   phone approvals for sensitive actions.
+3. A Device as a Runtime, together with the Runtime wire protocol (item 2).
+4. Phones as capability devices.
+5. Cloud device providers, Lambda first.

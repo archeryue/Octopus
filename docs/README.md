@@ -6,8 +6,8 @@ system works today; the rest is design history and reference.
 ## Current
 
 - **[roadmap.md](roadmap.md)** — what to build next, in order: the
-  multi-tenancy bugs, the Runtime architecture, the Router architecture, and
-  `octo`, each linked to its plan.
+  multi-tenancy bugs, the Runtime architecture, the Router architecture,
+  `octo`, and Devices, each linked to its plan.
 - **[architecture.md](architecture.md)** — the current system design: harness
   layer, agents, sessions, backends, MCP tools, connectors, the
   WebSocket protocol, the data model, and key decisions. The doc to read first.
@@ -35,6 +35,7 @@ fails if it has drifted. The hand-written version of this list had reached 13 of
 |---|---|---|
 | [`octo` — one way in to Octopus's data](plans/octo-cli.md) | in-progress | Design: a single client, `octo`, over one server-side interface layer, so agents, Applications and people reach Octopus's data the same way instead of each hacking the web API or the database. |
 | [Agent Router, Channels and the Ledger](plans/agent-router-and-channels.md) | in-progress | Design: an Agent becomes one continuous entity — a Ledger of all its work, an Agent Chat and Channels behind a Router, and hand-made sessions left direct and free. |
+| [Devices](plans/devices.md) | in-progress | Design: machines the user owns — a laptop, a rented GPU box, a home server, a phone — join Octopus as Devices that its agents can use, through `octo device …` and a small outbound-connecting daemon, `octod`. |
 | [Multi-tenancy, second pass: Connectors, Schedules, Harness](plans/multi-tenancy-gaps.md) | in-progress | Proposal: close the gaps a read-only review found where accounts can reach each other's work through the Manage surfaces, and make each class of gap structurally impossible. |
 | [/fork — duplicate a session onto a copied working directory](plans/session-fork.md) | shipped | Duplicate a session onto an independent full copy of its working directory. |
 | [Agent Collaboration — Tech Plan (agent-to-agent delegation)](plans/agent-collaboration.md) | shipped | Agent-to-agent delegation — the `mcp__ask_agent__*` tools, one hop, replies injected as follow-up turns. Reverses the "no A2A" carve-out in `agent-refactor.md` §40-41. |
