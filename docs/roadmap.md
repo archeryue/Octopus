@@ -100,6 +100,11 @@ on the `runtime-provider` branch; the platform side is
     state exists. A Runtime down is an outage, recovered by the platform's
     storage/compute separation.
   - Fold this into `runtime-providers.md` when the branch merges.
+- **Octopus-Runtime v1 puts experience first:** the same latency and stability
+  as `LocalRuntime`, gated by a benchmark. No resource reclaim, no memory
+  overcommit. The isolation technology (KubeVirt, Kata or gVisor) is chosen by
+  a bake-off on the real box. One node, or two if the operator's PC passes the
+  criteria to be a Runtime node.
 - **Octopus-Runtime itself is not urgent:**
   - buy the bare-metal box;
   - k3s + Kata;
