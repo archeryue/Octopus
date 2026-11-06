@@ -71,6 +71,20 @@ As a device it is a capability provider and the place approvals are asked for
 
 ## 3. Design
 
+**Devices are Octopus's own, managed directly — not through a Runtime.**
+Pairing, grants, approvals, Ledger records and `octo device …` are Octopus
+features, and a standalone Octopus on `LocalRuntime` has Devices. Everything
+lives in this repository:
+
+- the server side (registry, grants, approvals, `/api/v1/devices`) in Python,
+  in the Octopus backend;
+- the `octo device …` verbs in `octo` ([`octo-cli.md`](octo-cli.md));
+- `octod` in Go, under `octod/`, as its own Go module with its own build and
+  tests.
+
+The device protocol is defined here, so the server and the daemon change
+together in one commit, tested and released together.
+
 ```
  laptop / GPU box / home server                    Octopus site
  ┌───────────────────────────┐   outbound,     ┌──────────────────────────────┐
@@ -107,8 +121,17 @@ As a device it is a capability provider and the place approvals are asked for
   - The environment rule is the opposite of a Runtime's. A command runs in the
     **device's own environment** with the device's own credentials; the
     caller's environment does not come in.
-- `octod` is a natural Rust program: a single static binary on every kind of
-  machine.
+- **`octod` is written in Go** (decided 2026-11-06).
+  - It must be one static binary that runs on every kind of machine — Linux,
+    macOS on Intel and Apple Silicon, Windows / WSL2, cloud hosts — with
+    nothing to install first, memory-safe, and light enough to stay resident.
+  - Go gives all of that, with the simplest cross-compilation
+    (`GOOS`/`GOARCH`) and mature networking libraries. Tailscale's daemon, the
+    closest analogue — outbound-connecting, everywhere, always on — is Go.
+  - Rust would also qualify; its extra edge (no garbage collector, a few MB
+    less memory) does not matter on a laptop or a GPU box.
+  - Python does not qualify: it needs an interpreter and dependencies on the
+    user's machine.
 
 ### 3.2 Device control is part of `octo`
 
@@ -265,15 +288,13 @@ interface layer, bearers and scopes it extends.
 
 ## 7. Open questions
 
-1. `octod` in Rust from the start, or Python first like `octo`? It runs on every
-   kind of machine, which argues for a static binary from day one.
-2. The connection: WebSocket or gRPC, and how a long `exec` stream is
+1. The connection: WebSocket or gRPC, and how a long `exec` stream is
    multiplexed with control messages.
-3. File transfer for large data (datasets, checkpoints): through the site, or
+2. File transfer for large data (datasets, checkpoints): through the site, or
    device-to-device when both are reachable?
-4. Whether a forward may ever be public, or only reachable through Octopus with
+3. Whether a forward may ever be public, or only reachable through Octopus with
    the user's session.
-5. Approval UX when the phone is not at hand: a timeout that denies, or a
+4. Approval UX when the phone is not at hand: a timeout that denies, or a
    fallback channel?
 
 ## 8. What this defers
