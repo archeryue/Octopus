@@ -65,6 +65,19 @@ rule, on write *and* on use", §7.1):
   Add a version / health check for the harness CLIs, so a stale CLI is caught
   before users hit it.
 
+**Found in review** (2026-11-06):
+
+- **The encryption library is not a declared dependency.**
+  - Every stored secret is encrypted with `cryptography`'s Fernet
+    (`server/crypto.py`): credentials, connector tokens, per-account keys.
+  - But `cryptography` is missing from `pyproject.toml`. It is installed only
+    transitively, through `mcp` → `pyjwt[crypto]`.
+  - If `mcp` ever drops that dependency, a fresh install has no encryption
+    library and the server cannot read or write any secret.
+  - Fix: declare `cryptography` as a direct dependency, with a version range,
+    and add a test that fails if `server/crypto.py` imports anything not
+    declared in `pyproject.toml`.
+
 ## 2. The Runtime architecture
 
 Plan: [`runtime-providers.md`](https://github.com/archeryue/Octopus/blob/runtime-provider/docs/plans/runtime-providers.md),
