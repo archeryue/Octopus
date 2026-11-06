@@ -102,8 +102,8 @@ on the `runtime-provider` branch; the platform side is
   - Fold this into `runtime-providers.md` when the branch merges.
 - **Octopus-Runtime v1 puts experience first:** the same latency and stability
   as `LocalRuntime`, gated by a benchmark. No resource reclaim, no memory
-  overcommit. The isolation technology (KubeVirt, Kata or gVisor) is chosen by
-  a bake-off on the real box. One node, or two if the operator's PC passes the
+  overcommit. Each account gets a cloud computer: a full VM through KubeVirt by
+  default, confirmed by a bake-off on the real box (Kata as the fallback). One node, or two if the operator's PC passes the
   criteria to be a Runtime node.
 - **Octopus-Runtime itself is not urgent:**
   - buy the bare-metal box;
