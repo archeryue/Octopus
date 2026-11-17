@@ -11,6 +11,8 @@ Suggested sequencing, by dependency rather than by number:
 3. Then items 3 and 2 can run in parallel.
 4. Item 5 after item 4, step 1: device control is part of `octo` and stands on
    its interface layer, bearers and scopes.
+5. Item 6 depends on nothing and is small. It can go first: it is felt in
+   every session, on every device.
 
 ---
 
@@ -168,3 +170,26 @@ Plan: [`plans/devices.md`](plans/devices.md) §6. Starts after `octo` step 1.
 
 A Device is never a Runtime: a Runtime is always online, a Device may go
 offline at any time, and the two get different designs.
+
+## 6. Chat: open at the newest message, and stay there
+
+Plan: [`plans/chat-scroll.md`](plans/chat-scroll.md).
+
+Opening a session often lands mid-conversation. The cause, measured: the view
+is parked at the bottom once, then images, bg-task chips and delegation cards
+that fill in afterwards push the newest message off screen. Nothing brings it
+back (§1).
+
+1. **Stick to bottom.** While the reader is at the bottom, any height change
+   keeps the newest content on screen; only the reader scrolling up releases
+   it (§3). Replaces the three-frame park and `followOutput`.
+2. **A snapshot never removes what is held** before its window: reconnect and
+   reopen merge instead of replacing (§4).
+3. **Reserve the size of late content:** image dimensions recorded at upload
+   (and backfilled), a fixed frame for markdown images, placeholders shaped
+   like the chips and cards they become (§5).
+4. **A "Latest ↓" button** with the count of unseen messages (§6).
+5. **Open with 100 messages instead of 200**, from one shared constant (§7).
+
+*Done when* the scroll e2e (§9) passes in Chromium and mobile WebKit, and a long
+real session opens at its newest message on the iPhone, the iPad and the PC.
