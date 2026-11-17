@@ -61,12 +61,46 @@ bottom.** Anything that changes its height — a new message, streamed text, an
 image arriving, a card filling in — keeps the newest content on screen. Once
 the reader scrolls up, nothing moves the view until they come back.
 
-This is what every chat product does, and it replaces three mechanisms that
-each did part of the job: the three-frame park, Virtuoso's `followOutput`, and
-its 100 ms growth window.
+This is the established pattern for chat lists (§2.1), and it replaces three
+mechanisms that each did part of the job: the three-frame park, Virtuoso's
+`followOutput`, and its 100 ms growth window.
 
 Reserving the size of late content (§5) is the second half: it keeps the view
 still for a reader who has scrolled up, where the bottom anchor does not apply.
+
+### 2.1 Prior art, and where this differs
+
+The design follows what the established implementations do, checked against
+their code and documentation (2026-11-16):
+
+- **[`use-stick-to-bottom`](https://github.com/stackblitz-labs/use-stick-to-bottom)**
+  (StackBlitz), widely used in AI chat interfaces: a lock flag, a
+  `ResizeObserver` on the content that scrolls to the bottom while locked, the
+  lock released by scrolling up and re-engaged by scrolling back down to within
+  70 px of the bottom, and no re-pinning while the reader is selecting text.
+- **[assistant-ui's thread virtualization guide](https://www.assistant-ui.com/docs/guides/virtualization)**:
+  with a virtualized list, own the scroll container and re-pin from a
+  `ResizeObserver` while a sticky flag is set; leave the virtualizer's own
+  auto-scroll off, because "the two scroll writers fight" while text streams.
+- **[Stream's `VirtualizedMessageList`](https://getstream.io/chat/docs/sdk/react/v11/components/core-components/virtualized-list/)**
+  is built on react-virtuoso and sets `defaultItemHeight` when message heights
+  vary widely, so one tall first message does not skew every estimate.
+- **CSS scroll anchoring (`overflow-anchor`)** would do part of this natively,
+  but [Safari does not ship it](https://caniuse.com/css-overflow-anchor) — WebKit
+  has tracked it since 2017 and it exists only behind a flag in Technology
+  Preview. The iPhone and iPad are where this is read most, so it is not relied
+  on.
+- **[`VirtuosoMessageList`](https://virtuoso.dev/message-list/)**, react-virtuoso's
+  chat list, anchors to the bottom natively but is commercially licensed.
+
+**One deliberate difference.** `use-stick-to-bottom` treats any upward scroll as
+the reader's, and ignores only the scroll events its own resizes cause. That
+holds for a list where every message is mounted. In a virtualized list it does
+not: Virtuoso corrects estimated item heights by writing `scrollTop` itself,
+sometimes upward, and those writes would read as the reader leaving. So here a
+scroll counts as the reader's only when it comes with the reader's input
+(§3.2). `use-stick-to-bottom` also has no touch handling of its own; §3.2 does,
+because the touch devices are the main ones here.
 
 ---
 
@@ -78,21 +112,33 @@ A pure module, `web/src/lib/stickToBottom.ts`, holds the decision; `ChatView`
 feeds it events and performs what it returns. Pure so that every transition is
 unit-tested without a browser.
 
-State: `{ stuck: boolean, settled: boolean, unseen: number }`.
+State: `{ stuck: boolean, settled: boolean, unseen: number, selecting: boolean }`.
+
+The gap is `scrollHeight − scrollTop − clientHeight` of the scroller, computed
+by the module's caller on every event; nothing depends on Virtuoso's own
+at-bottom report.
 
 | Event | Effect |
 |---|---|
 | Session opened (active id changes) | `stuck = true`, `settled = false`, `unseen = 0` |
-| Content height changed | If `stuck` and the gap to the bottom is over 1 px: scroll to the bottom |
-| Reached the bottom (gap ≤ threshold) | `stuck = true`, `unseen = 0`; the first time after open, `settled = true` |
-| The reader scrolled away from the bottom (§3.2) | `stuck = false` |
+| Content height changed | If `stuck`, not `selecting`, and the gap is over 1 px: scroll to the bottom |
+| The gap reaches 1 px or less while `stuck` | The first time after open, `settled = true` |
+| The reader scrolls **up** (§3.2) | `stuck = false` — however small the scroll, so reading the line just above the bottom is not undone |
+| The reader scrolls **down** to a gap of 70 px or less, and the gesture has ended (§3.2) | `stuck = true`, `unseen = 0`, scroll to the bottom |
+| A text selection inside the list starts | `selecting = true` |
+| The selection ends (collapsed, or moved outside the list) | `selecting = false`; if `stuck` and the gap is over 1 px, scroll to the bottom |
 | Message appended while not stuck | `unseen += 1` |
 | The reader sends a message | `stuck = true`, scroll to the bottom |
 | "Latest" button pressed (§6) | `stuck = true`, scroll to the bottom |
 
-The threshold is Virtuoso's `atBottomThreshold`, set explicitly (8 px) rather
-than left at its default, so the list and the module agree on what "at the
-bottom" means.
+**Why 70 px to re-engage.** It is `use-stick-to-bottom`'s value, and on a touch
+screen momentum rarely stops a fling at exactly the bottom; a tighter band
+leaves a reader who came back to the end not following it.
+
+**Why selection pauses it.** Streamed text grows the footer on every delta; a
+re-pin then moves the content under a selection the reader is still dragging.
+`selectionchange`, with the selection's anchor inside the list, drives
+`selecting`.
 
 ### 3.2 Telling the reader's scroll from ours
 
@@ -108,9 +154,14 @@ So unsticking needs **intent**. The scroller listens for the reader's input:
 - keys, while the list has focus: `PageUp`, `ArrowUp`, `Home`, `Shift+Space`;
 - `pointerdown` on the scroller, which covers dragging the scrollbar.
 
-Intent is held while a touch or pointer is down, and for 250 ms after a wheel
-or key event. A `scroll` event during intent that leaves the gap above the
-threshold unsticks; any other `scroll` event changes nothing.
+Intent is held while a touch or pointer is down, for 250 ms after a wheel or
+key event, and — after a touch ends — until scroll events have stopped for
+150 ms, because iOS keeps scrolling with momentum after the finger lifts.
+
+A `scroll` event during intent is the reader's: `scrollTop` lower than at the
+previous event is "scrolls up", higher is "scrolls down" (§3.1). A `scroll`
+event without intent changes nothing. Re-engaging waits for the gesture to end
+so that snapping to the bottom never fights a finger still on the screen.
 
 ### 3.3 Observing height
 
@@ -133,6 +184,14 @@ replaces the fixed three-frame park.
   Virtuoso's smooth follow would compete with it.
 - `initialTopMostItemIndex` stays: on a remount with messages already in the
   store it avoids one frame at the top.
+- `defaultItemHeight` is set. Without it Virtuoso estimates every unmeasured
+  message from the first one it measures, and a first message with an
+  attachment or a long tool output skews the whole list. The value is the
+  median message height over the longest real sessions, measured read-only from
+  the deployed install's transcripts while implementing, and written next to
+  the prop with how it was obtained.
+- `atBottomStateChange` is no longer read for stickiness (§3.1 computes the gap
+  itself); `atTopStateChange` stays, for paging back.
 - `parked`, which arms paging back, becomes `settled`: paging is armed once the
   view has reached the bottom after opening, the same guarantee as today.
 
@@ -257,8 +316,10 @@ the window, and both import it.
 **Frontend unit (vitest)**
 
 - `stickToBottom`: every transition in §3.1, including that a height change
-  while not stuck does nothing, and that a scroll without intent never
-  unsticks.
+  while not stuck or while selecting does nothing, that a scroll without intent
+  never unsticks, that a small upward scroll unsticks and does not re-engage
+  until the reader scrolls down within 70 px, and that re-engaging waits for
+  the gesture (and its momentum) to end.
 - `applyTranscript`: a snapshot keeps held messages older than its window and
   keeps the older-end cursor; with nothing older held it replaces as today.
 - Thumbnail box: computed size from dimensions, for landscape, portrait and
@@ -274,9 +335,9 @@ the window, and both import it.
 
 **E2E (Playwright), `web/e2e/chat-scroll.spec.ts`**
 
-Cases 1–7 need no model and run in the fast bucket. Case 8 runs a real turn —
-a message can only be sent over the socket, and sending starts one — so it
-sits in a describe titled `@llm`.
+Cases 3, 8 and 9 need a real turn — streamed text comes only from one, and a
+message can only be sent over the socket, which starts one — so they sit in a
+describe titled `@llm`. The rest need no model and run in the fast bucket.
 
 Each case asserts the gap to the bottom (`scrollHeight − scrollTop −
 clientHeight`), not that the last message is "visible":
@@ -294,8 +355,11 @@ clientHeight`), not that the last message is "visible":
    through older pages: at the bottom it stays there; scrolled back, the
    message on screen stays on screen and the older pages are still loaded.
 7. Touch: a phone viewport (`isMobile`, `hasTouch`), a downward finger drag
-   unsticks, and content growth afterwards does not move the view.
-8. Messages that arrive while the tab is away: with the first page's socket
+   unsticks, and content growth afterwards does not move the view; a fling back
+   that stops within 70 px of the bottom re-engages once it has stopped.
+8. Selecting text in the last message while text streams: the selection stays
+   where it is until released, then the view returns to the bottom.
+9. Messages that arrive while the tab is away: with the first page's socket
    closed, a second page sends to the same session; after the first page
    reconnects, the new message and its reply are at its bottom.
 
